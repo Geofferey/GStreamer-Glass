@@ -1,6 +1,4 @@
-﻿# Module: 10-CoreUtilities.ps1 (auto-extracted by tools/Split-Monolith.ps1 -- edit here, then run tools/Build-Monolith.ps1)
-
-function Get-ApplicationIcon {
+﻿function Get-ApplicationIcon {
     # In a compiled PS12EXE/PS2EXE build, prefer the icon embedded in the EXE.
     # While running as a .ps1, prefer Glass2Glass-Streamer.ico beside the script.
     $currentExePath = $null

@@ -1,6 +1,4 @@
-﻿# Module: 26-MediaMtx.ps1 (auto-extracted by tools/Split-Monolith.ps1 -- edit here, then run tools/Build-Monolith.ps1)
-
-function Read-MediaMtxStartupLogs {
+﻿function Read-MediaMtxStartupLogs {
     $stdoutText = Read-NewLogText `
         -Path $script:MediaMtxStdOutPath `
         -Position ([ref]$script:MediaMtxStdOutPosition)

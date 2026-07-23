@@ -1,6 +1,4 @@
-﻿# Module: 24-Settings.ps1 (auto-extracted by tools/Split-Monolith.ps1 -- edit here, then run tools/Build-Monolith.ps1)
-
-function Save-Settings {
+﻿function Save-Settings {
     # UI events fire while Load-Settings assigns controls. Never persist that
     # partially restored state back over the complete settings file.
     if ($script:LoadingSettings) { return }
@@ -690,11 +688,6 @@ function Load-Settings {
     finally {
         $script:SuppressProtocolChange = $false
         $script:LoadingSettings = $false
-        # Existing f13 settings can contain a stale global TimingMode and a
-        # different Direct WebRTC clock-signalling value. For Direct GST WebRTC,
-        # preserve the actually emitted advanced setting and reconcile the
-        # global selector to it once loading is complete.
-        Sync-TransportTimingControls -Source DirectWebRtc
         Update-TransportUi
         Update-DirectWebRtcUi
         Update-EncoderUi
@@ -814,7 +807,6 @@ function Validate-Configuration {
         ) | Out-Null
         return $false
     }
-
 
     if (Test-DirectWebRtcSeparateMediaStreams) {
         $videoMsid = Get-DirectWebRtcMediaStreamId -Kind video

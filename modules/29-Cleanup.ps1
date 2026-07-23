@@ -1,6 +1,4 @@
-﻿# Module: 29-Cleanup.ps1 (auto-extracted by tools/Split-Monolith.ps1 -- edit here, then run tools/Build-Monolith.ps1)
-
-function Invoke-ApplicationCleanup {
+﻿function Invoke-ApplicationCleanup {
     if ($script:ExitCleanupStarted) {
         return
     }

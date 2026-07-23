@@ -1,6 +1,4 @@
-﻿# Module: 16-CaptureAndAudioDevices.ps1 (auto-extracted by tools/Split-Monolith.ps1 -- edit here, then run tools/Build-Monolith.ps1)
-
-function Update-TransportUi {
+﻿function Update-TransportUi {
     $enabled = Test-TransportEnabled
     foreach ($control in @($cmbProtocol, $txtDestination, $lblDestination, $cmbTimingMode, $chkStartMediaMtx)) {
         if ($control) { $control.Enabled = $enabled }

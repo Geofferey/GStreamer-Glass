@@ -1,6 +1,4 @@
-﻿# Module: 11-SceneEditor.ps1 (auto-extracted by tools/Split-Monolith.ps1 -- edit here, then run tools/Build-Monolith.ps1)
-
-function New-SceneNumeric {
+﻿function New-SceneNumeric {
     param([int]$Minimum, [int]$Maximum, [int]$Value, [int]$Increment = 1)
     $control = New-Object System.Windows.Forms.NumericUpDown
     $control.Minimum = $Minimum

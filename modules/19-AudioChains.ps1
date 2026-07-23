@@ -1,6 +1,4 @@
-﻿# Module: 19-AudioChains.ps1 (auto-extracted by tools/Split-Monolith.ps1 -- edit here, then run tools/Build-Monolith.ps1)
-
-function Build-RawAudioChain {
+﻿function Build-RawAudioChain {
     $desktopEnabled = $chkDesktopAudio.Checked
     $micEnabled = $chkMic.Checked
 
@@ -202,16 +200,6 @@ function Test-WebRtcClockSignalingForSink {
     }
 
     return (Test-SendAbsoluteTimestampsEnabled)
-}
-
-function Sync-TransportTimingControls {
-    param(
-        [ValidateSet('Protocol','TimingMode','DirectWebRtc')]
-        [string]$Source = 'Protocol'
-    )
-
-    # Compatibility no-op. Older builds had a second GST-WebRTC-only selector;
-    # f42 keeps one protocol-aware setting and only maps old values during load.
 }
 
 function Get-AbsoluteTimestampTransportOption {

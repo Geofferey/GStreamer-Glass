@@ -1,6 +1,4 @@
-﻿# Module: 28-PlayerConfig.ps1 (auto-extracted by tools/Split-Monolith.ps1 -- edit here, then run tools/Build-Monolith.ps1)
-
-function Update-PlayerConfigFromUi {
+﻿function Update-PlayerConfigFromUi {
     try {
         Write-DirectWebRtcWebClientConfig -Quiet
     }

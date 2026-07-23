@@ -1,15 +1,6 @@
-﻿# Module: 18-ThreadingAndDebug.ps1 (auto-extracted by tools/Split-Monolith.ps1 -- edit here, then run tools/Build-Monolith.ps1)
-
-function Get-CpuWorkerLimit {
+﻿function Get-CpuWorkerLimit {
     if (-not $numCpuWorkerLimit) { return 0 }
     return [Math]::Max(0, [int]$numCpuWorkerLimit.Value)
-}
-
-function Get-CpuWorkerProperty {
-    param([Parameter(Mandatory)][string]$Name)
-    $workers = Get-CpuWorkerLimit
-    if ($workers -le 0) { return '' }
-    return "$Name=$workers"
 }
 
 function Apply-ThreadBudget {

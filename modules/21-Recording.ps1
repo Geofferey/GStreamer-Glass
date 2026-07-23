@@ -1,6 +1,4 @@
-﻿# Module: 21-Recording.ps1 (auto-extracted by tools/Split-Monolith.ps1 -- edit here, then run tools/Build-Monolith.ps1)
-
-function Test-RecordingEnabled {
+﻿function Test-RecordingEnabled {
     return (
         $chkRecordingEnabled -and
         $chkRecordingEnabled.Checked -and
@@ -9,15 +7,7 @@ function Test-RecordingEnabled {
 }
 
 function Get-SelectedRecordingEncoderDefinition {
-    $name = [string]$cmbRecordingEncoder.SelectedItem
-    if (
-        [string]::IsNullOrWhiteSpace($name) -or
-        -not $script:EncoderCatalog.Contains($name)
-    ) {
-        $name = $script:DefaultEncoderName
-    }
-
-    return $script:EncoderCatalog[$name]
+    return Get-EncoderDefinitionForCombo -Combo $cmbRecordingEncoder
 }
 
 function Get-RecordingEncoderControlSupport {
@@ -253,7 +243,7 @@ function Get-RecordingEncoderElementChain {
     $aqStrengthFloat = ($aqStrength / 8.0).ToString('0.###', [System.Globalization.CultureInfo]::InvariantCulture)
     $vbvBuffer = [int]$numRecordingVbvBuffer.Value
     $parts = New-Object System.Collections.Generic.List[string]
-    foreach ($x in @('queue','max-size-buffers=12','max-size-bytes=0','max-size-time=0','leaky=downstream','!','d3d11convert','!')) { $parts.Add($x) }
+    foreach ($x in @((New-LiveQueueString -Buffers 12 -Leak 'downstream'),'!','d3d11convert','!')) { $parts.Add($x) }
     $parts.Add("`"video/x-raw(memory:D3D11Memory),format=NV12,width=$width,height=$height,framerate=$fps/1`"")
     $parts.Add('!')
     if ($inputType -eq 'I420') {
@@ -262,52 +252,24 @@ function Get-RecordingEncoderElementChain {
         $parts.Add('!')
     }
     $parts.Add($element)
-    switch ($family) {
-        'NVENC' {
-            $zeroLatency = ($bFrames -eq 0 -and $lookAheadFrames -eq 0 -and $tune -in @('low-latency','ultra-low-latency'))
-            Add-NvencRateControlOptions $parts $rateControl $videoBitrateKbps $maxVideoBitrateKbps $constantQp
-            foreach ($x in @("preset=$preset","tune=$tune","multi-pass=$multipass","zerolatency=$($zeroLatency.ToString().ToLowerInvariant())","bframes=$bFrames","b-adapt=$((($bFrames -gt 0) -and ($lookAheadFrames -gt 0)).ToString().ToLowerInvariant())","gop-size=$gopSize","rc-lookahead=$lookAheadFrames","spatial-aq=$($spatialAq.ToString().ToLowerInvariant())","temporal-aq=$($temporalAq.ToString().ToLowerInvariant())")) { $parts.Add($x) }
-            if ($spatialAq -or $temporalAq) { $parts.Add("aq-strength=$aqStrength") }
-            if ($vbvBuffer -gt 0) { $parts.Add("vbv-buffer-size=$vbvBuffer") }
-            if ($codec -in @('H264','H265')) { $parts.Add('repeat-sequence-header=true') }
-        }
-        'AMF' {
-            foreach ($x in @("bitrate=$videoBitrateKbps",'rate-control=cbr','preset=quality','usage=transcoding',"gop-size=$gopSize",'pre-encode=false')) { $parts.Add($x) }
-            if ($codec -eq 'H264') { $parts.Add("b-frames=$bFrames"); $parts.Add("max-b-frames=$bFrames") }
-        }
-        'QSV' {
-            Add-QsvRateControlOptions $parts $rateControl $videoBitrateKbps $maxVideoBitrateKbps $constantQp $lookAheadFrames $codec
-            $parts.Add("gop-size=$gopSize")
-            if ($codec -in @('H264','H265')) { $parts.Add("b-frames=$bFrames") }
-        }
-        'MF' {
-            foreach ($x in @("bitrate=$videoBitrateKbps",'rc-mode=cbr',"gop-size=$gopSize",'low-latency=false')) { $parts.Add($x) }
-            if ($support.BFrames) { $parts.Add("bframes=$bFrames") }
-        }
-        'X264' {
-            if ($rateControl -eq 'constqp') { $parts.Add('pass=quant'); $parts.Add("quantizer=$constantQp") } else { $parts.Add("bitrate=$videoBitrateKbps") }
-            $parts.Add('speed-preset=veryfast')
-            if ($tune -in @('low-latency','ultra-low-latency')) { $parts.Add('tune=zerolatency') }
-            foreach ($x in @("key-int-max=$gopSize","bframes=$bFrames","rc-lookahead=$lookAheadFrames",'byte-stream=true','aud=true')) { $parts.Add($x) }
-        }
-        'X265' {
-            if ($rateControl -ne 'constqp') { $parts.Add("bitrate=$videoBitrateKbps") }
-            $parts.Add('speed-preset=veryfast')
-            if ($tune -in @('low-latency','ultra-low-latency')) { $parts.Add('tune=zerolatency') }
-            $parts.Add("key-int-max=$gopSize")
-            $x265Options = New-Object System.Collections.Generic.List[string]
-            $x265Options.Add("bframes=$bFrames")
-            $x265Options.Add("rc-lookahead=$lookAheadFrames")
-            if ($rateControl -eq 'constqp') { $x265Options.Add("qp=$constantQp") }
-            if ($spatialAq -or $temporalAq) { $x265Options.Add('aq-mode=2'); $x265Options.Add("aq-strength=$aqStrengthFloat") } else { $x265Options.Add('aq-mode=0') }
-            $parts.Add("option-string=$($x265Options -join ':')")
-        }
-        'OPENH264' { foreach ($x in @("bitrate=$videoBitrateBps",'rate-control=bitrate','complexity=medium','usage-type=screen',"gop-size=$gopSize")) { $parts.Add($x) } }
-        'AOM' { foreach ($x in @("target-bitrate=$videoBitrateKbps",'end-usage=cbr','cpu-used=6','lag-in-frames=0',"keyframe-max-dist=$gopSize",'row-mt=true')) { $parts.Add($x) } }
-        'SVTAV1' { foreach ($x in @("target-bitrate=$videoBitrateKbps",'preset=8',"intra-period-length=$gopSize",'intra-refresh-type=IDR')) { $parts.Add($x) } }
-        'RAV1E' { foreach ($x in @("bitrate=$videoBitrateBps",'low-latency=true','speed-preset=8',"max-key-frame-interval=$gopSize",'min-key-frame-interval=1','rdo-lookahead-frames=0')) { $parts.Add($x) } }
-        'VPX' { foreach ($x in @("target-bitrate=$videoBitrateBps",'deadline=1','end-usage=cbr',"keyframe-max-dist=$gopSize",'lag-in-frames=0')) { $parts.Add($x) } }
-        default { throw "Unsupported recording encoder family: $family" }
+    Add-EncoderFamilyOptions -Parts $parts -Family $family -Codec $codec -Context 'Recording' -ControlSupportsBFrames $support.BFrames -Values @{
+        RateControl         = $rateControl
+        VideoBitrateKbps    = $videoBitrateKbps
+        VideoBitrateBps     = $videoBitrateBps
+        MaxVideoBitrateKbps = $maxVideoBitrateKbps
+        ConstantQp          = $constantQp
+        Preset              = $preset
+        Tune                = $tune
+        Multipass           = $multipass
+        GopSize             = $gopSize
+        BFrames             = $bFrames
+        LookAheadFrames     = $lookAheadFrames
+        SpatialAq           = $spatialAq
+        TemporalAq          = $temporalAq
+        AqStrength          = $aqStrength
+        AqStrengthFloat     = $aqStrengthFloat
+        VbvBuffer           = $vbvBuffer
+        CpuWorkers          = 0
     }
     Add-CustomEncoderOptions $parts $txtRecordingCustomEncoderOptions.Text
     if (-not [string]::IsNullOrWhiteSpace($parser)) {
@@ -331,14 +293,14 @@ function Build-RecordingRawAudioChain {
     $micSource = Get-WasapiSourceString
 
     if ($desktopEnabled -and -not $micEnabled) {
-        return @($desktopSource,'!','queue','max-size-buffers=16','max-size-bytes=0','max-size-time=0','leaky=downstream','!','audioconvert','!','audioresample','!',(Get-AudioRawCapsString -Format 'S16LE' -Channels 2)) -join ' '
+        return @($desktopSource,'!',(New-LiveQueueString -Buffers 16 -Leak 'downstream'),'!','audioconvert','!','audioresample','!',(Get-AudioRawCapsString -Format 'S16LE' -Channels 2)) -join ' '
     }
     if (-not $desktopEnabled -and $micEnabled) {
-        return @($micSource,'!','queue','max-size-buffers=16','max-size-bytes=0','max-size-time=0','leaky=downstream','!','audioconvert','!','audioresample','!',(Get-AudioRawCapsString -Format 'S16LE' -Channels 2)) -join ' '
+        return @($micSource,'!',(New-LiveQueueString -Buffers 16 -Leak 'downstream'),'!','audioconvert','!','audioresample','!',(Get-AudioRawCapsString -Format 'S16LE' -Channels 2)) -join ' '
     }
-    $desktopMixBranch = @($desktopSource,'!','queue','max-size-buffers=16','max-size-bytes=0','max-size-time=0','leaky=downstream','!','audioconvert','!','audioresample','!',(Get-AudioRawCapsString -Format 'F32LE' -Channels 2),'!','recordaudiomix.') -join ' '
-    $micMixBranch = @($micSource,'!','queue','max-size-buffers=16','max-size-bytes=0','max-size-time=0','leaky=downstream','!','audioconvert','!','audioresample','!',(Get-AudioRawCapsString -Format 'F32LE' -Channels 2),'!','recordaudiomix.') -join ' '
-    $mixOutput = @('recordaudiomix.','!','queue','max-size-buffers=16','max-size-bytes=0','max-size-time=0','leaky=downstream','!','audioconvert','!',(Get-AudioRawCapsString -Format 'S16LE' -Channels 2)) -join ' '
+    $desktopMixBranch = @($desktopSource,'!',(New-LiveQueueString -Buffers 16 -Leak 'downstream'),'!','audioconvert','!','audioresample','!',(Get-AudioRawCapsString -Format 'F32LE' -Channels 2),'!','recordaudiomix.') -join ' '
+    $micMixBranch = @($micSource,'!',(New-LiveQueueString -Buffers 16 -Leak 'downstream'),'!','audioconvert','!','audioresample','!',(Get-AudioRawCapsString -Format 'F32LE' -Channels 2),'!','recordaudiomix.') -join ' '
+    $mixOutput = @('recordaudiomix.','!',(New-LiveQueueString -Buffers 16 -Leak 'downstream'),'!','audioconvert','!',(Get-AudioRawCapsString -Format 'S16LE' -Channels 2)) -join ' '
     return "audiomixer name=recordaudiomix $desktopMixBranch $micMixBranch $mixOutput"
 }
 

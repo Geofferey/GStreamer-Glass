@@ -1138,7 +1138,7 @@ public static class GstProcessJob
 '@
 }
 
-$script:AppVersion = '3.8.0a'
+$script:AppVersion = '3.8.1a'
 $script:AppName = "GStreamer Glass v$($script:AppVersion)"
 $script:ConfigDirectory = Join-Path $env:APPDATA 'GStreamerBasicWhipStreamer'
 $script:ConfigPath = Join-Path $script:ConfigDirectory 'settings.json'
@@ -1154,13 +1154,10 @@ $script:ApplyingDirectWebRtcSmoothnessProfile = $false
 $script:ApplyingThreadingProfile = $false
 $script:ApplyingThreadBudget = $false
 $script:LoadingSettings = $false
-$script:SynchronizingTimingControls = $false
 $script:DefaultAudioOutputDeviceLabel = 'Default output device (loopback)'
 $script:DefaultAudioInputDeviceLabel = 'Default input device / microphone'
 $script:AudioOutputDeviceMap = @{}
 $script:AudioInputDeviceMap = @{}
-$script:PendingAudioOutputDeviceLabel = ''
-$script:PendingAudioInputDeviceLabel = ''
 
 # Resolve the directory beside the script during development and beside the
 # compiled executable when packaged by PS12EXE/PS2EXE.
@@ -1297,7 +1294,6 @@ $script:ProtocolDestinations = [ordered]@{
 # each created webrtcbin/ICE agent.
 $script:DefaultDirectWebRtcWebAddress = 'http://0.0.0.0:8889/'
 $script:DefaultDirectWebRtcWebPath = '/live'
-$script:DefaultDirectWebRtcWebDirectory = ''
 $script:DefaultDirectWebRtcBundledWebMode = 'Auto-detect beside EXE'
 $script:DefaultDirectWebRtcBundledWebDirectory = ''
 $script:DefaultDirectWebRtcWorkingWebMode = 'Auto: LocalAppData'
@@ -1361,7 +1357,6 @@ $script:DefaultPlayerUrlOverrides = $false
 $script:DefaultLiveEdgeGreenMs = 50
 $script:DefaultLiveEdgeYellowMs = 120
 $script:DefaultLiveEdgeAverageSec = 5
-$script:DefaultPlayerAvRenderMode = 'Synced single media element' # legacy config compatibility
 $script:DefaultPlayerSeparateHtmlMediaElements = $false
 $script:DefaultDirectWebRtcAvPipelineMode = 'Single pipeline'
 $script:DefaultSplitPlayerSyncMode = 'Off / free-run'
@@ -1528,7 +1523,6 @@ $script:DefaultEncoderName = 'NVIDIA NVENC H.264 (D3D11)'
 $script:RateControlModes = @('cbr', 'vbr', 'constqp')
 $script:NvencTuneModes = @('default', 'high-quality', 'low-latency', 'ultra-low-latency', 'lossless')
 $script:NvencMultipassModes = @('default', 'disabled', 'two-pass-quarter', 'two-pass')
-$script:QueueProfiles = @('Lowest latency', 'Balanced', 'Stable / recording')
 
 $script:AudioCodecCatalog = [ordered]@{
     'Opus' = [ordered]@{

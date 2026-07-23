@@ -1,7 +1,6 @@
-﻿# Module: 22-Encoding.ps1 (auto-extracted by tools/Split-Monolith.ps1 -- edit here, then run tools/Build-Monolith.ps1)
-
-function Get-SelectedEncoderDefinition {
-    $name = [string]$cmbEncoder.SelectedItem
+﻿function Get-EncoderDefinitionForCombo {
+    param([Parameter(Mandatory)]$Combo)
+    $name = [string]$Combo.SelectedItem
     if (
         [string]::IsNullOrWhiteSpace($name) -or
         -not $script:EncoderCatalog.Contains($name)
@@ -10,6 +9,10 @@ function Get-SelectedEncoderDefinition {
     }
 
     return $script:EncoderCatalog[$name]
+}
+
+function Get-SelectedEncoderDefinition {
+    return Get-EncoderDefinitionForCombo -Combo $cmbEncoder
 }
 
 function Get-SelectedAudioCodecDefinition {
@@ -312,6 +315,203 @@ function Get-EncodedVideoCaps {
     }
 }
 
+function Add-EncoderFamilyOptions {
+    param(
+        [Parameter(Mandatory)][System.Collections.Generic.List[string]]$Parts,
+        [Parameter(Mandatory)][string]$Family,
+        [Parameter(Mandatory)][string]$Codec,
+        [Parameter(Mandatory)][ValidateSet('Streaming', 'Recording')][string]$Context,
+        [Parameter(Mandatory)][bool]$ControlSupportsBFrames,
+        [Parameter(Mandatory)][hashtable]$Values
+    )
+
+    $rateControl = $Values.RateControl
+    $videoBitrateKbps = $Values.VideoBitrateKbps
+    $videoBitrateBps = $Values.VideoBitrateBps
+    $maxVideoBitrateKbps = $Values.MaxVideoBitrateKbps
+    $constantQp = $Values.ConstantQp
+    $preset = $Values.Preset
+    $tune = $Values.Tune
+    $multipass = $Values.Multipass
+    $gopSize = $Values.GopSize
+    $bFrames = $Values.BFrames
+    $lookAheadFrames = $Values.LookAheadFrames
+    $spatialAq = $Values.SpatialAq
+    $temporalAq = $Values.TemporalAq
+    $aqStrength = $Values.AqStrength
+    $aqStrengthFloat = $Values.AqStrengthFloat
+    $vbvBuffer = $Values.VbvBuffer
+    $cpuWorkers = $Values.CpuWorkers
+    $aqEnabled = $spatialAq -or $temporalAq
+    $isStreaming = ($Context -eq 'Streaming')
+
+    switch ($Family) {
+        'NVENC' {
+            # Identical between streaming and recording -- only the upstream
+            # preset/tune/multipass/rate-control inputs differ, and those are
+            # already resolved by the caller before this runs.
+            $zeroLatency = ($bFrames -eq 0 -and $lookAheadFrames -eq 0 -and $tune -in @('low-latency', 'ultra-low-latency'))
+            Add-NvencRateControlOptions $Parts $rateControl $videoBitrateKbps $maxVideoBitrateKbps $constantQp
+            $Parts.Add("preset=$preset")
+            $Parts.Add("tune=$tune")
+            $Parts.Add("multi-pass=$multipass")
+            $Parts.Add("zerolatency=$($zeroLatency.ToString().ToLowerInvariant())")
+            $Parts.Add("bframes=$bFrames")
+            $Parts.Add("b-adapt=$((($bFrames -gt 0) -and ($lookAheadFrames -gt 0)).ToString().ToLowerInvariant())")
+            $Parts.Add("gop-size=$gopSize")
+            $Parts.Add("rc-lookahead=$lookAheadFrames")
+            $Parts.Add("spatial-aq=$($spatialAq.ToString().ToLowerInvariant())")
+            $Parts.Add("temporal-aq=$($temporalAq.ToString().ToLowerInvariant())")
+            if ($aqEnabled) { $Parts.Add("aq-strength=$aqStrength") }
+            if ($vbvBuffer -gt 0) { $Parts.Add("vbv-buffer-size=$vbvBuffer") }
+            if ($Codec -in @('H264', 'H265')) {
+                $Parts.Add('repeat-sequence-header=true')
+            }
+        }
+        'AMF' {
+            if ($isStreaming) {
+                $Parts.Add("bitrate=$videoBitrateKbps")
+                $Parts.Add('rate-control=cbr')
+                $Parts.Add('preset=speed')
+                $Parts.Add(
+                    $(if ($Codec -eq 'AV1') {
+                        'usage=low-latency'
+                    }
+                    else {
+                        'usage=ultra-low-latency'
+                    })
+                )
+                $Parts.Add("gop-size=$gopSize")
+                $Parts.Add("pre-analysis=$((($lookAheadFrames -gt 0)).ToString().ToLowerInvariant())")
+                $Parts.Add('pre-encode=false')
+                if ($Codec -eq 'H264') {
+                    $Parts.Add("b-frames=$bFrames")
+                    $Parts.Add("max-b-frames=$bFrames")
+                    $Parts.Add(
+                        "adaptive-mini-gop=$((($bFrames -gt 0) -and ($lookAheadFrames -gt 0)).ToString().ToLowerInvariant())"
+                    )
+                }
+                if ($lookAheadFrames -gt 0 -and $Codec -in @('H264', 'H265')) {
+                    $Parts.Add("pa-lookahead-buffer-depth=$lookAheadFrames")
+                }
+            }
+            else {
+                $Parts.Add("bitrate=$videoBitrateKbps")
+                $Parts.Add('rate-control=cbr')
+                $Parts.Add('preset=quality')
+                $Parts.Add('usage=transcoding')
+                $Parts.Add("gop-size=$gopSize")
+                $Parts.Add('pre-encode=false')
+                if ($Codec -eq 'H264') {
+                    $Parts.Add("b-frames=$bFrames")
+                    $Parts.Add("max-b-frames=$bFrames")
+                }
+            }
+        }
+        'QSV' {
+            Add-QsvRateControlOptions $Parts $rateControl $videoBitrateKbps $maxVideoBitrateKbps $constantQp $lookAheadFrames $Codec
+            $Parts.Add("gop-size=$gopSize")
+            if ($Codec -in @('H264', 'H265')) {
+                $Parts.Add("b-frames=$bFrames")
+            }
+        }
+        'MF' {
+            $Parts.Add("bitrate=$videoBitrateKbps")
+            $Parts.Add('rc-mode=cbr')
+            $Parts.Add("gop-size=$gopSize")
+            $Parts.Add("low-latency=$(if ($isStreaming) { 'true' } else { 'false' })")
+            if ($ControlSupportsBFrames) {
+                $Parts.Add("bframes=$bFrames")
+            }
+        }
+        'X264' {
+            if ($rateControl -eq 'constqp') { $Parts.Add('pass=quant'); $Parts.Add("quantizer=$constantQp") } else { $Parts.Add("bitrate=$videoBitrateKbps") }
+            $Parts.Add("speed-preset=$(if ($isStreaming) { 'ultrafast' } else { 'veryfast' })")
+            if ($tune -in @('low-latency', 'ultra-low-latency')) { $Parts.Add('tune=zerolatency') }
+            $Parts.Add("key-int-max=$gopSize")
+            $Parts.Add("bframes=$bFrames")
+            if ($isStreaming) {
+                $Parts.Add(
+                    "b-adapt=$((($bFrames -gt 0) -and ($lookAheadFrames -gt 0)).ToString().ToLowerInvariant())"
+                )
+            }
+            $Parts.Add("rc-lookahead=$lookAheadFrames")
+            if ($isStreaming) {
+                $Parts.Add('sync-lookahead=0')
+                $Parts.Add("mb-tree=$($aqEnabled.ToString().ToLowerInvariant())")
+                $x264AqOptions = if ($aqEnabled) { "aq-mode=2:aq-strength=$aqStrengthFloat" } else { 'aq-mode=0' }
+                $Parts.Add("option-string=$x264AqOptions")
+                $Parts.Add('sliced-threads=true')
+                if ($cpuWorkers -gt 0) { $Parts.Add("threads=$cpuWorkers") }
+            }
+            $Parts.Add('byte-stream=true')
+            $Parts.Add('aud=true')
+        }
+        'X265' {
+            if ($rateControl -ne 'constqp') { $Parts.Add("bitrate=$videoBitrateKbps") }
+            $Parts.Add("speed-preset=$(if ($isStreaming) { 'ultrafast' } else { 'veryfast' })")
+            if ($tune -in @('low-latency', 'ultra-low-latency')) { $Parts.Add('tune=zerolatency') }
+            $Parts.Add("key-int-max=$gopSize")
+            $x265Options = New-Object System.Collections.Generic.List[string]
+            $x265Options.Add("bframes=$bFrames")
+            $x265Options.Add("rc-lookahead=$lookAheadFrames")
+            if ($isStreaming -and $cpuWorkers -gt 0) { $x265Options.Add("pools=$cpuWorkers") }
+            if ($rateControl -eq 'constqp') { $x265Options.Add("qp=$constantQp") }
+            if ($aqEnabled) {
+                $x265Options.Add('aq-mode=2')
+                $x265Options.Add("aq-strength=$aqStrengthFloat")
+            }
+            else {
+                $x265Options.Add('aq-mode=0')
+            }
+            $Parts.Add("option-string=$($x265Options -join ':')")
+        }
+        'OPENH264' {
+            $Parts.Add("bitrate=$videoBitrateBps")
+            $Parts.Add('rate-control=bitrate')
+            $Parts.Add("complexity=$(if ($isStreaming) { 'low' } else { 'medium' })")
+            $Parts.Add('usage-type=screen')
+            $Parts.Add("gop-size=$gopSize")
+            if ($isStreaming) { $Parts.Add('enable-frame-skip=true') }
+        }
+        'AOM' {
+            $Parts.Add("target-bitrate=$videoBitrateKbps")
+            $Parts.Add('end-usage=cbr')
+            $Parts.Add("cpu-used=$(if ($isStreaming) { 8 } else { 6 })")
+            $Parts.Add("lag-in-frames=$(if ($isStreaming) { $lookAheadFrames } else { 0 })")
+            $Parts.Add("keyframe-max-dist=$gopSize")
+            $Parts.Add('row-mt=true')
+        }
+        'SVTAV1' {
+            $Parts.Add("target-bitrate=$videoBitrateKbps")
+            $Parts.Add("preset=$(if ($isStreaming) { 12 } else { 8 })")
+            $Parts.Add("intra-period-length=$gopSize")
+            $Parts.Add('intra-refresh-type=IDR')
+            if ($isStreaming) { $Parts.Add('maximum-buffer-size=100') }
+        }
+        'RAV1E' {
+            $Parts.Add("bitrate=$videoBitrateBps")
+            $lowLatencyValue = if ($isStreaming) { ($lookAheadFrames -eq 0) } else { $true }
+            $Parts.Add("low-latency=$($lowLatencyValue.ToString().ToLowerInvariant())")
+            $Parts.Add("speed-preset=$(if ($isStreaming) { 10 } else { 8 })")
+            $Parts.Add("max-key-frame-interval=$gopSize")
+            $Parts.Add('min-key-frame-interval=1')
+            $Parts.Add("rdo-lookahead-frames=$(if ($isStreaming) { $lookAheadFrames } else { 0 })")
+        }
+        'VPX' {
+            $Parts.Add("target-bitrate=$videoBitrateBps")
+            $Parts.Add('deadline=1')
+            $Parts.Add('end-usage=cbr')
+            $Parts.Add("keyframe-max-dist=$gopSize")
+            $Parts.Add("lag-in-frames=$(if ($isStreaming) { $lookAheadFrames } else { 0 })")
+        }
+        default {
+            $label = if ($isStreaming) { 'encoder' } else { 'recording encoder' }
+            throw "Unsupported $label family: $Family"
+        }
+    }
+}
+
 function Get-EncoderElementChain {
     param([Parameter(Mandatory)][string]$Protocol)
 
@@ -355,7 +555,6 @@ function Get-EncoderElementChain {
     }
     $spatialAq = $controlSupport.AdaptiveQuantization -and $chkAdaptiveQuantization.Checked
     $temporalAq = $controlSupport.AdaptiveQuantization -and $chkTemporalAq.Checked
-    $aqEnabled = $spatialAq -or $temporalAq
     $aqStrength = [int]$numAqStrength.Value
     $vbvBuffer = [int]$numVbvBuffer.Value
     $aqStrengthFloat = ($aqStrength / 8.0).ToString(
@@ -378,7 +577,6 @@ function Get-EncoderElementChain {
         $lookAheadFrames = 0
         $spatialAq = $false
         $temporalAq = $false
-        $aqEnabled = $false
         if ($family -eq 'NVENC') {
             $tune = 'ultra-low-latency'
             $multipass = 'disabled'
@@ -403,151 +601,24 @@ function Get-EncoderElementChain {
 
     $parts.Add($element)
 
-    switch ($family) {
-        'NVENC' {
-            $zeroLatency = ($bFrames -eq 0 -and $lookAheadFrames -eq 0 -and $tune -in @('low-latency','ultra-low-latency'))
-            Add-NvencRateControlOptions $parts $rateControl $videoBitrateKbps $maxVideoBitrateKbps $constantQp
-            $parts.Add("preset=$preset")
-            $parts.Add("tune=$tune")
-            $parts.Add("multi-pass=$multipass")
-            $parts.Add("zerolatency=$($zeroLatency.ToString().ToLowerInvariant())")
-            $parts.Add("bframes=$bFrames")
-            $parts.Add(
-                "b-adapt=$((($bFrames -gt 0) -and ($lookAheadFrames -gt 0)).ToString().ToLowerInvariant())"
-            )
-            $parts.Add("gop-size=$gopSize")
-            $parts.Add("rc-lookahead=$lookAheadFrames")
-            $parts.Add("spatial-aq=$($spatialAq.ToString().ToLowerInvariant())")
-            $parts.Add("temporal-aq=$($temporalAq.ToString().ToLowerInvariant())")
-            if ($aqEnabled) { $parts.Add("aq-strength=$aqStrength") }
-            if ($vbvBuffer -gt 0) { $parts.Add("vbv-buffer-size=$vbvBuffer") }
-            if ($codec -in @('H264', 'H265')) {
-                $parts.Add('repeat-sequence-header=true')
-            }
-        }
-        'AMF' {
-            $parts.Add("bitrate=$videoBitrateKbps")
-            $parts.Add('rate-control=cbr')
-            $parts.Add('preset=speed')
-            $parts.Add(
-                $(if ($codec -eq 'AV1') {
-                    'usage=low-latency'
-                }
-                else {
-                    'usage=ultra-low-latency'
-                })
-            )
-            $parts.Add("gop-size=$gopSize")
-            $parts.Add(
-                "pre-analysis=$((($lookAheadFrames -gt 0)).ToString().ToLowerInvariant())"
-            )
-            $parts.Add('pre-encode=false')
-            if ($codec -eq 'H264') {
-                $parts.Add("b-frames=$bFrames")
-                $parts.Add("max-b-frames=$bFrames")
-                $parts.Add(
-                    "adaptive-mini-gop=$((($bFrames -gt 0) -and ($lookAheadFrames -gt 0)).ToString().ToLowerInvariant())"
-                )
-            }
-            if ($lookAheadFrames -gt 0 -and $codec -in @('H264', 'H265')) {
-                $parts.Add("pa-lookahead-buffer-depth=$lookAheadFrames")
-            }
-        }
-        'QSV' {
-            Add-QsvRateControlOptions $parts $rateControl $videoBitrateKbps $maxVideoBitrateKbps $constantQp $lookAheadFrames $codec
-            $parts.Add("gop-size=$gopSize")
-            if ($codec -in @('H264', 'H265')) {
-                $parts.Add("b-frames=$bFrames")
-            }
-        }
-        'MF' {
-            $parts.Add("bitrate=$videoBitrateKbps")
-            $parts.Add('rc-mode=cbr')
-            $parts.Add("gop-size=$gopSize")
-            $parts.Add('low-latency=true')
-            if ($controlSupport.BFrames) {
-                $parts.Add("bframes=$bFrames")
-            }
-        }
-        'X264' {
-            if ($rateControl -eq 'constqp') { $parts.Add('pass=quant'); $parts.Add("quantizer=$constantQp") } else { $parts.Add("bitrate=$videoBitrateKbps") }
-            $parts.Add('speed-preset=ultrafast')
-            if ($tune -in @('low-latency','ultra-low-latency')) { $parts.Add('tune=zerolatency') }
-            $parts.Add("key-int-max=$gopSize")
-            $parts.Add("bframes=$bFrames")
-            $parts.Add(
-                "b-adapt=$((($bFrames -gt 0) -and ($lookAheadFrames -gt 0)).ToString().ToLowerInvariant())"
-            )
-            $parts.Add("rc-lookahead=$lookAheadFrames")
-            $parts.Add('sync-lookahead=0')
-            $parts.Add("mb-tree=$($aqEnabled.ToString().ToLowerInvariant())")
-            $x264AqOptions = if ($aqEnabled) { "aq-mode=2:aq-strength=$aqStrengthFloat" } else { 'aq-mode=0' }
-            $parts.Add("option-string=$x264AqOptions")
-            $parts.Add('sliced-threads=true')
-            if ($cpuWorkers -gt 0) { $parts.Add("threads=$cpuWorkers") }
-            $parts.Add('byte-stream=true')
-            $parts.Add('aud=true')
-        }
-        'X265' {
-            if ($rateControl -ne 'constqp') { $parts.Add("bitrate=$videoBitrateKbps") }
-            $parts.Add('speed-preset=ultrafast')
-            if ($tune -in @('low-latency','ultra-low-latency')) { $parts.Add('tune=zerolatency') }
-            $parts.Add("key-int-max=$gopSize")
-            $x265Options = New-Object System.Collections.Generic.List[string]
-            $x265Options.Add("bframes=$bFrames")
-            $x265Options.Add("rc-lookahead=$lookAheadFrames")
-            if ($cpuWorkers -gt 0) { $x265Options.Add("pools=$cpuWorkers") }
-            if ($rateControl -eq 'constqp') { $x265Options.Add("qp=$constantQp") }
-            if ($aqEnabled) {
-                $x265Options.Add('aq-mode=2')
-                $x265Options.Add("aq-strength=$aqStrengthFloat")
-            }
-            else {
-                $x265Options.Add('aq-mode=0')
-            }
-            $parts.Add("option-string=$($x265Options -join ':')")
-        }
-        'OPENH264' {
-            $parts.Add("bitrate=$videoBitrateBps")
-            $parts.Add('rate-control=bitrate')
-            $parts.Add('complexity=low')
-            $parts.Add('usage-type=screen')
-            $parts.Add("gop-size=$gopSize")
-            $parts.Add('enable-frame-skip=true')
-        }
-        'AOM' {
-            $parts.Add("target-bitrate=$videoBitrateKbps")
-            $parts.Add('end-usage=cbr')
-            $parts.Add('cpu-used=8')
-            $parts.Add("lag-in-frames=$lookAheadFrames")
-            $parts.Add("keyframe-max-dist=$gopSize")
-            $parts.Add('row-mt=true')
-        }
-        'SVTAV1' {
-            $parts.Add("target-bitrate=$videoBitrateKbps")
-            $parts.Add('preset=12')
-            $parts.Add("intra-period-length=$gopSize")
-            $parts.Add('intra-refresh-type=IDR')
-            $parts.Add('maximum-buffer-size=100')
-        }
-        'RAV1E' {
-            $parts.Add("bitrate=$videoBitrateBps")
-            $parts.Add("low-latency=$(($lookAheadFrames -eq 0).ToString().ToLowerInvariant())")
-            $parts.Add('speed-preset=10')
-            $parts.Add("max-key-frame-interval=$gopSize")
-            $parts.Add('min-key-frame-interval=1')
-            $parts.Add("rdo-lookahead-frames=$lookAheadFrames")
-        }
-        'VPX' {
-            $parts.Add("target-bitrate=$videoBitrateBps")
-            $parts.Add('deadline=1')
-            $parts.Add('end-usage=cbr')
-            $parts.Add("keyframe-max-dist=$gopSize")
-            $parts.Add("lag-in-frames=$lookAheadFrames")
-        }
-        default {
-            throw "Unsupported encoder family: $family"
-        }
+    Add-EncoderFamilyOptions -Parts $parts -Family $family -Codec $codec -Context 'Streaming' -ControlSupportsBFrames $controlSupport.BFrames -Values @{
+        RateControl         = $rateControl
+        VideoBitrateKbps    = $videoBitrateKbps
+        VideoBitrateBps     = $videoBitrateBps
+        MaxVideoBitrateKbps = $maxVideoBitrateKbps
+        ConstantQp          = $constantQp
+        Preset              = $preset
+        Tune                = $tune
+        Multipass           = $multipass
+        GopSize             = $gopSize
+        BFrames             = $bFrames
+        LookAheadFrames     = $lookAheadFrames
+        SpatialAq           = $spatialAq
+        TemporalAq          = $temporalAq
+        AqStrength          = $aqStrength
+        AqStrengthFloat     = $aqStrengthFloat
+        VbvBuffer           = $vbvBuffer
+        CpuWorkers          = $cpuWorkers
     }
 
     Add-CustomEncoderOptions $parts $txtCustomEncoderOptions.Text

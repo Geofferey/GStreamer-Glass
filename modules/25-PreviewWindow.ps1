@@ -1,6 +1,4 @@
-﻿# Module: 25-PreviewWindow.ps1 (auto-extracted by tools/Split-Monolith.ps1 -- edit here, then run tools/Build-Monolith.ps1)
-
-function Ensure-PreviewParkingWindow {
+﻿function Ensure-PreviewParkingWindow {
     if ($script:PreviewParkForm -and -not $script:PreviewParkForm.IsDisposed) {
         return $script:PreviewParkForm
     }

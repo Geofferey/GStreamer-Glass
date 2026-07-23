@@ -1,6 +1,4 @@
-﻿# Module: 17-DirectWebRtcPipeline.ps1 (auto-extracted by tools/Split-Monolith.ps1 -- edit here, then run tools/Build-Monolith.ps1)
-
-function Get-DirectWebRtcAvPipelineMode {
+﻿function Get-DirectWebRtcAvPipelineMode {
     if ($null -eq $cmbDirectWebRtcAvPipelineMode) { return $script:DefaultDirectWebRtcAvPipelineMode }
     return (Get-ComboSelectedOrDefault $cmbDirectWebRtcAvPipelineMode $script:DefaultDirectWebRtcAvPipelineMode)
 }
@@ -68,21 +66,6 @@ function Get-DirectWebRtcSignalingClientHost {
 function Get-DirectWebRtcSharedSignallerUri {
     $clientHost = Get-DirectWebRtcSignalingClientHost
     return "ws://${clientHost}:$([int]$numDirectWebRtcSignalingPort.Value)"
-}
-
-function Get-DirectWebRtcSplitAudioWebAddress {
-    $base = Normalize-DirectWebRtcWebAddress $txtDestination.Text.Trim()
-    if ([string]::IsNullOrWhiteSpace($base)) { $base = $script:DefaultDirectWebRtcWebAddress }
-    try {
-        $u = [Uri]$base
-        $b = New-Object System.UriBuilder($u)
-        if ($b.Port -le 0) { $b.Port = 8889 }
-        $b.Port = $b.Port + 1
-        return $b.Uri.AbsoluteUri
-    }
-    catch {
-        return 'http://0.0.0.0:8890/'
-    }
 }
 
 function Get-DirectWebRtcSplitAudioWsUrlForPlayer {
@@ -178,45 +161,6 @@ function New-LiveQueueString {
     $Buffers = [Math]::Max(1, $Buffers)
     $ns = [int64]([Math]::Max(0, $MaxTimeMs)) * 1000000
     return "queue max-size-buffers=$Buffers max-size-bytes=0 max-size-time=$ns leaky=$Leak"
-}
-
-function Build-DirectWebRtcRawVideoBranch {
-    # NOTE: currently unreachable. Build-DirectWebRtcEncodedVideoBranch is the only
-    # path Build-GstArguments uses for Direct GST WebRTC (see its comment: the raw
-    # D3D11 feed experiment could not find a usable encoder on this Windows
-    # package). Kept for that experiment. The rawtee line below was single-quoted
-    # and would have emitted a literal $(Get-CaptureEncoderQueue) into the
-    # pipeline, so this function could never have parsed if it were called; fixed
-    # so reviving the experiment does not start from a broken pipeline.
-    # webrtcsink is a high-level WebRTC sender and works best when it owns the
-    # per-consumer encoder/payloader. Feed raw D3D11 frames and use video-caps
-    # to tell it which WebRTC codec to negotiate.
-    Assert-RecordingFrameRateCompatible
-    $capture = Build-CaptureChain
-    $hasPreview = Test-PreviewEnabledForCurrentPipeline
-    $hasRecording = Test-RecordingEnabled
-
-    if ($hasPreview -or $hasRecording) {
-        $parts = New-Object System.Collections.Generic.List[string]
-        $parts.Add($capture)
-        $parts.Add('!')
-        $parts.Add('tee')
-        $parts.Add('name=rawtee')
-
-        if ($hasRecording) {
-            $recordingBranch = Build-RecordingMuxPrefixAndVideoBranch
-            if (-not [string]::IsNullOrWhiteSpace($recordingBranch)) { $parts.Add($recordingBranch) }
-        }
-
-        if ($hasPreview) {
-            $parts.Add((@('rawtee.','!','queue','max-size-buffers=1','max-size-bytes=0','max-size-time=0','leaky=downstream','!','d3d11videosink','name=localpreview',(Get-VideoPreviewSinkSyncOption),'force-aspect-ratio=true') -join ' '))
-        }
-
-        $parts.Add("rawtee. ! $(Get-CaptureEncoderQueue) ! out.video_0")
-        return ($parts -join ' ')
-    }
-
-    return "$capture ! $(Get-CaptureEncoderQueue) ! out.video_0"
 }
 
 function Set-WebRtcRecoveryMode {

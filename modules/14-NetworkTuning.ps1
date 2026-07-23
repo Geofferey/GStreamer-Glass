@@ -1,6 +1,4 @@
-﻿# Module: 14-NetworkTuning.ps1 (auto-extracted by tools/Split-Monolith.ps1 -- edit here, then run tools/Build-Monolith.ps1)
-
-function Ensure-NetworkRecoveryDirectory {
+﻿function Ensure-NetworkRecoveryDirectory {
     if (-not (Test-Path -LiteralPath $script:NetworkRecoveryDirectory)) {
         $null = New-Item -ItemType Directory -Path $script:NetworkRecoveryDirectory -Force
     }
