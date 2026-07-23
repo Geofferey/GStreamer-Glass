@@ -587,6 +587,12 @@ public static class GstControlledScenePreview
     private static extern int gst_element_get_state(IntPtr element, out int state, out int pending, ulong timeout);
 
     [DllImport(Gst, CallingConvention = CallingConvention.Cdecl)]
+    private static extern IntPtr gst_event_new_eos();
+
+    [DllImport(Gst, CallingConvention = CallingConvention.Cdecl)]
+    private static extern int gst_element_send_event(IntPtr element, IntPtr evt);
+
+    [DllImport(Gst, CallingConvention = CallingConvention.Cdecl)]
     private static extern IntPtr gst_element_get_bus(IntPtr element);
 
     [DllImport(Gst, CallingConvention = CallingConvention.Cdecl)]
@@ -635,6 +641,18 @@ public static class GstControlledScenePreview
     private static extern void g_object_set_property(IntPtr obj, string property_name, ref GValue value);
 
     [DllImport(GObject, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
+    private static extern void g_object_get_property(IntPtr obj, string property_name, ref GValue value);
+
+    [DllImport(GObject, CallingConvention = CallingConvention.Cdecl)]
+    private static extern void g_value_set_boolean(ref GValue value, int enabled);
+
+    [DllImport(GObject, CallingConvention = CallingConvention.Cdecl)]
+    private static extern IntPtr g_value_get_object(ref GValue value);
+
+    [DllImport(GObject, EntryPoint = "g_signal_emit_by_name", CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
+    private static extern void g_signal_emit_by_name_void(IntPtr instance, string detailed_signal);
+
+    [DllImport(GObject, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
     private static extern IntPtr g_object_class_find_property(IntPtr oclass, string property_name);
 
     [DllImport(GLib, CallingConvention = CallingConvention.Cdecl)]
@@ -651,6 +669,8 @@ public static class GstControlledScenePreview
     private static IntPtr bus;
     private static IntPtr desktopPad;
     private static IntPtr webcamPad;
+    private static bool livePipeline;
+    private static string lastStopDetail = "No controlled pipeline has been stopped.";
 
     public static bool IsRunning
     {
@@ -660,6 +680,11 @@ public static class GstControlledScenePreview
     public static bool HasWebcamPad
     {
         get { lock (Gate) { return webcamPad != IntPtr.Zero; } }
+    }
+
+    public static string LastStopDetail
+    {
+        get { lock (Gate) { return lastStopDetail; } }
     }
 
     private static string ReadGError(IntPtr error)
@@ -717,6 +742,7 @@ public static class GstControlledScenePreview
         lock (Gate)
         {
             StopUnsafe();
+            livePipeline = String.Equals(sinkName, "localpreview", StringComparison.Ordinal);
             if (!initialized)
             {
                 gst_init(IntPtr.Zero, IntPtr.Zero);
@@ -902,10 +928,124 @@ public static class GstControlledScenePreview
         lock (Gate) { StopUnsafe(); }
     }
 
+    private static bool SetBooleanIfPresent(IntPtr obj, string name, bool enabled)
+    {
+        if (obj == IntPtr.Zero) return false;
+        IntPtr objectClass;
+        IntPtr paramSpec;
+        try
+        {
+            objectClass = Marshal.ReadIntPtr(obj);
+            paramSpec = objectClass == IntPtr.Zero
+                ? IntPtr.Zero
+                : g_object_class_find_property(objectClass, name);
+        }
+        catch { return false; }
+        if (paramSpec == IntPtr.Zero) return false;
+
+        GParamSpecPrefix prefix = (GParamSpecPrefix)Marshal.PtrToStructure(
+            paramSpec, typeof(GParamSpecPrefix));
+        if (prefix.value_type == UIntPtr.Zero) return false;
+
+        GValue value = new GValue();
+        g_value_init(ref value, prefix.value_type);
+        try
+        {
+            g_value_set_boolean(ref value, enabled ? 1 : 0);
+            g_object_set_property(obj, name, ref value);
+            return true;
+        }
+        finally { g_value_unset(ref value); }
+    }
+
+    private static bool ShutdownSignallerIfPresent(IntPtr transport)
+    {
+        if (transport == IntPtr.Zero) return false;
+        IntPtr objectClass;
+        IntPtr paramSpec;
+        try
+        {
+            objectClass = Marshal.ReadIntPtr(transport);
+            paramSpec = objectClass == IntPtr.Zero
+                ? IntPtr.Zero
+                : g_object_class_find_property(objectClass, "signaller");
+        }
+        catch { return false; }
+        if (paramSpec == IntPtr.Zero) return false;
+
+        GParamSpecPrefix prefix = (GParamSpecPrefix)Marshal.PtrToStructure(
+            paramSpec, typeof(GParamSpecPrefix));
+        if (prefix.value_type == UIntPtr.Zero) return false;
+
+        GValue value = new GValue();
+        g_value_init(ref value, prefix.value_type);
+        try
+        {
+            g_object_get_property(transport, "signaller", ref value);
+            IntPtr signaller = g_value_get_object(ref value);
+            if (signaller == IntPtr.Zero) return false;
+            // GstRSWebRTCSignallable's documented no-argument shutdown action
+            // ends active sessions before the owning server is removed.
+            g_signal_emit_by_name_void(signaller, "shutdown");
+            return true;
+        }
+        finally { g_value_unset(ref value); }
+    }
+
+    private static void GracefulLiveShutdownUnsafe()
+    {
+        bool signallerShutdown = false;
+        bool serverDisabled = false;
+        bool eosSent = false;
+        bool eosObserved = false;
+
+        IntPtr transport = gst_bin_get_by_name(pipeline, "out");
+        if (transport != IntPtr.Zero)
+        {
+            try
+            {
+                signallerShutdown = ShutdownSignallerIfPresent(transport);
+                serverDisabled = SetBooleanIfPresent(
+                    transport, "run-signalling-server", false);
+            }
+            catch { }
+            finally { gst_object_unref(transport); }
+        }
+
+        try
+        {
+            IntPtr eos = gst_event_new_eos();
+            if (eos != IntPtr.Zero)
+            {
+                // gst_element_send_event takes ownership of the event.
+                eosSent = gst_element_send_event(pipeline, eos) != 0;
+                if (eosSent && bus != IntPtr.Zero)
+                {
+                    IntPtr message = gst_bus_timed_pop_filtered(
+                        bus, 1000000000UL, GST_MESSAGE_EOS | GST_MESSAGE_ERROR);
+                    if (message != IntPtr.Zero)
+                    {
+                        eosObserved = true;
+                        gst_mini_object_unref(message);
+                    }
+                }
+            }
+        }
+        catch { }
+
+        // Give the producer-removed / socket-close notification a bounded chance
+        // to leave the Rust signaller before the element graph is destroyed.
+        System.Threading.Thread.Sleep(250);
+        lastStopDetail = String.Format(
+            "signaller shutdown={0}; signalling server disabled={1}; EOS sent={2}; terminal bus message={3}",
+            signallerShutdown, serverDisabled, eosSent, eosObserved);
+    }
+
     private static void StopUnsafe()
     {
         if (pipeline != IntPtr.Zero)
         {
+            if (livePipeline) GracefulLiveShutdownUnsafe();
             gst_element_set_state(pipeline, GST_STATE_NULL);
             try
             {
@@ -922,6 +1062,7 @@ public static class GstControlledScenePreview
         if (scene != IntPtr.Zero) gst_object_unref(scene);
         if (pipeline != IntPtr.Zero) gst_object_unref(pipeline);
         webcamPad = desktopPad = bus = sink = scene = pipeline = IntPtr.Zero;
+        livePipeline = false;
     }
 }
 '@
@@ -1037,7 +1178,7 @@ public static class GstProcessJob
 '@
 }
 
-$script:AppVersion = '3.7.52f72'
+$script:AppVersion = '3.7.52f73'
 $script:AppName = "GStreamer Glass v$($script:AppVersion)"
 $script:ConfigDirectory = Join-Path $env:APPDATA 'GStreamerBasicWhipStreamer'
 $script:ConfigPath = Join-Path $script:ConfigDirectory 'settings.json'
@@ -14433,11 +14574,17 @@ function Stop-ControlledLiveStream {
 
     $script:StopRequested = $true
     $script:WaitingForFullscreen = $false
-    $script:RestartAt = if ($Restart) { (Get-Date).AddMilliseconds(800) } else { $null }
+    # Do not begin the restart countdown until the controlled graph has sent
+    # its signalling shutdown/EOS boundary and released the owned listener.
+    $script:RestartAt = $null
     Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Stopping controlled in-process live pipeline..."
 
     try { [GstControlledScenePreview]::Stop() }
     catch { Append-Log "Controlled live pipeline stop warning: $($_.Exception.Message)" }
+    try {
+        Append-Log "Controlled live signalling teardown: $([GstControlledScenePreview]::LastStopDetail)"
+    }
+    catch {}
 
     $script:ControlledLiveStreamActive = $false
     $script:ControlledLivePreviewSurfaceHwnd = [IntPtr]::Zero
@@ -14462,6 +14609,13 @@ function Stop-ControlledLiveStream {
     Remove-ActiveProcessState
     if ((-not $Restart) -and $chkNetworkRestoreOnStop.Checked) {
         Restore-NetworkTuning -Quiet | Out-Null
+    }
+
+    if ($Restart) {
+        # Preserve a real disconnect interval after teardown. Starting this
+        # timer before the bounded native shutdown could otherwise make the
+        # replacement producer appear immediately and strand existing players.
+        $script:RestartAt = (Get-Date).AddMilliseconds(1200)
     }
 
     Set-RunState $false
