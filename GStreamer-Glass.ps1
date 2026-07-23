@@ -522,7 +522,7 @@ public static class GstProcessJob
 '@
 }
 
-$script:AppVersion = '3.6.0'
+$script:AppVersion = '3.6.1'
 $script:AppName = "GStreamer Glass v$($script:AppVersion)"
 $script:ConfigDirectory = Join-Path $env:APPDATA 'GStreamerBasicWhipStreamer'
 $script:ConfigPath = Join-Path $script:ConfigDirectory 'settings.json'
@@ -1463,7 +1463,7 @@ $numAudioBitrate.Value = 128
 $settingsGroup.Controls.Add($numAudioBitrate)
 
 $audioNote = New-Object System.Windows.Forms.Label
-$audioNote.Text = 'Desktop audio uses WASAPI loopback; microphone uses the default Windows capture device.'
+$audioNote.Text = 'Desktop audio uses WASAPI loopback; microphone uses the default device. Video-only WHIP automatically adds a muted Opus/WASAPI clock track for timestamp stability.'
 $audioNote.Location = New-Object System.Drawing.Point(15, 392)
 $audioNote.Size = New-Object System.Drawing.Size(700, 22)
 $audioNote.ForeColor = [System.Drawing.Color]::DimGray
@@ -2047,6 +2047,8 @@ function Build-RawAudioChain {
             'wasapi2src'
             'loopback=true'
             'low-latency=true'
+            'buffer-time=20000'
+            'latency-time=10000'
             '!'
             'queue'
             'max-size-buffers=4'
@@ -2069,6 +2071,8 @@ function Build-RawAudioChain {
         return @(
             'wasapi2src'
             'low-latency=true'
+            'buffer-time=20000'
+            'latency-time=10000'
             '!'
             'queue'
             'max-size-buffers=4'
@@ -2091,6 +2095,8 @@ function Build-RawAudioChain {
         'wasapi2src'
         'loopback=true'
         'low-latency=true'
+        'buffer-time=20000'
+        'latency-time=10000'
         '!'
         'queue'
         'max-size-buffers=8'
@@ -2113,6 +2119,8 @@ function Build-RawAudioChain {
     $micMixBranch = @(
         'wasapi2src'
         'low-latency=true'
+        'buffer-time=20000'
+        'latency-time=10000'
         '!'
         'queue'
         'max-size-buffers=8'
@@ -2147,6 +2155,36 @@ function Build-RawAudioChain {
     ) -join ' '
 
     return "audiomixer name=mix $desktopMixBranch $micMixBranch $mixOutput"
+}
+
+
+function Build-WhipSilentClockAudioChain {
+    # MediaMTX/GStreamer testing showed that video-only WHIP selects
+    # GstSystemClock and eventually develops a small backward DTS step. A muted
+    # WASAPI loopback source makes the pipeline use GstAudioSrcClock, matching
+    # the stable desktop-audio path while emitting no audible sound.
+    return @(
+        'wasapi2src'
+        'loopback=true'
+        'low-latency=true'
+        'buffer-time=20000'
+        'latency-time=10000'
+        '!'
+        'queue'
+        'max-size-buffers=4'
+        'max-size-bytes=0'
+        'max-size-time=0'
+        'leaky=downstream'
+        '!'
+        'audioconvert'
+        '!'
+        'audioresample'
+        '!'
+        '"audio/x-raw,format=S16LE,rate=48000,channels=2"'
+        '!'
+        'volume'
+        'volume=0.0'
+    ) -join ' '
 }
 
 function Get-SelectedEncoderDefinition {
@@ -2247,9 +2285,19 @@ function Update-AudioCodecChoices {
     $selected = [string]$cmbAudioCodec.SelectedItem
     if ($selected) {
         $script:ProtocolAudioCodecs[$protocol] = $selected
-        $lblAudioCodecStatus.Text =
-            "$protocol compatible • $([string]$script:AudioCodecCatalog[$selected].Codec)"
-        $lblAudioCodecStatus.ForeColor = [System.Drawing.Color]::DimGray
+        if (
+            $protocol -eq 'WHIP' -and
+            -not $chkDesktopAudio.Checked -and
+            -not $chkMic.Checked
+        ) {
+            $lblAudioCodecStatus.Text = 'WHIP • muted Opus clock track (automatic)'
+            $lblAudioCodecStatus.ForeColor = [System.Drawing.Color]::DarkSlateBlue
+        }
+        else {
+            $lblAudioCodecStatus.Text =
+                "$protocol compatible • $([string]$script:AudioCodecCatalog[$selected].Codec)"
+            $lblAudioCodecStatus.ForeColor = [System.Drawing.Color]::DimGray
+        }
     }
 
     Update-CommandPreview
@@ -2776,18 +2824,52 @@ function Build-GstArguments {
     $definition = Get-SelectedEncoderDefinition
     $codec = [string]$definition.Codec
     $mediaType = Get-CodecMediaType -Codec $codec
+    $userAudioEnabled =
+        $chkDesktopAudio.Checked -or
+        $chkMic.Checked
+
     $audioRaw = Build-RawAudioChain
+    $usingWhipSilentClockAudio = $false
+
+    if (
+        $protocol -eq 'WHIP' -and
+        [string]::IsNullOrWhiteSpace($audioRaw)
+    ) {
+        $audioRaw = Build-WhipSilentClockAudioChain
+        $usingWhipSilentClockAudio = $true
+    }
+
     $hasAudio = -not [string]::IsNullOrWhiteSpace($audioRaw)
-    $audioCodecName = [string]$cmbAudioCodec.SelectedItem
-    $audioDefinition = Get-SelectedAudioCodecDefinition
+
+    $audioCodecName = if ($usingWhipSilentClockAudio) {
+        'Opus'
+    }
+    else {
+        [string]$cmbAudioCodec.SelectedItem
+    }
+
+    $audioDefinition = if ($usingWhipSilentClockAudio) {
+        $script:AudioCodecCatalog['Opus']
+    }
+    else {
+        Get-SelectedAudioCodecDefinition
+    }
+
     $audioMediaType = switch ([string]$audioDefinition.Codec) {
         'OPUS' { 'audio/x-opus' }
         'AAC'  { 'audio/mpeg' }
         'MP3'  { 'audio/mpeg' }
         'AC3'  { 'audio/x-ac3' }
-        default { throw "Unsupported audio codec: $([string]$audioDefinition.Codec)" }
+        default {
+            throw "Unsupported audio codec: $([string]$audioDefinition.Codec)"
+        }
     }
-    $audioEncoded = if ($hasAudio) {
+
+    $audioEncoded = if ($usingWhipSilentClockAudio) {
+        $silentBitrate = [int]$numAudioBitrate.Value * 1000
+        "opusenc bitrate=$silentBitrate bitrate-type=cbr frame-size=10 audio-type=restricted-lowdelay ! `"audio/x-opus`""
+    }
+    elseif ($hasAudio) {
         Get-AudioEncoderChain -Protocol $protocol
     }
     else {
@@ -3586,17 +3668,39 @@ function Test-GStreamerElements {
         $elements.Add('d3d11videosink')
     }
 
-    if ($chkDesktopAudio.Checked -or $chkMic.Checked) {
-        foreach ($element in @('wasapi2src', 'audioconvert', 'audioresample', 'volume')) {
+    $userAudioEnabled =
+        $chkDesktopAudio.Checked -or
+        $chkMic.Checked
+
+    $usingWhipSilentClockAudio =
+        $protocol -eq 'WHIP' -and
+        -not $userAudioEnabled
+
+    $hasAudio =
+        $userAudioEnabled -or
+        $usingWhipSilentClockAudio
+
+    if ($hasAudio) {
+        foreach (
+            $element in @(
+                'wasapi2src',
+                'audioconvert',
+                'audioresample',
+                'volume'
+            )
+        ) {
             $elements.Add($element)
         }
+
         if ($chkDesktopAudio.Checked -and $chkMic.Checked) {
             $elements.Add('audiomixer')
         }
     }
 
-    $hasAudio = $chkDesktopAudio.Checked -or $chkMic.Checked
-    $audioDefinition = if ($hasAudio) {
+    $audioDefinition = if ($usingWhipSilentClockAudio) {
+        $script:AudioCodecCatalog['Opus']
+    }
+    elseif ($hasAudio) {
         Get-SelectedAudioCodecDefinition
     }
     else {
@@ -3693,6 +3797,7 @@ function Test-GStreamerElements {
     }
     elseif (
         $hasAudio -and
+        -not $usingWhipSilentClockAudio -and
         -not (Test-AudioCodecProtocolCompatibility `
             -AudioCodecName ([string]$cmbAudioCodec.SelectedItem) `
             -Protocol $protocol)
@@ -3702,7 +3807,10 @@ function Test-GStreamerElements {
     }
 
     if ($missing.Count -eq 0 -and -not $compatibilityWarning) {
-        $audioSummary = if ($hasAudio) {
+        $audioSummary = if ($usingWhipSilentClockAudio) {
+            'Muted Opus/WASAPI clock track (automatic)'
+        }
+        elseif ($hasAudio) {
             [string]$cmbAudioCodec.SelectedItem
         }
         else {
