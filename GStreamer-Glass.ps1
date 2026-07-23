@@ -630,7 +630,7 @@ public static class GstProcessJob
 '@
 }
 
-$script:AppVersion = '3.7.52f13'
+$script:AppVersion = '3.7.52f14'
 $script:AppName = "GStreamer Glass v$($script:AppVersion)"
 $script:ConfigDirectory = Join-Path $env:APPDATA 'GStreamerBasicWhipStreamer'
 $script:ConfigPath = Join-Path $script:ConfigDirectory 'settings.json'
@@ -646,6 +646,7 @@ $script:ApplyingDirectWebRtcSmoothnessProfile = $false
 $script:ApplyingThreadingProfile = $false
 $script:ApplyingThreadBudget = $false
 $script:LoadingSettings = $false
+$script:SynchronizingTimingControls = $false
 $script:DefaultAudioOutputDeviceLabel = 'Default output device (loopback)'
 $script:DefaultAudioInputDeviceLabel = 'Default input device / microphone'
 $script:AudioOutputDeviceMap = @{}
@@ -1398,7 +1399,7 @@ dSwKICAgIFtib29sXSRJbnRlcm5hbFJlcGVhdEhlYWRlcnMKKQo=
 function Ensure-UnifiedPublisherHostScript {
     $helperDir = Join-Path $env:LOCALAPPDATA 'GStreamerGlass\Helpers'
     if (-not (Test-Path -LiteralPath $helperDir)) { $null = New-Item -ItemType Directory -Path $helperDir -Force }
-    $helperPath = Join-Path $helperDir 'GStreamerGlass-UnifiedPublisherHost-f13.ps1'
+    $helperPath = Join-Path $helperDir 'GStreamerGlass-UnifiedPublisherHost-f14.ps1'
     $bytes = [Convert]::FromBase64String(($script:UnifiedPublisherHostScriptBase64 -replace '\s',''))
     [System.IO.File]::WriteAllBytes($helperPath, $bytes)
     return $helperPath
@@ -1754,7 +1755,7 @@ $null = $cmbTimingMode.Items.AddRange([string[]]@(
 ))
 $cmbTimingMode.SelectedItem = $script:DefaultTimingMode
 $settingsGroup.Controls.Add($cmbTimingMode)
-$toolTip.SetToolTip($cmbTimingMode, 'Protocol-aware timing mode for WHIP and RTSP. Direct GST WebRTC now has a dedicated RFC7273 clock-signalling control under Direct GStreamer WebRTC.')
+$toolTip.SetToolTip($cmbTimingMode, 'Global transport timing mode. This selector remains available for every transport. For Direct GST WebRTC it stays synchronized with the dedicated RFC7273 clock-signalling control; WHIP and RTSP emit their protocol-specific timing properties.')
 
 $lblTimestampStatus = New-Object System.Windows.Forms.Label
 $lblTimestampStatus.Text = 'Timing: receiver/server timestamps'
@@ -6383,6 +6384,7 @@ function Reset-TransportDefaults {
     $txtMediaMtxPath.Text = Find-MediaMtx
     $numSrtLatency.Value = 50
     $cmbRtspTransport.SelectedItem = 'TCP'
+    if ($cmbTimingMode.Items.Contains($script:DefaultTimingMode)) { $cmbTimingMode.SelectedItem = $script:DefaultTimingMode }
     Update-TransportUi
     Update-DirectWebRtcUi
     Update-CaptureModeUi
@@ -7690,6 +7692,47 @@ function Test-DirectWebRtcClockSignalingEnabled {
     return ((Get-ComboSelectedOrDefault $cmbDirectWebRtcClockSignaling $script:DefaultDirectWebRtcClockSignaling) -eq 'RFC7273 NTP/PTP signalling')
 }
 
+function Sync-TransportTimingControls {
+    param(
+        [ValidateSet('Protocol','TimingMode','DirectWebRtc')]
+        [string]$Source = 'Protocol'
+    )
+
+    if ($script:SynchronizingTimingControls -or $script:LoadingSettings) { return }
+    if ([string]$cmbProtocol.SelectedItem -ne $script:DirectWebRtcProtocolName) { return }
+
+    $script:SynchronizingTimingControls = $true
+    try {
+        if ($Source -eq 'DirectWebRtc') {
+            $targetTimingMode = if (Test-DirectWebRtcClockSignalingEnabled) {
+                'Send absolute timestamps / clock signalling'
+            }
+            else {
+                $script:DefaultTimingMode
+            }
+
+            if ([string]$cmbTimingMode.SelectedItem -ne $targetTimingMode) {
+                $cmbTimingMode.SelectedItem = $targetTimingMode
+            }
+        }
+        else {
+            $targetClockSignaling = if (Test-SendAbsoluteTimestampsEnabled) {
+                'RFC7273 NTP/PTP signalling'
+            }
+            else {
+                'Off'
+            }
+
+            if ([string]$cmbDirectWebRtcClockSignaling.SelectedItem -ne $targetClockSignaling) {
+                $cmbDirectWebRtcClockSignaling.SelectedItem = $targetClockSignaling
+            }
+        }
+    }
+    finally {
+        $script:SynchronizingTimingControls = $false
+    }
+}
+
 function Get-AbsoluteTimestampTransportOption {
     param([Parameter(Mandatory)][string]$Protocol)
 
@@ -7738,21 +7781,24 @@ function Get-AbsoluteTimestampStatusText {
     switch ($protocol) {
         'WHIP' { return 'WHIP: do-clock-signalling=true; pair with MediaMTX useAbsoluteTimestamp' }
         'RTSP' { return 'RTSP: NTP sender reports' }
-        default { return ($protocol + ': timing mode not used') }
+        default { return ($protocol + ': timing mode retained; no protocol-specific timing flag emitted') }
     }
 }
 
 function Update-TimestampUi {
     $protocol = [string]$cmbProtocol.SelectedItem
     $transportEnabled = Test-TransportEnabled
-    $supported = $transportEnabled -and ($protocol -in @('WHIP', 'RTSP'))
+    $protocolTimingApplied = $transportEnabled -and ($protocol -in @('WHIP', 'RTSP'))
 
-    if ($null -ne $cmbTimingMode) { $cmbTimingMode.Enabled = $supported }
+    # Timing mode is a global transport control. Keep it selectable for every
+    # transport instead of disabling it when the current protocol has no
+    # protocol-specific timing property.
+    if ($null -ne $cmbTimingMode) { $cmbTimingMode.Enabled = $transportEnabled }
     $chkSendAbsoluteTimestamps.Checked = Test-SendAbsoluteTimestampsEnabled
 
     $lblTimestampStatus.Text = Get-AbsoluteTimestampStatusText
     $directClockActive = ($protocol -eq 'GST WebRTC') -and (Test-DirectWebRtcClockSignalingEnabled)
-    $lblTimestampStatus.ForeColor = if ($directClockActive -or ((Test-SendAbsoluteTimestampsEnabled) -and $supported)) {
+    $lblTimestampStatus.ForeColor = if ($directClockActive -or ((Test-SendAbsoluteTimestampsEnabled) -and $protocolTimingApplied)) {
         [System.Drawing.Color]::DarkSlateBlue
     }
     else {
@@ -11123,6 +11169,11 @@ function Load-Settings {
     finally {
         $script:SuppressProtocolChange = $false
         $script:LoadingSettings = $false
+        # Existing f13 settings can contain a stale global TimingMode and a
+        # different Direct WebRTC clock-signalling value. For Direct GST WebRTC,
+        # preserve the actually emitted advanced setting and reconcile the
+        # global selector to it once loading is complete.
+        Sync-TransportTimingControls -Source DirectWebRtc
         Update-TransportUi
         Update-DirectWebRtcUi
         Update-EncoderUi
@@ -12452,11 +12503,24 @@ $txtDestination.Add_TextChanged({
     Update-DirectWebRtcUi
     Update-CommandPreview
 })
-$cmbProtocol.Add_SelectedIndexChanged({ Update-ProtocolUi; Update-CommandPreview })
+$cmbProtocol.Add_SelectedIndexChanged({
+    Update-ProtocolUi
+    Sync-TransportTimingControls -Source TimingMode
+    Update-TimestampUi
+    Update-CommandPreview
+})
 $chkTransportEnabled.Add_CheckedChanged({ Update-TransportUi })
 $chkSendAbsoluteTimestamps.Add_CheckedChanged({ Update-TimestampUi; Update-CommandPreview })
-$cmbTimingMode.Add_SelectedIndexChanged({ Update-TimestampUi; Update-CommandPreview })
-$cmbDirectWebRtcClockSignaling.Add_SelectedIndexChanged({ Update-TimestampUi })
+$cmbTimingMode.Add_SelectedIndexChanged({
+    Sync-TransportTimingControls -Source TimingMode
+    Update-TimestampUi
+    Update-CommandPreview
+})
+$cmbDirectWebRtcClockSignaling.Add_SelectedIndexChanged({
+    Sync-TransportTimingControls -Source DirectWebRtc
+    Update-TimestampUi
+    Update-CommandPreview
+})
 $cmbEncoder.Add_SelectedIndexChanged({ Update-EncoderUi })
 $cmbAudioTransportMode.Add_SelectedIndexChanged({ Update-AudioCodecChoices; Update-CommandPreview })
 $cmbSplitAudioPipelineClockMode.Add_SelectedIndexChanged($previewHandler)
