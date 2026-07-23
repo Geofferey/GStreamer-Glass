@@ -15,7 +15,7 @@
     experimental convenience layer; streaming does not depend on preview.
 
     Designed to run as a PS2EXE/PS12EXE no-console application. All GStreamer
-    output is redirected to the in-app log and per-run log files.
+    output is shown in the in-memory app log. Per-run process log files are opt-in.
 #>
 
 Add-Type -AssemblyName System.Windows.Forms
@@ -630,7 +630,7 @@ public static class GstProcessJob
 '@
 }
 
-$script:AppVersion = '3.7.52'
+$script:AppVersion = '3.7.52f'
 $script:AppName = "GStreamer Glass v$($script:AppVersion)"
 $script:ConfigDirectory = Join-Path $env:APPDATA 'GStreamerBasicWhipStreamer'
 $script:ConfigPath = Join-Path $script:ConfigDirectory 'settings.json'
@@ -721,6 +721,7 @@ $script:JobHandle = [IntPtr]::Zero
 $script:ExitCleanupStarted = $false
 $script:SuppressProtocolChange = $false
 $script:TrayHintShown = $false
+$script:StartupTrayHidePending = $false
 $script:LastProtocol = 'WHIP'
 $script:ProtocolDestinations = [ordered]@{
     WHIP = 'http://10.0.0.25:8889/live/whip'
@@ -776,7 +777,9 @@ $script:DefaultPlayerAvRenderMode = 'Synced single media element'
 $script:DefaultDirectWebRtcAvPipelineMode = 'Single pipeline'
 $script:DefaultSplitPlayerSyncMode = 'Off / free-run'
 $script:DefaultSplitAudioStallSeconds = 3
+$script:DefaultSplitAudioWarmupSeconds = 8
 $script:DefaultSplitAvOffsetWarnMs = 140
+$script:DefaultSplitAvOffsetBaselineMs = 0
 $script:DefaultDirectWebRtcSplitAudioPortOffset = 1
 $script:DefaultVideoSyncMode = 'Default'
 $script:DefaultAudioSyncMode = 'Default'
@@ -798,6 +801,7 @@ $script:DefaultCpuWorkerLimit = 0
 $script:DefaultGstDebugMode = 'Off'
 $script:DefaultGstDebugSpec = '*:4'
 $script:DefaultGstDebugNoColor = $true
+$script:DefaultDiskProcessLogging = $false
 
 $script:DirectWebRtcProtocolName = 'GST WebRTC'
 
@@ -1811,6 +1815,14 @@ $chkVerbose.Checked = $false
 $settingsGroup.Controls.Add($chkVerbose)
 $toolTip.SetToolTip($chkVerbose, 'Adds gst-launch -v. This is element/caps verbosity, not full GST_DEBUG logging. Use GST debug below for deep logs.')
 
+$chkDiskProcessLogging = New-Object System.Windows.Forms.CheckBox
+$chkDiskProcessLogging.Text = 'Write process logs to disk'
+$chkDiskProcessLogging.Location = New-Object System.Drawing.Point(480, 158)
+$chkDiskProcessLogging.Size = New-Object System.Drawing.Size(190, 23)
+$chkDiskProcessLogging.Checked = $script:DefaultDiskProcessLogging
+$settingsGroup.Controls.Add($chkDiskProcessLogging)
+$toolTip.SetToolTip($chkDiskProcessLogging, 'Off by default. When off, gst-launch/MediaMTX stdout/stderr are not redirected to per-run log files. Verbose output, GST debug, or tracer options still explicitly enable diagnostic process logs for that run.')
+
 $chkMinimizeToTray = New-Object System.Windows.Forms.CheckBox
 $chkMinimizeToTray.Text = 'Minimize to tray'
 $chkMinimizeToTray.Location = New-Object System.Drawing.Point(600, 130)
@@ -2259,7 +2271,17 @@ $numSplitAudioStallSeconds.Maximum = 30
 $numSplitAudioStallSeconds.Increment = 1
 $numSplitAudioStallSeconds.Value = $script:DefaultSplitAudioStallSeconds
 $settingsGroup.Controls.Add($numSplitAudioStallSeconds)
-$toolTip.SetToolTip($numSplitAudioStallSeconds, 'Opt-in split audio watchdog timeout. If enabled and audio stats/element look stalled this many seconds, the player recovers only the split audio path.')
+$toolTip.SetToolTip($numSplitAudioStallSeconds, 'Opt-in split audio watchdog timeout. If enabled and audio stats/element look stalled this many seconds, the player recovers only the split audio path after the startup warmup window.')
+
+$numSplitAudioWarmupSeconds = New-Object System.Windows.Forms.NumericUpDown
+$numSplitAudioWarmupSeconds.Location = New-Object System.Drawing.Point(15, 548)
+$numSplitAudioWarmupSeconds.Size = New-Object System.Drawing.Size(70, 23)
+$numSplitAudioWarmupSeconds.Minimum = 0
+$numSplitAudioWarmupSeconds.Maximum = 60
+$numSplitAudioWarmupSeconds.Increment = 1
+$numSplitAudioWarmupSeconds.Value = $script:DefaultSplitAudioWarmupSeconds
+$settingsGroup.Controls.Add($numSplitAudioWarmupSeconds)
+$toolTip.SetToolTip($numSplitAudioWarmupSeconds, 'Opt-in startup/equalization grace period for both browser JBUF watchdog and split audio watchdog/soft-sync recovery. Recovery/reconnect is blocked until this many seconds after primary or split audio connects/receives media.')
 
 $numSplitAvOffsetWarnMs = New-Object System.Windows.Forms.NumericUpDown
 $numSplitAvOffsetWarnMs.Location = New-Object System.Drawing.Point(15, 548)
@@ -2269,7 +2291,17 @@ $numSplitAvOffsetWarnMs.Maximum = 1000
 $numSplitAvOffsetWarnMs.Increment = 10
 $numSplitAvOffsetWarnMs.Value = $script:DefaultSplitAvOffsetWarnMs
 $settingsGroup.Controls.Add($numSplitAvOffsetWarnMs)
-$toolTip.SetToolTip($numSplitAvOffsetWarnMs, 'Opt-in split A/V soft-sync warning threshold. Estimated from audio/video jitter-buffer stats; video is never delayed by this feature.')
+$toolTip.SetToolTip($numSplitAvOffsetWarnMs, 'Opt-in split A/V soft-sync drift threshold. This compares current estimated A/V offset against the learned/configured baseline, not against zero. Video is never delayed by this feature.')
+
+$numSplitAvOffsetBaselineMs = New-Object System.Windows.Forms.NumericUpDown
+$numSplitAvOffsetBaselineMs.Location = New-Object System.Drawing.Point(15, 548)
+$numSplitAvOffsetBaselineMs.Size = New-Object System.Drawing.Size(80, 23)
+$numSplitAvOffsetBaselineMs.Minimum = 0
+$numSplitAvOffsetBaselineMs.Maximum = 1000
+$numSplitAvOffsetBaselineMs.Increment = 1
+$numSplitAvOffsetBaselineMs.Value = $script:DefaultSplitAvOffsetBaselineMs
+$settingsGroup.Controls.Add($numSplitAvOffsetBaselineMs)
+$toolTip.SetToolTip($numSplitAvOffsetBaselineMs, 'Opt-in split A/V healthy offset baseline in ms. 0 = auto-learn after watchdog warmup. Example: audio 59ms - video 16ms = baseline 43ms, and only drift above that is considered bad.')
 
 $btnResetAll = New-Object System.Windows.Forms.Button
 $btnResetAll.Text = 'Reset All App Defaults'
@@ -3140,7 +3172,7 @@ $btnOpenLogs.Size = New-Object System.Drawing.Size(105, 34)
 $form.Controls.Add($btnOpenLogs)
 $toolTip.SetToolTip(
     $btnOpenLogs,
-    "Opens the persistent log folder: $script:LogDirectory"
+    "Opens the optional per-run process log folder. Disk process logs are disabled by default."
 )
 
 $statusLabel = New-Object System.Windows.Forms.Label
@@ -4237,7 +4269,10 @@ function Apply-ModernDashboardUi {
     $r = Add-Row $s
     Add-Field $r -Label 'Split sync mode' -Control $cmbSplitPlayerSyncMode -Width 235 | Out-Null
     Add-Field $r -Label 'Audio stall sec' -Control $numSplitAudioStallSeconds -Width 95 | Out-Null
-    Add-Field $r -Label 'Offset warn ms' -Control $numSplitAvOffsetWarnMs -Width 105 | Out-Null
+    Add-Field $r -Label 'Watchdog warmup sec' -Control $numSplitAudioWarmupSeconds -Width 140 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Label 'Offset baseline ms' -Control $numSplitAvOffsetBaselineMs -Width 130 | Out-Null
+    Add-Field $r -Label 'Offset drift warn ms' -Control $numSplitAvOffsetWarnMs -Width 140 | Out-Null
 
     $s = Add-Section $panePlayer 'Web player hosting'
     $r = Add-Row $s
@@ -4387,7 +4422,8 @@ function Apply-ModernDashboardUi {
     Add-Field $r -Control $chkPreview -Width 180 | Out-Null
     Add-Field $r -Control $chkAutoRestart -Width 170 | Out-Null
     $r = Add-Row $s
-    Add-Field $r -Control $chkVerbose -Width 160 | Out-Null
+    Add-Field $r -Control $chkVerbose -Width 145 | Out-Null
+    Add-Field $r -Control $chkDiskProcessLogging -Width 210 | Out-Null
     Add-Field $r -Control $chkMinimizeToTray -Width 160 | Out-Null
     $r = Add-Row $s
     Add-Field $r -Control $chkStartMinimized -Width 170 | Out-Null
@@ -4528,7 +4564,7 @@ function Apply-ModernDashboardUi {
         $lblNetworkStatus, $btnResetTransport, $btnResetWebRtcSane, $btnResetVideo, $btnResetAudio,
         $btnResetRecording, $btnResetNetwork, $btnResetOptions, $btnResetAll,
         $txtGstPath, $btnBrowseGst, $btnDetectGst, $btnCheckGst,
-        $chkPreview, $chkAutoRestart, $chkVerbose, $chkMinimizeToTray,
+        $chkPreview, $chkAutoRestart, $chkVerbose, $chkDiskProcessLogging, $chkMinimizeToTray,
         $chkStartMinimized
     )) {
         if ($realControl) {
@@ -4548,7 +4584,7 @@ function Apply-ModernDashboardUi {
     foreach ($checkBox in @(
         $chkTransportEnabled, $chkCursor, $chkStartMediaMtx,
         $chkPlayerStatsOverlay, $chkPlayerJbufDebug, $chkPlayerUrlOverrides,
-        $cmbSplitPlayerSyncMode, $numSplitAudioStallSeconds, $numSplitAvOffsetWarnMs,
+        $cmbSplitPlayerSyncMode, $numSplitAudioStallSeconds, $numSplitAudioWarmupSeconds, $numSplitAvOffsetBaselineMs, $numSplitAvOffsetWarnMs,
         $chkDirectWebRtcOpusFec, $chkDirectWebRtcOpusDtx,
         $chkLookAhead, $chkAdaptiveQuantization, $chkTemporalAq,
         $chkDesktopAudio, $chkMic,
@@ -4557,14 +4593,21 @@ function Apply-ModernDashboardUi {
         $chkNetworkTuningEnabled, $chkNetworkDscp, $chkNetworkDisablePowerSaving,
         $chkNetworkDisableEee, $chkNetworkRestoreOnStop, $chkNetworkRestoreOnExit,
         $chkNetworkRecoveryTask,
-        $chkPreview, $chkAutoRestart, $chkVerbose,
+        $chkPreview, $chkAutoRestart, $chkVerbose, $chkDiskProcessLogging,
         $chkMinimizeToTray, $chkStartMinimized
     )) {
-        if ($checkBox) {
-            $checkBox.FlatStyle = [System.Windows.Forms.FlatStyle]::Standard
-            $checkBox.UseVisualStyleBackColor = $false
-            $checkBox.BackColor = $script:ColorSurface
-            $checkBox.ForeColor = $script:ColorText
+        # This list is hand-maintained and has occasionally picked up non-CheckBox
+        # controls during UI feature patches. Guard the style calls so shutdown or
+        # delayed UI refresh cannot throw repeated modal errors for controls that
+        # do not expose FlatStyle / UseVisualStyleBackColor.
+        if ($checkBox -and ($checkBox -is [System.Windows.Forms.CheckBox])) {
+            try {
+                $checkBox.FlatStyle = [System.Windows.Forms.FlatStyle]::Standard
+                $checkBox.UseVisualStyleBackColor = $false
+                $checkBox.BackColor = $script:ColorSurface
+                $checkBox.ForeColor = $script:ColorText
+            }
+            catch {}
         }
     }
 
@@ -4844,17 +4887,26 @@ function Apply-StartMinimized {
 
     try {
         if ($chkMinimizeToTray.Checked) {
-            Hide-MainWindowToTray
+            Hide-MainWindowToTray -SuppressBalloon
+            $script:StartupTrayHidePending = $false
         }
         else {
             $form.WindowState = [System.Windows.Forms.FormWindowState]::Minimized
         }
     }
-    catch {}
+    catch {
+        try {
+            $form.Opacity = 1
+            $form.ShowInTaskbar = $true
+        }
+        catch {}
+    }
 }
 
 function Show-MainWindow {
     try {
+        $script:StartupTrayHidePending = $false
+        $form.Opacity = 1
         $form.ShowInTaskbar = $true
         $form.Show()
         if ($form.WindowState -eq [System.Windows.Forms.FormWindowState]::Minimized) {
@@ -4882,6 +4934,8 @@ function Show-MainWindow {
 }
 
 function Hide-MainWindowToTray {
+    param([switch]$SuppressBalloon)
+
     if (-not $chkMinimizeToTray.Checked -or $script:ExitCleanupStarted) {
         return
     }
@@ -4896,8 +4950,9 @@ function Hide-MainWindowToTray {
 
         $form.ShowInTaskbar = $false
         $form.Hide()
+        $form.Opacity = 1
 
-        if (-not $script:TrayHintShown) {
+        if (-not $SuppressBalloon -and -not $script:TrayHintShown) {
             $notifyIcon.BalloonTipTitle = $script:AppName
             $notifyIcon.BalloonTipText = 'The streamer is still running. Double-click the tray icon to restore it.'
             $notifyIcon.BalloonTipIcon = [System.Windows.Forms.ToolTipIcon]::Info
@@ -4908,6 +4963,7 @@ function Hide-MainWindowToTray {
     catch {
         # A failed tray hide should leave the normal minimized taskbar window.
         try {
+            $form.Opacity = 1
             $form.ShowInTaskbar = $true
             $form.Show()
         }
@@ -5758,6 +5814,8 @@ function Reset-WebRtcSaneDefaults {
     if ($cmbDirectWebRtcAvPipelineMode.Items.Contains($script:DefaultDirectWebRtcAvPipelineMode)) { $cmbDirectWebRtcAvPipelineMode.SelectedItem = $script:DefaultDirectWebRtcAvPipelineMode }
     if ($cmbSplitPlayerSyncMode.Items.Contains($script:DefaultSplitPlayerSyncMode)) { $cmbSplitPlayerSyncMode.SelectedItem = $script:DefaultSplitPlayerSyncMode }
     $numSplitAudioStallSeconds.Value = $script:DefaultSplitAudioStallSeconds
+    $numSplitAudioWarmupSeconds.Value = $script:DefaultSplitAudioWarmupSeconds
+    $numSplitAvOffsetBaselineMs.Value = $script:DefaultSplitAvOffsetBaselineMs
     $numSplitAvOffsetWarnMs.Value = $script:DefaultSplitAvOffsetWarnMs
     Update-DirectWebRtcUi
     Update-CommandPreview
@@ -5903,6 +5961,7 @@ function Reset-OptionsDefaults {
     $chkPreview.Checked = $false
     $chkAutoRestart.Checked = $true
     $chkVerbose.Checked = $false
+    $chkDiskProcessLogging.Checked = $script:DefaultDiskProcessLogging
     $chkMinimizeToTray.Checked = $true
     $chkStartMinimized.Checked = $false
     if ($cmbThreadingProfile.Items.Contains($script:DefaultThreadingProfile)) { $cmbThreadingProfile.SelectedItem = $script:DefaultThreadingProfile }
@@ -6683,6 +6742,43 @@ function Get-GstDebugSpec {
     }
 }
 
+function Test-ProcessDiskLoggingEnabled {
+    # Keep the default run path disk-quiet. Diagnostic output is captured only
+    # when explicitly requested by the disk-log checkbox or by an explicit
+    # diagnostic mode that would otherwise emit useful stdout/stderr.
+    try {
+        if ($chkDiskProcessLogging -and $chkDiskProcessLogging.Checked) { return $true }
+        if ($chkVerbose -and $chkVerbose.Checked) { return $true }
+        if ($chkBufferLatenessTracer -and $chkBufferLatenessTracer.Checked) { return $true }
+        $debugSpec = Get-GstDebugSpec
+        if (-not [string]::IsNullOrWhiteSpace($debugSpec)) { return $true }
+    }
+    catch {}
+
+    return $false
+}
+
+function Reset-ProcessLogPaths {
+    $script:StdOutPath = $null
+    $script:StdErrPath = $null
+    $script:StdOutAudioPath = $null
+    $script:StdErrAudioPath = $null
+    $script:MediaMtxStdOutPath = $null
+    $script:MediaMtxStdErrPath = $null
+    $script:StdOutPosition = [int64]0
+    $script:StdErrPosition = [int64]0
+    $script:StdOutAudioPosition = [int64]0
+    $script:StdErrAudioPosition = [int64]0
+    $script:MediaMtxStdOutPosition = [int64]0
+    $script:MediaMtxStdErrPosition = [int64]0
+}
+
+function Ensure-ProcessLogDirectory {
+    if (-not (Test-Path -LiteralPath $script:LogDirectory)) {
+        $null = New-Item -ItemType Directory -Path $script:LogDirectory -Force
+    }
+}
+
 function Update-GstDebugUi {
     $mode = Get-ComboSelectedOrDefault $cmbGstDebugMode $script:DefaultGstDebugMode
     $custom = ($mode -eq 'Custom')
@@ -7301,6 +7397,10 @@ function Get-PlayerSettingsFromUi {
         AvPipelineMode = [string](Get-DirectWebRtcAvPipelineMode)
         SplitPlayerSyncMode = [string](Get-ComboSelectedOrDefault $cmbSplitPlayerSyncMode $script:DefaultSplitPlayerSyncMode)
         SplitAudioStallSeconds = [int]$numSplitAudioStallSeconds.Value
+        SplitAudioWarmupSeconds = [int]$numSplitAudioWarmupSeconds.Value
+        JbufWatchdogWarmupSeconds = [int]$numSplitAudioWarmupSeconds.Value
+        WatchdogWarmupSeconds = [int]$numSplitAudioWarmupSeconds.Value
+        SplitAvOffsetBaselineMs = [int]$numSplitAvOffsetBaselineMs.Value
         SplitAvOffsetWarnMs = [int]$numSplitAvOffsetWarnMs.Value
         WebPath = [string]$txtDirectWebRtcWebPath.Text
         BundledWebMode = [string]$cmbDirectWebRtcBundledWebMode.SelectedItem
@@ -7416,6 +7516,7 @@ function Update-DirectWebRtcUi {
         $cmbPlayerAvRenderMode,
         $cmbSplitPlayerSyncMode,
         $numSplitAudioStallSeconds,
+        $numSplitAudioWarmupSeconds,
         $numSplitAvOffsetWarnMs,
         $btnOpenDirectWebRtcViewer,
         $btnCopyDirectWebRtcViewer
@@ -8865,7 +8966,14 @@ function Write-DirectWebRtcWebClientConfig {
             splitPlayerSyncMode = [string]$playerSettings.SplitPlayerSyncMode
             splitAudioWatchdogMode = [string]$playerSettings.SplitPlayerSyncMode
             splitAudioStallSeconds = [int]$playerSettings.SplitAudioStallSeconds
+            splitAudioWarmupSeconds = [int]$playerSettings.SplitAudioWarmupSeconds
+            splitAudioEqualizeSeconds = [int]$playerSettings.SplitAudioWarmupSeconds
+            jbufWatchdogWarmupSeconds = [int]$playerSettings.JbufWatchdogWarmupSeconds
+            watchdogWarmupSeconds = [int]$playerSettings.WatchdogWarmupSeconds
             splitAvOffsetWarnMs = [int]$playerSettings.SplitAvOffsetWarnMs
+            splitAvOffsetBaselineMs = [int]$playerSettings.SplitAvOffsetBaselineMs
+            splitAvBaselineMs = [int]$playerSettings.SplitAvOffsetBaselineMs
+            splitAvBaselineLearnTicks = 5
             splitAudioWsUrl = if (Test-DirectWebRtcSplitAvPipelines) { [string](Get-DirectWebRtcSplitAudioWsUrlForPlayer) } else { '' }
             splitAudioSignalingPort = if (Test-DirectWebRtcSplitAvPipelines) { [int](Get-DirectWebRtcSplitAudioSignalingPort) } else { 0 }
             webPath = [string]$playerSettings.WebPath
@@ -9426,6 +9534,10 @@ function Save-Settings {
             DirectWebRtcAvPipelineMode = [string](Get-DirectWebRtcAvPipelineMode)
             SplitPlayerSyncMode = [string](Get-ComboSelectedOrDefault $cmbSplitPlayerSyncMode $script:DefaultSplitPlayerSyncMode)
             SplitAudioStallSeconds = [int]$numSplitAudioStallSeconds.Value
+            SplitAudioWarmupSeconds = [int]$numSplitAudioWarmupSeconds.Value
+            JbufWatchdogWarmupSeconds = [int]$numSplitAudioWarmupSeconds.Value
+            WatchdogWarmupSeconds = [int]$numSplitAudioWarmupSeconds.Value
+            SplitAvOffsetBaselineMs = [int]$numSplitAvOffsetBaselineMs.Value
             SplitAvOffsetWarnMs = [int]$numSplitAvOffsetWarnMs.Value
             VideoSyncMode = [string]$cmbVideoSyncMode.SelectedItem
             AudioSyncMode = [string]$cmbAudioSyncMode.SelectedItem
@@ -9497,6 +9609,7 @@ function Save-Settings {
             Preview           = $chkPreview.Checked
             AutoRestart       = $chkAutoRestart.Checked
             Verbose           = $chkVerbose.Checked
+            DiskProcessLogging = $chkDiskProcessLogging.Checked
             MinimizeToTray    = $chkMinimizeToTray.Checked
             StartMinimized    = $chkStartMinimized.Checked
             NetworkTuningEnabled = $chkNetworkTuningEnabled.Checked
@@ -9639,6 +9752,8 @@ function Load-Settings {
         if ($settings.DirectWebRtcAvPipelineMode -and $cmbDirectWebRtcAvPipelineMode.Items.Contains([string]$settings.DirectWebRtcAvPipelineMode)) { $cmbDirectWebRtcAvPipelineMode.SelectedItem = [string]$settings.DirectWebRtcAvPipelineMode }
         if ($settings.SplitPlayerSyncMode -and $cmbSplitPlayerSyncMode.Items.Contains([string]$settings.SplitPlayerSyncMode)) { $cmbSplitPlayerSyncMode.SelectedItem = [string]$settings.SplitPlayerSyncMode }
         if ($null -ne $settings.SplitAudioStallSeconds) { $numSplitAudioStallSeconds.Value = [decimal]([Math]::Min([int]$numSplitAudioStallSeconds.Maximum, [Math]::Max([int]$numSplitAudioStallSeconds.Minimum, [int]$settings.SplitAudioStallSeconds))) }
+        if ($null -ne $settings.JbufWatchdogWarmupSeconds) { $numSplitAudioWarmupSeconds.Value = [decimal]([Math]::Min([int]$numSplitAudioWarmupSeconds.Maximum, [Math]::Max([int]$numSplitAudioWarmupSeconds.Minimum, [int]$settings.JbufWatchdogWarmupSeconds))) } elseif ($null -ne $settings.WatchdogWarmupSeconds) { $numSplitAudioWarmupSeconds.Value = [decimal]([Math]::Min([int]$numSplitAudioWarmupSeconds.Maximum, [Math]::Max([int]$numSplitAudioWarmupSeconds.Minimum, [int]$settings.WatchdogWarmupSeconds))) } elseif ($null -ne $settings.SplitAudioWarmupSeconds) { $numSplitAudioWarmupSeconds.Value = [decimal]([Math]::Min([int]$numSplitAudioWarmupSeconds.Maximum, [Math]::Max([int]$numSplitAudioWarmupSeconds.Minimum, [int]$settings.SplitAudioWarmupSeconds))) }
+        if ($null -ne $settings.SplitAvOffsetBaselineMs) { $numSplitAvOffsetBaselineMs.Value = [decimal]([Math]::Min([int]$numSplitAvOffsetBaselineMs.Maximum, [Math]::Max([int]$numSplitAvOffsetBaselineMs.Minimum, [int]$settings.SplitAvOffsetBaselineMs))) }
         if ($null -ne $settings.SplitAvOffsetWarnMs) { $numSplitAvOffsetWarnMs.Value = [decimal]([Math]::Min([int]$numSplitAvOffsetWarnMs.Maximum, [Math]::Max([int]$numSplitAvOffsetWarnMs.Minimum, [int]$settings.SplitAvOffsetWarnMs))) }
         if ($settings.ThreadingProfile -and $cmbThreadingProfile.Items.Contains([string]$settings.ThreadingProfile)) { $cmbThreadingProfile.SelectedItem = [string]$settings.ThreadingProfile }
         if ($settings.GstProcessPriority -and $cmbGstProcessPriority.Items.Contains([string]$settings.GstProcessPriority)) { $cmbGstProcessPriority.SelectedItem = [string]$settings.GstProcessPriority }
@@ -9732,6 +9847,7 @@ function Load-Settings {
         if ($null -ne $settings.Preview) { $chkPreview.Checked = [bool]$settings.Preview }
         if ($null -ne $settings.AutoRestart) { $chkAutoRestart.Checked = [bool]$settings.AutoRestart }
         if ($null -ne $settings.Verbose) { $chkVerbose.Checked = [bool]$settings.Verbose }
+        if ($null -ne $settings.DiskProcessLogging) { $chkDiskProcessLogging.Checked = [bool]$settings.DiskProcessLogging }
         if ($null -ne $settings.MinimizeToTray) { $chkMinimizeToTray.Checked = [bool]$settings.MinimizeToTray }
         if ($null -ne $settings.StartMinimized) { $chkStartMinimized.Checked = [bool]$settings.StartMinimized }
         if ($null -ne $settings.NetworkTuningEnabled) { $chkNetworkTuningEnabled.Checked = [bool]$settings.NetworkTuningEnabled }
@@ -10183,13 +10299,18 @@ function Start-ManagedMediaMtx {
     $mediaMtxPath = $txtMediaMtxPath.Text.Trim()
     $script:MediaMtxPathInUse = [System.IO.Path]::GetFullPath($mediaMtxPath)
 
-    $stamp = Get-Date -Format 'yyyyMMdd-HHmmss-fff'
-    $script:MediaMtxStdOutPath =
-        Join-Path $script:LogDirectory "mediamtx-$stamp-out.log"
-    $script:MediaMtxStdErrPath =
-        Join-Path $script:LogDirectory "mediamtx-$stamp-err.log"
+    $processDiskLogging = Test-ProcessDiskLoggingEnabled
+    $script:MediaMtxStdOutPath = $null
+    $script:MediaMtxStdErrPath = $null
     $script:MediaMtxStdOutPosition = [int64]0
     $script:MediaMtxStdErrPosition = [int64]0
+
+    if ($processDiskLogging) {
+        Ensure-ProcessLogDirectory
+        $stamp = Get-Date -Format 'yyyyMMdd-HHmmss-fff'
+        $script:MediaMtxStdOutPath = Join-Path $script:LogDirectory "mediamtx-$stamp-out.log"
+        $script:MediaMtxStdErrPath = Join-Path $script:LogDirectory "mediamtx-$stamp-err.log"
+    }
 
     $workingDirectory = Split-Path -Parent $script:MediaMtxPathInUse
 
@@ -10200,13 +10321,22 @@ function Start-ManagedMediaMtx {
     Append-Log "MediaMTX working directory: $workingDirectory"
 
     try {
-        $script:MediaMtxProcess = Start-Process `
-            -FilePath $script:MediaMtxPathInUse `
-            -WorkingDirectory $workingDirectory `
-            -RedirectStandardOutput $script:MediaMtxStdOutPath `
-            -RedirectStandardError $script:MediaMtxStdErrPath `
-            -WindowStyle Hidden `
-            -PassThru
+        if ($processDiskLogging) {
+            $script:MediaMtxProcess = Start-Process `
+                -FilePath $script:MediaMtxPathInUse `
+                -WorkingDirectory $workingDirectory `
+                -RedirectStandardOutput $script:MediaMtxStdOutPath `
+                -RedirectStandardError $script:MediaMtxStdErrPath `
+                -WindowStyle Hidden `
+                -PassThru
+        }
+        else {
+            $script:MediaMtxProcess = Start-Process `
+                -FilePath $script:MediaMtxPathInUse `
+                -WorkingDirectory $workingDirectory `
+                -WindowStyle Hidden `
+                -PassThru
+        }
 
         if ($script:JobHandle -ne [IntPtr]::Zero) {
             try {
@@ -10238,7 +10368,9 @@ function Start-ManagedMediaMtx {
             }
         }
 
-        Read-MediaMtxStartupLogs
+        if ($processDiskLogging) {
+            Read-MediaMtxStartupLogs
+        }
 
         if ($script:MediaMtxProcess.HasExited) {
             $exitCode = $script:MediaMtxProcess.ExitCode
@@ -10341,19 +10473,16 @@ function Start-GstStream {
 
     Save-Settings
 
-    if (-not (Test-Path -LiteralPath $script:LogDirectory)) {
-        $null = New-Item -ItemType Directory -Path $script:LogDirectory -Force
+    Reset-ProcessLogPaths
+    $processDiskLogging = Test-ProcessDiskLoggingEnabled
+    if ($processDiskLogging) {
+        Ensure-ProcessLogDirectory
+        $stamp = Get-Date -Format 'yyyyMMdd-HHmmss-fff'
+        $script:StdOutPath = Join-Path $script:LogDirectory "gst-$stamp-out.log"
+        $script:StdErrPath = Join-Path $script:LogDirectory "gst-$stamp-err.log"
+        $script:StdOutAudioPath = Join-Path $script:LogDirectory "gst-audio-$stamp-out.log"
+        $script:StdErrAudioPath = Join-Path $script:LogDirectory "gst-audio-$stamp-err.log"
     }
-
-    $stamp = Get-Date -Format 'yyyyMMdd-HHmmss-fff'
-    $script:StdOutPath = Join-Path $script:LogDirectory "gst-$stamp-out.log"
-    $script:StdErrPath = Join-Path $script:LogDirectory "gst-$stamp-err.log"
-    $script:StdOutAudioPath = Join-Path $script:LogDirectory "gst-audio-$stamp-out.log"
-    $script:StdErrAudioPath = Join-Path $script:LogDirectory "gst-audio-$stamp-err.log"
-    $script:StdOutPosition = [int64]0
-    $script:StdErrPosition = [int64]0
-    $script:StdOutAudioPosition = [int64]0
-    $script:StdErrAudioPosition = [int64]0
     $script:StopRequested = $false
     $script:RestartAt = $null
     $script:PreviewHwnd = [IntPtr]::Zero
@@ -10392,6 +10521,7 @@ function Start-GstStream {
 
     $transportEnabled = Test-TransportEnabled
     Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Starting full GStreamer pipeline..."
+    Append-Log "Process disk logging: $(if ($processDiskLogging) { 'enabled' } else { 'disabled - UI log only' })"
     Append-Log "Transport: $(if ($transportEnabled) { 'Enabled' } else { 'Disabled - local recording/preview only' })"
     if ($transportEnabled) {
         Append-Log "Protocol: $([string]$cmbProtocol.SelectedItem)"
@@ -10451,7 +10581,7 @@ function Start-GstStream {
     if ((Get-QueueLeakValue) -eq 'no' -and (Get-EffectiveLiveQueueLeakValue) -ne 'no') { Append-Log 'Threading guard: No leak/block was selected but coerced to downstream/drop-old outside Blocking diagnostic profile.' }
     if ($requestedAudioQueueCapMs -gt 0 -and $effectiveAudioQueueCapMs -gt $requestedAudioQueueCapMs) { Append-Log "Audio queue guard: raised nonzero audio queue cap from $requestedAudioQueueCapMs ms to $effectiveAudioQueueCapMs ms so GStreamer latency negotiation has enough headroom." }
     Append-Log "Browser JBUF guard: audio/video target $([int]$numDirectWebRtcPlayerJitterMs.Value)/$([int]$numDirectWebRtcVideoJitterMs.Value) ms, watchdog $([string]$cmbJbufWatchdogMode.SelectedItem), max $([int]$numJbufMaxMs.Value) ms, URL/config bridged."
-    Append-Log "Split player sync: $([string]$cmbSplitPlayerSyncMode.SelectedItem), audio stall $([int]$numSplitAudioStallSeconds.Value) sec, offset warn $([int]$numSplitAvOffsetWarnMs.Value) ms. Default free-run never delays video."
+    Append-Log "Split player sync: $([string]$cmbSplitPlayerSyncMode.SelectedItem), watchdog warmup $([int]$numSplitAudioWarmupSeconds.Value) sec applies to both JBUF and split-audio watchdogs, audio stall $([int]$numSplitAudioStallSeconds.Value) sec, offset baseline $([int]$numSplitAvOffsetBaselineMs.Value) ms (0 auto), drift warn $([int]$numSplitAvOffsetWarnMs.Value) ms. Default free-run never delays video."
     Append-Log "Direct GST WebRTC Opus: $([string]$cmbDirectWebRtcOpusMode.SelectedItem), frame $([string]$cmbDirectWebRtcOpusFrameMs.SelectedItem) ms, type $([string]$cmbDirectWebRtcOpusAudioType.SelectedItem), FEC $($chkDirectWebRtcOpusFec.Checked), DTX $($chkDirectWebRtcOpusDtx.Checked)."
     Append-Log "Video sync mode: $([string]$cmbVideoSyncMode.SelectedItem); Audio sync mode: $([string]$cmbAudioSyncMode.SelectedItem). Explicit modes insert clocksync before compatible send/mux sinks; local preview also honors Video sync mode."
     Append-Log "Audio clock mode: $([string]$cmbAudioClockMode.SelectedItem); timing $([string]$cmbAudioTimingMode.SelectedItem); slave $([string]$cmbAudioSlaveMethod.SelectedItem); requested buffer $([int]$numAudioBufferMs.Value) ms / latency $([int]$numAudioLatencyMs.Value) ms."
@@ -10474,7 +10604,12 @@ function Start-GstStream {
         try {
             $tracerEnvState = Set-GstTracerEnvironment -Enable:([bool]$chkBufferLatenessTracer.Checked) -DebugSpec $gstDebugSpec -NoColor:([bool]$chkGstDebugNoColor.Checked)
             if ($chkBufferLatenessTracer.Checked) { Append-Log 'GStreamer buffer-lateness tracer enabled for this run.' }
-            $script:GstProcess = Start-Process -FilePath $gstPath -ArgumentList $arguments -RedirectStandardOutput $script:StdOutPath -RedirectStandardError $script:StdErrPath -WindowStyle Hidden -PassThru
+            if ($processDiskLogging) {
+                $script:GstProcess = Start-Process -FilePath $gstPath -ArgumentList $arguments -RedirectStandardOutput $script:StdOutPath -RedirectStandardError $script:StdErrPath -WindowStyle Hidden -PassThru
+            }
+            else {
+                $script:GstProcess = Start-Process -FilePath $gstPath -ArgumentList $arguments -WindowStyle Hidden -PassThru
+            }
         }
         finally {
             Restore-GstTracerEnvironment $tracerEnvState
@@ -10496,7 +10631,12 @@ function Start-GstStream {
             $audioTracerEnvState = $null
             try {
                 $audioTracerEnvState = Set-GstTracerEnvironment -Enable:([bool]$chkBufferLatenessTracer.Checked) -DebugSpec $gstDebugSpec -NoColor:([bool]$chkGstDebugNoColor.Checked)
-                $script:GstAudioProcess = Start-Process -FilePath $gstPath -ArgumentList $audioArguments -RedirectStandardOutput $script:StdOutAudioPath -RedirectStandardError $script:StdErrAudioPath -WindowStyle Hidden -PassThru
+                if ($processDiskLogging) {
+                    $script:GstAudioProcess = Start-Process -FilePath $gstPath -ArgumentList $audioArguments -RedirectStandardOutput $script:StdOutAudioPath -RedirectStandardError $script:StdErrAudioPath -WindowStyle Hidden -PassThru
+                }
+                else {
+                    $script:GstAudioProcess = Start-Process -FilePath $gstPath -ArgumentList $audioArguments -WindowStyle Hidden -PassThru
+                }
             }
             finally {
                 Restore-GstTracerEnvironment $audioTracerEnvState
@@ -11049,6 +11189,7 @@ $chkPreview.Add_CheckedChanged({
 })
 $chkAutoRestart.Add_CheckedChanged($previewHandler)
 $chkVerbose.Add_CheckedChanged($previewHandler)
+$chkDiskProcessLogging.Add_CheckedChanged($previewHandler)
 $numWidth.Add_ValueChanged($previewHandler)
 $numHeight.Add_ValueChanged($previewHandler)
 $numFps.Add_ValueChanged($previewHandler)
@@ -11297,7 +11438,7 @@ foreach ($smoothControl in @($numDirectWebRtcPacingMs, $numDirectWebRtcPlayerJit
     })
 }
 
-foreach ($splitPlayerNumeric in @($numSplitAudioStallSeconds, $numSplitAvOffsetWarnMs)) {
+foreach ($splitPlayerNumeric in @($numSplitAudioStallSeconds, $numSplitAudioWarmupSeconds, $numSplitAvOffsetBaselineMs, $numSplitAvOffsetWarnMs)) {
     $splitPlayerNumeric.Add_ValueChanged({ Update-PlayerConfigFromUi })
 }
 
@@ -11571,10 +11712,13 @@ $btnClearLog.Add_Click({ $txtLog.Clear() })
 $btnOpenLogs.Add_Click({
     try {
         if (-not (Test-Path -LiteralPath $script:LogDirectory)) {
-            $null = New-Item `
-                -ItemType Directory `
-                -Path $script:LogDirectory `
-                -Force
+            if (-not (Test-ProcessDiskLoggingEnabled)) {
+                Append-Log 'No process log folder exists. Disk process logging is disabled.'
+                $lowerTabs.SelectedTab = $tabLog
+                return
+            }
+
+            Ensure-ProcessLogDirectory
         }
 
         Start-Process `
@@ -11618,7 +11762,13 @@ $form.Add_Resize({
         $chkMinimizeToTray.Checked -and
         $form.WindowState -eq [System.Windows.Forms.FormWindowState]::Minimized
     ) {
-        Hide-MainWindowToTray
+        if ($script:StartupTrayHidePending) {
+            Hide-MainWindowToTray -SuppressBalloon
+            $script:StartupTrayHidePending = $false
+        }
+        else {
+            Hide-MainWindowToTray
+        }
     }
     elseif ($form.Visible -and $script:GstProcess -and -not $script:GstProcess.HasExited) {
         Set-PreviewVisibility
@@ -11811,6 +11961,14 @@ $form.Add_Shown({
             Apply-StartMinimized
         })
     }
+    elseif ($script:StartupTrayHidePending) {
+        $script:StartupTrayHidePending = $false
+        try {
+            $form.Opacity = 1
+            $form.ShowInTaskbar = $true
+        }
+        catch {}
+    }
 })
 
 function Invoke-ApplicationCleanup {
@@ -11889,6 +12047,47 @@ $form.Add_FormClosing({
     $pollTimer.Stop()
     Invoke-ApplicationCleanup
 })
+
+# Prepare the initial minimized-to-tray window state before Application.Run()
+# makes the form visible. Previously settings were loaded only from the Shown
+# event, so Start minimized could briefly paint the main window before hiding it.
+# This small pre-read only affects first-paint visibility; Load-Settings still
+# remains the full source of truth during Shown.
+try {
+    $startupStartMinimized = [bool]$chkStartMinimized.Checked
+    $startupMinimizeToTray = [bool]$chkMinimizeToTray.Checked
+
+    if (Test-Path -LiteralPath $script:ConfigPath) {
+        $startupSettings =
+            Get-Content -LiteralPath $script:ConfigPath -Raw |
+            ConvertFrom-Json
+
+        if ($null -ne $startupSettings.StartMinimized) {
+            $startupStartMinimized = [bool]$startupSettings.StartMinimized
+        }
+        if ($null -ne $startupSettings.MinimizeToTray) {
+            $startupMinimizeToTray = [bool]$startupSettings.MinimizeToTray
+        }
+    }
+
+    if ($startupStartMinimized -and $startupMinimizeToTray) {
+        $script:StartupTrayHidePending = $true
+        $form.ShowInTaskbar = $false
+        $form.Opacity = 0
+    }
+    elseif ($startupStartMinimized) {
+        $form.WindowState = [System.Windows.Forms.FormWindowState]::Minimized
+    }
+}
+catch {
+    # Startup pre-hide is cosmetic only. If it fails, fall back to normal startup.
+    try {
+        $script:StartupTrayHidePending = $false
+        $form.Opacity = 1
+        $form.ShowInTaskbar = $true
+    }
+    catch {}
+}
 
 try {
     # Use a normal WinForms application message loop instead of ShowDialog().
