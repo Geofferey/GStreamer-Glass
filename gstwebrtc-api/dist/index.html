@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#07111f">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Glass Live">
+  <title>GStreamer Glass Live</title>
+  <link rel="manifest" href="./manifest.webmanifest?v=3.7.52f45-honest-video-sender-queue">
+  <link rel="icon" type="image/png" sizes="192x192" href="./icons/gstreamer-glass-192.png">
+  <link rel="apple-touch-icon" href="./icons/gstreamer-glass-192.png">
+  <link rel="stylesheet" href="./player.css?v=3.7.52f45-honest-video-sender-queue">
+</head>
+<body>
+  <main id="playerRoot" class="playerRoot">
+    <video id="video" autoplay playsinline muted></video>
+
+    <button id="fullscreenButton" class="fullscreenButton" type="button" aria-label="Enter fullscreen">
+      <span class="fsIcon">⛶</span>
+      <span class="fsText">Fullscreen</span>
+    </button>
+
+    <div id="overlay" class="overlay">
+      <div class="brand">GStreamer Glass</div>
+      <div id="status" class="status">Connecting…</div>
+      <div id="detail" class="detail" hidden></div>
+    </div>
+
+    <div id="statsOverlay" class="statsOverlay">stats pending</div>
+
+    <a class="debugLink" href="./debug/" title="Open Direct WebRTC debug interface">debug</a>
+  </main>
+
+  <script>
+    (() => {
+      const configScript = document.createElement('script');
+      configScript.src = `./gstglass-config.js?t=${Date.now()}`;
+      configScript.onload = loadFrontend;
+      configScript.onerror = loadFrontend;
+      document.body.appendChild(configScript);
+
+      function loadFrontend() {
+        const frontendScript = document.createElement('script');
+        frontendScript.src = `./player.js?v=3.7.52f45-honest-video-sender-queue&t=${Date.now()}`;
+        document.body.appendChild(frontendScript);
+      }
+    })();
+  </script>
+</body>
+</html>

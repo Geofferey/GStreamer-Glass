@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GStreamer Glass Direct WebRTC Debug</title>
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div>
+        <div class="eyebrow">GStreamer Glass</div>
+        <h1>Direct WebRTC Debug</h1>
+      </div>
+      <div id="status" class="status offline">offline</div>
+    </header>
+
+    <section class="card controls">
+      <label>
+        Signaling WebSocket
+        <input id="wsUrl" type="text" spellcheck="false" autocomplete="off">
+      </label>
+      <label>
+        STUN server
+        <input id="stunUrl" type="text" spellcheck="false" autocomplete="off" value="stun:stun.l.google.com:19302">
+      </label>
+      <label>
+        WS keepalive seconds
+        <input id="keepAliveSec" type="number" min="0" max="300" step="1" value="15">
+      </label>
+      <label>
+        Player jitter target ms
+        <input id="jitterMs" type="number" min="0" max="3000" step="10" value="80">
+      </label>
+      <div class="buttons">
+        <button id="connectBtn">Connect</button>
+        <button id="refreshBtn">Refresh streams</button>
+        <button id="stopBtn">Stop session</button>
+      </div>
+    </section>
+
+    <section class="grid">
+      <section class="card videoCard">
+        <video id="video" autoplay playsinline controls></video>
+      </section>
+
+      <aside class="side">
+        <section class="card">
+          <div class="sectionTitle">Available producers</div>
+          <div id="producerList" class="producerList empty">No producers yet.</div>
+        </section>
+        <section class="card">
+          <div class="sectionTitle">Session</div>
+          <dl class="kv">
+            <dt>Local peer</dt><dd id="localPeer">—</dd>
+            <dt>Remote peer</dt><dd id="remotePeer">—</dd>
+            <dt>Session</dt><dd id="sessionId">—</dd>
+            <dt>PeerConnection</dt><dd id="pcState">—</dd>
+            <dt>ICE</dt><dd id="iceState">—</dd>
+          </dl>
+        </section>
+        <section class="card">
+          <div class="sectionTitle">WebRTC stats</div>
+          <pre id="statsBox" class="statsBox">Waiting for stats…</pre>
+        </section>
+      </aside>
+    </section>
+
+    <section class="card logCard">
+      <div class="sectionTitle">Log</div>
+      <pre id="log"></pre>
+    </section>
+  </main>
+
+  <script>
+    (() => {
+      const configScript = document.createElement('script');
+      configScript.src = `../gstglass-config.js?t=${Date.now()}`;
+      configScript.onload = loadFrontend;
+      configScript.onerror = loadFrontend;
+      document.body.appendChild(configScript);
+
+      function loadFrontend() {
+        const frontendScript = document.createElement('script');
+        frontendScript.src = './app.js?v=3.7.39-jitter-units-fix';
+        document.body.appendChild(frontendScript);
+      }
+    })();
+  </script>
+</body>
+</html>

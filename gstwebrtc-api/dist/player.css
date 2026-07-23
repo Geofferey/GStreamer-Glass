@@ -1,0 +1,379 @@
+:root {
+  color-scheme: dark;
+  --bg: #000;
+  --text: #eef4ff;
+  --muted: rgba(238,244,255,.68);
+  --good: #35d789;
+  --warn: #ffbc4b;
+  --bad: #ff5d6c;
+}
+* { box-sizing: border-box; }
+html, body {
+  margin: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #000;
+  color: var(--text);
+  font: 14px/1.35 "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  touch-action: manipulation;
+}
+.playerRoot {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #000;
+}
+.playerRoot:fullscreen,
+.playerRoot:-webkit-full-screen {
+  width: 100vw;
+  height: 100vh;
+}
+video {
+  display: block;
+  width: 100vw;
+  height: 100vh;
+  object-fit: contain;
+  background: #000;
+  transform-origin: center center;
+  will-change: transform;
+  touch-action: none;
+}
+body.videoZoomed video { cursor: grab; }
+body.videoZoomed video:active { cursor: grabbing; }
+.overlay {
+  position: fixed;
+  left: max(18px, env(safe-area-inset-left));
+  top: max(18px, env(safe-area-inset-top));
+  max-width: min(560px, calc(100vw - 36px));
+  padding: 12px 14px;
+  border: 1px solid rgba(255,255,255,.12);
+  border-radius: 16px;
+  background: linear-gradient(180deg, rgba(10,14,22,.82), rgba(10,14,22,.48));
+  backdrop-filter: blur(10px);
+  box-shadow: 0 14px 44px rgba(0,0,0,.35);
+  transition: opacity .25s ease, transform .25s ease;
+  z-index: 5;
+}
+.overlay.hidden {
+  opacity: 0;
+  transform: translateY(-8px);
+  pointer-events: none;
+}
+.brand {
+  margin-bottom: 4px;
+  color: #8fb3ff;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: .16em;
+  text-transform: uppercase;
+}
+.status {
+  font-size: 20px;
+  font-weight: 750;
+}
+.status.good { color: var(--good); }
+.status.warn { color: var(--warn); }
+.status.bad { color: var(--bad); }
+.detail {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 13px;
+}
+.hint {
+  display: none;
+  margin-top: 9px;
+  color: rgba(238,244,255,.72);
+  font-size: 12px;
+}
+body.fsWanted .hint,
+body.fsBlocked .hint { display: block; }
+.fullscreenButton {
+  position: fixed;
+  left: 50%;
+  bottom: max(20px, env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  min-width: 150px;
+  min-height: 46px;
+  padding: 12px 18px;
+  border: 1px solid rgba(255,255,255,.18);
+  border-radius: 999px;
+  background: rgba(12,18,28,.78);
+  color: #eef4ff;
+  box-shadow: 0 16px 48px rgba(0,0,0,.42);
+  backdrop-filter: blur(10px);
+  font: 750 14px/1 "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  letter-spacing: .01em;
+  opacity: .92;
+  cursor: pointer;
+  z-index: 8;
+  transition: opacity .18s ease, transform .18s ease, background .18s ease;
+}
+.fullscreenButton:hover,
+.fullscreenButton:active {
+  opacity: 1;
+  background: rgba(26,42,66,.94);
+  transform: translateX(-50%) scale(1.02);
+}
+.fsIcon {
+  display: inline-block;
+  margin-right: 8px;
+  font-size: 18px;
+  vertical-align: -2px;
+}
+body.isFullscreen .fullscreenButton,
+body:not(.playing) .fullscreenButton {
+  display: none;
+}
+.debugLink {
+  position: fixed;
+  right: max(14px, env(safe-area-inset-right));
+  bottom: max(14px, env(safe-area-inset-bottom));
+  padding: 7px 9px;
+  border-radius: 999px;
+  border: 1px solid rgba(255,255,255,.12);
+  background: rgba(8,12,18,.58);
+  color: rgba(238,244,255,.48);
+  text-decoration: none;
+  font-size: 12px;
+  opacity: .34;
+  transition: opacity .18s ease, color .18s ease, background .18s ease;
+  z-index: 7;
+}
+.debugLink:hover {
+  opacity: 1;
+  color: var(--text);
+  background: rgba(20,30,44,.88);
+}
+body.playing .overlay {
+  opacity: 0;
+  pointer-events: none;
+}
+body.uiActive.showStatus .overlay,
+body.uiPinned .overlay,
+body.statusAlert.showStatus .overlay,
+body:not(.playing) .overlay {
+  opacity: 1;
+  pointer-events: auto;
+}
+body.isFullscreen .debugLink {
+  opacity: 0;
+  pointer-events: none;
+}
+body.isFullscreen.uiPinned .debugLink {
+  opacity: .72;
+  pointer-events: auto;
+}
+@media (pointer: coarse), (max-width: 860px) {
+  .overlay {
+    left: max(10px, env(safe-area-inset-left));
+    top: max(10px, env(safe-area-inset-top));
+    max-width: calc(100vw - 20px);
+    padding: 10px 12px;
+    border-radius: 14px;
+  }
+  .status { font-size: 18px; }
+  .detail, .hint { font-size: 12px; }
+  .fullscreenButton {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    bottom: max(16px, env(safe-area-inset-bottom));
+    min-width: 174px;
+    min-height: 52px;
+    font-size: 15px;
+    opacity: .96;
+  }
+  .debugLink {
+    right: max(10px, env(safe-area-inset-right));
+    top: max(10px, env(safe-area-inset-top));
+    bottom: auto;
+    opacity: .22;
+  }
+}
+.statsOverlay {
+  position: fixed;
+  left: max(14px, env(safe-area-inset-left));
+  bottom: max(14px, env(safe-area-inset-bottom));
+  min-width: 280px;
+  max-width: min(560px, calc(100vw - 32px));
+  padding: 9px 11px;
+  border: 1px solid rgba(255,255,255,.10);
+  border-radius: 13px;
+  background: rgba(6,10,16,.58);
+  color: rgba(238,244,255,.76);
+  backdrop-filter: blur(8px);
+  box-shadow: 0 12px 36px rgba(0,0,0,.28);
+  font: 11px/1.35 Consolas, "Cascadia Mono", monospace;
+  white-space: pre-wrap;
+  pointer-events: none;
+  opacity: .70;
+  z-index: 6;
+}
+body:not(.playing) .statsOverlay { display: none; }
+body.isFullscreen .statsOverlay { opacity: .35; }
+@media (pointer: coarse), (max-width: 860px) {
+  .statsOverlay {
+    left: max(8px, env(safe-area-inset-left));
+    right: max(8px, env(safe-area-inset-right));
+    bottom: max(8px, env(safe-area-inset-bottom));
+    max-width: none;
+    min-width: 0;
+    font-size: 10px;
+    opacity: .58;
+  }
+}
+
+/* Keep the stats overlay visible above the full-width media control bar. */
+body.hasGlassControls .statsOverlay {
+  bottom: calc(max(14px, env(safe-area-inset-bottom)) + 62px);
+  z-index: 9;
+}
+body.hasGlassControls.isFullscreen .statsOverlay {
+  bottom: calc(max(14px, env(safe-area-inset-bottom)) + 62px);
+  opacity: .50;
+}
+@media (pointer: coarse), (max-width: 860px) {
+  body.hasGlassControls .statsOverlay {
+    bottom: calc(max(8px, env(safe-area-inset-bottom)) + 62px);
+    z-index: 9;
+  }
+}
+@media (max-height: 520px) {
+  body.hasGlassControls .statsOverlay {
+    top: max(8px, env(safe-area-inset-top));
+    bottom: auto;
+    max-height: calc(100vh - 90px);
+    overflow: hidden;
+  }
+}
+
+.glassControls {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 52px;
+  max-width: none;
+  padding: 7px max(12px, env(safe-area-inset-right)) calc(7px + env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left));
+  border: 0;
+  border-top: 1px solid rgba(255,255,255,.14);
+  border-radius: 0;
+  background: linear-gradient(180deg, rgba(9,13,20,.82), rgba(5,8,13,.94));
+  color: #eef4ff;
+  box-shadow: 0 -12px 34px rgba(0,0,0,.34);
+  backdrop-filter: blur(12px);
+  z-index: 10;
+}
+.glassControls[hidden] { display: none !important; }
+.glassControlButton {
+  min-width: 40px;
+  min-height: 38px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: #eef4ff;
+  font: 750 12px/1 "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  cursor: pointer;
+}
+.glassControlButton:hover,
+.glassControlButton:active,
+.glassControlButton:focus-visible { background: rgba(143,179,255,.18); outline: none; }
+.glassIconButton {
+  padding: 7px 9px;
+  font-size: 18px;
+}
+.glassPinButton.isPinned {
+  background: rgba(143,179,255,.26);
+  color: #fff;
+}
+.glassInstallButton {
+  white-space: nowrap;
+  color: #b9d0ff;
+}
+.glassInstallButton[hidden] { display: none !important; }
+.glassZoomButton {
+  white-space: nowrap;
+  color: #b9d0ff;
+}
+.glassZoomButton[hidden] { display: none !important; }
+.glassRouteButton {
+  min-width: 58px;
+  white-space: nowrap;
+  border: 1px solid rgba(143,179,255,.34);
+  color: #b9d0ff;
+}
+.glassRouteButton.isLan {
+  border-color: rgba(93,224,151,.48);
+  background: rgba(35,145,91,.18);
+  color: #9ff0c3;
+}
+.glassRouteButton.isProxy {
+  border-color: rgba(255,191,92,.52);
+  background: rgba(180,113,24,.18);
+  color: #ffd28c;
+}
+.glassControlSpacer {
+  flex: 1 1 auto;
+  min-width: 8px;
+}
+.glassVolume {
+  width: min(140px, 22vw);
+  min-width: 72px;
+  accent-color: #8fb3ff;
+}
+.glassControlStatus {
+  display: none !important;
+}
+body.hasGlassControls .fullscreenButton { display: none !important; }
+body.isFullscreen .glassControls { opacity: .42; }
+body.isFullscreen.uiActive .glassControls { opacity: .96; }
+body.isFullscreen.uiActive .statsOverlay { opacity: .70; }
+body.uiPinned .glassControls,
+body.isFullscreen.uiPinned .glassControls { opacity: .98; }
+body.uiPinned .statsOverlay,
+body.isFullscreen.uiPinned .statsOverlay { opacity: .78; }
+body.showStatus .glassControls,
+body:not(.playing) .glassControls { opacity: .96; }
+@media (pointer: coarse), (max-width: 860px) {
+  .glassControls {
+    left: 0;
+    right: 0;
+    bottom: 0;
+    gap: 2px;
+    padding: 6px max(6px, env(safe-area-inset-right)) calc(6px + env(safe-area-inset-bottom)) max(6px, env(safe-area-inset-left));
+    border-radius: 0;
+    flex-wrap: nowrap;
+  }
+  .glassControlButton { min-width: 36px; min-height: 38px; padding: 7px 8px; }
+  .glassIconButton { font-size: 17px; }
+  .glassVolume { width: min(96px, 20vw); min-width: 58px; }
+  .glassReconnectButton { font-size: 11px; white-space: nowrap; }
+  .glassInstallButton { font-size: 11px; padding-inline: 7px; }
+  .glassZoomButton { font-size: 11px; padding-inline: 7px; }
+  .glassRouteButton { min-width: 48px; font-size: 10px; padding-inline: 6px; }
+  .glassControlStatus { flex-basis: 100%; text-align: center; max-width: none; }
+}
+
+/* A playing picture should be completely clean until the viewer interacts.
+   visibility removes the controls from hit-testing as well as from sight, so
+   the first touch reveals the UI instead of activating an invisible button. */
+body.playing:not(.uiActive):not(.uiPinned) .fullscreenButton,
+body.playing:not(.uiActive):not(.uiPinned) .statsOverlay,
+body.playing:not(.uiActive):not(.uiPinned) .glassControls,
+body.playing:not(.uiActive):not(.uiPinned) .debugLink {
+  opacity: 0 !important;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+/* f29: compact status overlay contains status only; diagnostics live in Stats overlay. */
+.overlay .detail, .overlay .hint { display: none !important; }
+.statsOverlay::first-line { color: rgba(255,255,255,.98); font-weight: 800; font-size: 1.08em; }
