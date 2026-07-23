@@ -630,7 +630,7 @@ public static class GstProcessJob
 '@
 }
 
-$script:AppVersion = '3.7.52f56'
+$script:AppVersion = '3.7.52f57'
 $script:AppName = "GStreamer Glass v$($script:AppVersion)"
 $script:ConfigDirectory = Join-Path $env:APPDATA 'GStreamerBasicWhipStreamer'
 $script:ConfigPath = Join-Path $script:ConfigDirectory 'settings.json'
@@ -714,6 +714,9 @@ $script:PreviewOnlyMode = $false
 $script:ForceLocalPreviewMode = $false
 $script:DynamicScenePreviewActive = $false
 $script:DynamicScenePreviewStarting = $false
+$script:DynamicScenePreviewStartedAt = $null
+$script:DynamicScenePreviewFallbackTriggered = $false
+$script:SuppressDynamicScenePreview = $false
 $script:SceneDesktopPreviewProcess = $null
 $script:SceneWebcamPreviewProcess = $null
 $script:SceneDesktopPreviewHwnd = [IntPtr]::Zero
@@ -4158,7 +4161,9 @@ function Update-SceneCanvasFromValues {
         }
         $lblSceneDesktop.Visible = (-not $script:DynamicScenePreviewActive)
         $sceneWebcamElement.BringToFront()
-        Sync-DynamicScenePreviewLayout
+        if (Get-Command Sync-DynamicScenePreviewLayout -ErrorAction SilentlyContinue) {
+            Sync-DynamicScenePreviewLayout
+        }
     }
     finally { $script:UpdatingSceneEditor = $false }
 }
@@ -4262,8 +4267,16 @@ $lblWebcamSource.Add_MouseUp({
     Place-WebcamOnSceneCanvas -ScreenPoint ([System.Windows.Forms.Cursor]::Position)
 })
 $sceneEditorCanvas.Add_SizeChanged({ Update-SceneCanvasFromValues })
-$sceneDesktopPreviewPanel.Add_Resize({ Sync-DynamicScenePreviewLayout })
-$sceneWebcamPreviewPanel.Add_Resize({ Sync-DynamicScenePreviewLayout })
+$sceneDesktopPreviewPanel.Add_Resize({
+    if (Get-Command Sync-DynamicScenePreviewLayout -ErrorAction SilentlyContinue) {
+        Sync-DynamicScenePreviewLayout
+    }
+})
+$sceneWebcamPreviewPanel.Add_Resize({
+    if (Get-Command Sync-DynamicScenePreviewLayout -ErrorAction SilentlyContinue) {
+        Sync-DynamicScenePreviewLayout
+    }
+})
 
 function Get-SelectedWebcamIndex {
     $selected = [string]$cmbWebcamDevice.SelectedItem
@@ -4364,18 +4377,23 @@ function Invoke-ScenePreviewRedraw {
     }
 }
 
-$btnRefreshWebcams.Add_Click({ Refresh-WebcamDevices; Update-SceneUi; Restart-DynamicScenePreviewIfActive })
+function Reset-DynamicScenePreviewFallback {
+    $script:SuppressDynamicScenePreview = $false
+    $script:DynamicScenePreviewFallbackTriggered = $false
+}
+
+$btnRefreshWebcams.Add_Click({ Reset-DynamicScenePreviewFallback; Refresh-WebcamDevices; Update-SceneUi; Restart-DynamicScenePreviewIfActive })
 $btnRedrawScenePreview.Add_Click({ Invoke-ScenePreviewRedraw })
-$chkSceneEnabled.Add_CheckedChanged({ Update-SceneUi; Restart-DynamicScenePreviewIfActive; Sync-StandalonePreviewState -Quiet })
-$cmbScenePreset.Add_SelectedIndexChanged({ Update-SceneUi; Restart-DynamicScenePreviewIfActive })
+$chkSceneEnabled.Add_CheckedChanged({ Reset-DynamicScenePreviewFallback; Update-SceneUi; Restart-DynamicScenePreviewIfActive; Sync-StandalonePreviewState -Quiet })
+$cmbScenePreset.Add_SelectedIndexChanged({ Reset-DynamicScenePreviewFallback; Update-SceneUi; Restart-DynamicScenePreviewIfActive })
 $cmbSceneCompositor.Add_SelectedIndexChanged({ Update-SceneUi })
-$cmbWebcamDevice.Add_SelectedIndexChanged({ Update-SceneUi; Restart-DynamicScenePreviewIfActive })
+$cmbWebcamDevice.Add_SelectedIndexChanged({ Reset-DynamicScenePreviewFallback; Update-SceneUi; Restart-DynamicScenePreviewIfActive })
 $cmbWebcamLayout.Add_SelectedIndexChanged({ Set-WebcamLayoutPreset; Update-SceneUi })
 foreach ($control in @($numWebcamWidth,$numWebcamHeight,$numWebcamX,$numWebcamY,$numWebcamFps,$numWebcamOpacity,$numWebcamBorder,$numSceneInputQueueBuffers,$numSceneInputQueueCapMs)) { $control.Add_ValueChanged({ Update-SceneUi }) }
-$numWebcamFps.Add_ValueChanged({ Restart-DynamicScenePreviewIfActive })
+$numWebcamFps.Add_ValueChanged({ Reset-DynamicScenePreviewFallback; Restart-DynamicScenePreviewIfActive })
 $numWidth.Add_ValueChanged({ Resize-LiveSceneCanvas; Update-SceneCanvasFromValues })
 $numHeight.Add_ValueChanged({ Resize-LiveSceneCanvas; Update-SceneCanvasFromValues })
-$chkWebcamMirror.Add_CheckedChanged({ Update-SceneUi; Restart-DynamicScenePreviewIfActive })
+$chkWebcamMirror.Add_CheckedChanged({ Reset-DynamicScenePreviewFallback; Update-SceneUi; Restart-DynamicScenePreviewIfActive })
 
 function Resize-LiveSceneCanvas {
     if (-not $script:SceneWorkspaceActive -or -not $script:SceneSettingsPane -or $script:ResizingSceneWorkspace) { return }
@@ -12523,6 +12541,7 @@ function Test-UseDynamicScenePreview {
     try {
         return (
             $script:SceneWorkspaceActive -and
+            -not $script:SuppressDynamicScenePreview -and
             $chkSceneEnabled -and $chkSceneEnabled.Checked -and
             $chkPreview -and $chkPreview.Checked -and
             (Test-StandalonePreviewAllowed) -and
@@ -12581,8 +12600,10 @@ function Start-DynamicScenePreview {
 
     $script:DynamicScenePreviewStarting = $true
     try {
+        Reset-DynamicScenePreviewFallback
         Stop-GstStream
         $script:DynamicScenePreviewActive = $true
+        $script:DynamicScenePreviewStartedAt = Get-Date
         $script:PreviewOnlyMode = $true
         $script:PipelineHasPreview = $false
         $script:PreviewHwnd = [IntPtr]::Zero
@@ -12647,6 +12668,7 @@ function Stop-DynamicScenePreview {
     $script:SceneWebcamPreviewHwnd = [IntPtr]::Zero
     $script:DynamicScenePreviewActive = $false
     $script:DynamicScenePreviewStarting = $false
+    $script:DynamicScenePreviewStartedAt = $null
     $script:PreviewOnlyMode = $false
 
     if ($sceneDesktopPreviewPanel) { $sceneDesktopPreviewPanel.Visible = $false }
@@ -12685,6 +12707,49 @@ function Try-AttachDynamicScenePreview {
     }
 
     Sync-DynamicScenePreviewLayout
+}
+
+function Test-DynamicScenePreviewAttached {
+    if (-not $script:DynamicScenePreviewActive) { return $false }
+
+    $preset = [string]$cmbScenePreset.SelectedItem
+    $needsDesktop = ($preset -ne 'Webcam only')
+    $needsWebcam = ($preset -ne 'Desktop only')
+
+    if ($needsDesktop -and $script:SceneDesktopPreviewHwnd -eq [IntPtr]::Zero) { return $false }
+    if ($needsWebcam -and $script:SceneWebcamPreviewHwnd -eq [IntPtr]::Zero) { return $false }
+
+    return $true
+}
+
+function Invoke-DynamicScenePreviewFallback {
+    param([string]$Reason = 'did not attach its source preview window(s) within 4 seconds')
+
+    if (-not $script:DynamicScenePreviewActive) { return }
+    if ($script:DynamicScenePreviewFallbackTriggered) { return }
+
+    $script:DynamicScenePreviewFallbackTriggered = $true
+    $script:SuppressDynamicScenePreview = $true
+
+    Append-Log (
+        "[$(Get-Date -Format 'HH:mm:ss')] Dynamic scene preview $Reason; " +
+        'falling back to the normal composed preview in the scene editor. ' +
+        'Scene objects will not redraw dynamically until the dynamic preview path works.'
+    )
+
+    Stop-DynamicScenePreview -Quiet
+    $script:PreviewOnlyMode = $false
+    $script:PreviewHwnd = [IntPtr]::Zero
+    Reset-PreviewAppliedState
+
+    if ($previewPlaceholder) {
+        $previewPlaceholder.Text = 'Dynamic preview fallback: normal composed preview'
+        $previewPlaceholder.Visible = $true
+    }
+
+    if ($chkPreview -and $chkPreview.Checked -and (Test-StandalonePreviewAllowed)) {
+        Start-GstStream -PreviewOnly
+    }
 }
 
 function Sync-DynamicScenePreviewLayout {
@@ -13825,6 +13890,10 @@ $chkPreview.Add_CheckedChanged({
         return
     }
 
+    if ($chkPreview.Checked) {
+        Reset-DynamicScenePreviewFallback
+    }
+
     if ($script:DynamicScenePreviewActive -and -not $chkPreview.Checked) {
         Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Preview disabled; stopping dynamic scene preview."
         Stop-DynamicScenePreview
@@ -14583,8 +14652,16 @@ $pollTimer.Add_Tick({
         $desktopExited = $script:SceneDesktopPreviewProcess -and $script:SceneDesktopPreviewProcess.HasExited
         $webcamExited = $script:SceneWebcamPreviewProcess -and $script:SceneWebcamPreviewProcess.HasExited
         if ($desktopExited -or $webcamExited) {
-            Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Dynamic scene preview source exited; stopping dynamic preview."
-            Stop-DynamicScenePreview
+            Invoke-DynamicScenePreviewFallback -Reason 'source process exited'
+            return
+        }
+
+        if (
+            $script:DynamicScenePreviewStartedAt -and
+            -not (Test-DynamicScenePreviewAttached) -and
+            ((Get-Date) - $script:DynamicScenePreviewStartedAt).TotalSeconds -ge 4
+        ) {
+            Invoke-DynamicScenePreviewFallback
             return
         }
     }
