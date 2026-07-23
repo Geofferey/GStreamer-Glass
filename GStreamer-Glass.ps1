@@ -630,7 +630,7 @@ public static class GstProcessJob
 '@
 }
 
-$script:AppVersion = '3.7.52f49'
+$script:AppVersion = '3.7.52f50'
 $script:AppName = "GStreamer Glass v$($script:AppVersion)"
 $script:ConfigDirectory = Join-Path $env:APPDATA 'GStreamerBasicWhipStreamer'
 $script:ConfigPath = Join-Path $script:ConfigDirectory 'settings.json'
@@ -4075,17 +4075,22 @@ function Update-SceneSelectionChrome {
     $region = New-Object System.Drawing.Region($outer)
 
     if ($sceneWebcamElement.Width -gt 6 -and $sceneWebcamElement.Height -gt 30) {
-        $hole = New-Object System.Drawing.Rectangle(2, 24, $sceneWebcamElement.Width - 4, $sceneWebcamElement.Height - 27)
+        # Windows PowerShell treats arithmetic placed directly after commas in a
+        # New-Object TypeName(...) constructor as an operation on the accumulated
+        # Object[] argument list. Calculate dimensions first so the constructor
+        # receives four scalar values.
+        $holeWidth = [int]$sceneWebcamElement.Width - 4
+        $holeHeight = [int]$sceneWebcamElement.Height - 27
+        $hole = New-Object System.Drawing.Rectangle(2, 24, $holeWidth, $holeHeight)
         $region.Exclude($hole)
     }
 
     $sceneWebcamElement.Region = $region
     if ($oldRegion) { try { $oldRegion.Dispose() } catch {} }
     $lblSceneWebcam.Height = [Math]::Min(24, [Math]::Max(1, $sceneWebcamElement.Height))
-    $sceneResizeHandle.Location = New-Object System.Drawing.Point(
-        [Math]::Max(0, $sceneWebcamElement.Width - $sceneResizeHandle.Width - 1),
-        [Math]::Max(0, $sceneWebcamElement.Height - $sceneResizeHandle.Height - 1)
-    )
+    $handleX = [Math]::Max(0, [int]$sceneWebcamElement.Width - [int]$sceneResizeHandle.Width - 1)
+    $handleY = [Math]::Max(0, [int]$sceneWebcamElement.Height - [int]$sceneResizeHandle.Height - 1)
+    $sceneResizeHandle.Location = New-Object System.Drawing.Point($handleX, $handleY)
     $lblSceneWebcam.BringToFront()
     $sceneResizeHandle.BringToFront()
 }
