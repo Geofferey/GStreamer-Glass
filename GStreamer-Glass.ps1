@@ -630,7 +630,7 @@ public static class GstProcessJob
 '@
 }
 
-$script:AppVersion = '3.7.52f50'
+$script:AppVersion = '3.7.52f51'
 $script:AppName = "GStreamer Glass v$($script:AppVersion)"
 $script:ConfigDirectory = Join-Path $env:APPDATA 'GStreamerBasicWhipStreamer'
 $script:ConfigPath = Join-Path $script:ConfigDirectory 'settings.json'
@@ -710,6 +710,8 @@ $script:PipelineHasPreview = $false
 # 2.5x/second forever, which can force needless swapchain work and visible hitching.
 $script:PreviewAppliedSize = [System.Drawing.Size]::Empty
 $script:PreviewAppliedVisible = $null
+$script:PreviewOnlyMode = $false
+$script:ForceLocalPreviewMode = $false
 $script:DashboardLayout = $null
 $script:SceneSettingsPane = $null
 $script:SceneWorkspaceActive = $false
@@ -3935,6 +3937,10 @@ $cmbWebcamDevice.SelectedIndex = 0
 $btnRefreshWebcams = New-Object System.Windows.Forms.Button
 $btnRefreshWebcams.Text = 'Refresh cameras'
 
+$btnRedrawScenePreview = New-Object System.Windows.Forms.Button
+$btnRedrawScenePreview.Text = 'Redraw preview'
+$toolTip.SetToolTip($btnRedrawScenePreview, 'Refreshes the embedded scene preview surface without restarting the GStreamer pipeline.')
+
 $cmbWebcamLayout = New-Object System.Windows.Forms.ComboBox
 $cmbWebcamLayout.DropDownStyle = 'DropDownList'
 $null = $cmbWebcamLayout.Items.AddRange(@('Bottom right', 'Bottom left', 'Top right', 'Top left', 'Custom'))
@@ -4275,7 +4281,48 @@ function Update-SceneUi {
     if (Get-Command Update-CommandPreview -ErrorAction SilentlyContinue) { Update-CommandPreview }
 }
 
+function Invoke-ScenePreviewRedraw {
+    param([switch]$Quiet)
+
+    try {
+        if ($script:SceneWorkspaceActive) {
+            Resize-LiveSceneCanvas
+        }
+
+        Update-SceneCanvasFromValues
+
+        if ($previewPanel) {
+            $previewPanel.PerformLayout()
+            $previewPanel.Invalidate()
+        }
+        if ($sceneEditorCanvas) {
+            $sceneEditorCanvas.PerformLayout()
+            $sceneEditorCanvas.Invalidate()
+        }
+
+        if (Get-Command Reset-PreviewAppliedState -ErrorAction SilentlyContinue) {
+            Reset-PreviewAppliedState
+        }
+        if (Get-Command Try-AttachPreview -ErrorAction SilentlyContinue) {
+            Try-AttachPreview
+        }
+        elseif (Get-Command Set-PreviewVisibility -ErrorAction SilentlyContinue) {
+            Set-PreviewVisibility
+        }
+
+        if (-not $Quiet) {
+            Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Scene preview redraw requested."
+        }
+    }
+    catch {
+        if (-not $Quiet) {
+            Append-Log "Scene preview redraw error: $($_.Exception.Message)"
+        }
+    }
+}
+
 $btnRefreshWebcams.Add_Click({ Refresh-WebcamDevices; Update-SceneUi })
+$btnRedrawScenePreview.Add_Click({ Invoke-ScenePreviewRedraw })
 $chkSceneEnabled.Add_CheckedChanged({ Update-SceneUi })
 $cmbScenePreset.Add_SelectedIndexChanged({ Update-SceneUi })
 $cmbSceneCompositor.Add_SelectedIndexChanged({ Update-SceneUi })
@@ -4368,8 +4415,7 @@ function Update-SceneWorkspaceMode {
 
     $script:DashboardLayout.PerformLayout()
     if ($sceneSelected) { Resize-LiveSceneCanvas }
-    if (Get-Command Reset-PreviewAppliedState -ErrorAction SilentlyContinue) { Reset-PreviewAppliedState }
-    if (Get-Command Set-PreviewVisibility -ErrorAction SilentlyContinue) { Set-PreviewVisibility }
+    Invoke-ScenePreviewRedraw -Quiet
 }
 
 function Apply-ModernDashboardUi {
@@ -5140,6 +5186,8 @@ function Apply-ModernDashboardUi {
     $r = Add-Row $s
     Add-Field $r -Label 'Sources' -Control $sceneSourcePalette -Width 550 | Out-Null
     $r = Add-Row $s
+    Add-Field $r -Control $btnRedrawScenePreview -Width 130 | Out-Null
+    $r = Add-Row $s
     Add-Field $r -Control $sceneEditorCanvas -Width 550 | Out-Null
     $r = Add-Row $s
     Add-Field $r -Control $lblSceneEditorHint -Width 550 | Out-Null
@@ -5566,7 +5614,7 @@ function Apply-ModernDashboardUi {
         $btnResetRecording, $btnResetNetwork, $btnResetOptions, $btnExportLabConfig, $btnResetAll,
         $txtGstPath, $btnBrowseGst, $btnDetectGst, $btnCheckGst,
         $chkPreview, $chkAutoRestart, $chkVerbose, $chkDiskProcessLogging, $chkMinimizeToTray,
-        $chkStartMinimized
+        $chkStartMinimized, $btnRedrawScenePreview
     )) {
         if ($realControl) {
             $realControl.Visible = $true
@@ -5891,18 +5939,30 @@ function Update-TrayMenuState {
     try {
         $running = $script:GstProcess -and -not $script:GstProcess.HasExited
         $waiting = [bool]$script:WaitingForFullscreen
+        $previewOnly = $running -and [bool]$script:PreviewOnlyMode
 
-        $trayStartItem.Enabled = -not $running -and -not $waiting
+        $trayStartItem.Enabled = ((-not $running) -or $previewOnly) -and -not $waiting
         $trayStopItem.Enabled = $running -or $waiting
-        $trayRestartItem.Enabled = $running
+        $trayRestartItem.Enabled = $running -and -not $previewOnly
 
-        if ($running) {
+        if ($previewOnly) {
+            $trayStartItem.Text = 'Start Stream'
+            $trayStopItem.Text = 'Stop Preview'
+            $notifyIcon.Text = 'GStreamer Streamer - preview only'
+        }
+        elseif ($running) {
+            $trayStartItem.Text = 'Start Stream'
+            $trayStopItem.Text = 'Stop Stream'
             $notifyIcon.Text = "GStreamer Streamer - $([string]$cmbProtocol.SelectedItem) running"
         }
         elseif ($waiting) {
+            $trayStartItem.Text = 'Start Stream'
+            $trayStopItem.Text = 'Stop Stream'
             $notifyIcon.Text = 'GStreamer Streamer - waiting for fullscreen app'
         }
         else {
+            $trayStartItem.Text = 'Start Stream'
+            $trayStopItem.Text = 'Stop Stream'
             $notifyIcon.Text = 'GStreamer Streamer - stopped'
         }
     }
@@ -6142,13 +6202,23 @@ function Append-Log {
 function Set-RunState {
     param([bool]$Running)
 
-    $btnStart.Enabled = -not $Running
+    $previewOnly = $Running -and [bool]$script:PreviewOnlyMode
+    $btnStart.Enabled = (-not $Running) -or $previewOnly
     $btnStop.Enabled = $Running
-    $btnRestart.Enabled = $Running
+    $btnRestart.Enabled = $Running -and -not $previewOnly
+    if ($previewOnly) {
+        $btnStart.Text = "$($script:Glyph.Start)  Go Live"
+        $btnStop.Text = "$($script:Glyph.Stop)  Stop Preview"
+    }
+    else {
+        $btnStart.Text = "$($script:Glyph.Start)  Start"
+        $btnStop.Text = "$($script:Glyph.Stop)  Stop"
+    }
     Update-TrayMenuState
 }
 
 function Test-TransportEnabled {
+    if ($script:ForceLocalPreviewMode) { return $false }
     return (-not $chkTransportEnabled) -or [bool]$chkTransportEnabled.Checked
 }
 
@@ -12480,15 +12550,26 @@ function Stop-ManagedMediaMtx {
 }
 
 function Start-GstStream {
-    param([switch]$Automatic)
+    param(
+        [switch]$Automatic,
+        [switch]$PreviewOnly
+    )
 
     if ($script:GstProcess -and -not $script:GstProcess.HasExited) {
+        if ($script:PreviewOnlyMode -and -not $PreviewOnly) {
+            Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Going live: stopping local preview and starting the configured stream."
+            Stop-GstStream -Restart
+        }
         return
     }
+
+    $script:ForceLocalPreviewMode = [bool]$PreviewOnly
 
     if (-not (Validate-Configuration)) {
         $script:WaitingForFullscreen = $false
         $script:RestartAt = $null
+        $script:PreviewOnlyMode = $false
+        $script:ForceLocalPreviewMode = $false
         Set-RunState $false
         return
     }
@@ -12506,6 +12587,8 @@ function Start-GstStream {
         if ($firstWait) {
             Append-Log "[$(Get-Date -Format 'HH:mm:ss')] No fullscreen application is active; waiting and retrying every 2 seconds."
         }
+        $script:PreviewOnlyMode = $false
+        $script:ForceLocalPreviewMode = $false
         return
     }
 
@@ -12534,12 +12617,15 @@ function Start-GstStream {
     $script:PreviewParked = $false
     Reset-PreviewAppliedState
     $script:PipelineHasPreview = [bool]$chkPreview.Checked
+    $script:PreviewOnlyMode = [bool]$PreviewOnly
     $previewPlaceholder.Visible = $true
     $previewPlaceholder.Text = if ($script:PipelineHasPreview) { 'Starting preview...' } else { 'Preview disabled for this pipeline' }
 
     if (-not (Apply-NetworkTuningForSession)) {
         $statusLabel.Text = 'Network tuning failed'
         $statusLabel.ForeColor = [System.Drawing.Color]::DarkRed
+        $script:PreviewOnlyMode = $false
+        $script:ForceLocalPreviewMode = $false
         Set-RunState $false
         return
     }
@@ -12552,26 +12638,42 @@ function Start-GstStream {
         if ($chkNetworkRestoreOnStop.Checked) { Restore-NetworkTuning -Quiet | Out-Null }
         $statusLabel.Text = 'MediaMTX start failed'
         $statusLabel.ForeColor = [System.Drawing.Color]::DarkRed
+        $script:PreviewOnlyMode = $false
+        $script:ForceLocalPreviewMode = $false
         Set-RunState $false
         return
     }
 
     Write-DirectWebRtcWebClientConfig
 
-    $arguments = Build-GstArguments
-    $videoArguments = ''
-    $audioArguments = ''
-    if ((Test-TransportEnabled) -and [string]$cmbProtocol.SelectedItem -eq $script:DirectWebRtcProtocolName -and (Test-DirectWebRtcSplitAvPipelines)) {
-        if (Test-DirectWebRtcUnifiedPublisher) {
-            $videoArguments = Build-DirectWebRtcUnifiedVideoBridgeArguments
+    try {
+        $arguments = Build-GstArguments
+        $videoArguments = ''
+        $audioArguments = ''
+        if ((Test-TransportEnabled) -and [string]$cmbProtocol.SelectedItem -eq $script:DirectWebRtcProtocolName -and (Test-DirectWebRtcSplitAvPipelines)) {
+            if (Test-DirectWebRtcUnifiedPublisher) {
+                $videoArguments = Build-DirectWebRtcUnifiedVideoBridgeArguments
+            }
+            $audioArguments = Build-DirectWebRtcAudioOnlyArguments
         }
-        $audioArguments = Build-DirectWebRtcAudioOnlyArguments
+    }
+    catch {
+        $script:PreviewOnlyMode = $false
+        $script:ForceLocalPreviewMode = $false
+        $statusLabel.Text = 'Start failed'
+        $statusLabel.ForeColor = [System.Drawing.Color]::DarkRed
+        Set-RunState $false
+        Append-Log "START ERROR: $($_.Exception.Message)"
+        return
     }
 
     $transportEnabled = Test-TransportEnabled
+    $runIsPreviewOnly = [bool]$PreviewOnly
+    $runNeedsUnifiedPublisherHost = $transportEnabled -and (Test-DirectWebRtcUnifiedPublisherHostRequired)
+    $script:ForceLocalPreviewMode = $false
     Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Starting full GStreamer pipeline..."
     Append-Log "Process disk logging: $(if ($processDiskLogging) { 'enabled' } else { 'disabled - UI log only' })"
-    Append-Log "Transport: $(if ($transportEnabled) { 'Enabled' } else { 'Disabled - local recording/preview only' })"
+    Append-Log "Transport: $(if ($transportEnabled) { 'Enabled' } elseif ($runIsPreviewOnly) { 'Disabled - local preview only' } else { 'Disabled - local recording/preview only' })"
     if ($transportEnabled) {
         Append-Log "Protocol: $([string]$cmbProtocol.SelectedItem)"
         Append-Log "Absolute timestamps: $(Get-AbsoluteTimestampStatusText)"
@@ -12686,7 +12788,7 @@ function Start-GstStream {
     }
     $mainLaunchExecutable = $gstPath
     $mainLaunchArguments = $arguments
-    if (Test-DirectWebRtcUnifiedPublisherHostRequired) {
+    if ($runNeedsUnifiedPublisherHost) {
         $hostLaunch = Get-UnifiedPublisherHostLaunch -GstPath $gstPath -GstArguments $arguments
         $mainLaunchExecutable = [string]$hostLaunch.Executable
         $mainLaunchArguments = [string]$hostLaunch.Arguments
@@ -12814,6 +12916,8 @@ function Start-GstStream {
         if ($script:GstAudioProcess -and -not $script:GstAudioProcess.HasExited) { try { Stop-ProcessTreeById -ProcessId $script:GstAudioProcess.Id } catch {} }
         $script:GstVideoProcess = $null
         $script:GstAudioProcess = $null
+        $script:PreviewOnlyMode = $false
+        $script:ForceLocalPreviewMode = $false
         Stop-ManagedMediaMtx -Quiet
         if ($chkNetworkRestoreOnStop.Checked) { Restore-NetworkTuning -Quiet | Out-Null }
         Remove-ActiveProcessState
@@ -12828,6 +12932,7 @@ function Stop-GstStream {
 
     $script:StopRequested = $true
     $script:WaitingForFullscreen = $false
+    $wasPreviewOnly = [bool]$script:PreviewOnlyMode
 
     if ($Restart) {
         $script:RestartAt = (Get-Date).AddMilliseconds(800)
@@ -12839,9 +12944,11 @@ function Stop-GstStream {
     $script:PreviewHwnd = [IntPtr]::Zero
     $script:PreviewParked = $false
     $script:PipelineHasPreview = $false
+    $script:PreviewOnlyMode = $false
+    $script:ForceLocalPreviewMode = $false
     Reset-PreviewAppliedState
     $previewPlaceholder.Visible = $true
-    $previewPlaceholder.Text = 'Preview stopped'
+    $previewPlaceholder.Text = if ($wasPreviewOnly) { 'Preview stopped' } else { 'Preview stopped' }
 
     $hadGst =
         $script:GstProcess -and
@@ -13365,8 +13472,17 @@ $chkFullscreenApp.Add_CheckedChanged({
     }
 })
 $chkPreview.Add_CheckedChanged({
+    if ($script:LoadingSettings) {
+        Update-CommandPreview
+        return
+    }
+
     if ($script:GstProcess -and -not $script:GstProcess.HasExited) {
-        if ($script:PipelineHasPreview) {
+        if ($script:PreviewOnlyMode -and -not $chkPreview.Checked) {
+            Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Preview disabled; stopping local preview."
+            Stop-GstStream
+        }
+        elseif ($script:PipelineHasPreview) {
             Set-PreviewVisibility
             $previewState = if ($chkPreview.Checked) { 'shown' } else { 'hidden' }
             Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Preview $previewState without restarting stream."
@@ -13382,11 +13498,13 @@ $chkPreview.Add_CheckedChanged({
         }
     }
     else {
-        $previewPlaceholder.Text = if ($chkPreview.Checked) {
-            'Preview will start with the next stream'
+        if ($chkPreview.Checked) {
+            $previewPlaceholder.Text = 'Starting local preview...'
+            $lowerTabs.SelectedTab = $tabLog
+            Start-GstStream -PreviewOnly
         }
         else {
-            'Preview disabled for this pipeline'
+            $previewPlaceholder.Text = 'Preview disabled for this pipeline'
         }
     }
 
@@ -14174,6 +14292,8 @@ $pollTimer.Add_Tick({
 
         if ($wasRequested -and $chkNetworkRestoreOnStop.Checked) { Restore-NetworkTuning -Quiet | Out-Null }
         $script:PreviewHwnd = [IntPtr]::Zero
+        $script:PreviewOnlyMode = $false
+        $script:ForceLocalPreviewMode = $false
         Reset-PreviewAppliedState
         $previewPlaceholder.Visible = $true
         $previewPlaceholder.Text = 'Preview stopped'
