@@ -630,7 +630,7 @@ public static class GstProcessJob
 '@
 }
 
-$script:AppVersion = '3.7.52f66'
+$script:AppVersion = '3.7.52f67'
 $script:AppName = "GStreamer Glass v$($script:AppVersion)"
 $script:ConfigDirectory = Join-Path $env:APPDATA 'GStreamerBasicWhipStreamer'
 $script:ConfigPath = Join-Path $script:ConfigDirectory 'settings.json'
@@ -752,6 +752,7 @@ $script:TrayHintShown = $false
 $script:StartupTrayHidePending = $false
 $script:TrayRestoreInProgress = $false
 $script:DynamicPreviewUiReady = $false
+$script:EnforcingStartMinimizedTrayInvariant = $false
 $script:LastProtocol = 'WHIP'
 $script:ProtocolDestinations = [ordered]@{
     WHIP = 'http://10.0.0.25:8889/live/whip'
@@ -1890,7 +1891,7 @@ $chkStartMinimized.Location = New-Object System.Drawing.Point(600, 96)
 $chkStartMinimized.Size = New-Object System.Drawing.Size(125, 25)
 $chkStartMinimized.Checked = $false
 $settingsGroup.Controls.Add($chkStartMinimized)
-$toolTip.SetToolTip($chkStartMinimized, 'Starts the app minimized. If Minimize to tray is enabled, startup goes directly to tray.')
+$toolTip.SetToolTip($chkStartMinimized, 'Starts the app directly in the notification area. Enabling this requires and automatically enables Minimize to tray.')
 
 $null = Add-Label $settingsGroup 'Monitor' 15 130 60
 $numMonitor = New-Object System.Windows.Forms.NumericUpDown
@@ -6239,13 +6240,11 @@ function Apply-StartMinimized {
     }
 
     try {
-        if ($chkMinimizeToTray.Checked) {
-            Hide-MainWindowToTray -SuppressBalloon
-            $script:StartupTrayHidePending = $false
-        }
-        else {
-            $form.WindowState = [System.Windows.Forms.FormWindowState]::Minimized
-        }
+        # Start minimized is defined as start in tray. Keep this defensive
+        # assignment even though load/UI/save also enforce the invariant.
+        $chkMinimizeToTray.Checked = $true
+        Hide-MainWindowToTray -SuppressBalloon
+        $script:StartupTrayHidePending = $false
     }
     catch {
         try {
@@ -6255,6 +6254,39 @@ function Apply-StartMinimized {
         catch {}
     }
 }
+
+function Enforce-StartMinimizedTrayInvariant {
+    param([switch]$Persist)
+
+    if ($script:EnforcingStartMinimizedTrayInvariant) { return }
+
+    $script:EnforcingStartMinimizedTrayInvariant = $true
+    try {
+        if ($chkStartMinimized.Checked) {
+            if (-not $chkMinimizeToTray.Checked) {
+                $chkMinimizeToTray.Checked = $true
+            }
+            $chkMinimizeToTray.Enabled = $false
+        }
+        else {
+            $chkMinimizeToTray.Enabled = $true
+        }
+    }
+    finally {
+        $script:EnforcingStartMinimizedTrayInvariant = $false
+    }
+
+    if ($Persist -and -not $script:LoadingSettings) {
+        Save-Settings
+    }
+}
+
+$chkStartMinimized.Add_CheckedChanged({
+    Enforce-StartMinimizedTrayInvariant -Persist
+})
+$chkMinimizeToTray.Add_CheckedChanged({
+    Enforce-StartMinimizedTrayInvariant -Persist
+})
 
 function Show-MainWindow {
     if ($script:TrayRestoreInProgress -or $script:ExitCleanupStarted) {
@@ -11834,7 +11866,7 @@ function Save-Settings {
             AutoRestart       = $chkAutoRestart.Checked
             Verbose           = $chkVerbose.Checked
             DiskProcessLogging = $chkDiskProcessLogging.Checked
-            MinimizeToTray    = $chkMinimizeToTray.Checked
+            MinimizeToTray    = [bool]($chkMinimizeToTray.Checked -or $chkStartMinimized.Checked)
             StartMinimized    = $chkStartMinimized.Checked
             NetworkTuningEnabled = $chkNetworkTuningEnabled.Checked
             NetworkAdapter    = Get-SelectedNetworkAdapterName
@@ -15118,6 +15150,9 @@ $form.Add_Shown({
     Refresh-NetworkAdapters
     Refresh-WebcamDevices
     Load-Settings
+    # Repair legacy configs that contain StartMinimized=true alongside
+    # MinimizeToTray=false, then write the corrected invariant immediately.
+    Enforce-StartMinimizedTrayInvariant -Persist
     Update-GstDebugUi
     Initialize-GstJob
     Stop-StaleManagedProcesses
@@ -15257,7 +15292,6 @@ $form.Add_FormClosing({
 # remains the full source of truth during Shown.
 try {
     $startupStartMinimized = [bool]$chkStartMinimized.Checked
-    $startupMinimizeToTray = [bool]$chkMinimizeToTray.Checked
 
     if (Test-Path -LiteralPath $script:ConfigPath) {
         $startupSettings =
@@ -15267,18 +15301,15 @@ try {
         if ($null -ne $startupSettings.StartMinimized) {
             $startupStartMinimized = [bool]$startupSettings.StartMinimized
         }
-        if ($null -ne $startupSettings.MinimizeToTray) {
-            $startupMinimizeToTray = [bool]$startupSettings.MinimizeToTray
-        }
     }
 
-    if ($startupStartMinimized -and $startupMinimizeToTray) {
+    # Start minimized always means start in tray. Do not consult the legacy
+    # MinimizeToTray value here: the historical true/false mismatch let Resize
+    # hide the form before Shown finished initializing controls and previews.
+    if ($startupStartMinimized) {
         $script:StartupTrayHidePending = $true
         $form.ShowInTaskbar = $false
         $form.Opacity = 0
-    }
-    elseif ($startupStartMinimized) {
-        $form.WindowState = [System.Windows.Forms.FormWindowState]::Minimized
     }
 }
 catch {
