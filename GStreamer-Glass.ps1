@@ -1280,10 +1280,10 @@ $script:DynamicPreviewUiReady = $false
 $script:EnforcingStartMinimizedTrayInvariant = $false
 $script:LastProtocol = 'WHIP'
 $script:ProtocolDestinations = [ordered]@{
-    WHIP = 'http://10.0.0.25:8889/live/whip'
-    SRT  = 'srt://10.0.0.25:8890?mode=caller&streamid=publish:live'
-    RTMP = 'rtmp://10.0.0.25/live'
-    RTSP = 'rtsp://10.0.0.25:8554/live'
+    WHIP = 'http://127.0.0.1:8889/live/whip'
+    SRT  = 'srt://127.0.0.1:8890?mode=caller&streamid=publish:live'
+    RTMP = 'rtmp://127.0.0.1/live'
+    RTSP = 'rtsp://127.0.0.1:8554/live'
     'GST WebRTC' = 'http://0.0.0.0:8889/'
 }
 
@@ -8293,10 +8293,10 @@ function Reset-WebRtcSaneDefaults {
 function Reset-TransportDefaults {
     $chkTransportEnabled.Checked = $true
     $cmbProtocol.SelectedItem = 'WHIP'
-    $script:ProtocolDestinations.WHIP = 'http://10.0.0.25:8889/live/whip'
-    $script:ProtocolDestinations.SRT = 'srt://10.0.0.25:8890?mode=caller&streamid=publish:live'
-    $script:ProtocolDestinations.RTMP = 'rtmp://10.0.0.25/live'
-    $script:ProtocolDestinations.RTSP = 'rtsp://10.0.0.25:8554/live'
+    $script:ProtocolDestinations.WHIP = 'http://127.0.0.1:8889/live/whip'
+    $script:ProtocolDestinations.SRT = 'srt://127.0.0.1:8890?mode=caller&streamid=publish:live'
+    $script:ProtocolDestinations.RTMP = 'rtmp://127.0.0.1/live'
+    $script:ProtocolDestinations.RTSP = 'rtsp://127.0.0.1:8554/live'
     $script:ProtocolDestinations[$script:DirectWebRtcProtocolName] = $script:DefaultDirectWebRtcWebAddress
     $txtDestination.Text = $script:ProtocolDestinations.WHIP
     $txtDirectWebRtcSignalingHost.Text = $script:DefaultDirectWebRtcSignalingHost
