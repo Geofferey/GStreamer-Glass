@@ -630,7 +630,7 @@ public static class GstProcessJob
 '@
 }
 
-$script:AppVersion = '3.7.52f53'
+$script:AppVersion = '3.7.52f54'
 $script:AppName = "GStreamer Glass v$($script:AppVersion)"
 $script:ConfigDirectory = Join-Path $env:APPDATA 'GStreamerBasicWhipStreamer'
 $script:ConfigPath = Join-Path $script:ConfigDirectory 'settings.json'
@@ -13075,6 +13075,11 @@ function Stop-GstStream {
         $statusLabel.ForeColor = [System.Drawing.Color]::Black
         Set-RunState $false
         $script:StopRequested = $false
+        if (-not $wasPreviewOnly) {
+            $null = $form.BeginInvoke([Action]{
+                try { Sync-StandalonePreviewState -Quiet } catch {}
+            })
+        }
     }
     else {
         Set-RunState $false
@@ -14366,6 +14371,9 @@ $pollTimer.Add_Tick({
             $statusLabel.Text = 'Stopped'
             $statusLabel.ForeColor = [System.Drawing.Color]::Black
             Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Pipeline stopped."
+            $null = $form.BeginInvoke([Action]{
+                try { Sync-StandalonePreviewState -Quiet } catch {}
+            })
         }
         else {
             $statusLabel.Text = "Pipeline exited - code $exitCode"
