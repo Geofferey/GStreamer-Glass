@@ -630,7 +630,7 @@ public static class GstProcessJob
 '@
 }
 
-$script:AppVersion = '3.7.52f54'
+$script:AppVersion = '3.7.52f55'
 $script:AppName = "GStreamer Glass v$($script:AppVersion)"
 $script:ConfigDirectory = Join-Path $env:APPDATA 'GStreamerBasicWhipStreamer'
 $script:ConfigPath = Join-Path $script:ConfigDirectory 'settings.json'
@@ -2338,7 +2338,14 @@ $chkPreview.Location = New-Object System.Drawing.Point(235, 130)
 $chkPreview.Size = New-Object System.Drawing.Size(80, 23)
 $chkPreview.Checked = $false
 $settingsGroup.Controls.Add($chkPreview)
-$toolTip.SetToolTip($chkPreview, 'Includes preview when the stream starts. If the running pipeline has preview, this only hides/shows it. If not, enabling preview restarts the stream to add the branch.')
+$toolTip.SetToolTip($chkPreview, 'Enables standalone preview while stopped and, unless Hide preview during stream is enabled, includes a local preview branch when the stream starts.')
+
+$chkHidePreviewDuringStream = New-Object System.Windows.Forms.CheckBox
+$chkHidePreviewDuringStream.Text = 'Hide preview during stream'
+$chkHidePreviewDuringStream.AutoSize = $true
+$chkHidePreviewDuringStream.Checked = $false
+$settingsGroup.Controls.Add($chkHidePreviewDuringStream)
+$toolTip.SetToolTip($chkHidePreviewDuringStream, 'When enabled, Show Preview is used for standalone preview while stopped, but the live transport pipeline omits/hides the local preview branch.')
 
 $chkAutoRestart = New-Object System.Windows.Forms.CheckBox
 $chkAutoRestart.Text = 'Auto-restart on exit'
@@ -5467,6 +5474,7 @@ function Apply-ModernDashboardUi {
     $s = Add-Section $paneOptions 'General'
     $r = Add-Row $s
     Add-Field $r -Control $chkPreview -Width 180 | Out-Null
+    Add-Field $r -Control $chkHidePreviewDuringStream -Width 210 | Out-Null
     Add-Field $r -Control $chkAutoRestart -Width 170 | Out-Null
     $r = Add-Row $s
     Add-Field $r -Control $chkVerbose -Width 145 | Out-Null
@@ -5613,7 +5621,7 @@ function Apply-ModernDashboardUi {
         $lblNetworkStatus, $btnResetTransport, $btnResetWebRtcSane, $btnResetVideo, $btnResetAudio,
         $btnResetRecording, $btnResetNetwork, $btnResetOptions, $btnExportLabConfig, $btnResetAll,
         $txtGstPath, $btnBrowseGst, $btnDetectGst, $btnCheckGst,
-        $chkPreview, $chkAutoRestart, $chkVerbose, $chkDiskProcessLogging, $chkMinimizeToTray,
+        $chkPreview, $chkHidePreviewDuringStream, $chkAutoRestart, $chkVerbose, $chkDiskProcessLogging, $chkMinimizeToTray,
         $chkStartMinimized, $btnRedrawScenePreview
     )) {
         if ($realControl) {
@@ -5642,7 +5650,7 @@ function Apply-ModernDashboardUi {
         $chkNetworkTuningEnabled, $chkNetworkDscp, $chkNetworkDisablePowerSaving,
         $chkNetworkDisableEee, $chkNetworkRestoreOnStop, $chkNetworkRestoreOnExit,
         $chkNetworkRecoveryTask,
-        $chkPreview, $chkAutoRestart, $chkVerbose, $chkDiskProcessLogging,
+        $chkPreview, $chkHidePreviewDuringStream, $chkAutoRestart, $chkVerbose, $chkDiskProcessLogging,
         $chkMinimizeToTray, $chkStartMinimized
     )) {
         # This list is hand-maintained and has occasionally picked up non-CheckBox
@@ -7154,6 +7162,7 @@ function Reset-NetworkDefaults {
 function Reset-OptionsDefaults {
     $txtGstPath.Text = Find-GstLaunch
     $chkPreview.Checked = $false
+    $chkHidePreviewDuringStream.Checked = $false
     $chkAutoRestart.Checked = $true
     $chkVerbose.Checked = $false
     $chkDiskProcessLogging.Checked = $script:DefaultDiskProcessLogging
@@ -10281,13 +10290,27 @@ function Build-CaptureChain {
     return (Build-DesktopCaptureChain -LocalOnly:$LocalOnly)
 }
 
+function Test-PreviewEnabledForCurrentPipeline {
+    if (-not $chkPreview.Checked) { return $false }
+    if ($script:ForceLocalPreviewMode) { return $true }
+    if ((Test-TransportEnabled) -and $chkHidePreviewDuringStream -and $chkHidePreviewDuringStream.Checked) { return $false }
+    return $true
+}
+
+function Test-PreviewVisibleNow {
+    if (-not $chkPreview.Checked) { return $false }
+    if ($script:PreviewOnlyMode) { return $true }
+    if (($script:GstProcess -and -not $script:GstProcess.HasExited) -and (Test-TransportEnabled) -and $chkHidePreviewDuringStream -and $chkHidePreviewDuringStream.Checked) { return $false }
+    return $true
+}
+
 function Build-VideoBranch {
     param([Parameter(Mandatory)][string]$Protocol)
 
     Assert-RecordingFrameRateCompatible
     $capture = Build-CaptureChain
     $encoder = Get-EncoderElementChain -Protocol $Protocol
-    $hasPreview = [bool]$chkPreview.Checked
+    $hasPreview = Test-PreviewEnabledForCurrentPipeline
     $hasRecording = Test-RecordingEnabled
 
     if ($hasPreview -or $hasRecording) {
@@ -10315,7 +10338,7 @@ function Build-VideoBranch {
 
 function Build-LocalOnlyVideoPipeline {
     $capture = Build-CaptureChain -LocalOnly
-    $hasPreview = [bool]$chkPreview.Checked
+    $hasPreview = Test-PreviewEnabledForCurrentPipeline
     $hasRecording = Test-RecordingEnabled
 
     if (-not $hasPreview -and -not $hasRecording) {
@@ -10353,7 +10376,7 @@ function Build-DirectWebRtcRawVideoBranch {
     # to tell it which WebRTC codec to negotiate.
     Assert-RecordingFrameRateCompatible
     $capture = Build-CaptureChain
-    $hasPreview = [bool]$chkPreview.Checked
+    $hasPreview = Test-PreviewEnabledForCurrentPipeline
     $hasRecording = Test-RecordingEnabled
 
     if ($hasPreview -or $hasRecording) {
@@ -11513,6 +11536,7 @@ function Save-Settings {
             RecordingMicrophone = $chkRecordingMic.Checked
             RecordingAudioBitrateKbps = [int]$numRecordingAudioBitrate.Value
             Preview           = $chkPreview.Checked
+            HidePreviewDuringStream = $chkHidePreviewDuringStream.Checked
             AutoRestart       = $chkAutoRestart.Checked
             Verbose           = $chkVerbose.Checked
             DiskProcessLogging = $chkDiskProcessLogging.Checked
@@ -11896,6 +11920,7 @@ function Load-Settings {
         if ($null -ne $settings.RecordingMicrophone) { $chkRecordingMic.Checked = [bool]$settings.RecordingMicrophone }
         if ($settings.RecordingAudioBitrateKbps) { $numRecordingAudioBitrate.Value = [decimal]$settings.RecordingAudioBitrateKbps }
         if ($null -ne $settings.Preview) { $chkPreview.Checked = [bool]$settings.Preview }
+        if ($null -ne $settings.HidePreviewDuringStream) { $chkHidePreviewDuringStream.Checked = [bool]$settings.HidePreviewDuringStream }
         if ($null -ne $settings.AutoRestart) { $chkAutoRestart.Checked = [bool]$settings.AutoRestart }
         if ($null -ne $settings.Verbose) { $chkVerbose.Checked = [bool]$settings.Verbose }
         if ($null -ne $settings.DiskProcessLogging) { $chkDiskProcessLogging.Checked = [bool]$settings.DiskProcessLogging }
@@ -12322,7 +12347,7 @@ function Restore-PreviewWindowFromParking {
             $previewPanel.Handle,
             $previewPanel.ClientSize.Width,
             $previewPanel.ClientSize.Height,
-            $chkPreview.Checked
+            (Test-PreviewVisibleNow)
         )
         $script:PreviewParked = $false
         Reset-PreviewAppliedState
@@ -12348,7 +12373,7 @@ function Set-PreviewVisibility {
         $previewPlaceholder.Text = if ($formIsHiddenForTray) {
             'Preview parked while app is in tray'
         }
-        elseif ($chkPreview.Checked) {
+        elseif (Test-PreviewVisibleNow) {
             'Preview starting...'
         }
         else {
@@ -12368,7 +12393,7 @@ function Set-PreviewVisibility {
         Restore-PreviewWindowFromParking
     }
 
-    if ($chkPreview.Checked) {
+    if (Test-PreviewVisibleNow) {
         # Only touch the renderer window when something actually changed. This runs
         # every poll tick; unconditional resize/show on a live d3d11videosink is a
         # stutter source.
@@ -12399,7 +12424,12 @@ function Set-PreviewVisibility {
         }
 
         $previewPlaceholder.Visible = $true
-        $previewPlaceholder.Text = 'Preview hidden - stream still running'
+        $previewPlaceholder.Text = if ($chkHidePreviewDuringStream -and $chkHidePreviewDuringStream.Checked -and (Test-TransportEnabled)) {
+            'Preview hidden during stream'
+        }
+        else {
+            'Preview hidden - stream still running'
+        }
     }
 }
 
@@ -12658,7 +12688,7 @@ function Start-GstStream {
     $script:PreviewHwnd = [IntPtr]::Zero
     $script:PreviewParked = $false
     Reset-PreviewAppliedState
-    $script:PipelineHasPreview = [bool]$chkPreview.Checked
+    $script:PipelineHasPreview = Test-PreviewEnabledForCurrentPipeline
     $script:PreviewOnlyMode = [bool]$PreviewOnly
     $previewPlaceholder.Visible = $true
     $previewPlaceholder.Text = if ($script:PipelineHasPreview) { 'Starting preview...' } else { 'Preview disabled for this pipeline' }
@@ -13534,6 +13564,11 @@ $chkPreview.Add_CheckedChanged({
             $previewState = if ($chkPreview.Checked) { 'shown' } else { 'hidden' }
             Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Preview $previewState without restarting stream."
         }
+        elseif ($chkPreview.Checked -and $chkHidePreviewDuringStream.Checked -and (Test-TransportEnabled)) {
+            $previewPlaceholder.Visible = $true
+            $previewPlaceholder.Text = 'Preview hidden during stream'
+            Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Preview remains hidden because Hide preview during stream is enabled."
+        }
         elseif ($chkPreview.Checked) {
             Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Preview enabled; restarting stream to add preview pipeline branch."
             $lowerTabs.SelectedTab = $tabLog
@@ -13552,6 +13587,27 @@ $chkPreview.Add_CheckedChanged({
         }
         else {
             $previewPlaceholder.Text = 'Preview disabled for this pipeline'
+        }
+    }
+
+    Update-CommandPreview
+})
+$chkHidePreviewDuringStream.Add_CheckedChanged({
+    if ($script:LoadingSettings) {
+        Update-CommandPreview
+        return
+    }
+
+    if ($script:GstProcess -and -not $script:GstProcess.HasExited -and -not $script:PreviewOnlyMode) {
+        if ($script:PipelineHasPreview) {
+            Set-PreviewVisibility
+            $previewState = if ($chkHidePreviewDuringStream.Checked) { 'hidden during stream' } else { 'shown during stream' }
+            Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Preview $previewState without restarting stream."
+        }
+        elseif ((-not $chkHidePreviewDuringStream.Checked) -and $chkPreview.Checked) {
+            Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Hide preview during stream disabled; restarting stream to add preview pipeline branch."
+            $lowerTabs.SelectedTab = $tabLog
+            Stop-GstStream -Restart
         }
     }
 
