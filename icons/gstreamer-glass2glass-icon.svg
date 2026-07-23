@@ -1,0 +1,75 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" role="img" aria-label="Glass-to-glass streamer icon">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0b1730"/>
+      <stop offset="100%" stop-color="#030811"/>
+    </linearGradient>
+    <linearGradient id="rim" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#a7d7ff" stop-opacity="0.9"/>
+      <stop offset="45%" stop-color="#3ea0ff" stop-opacity="0.7"/>
+      <stop offset="100%" stop-color="#0e3e8c" stop-opacity="0.95"/>
+    </linearGradient>
+    <linearGradient id="glass" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#eaf6ff" stop-opacity="0.18"/>
+      <stop offset="25%" stop-color="#b9dbff" stop-opacity="0.10"/>
+      <stop offset="100%" stop-color="#0c1730" stop-opacity="0.30"/>
+    </linearGradient>
+    <linearGradient id="streamRed" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#ff6073"/>
+      <stop offset="100%" stop-color="#ff2b2b"/>
+    </linearGradient>
+    <linearGradient id="streamGreen" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#66ff7a"/>
+      <stop offset="100%" stop-color="#16d83d"/>
+    </linearGradient>
+    <linearGradient id="streamBlue" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#64d4ff"/>
+      <stop offset="100%" stop-color="#2360ff"/>
+    </linearGradient>
+    <filter id="glowBlue" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="8" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="glowStrong" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="10" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <clipPath id="panelRightClip">
+      <rect x="660" y="250" rx="42" ry="42" width="220" height="310"/>
+    </clipPath>
+  </defs>
+
+  <rect x="40" y="40" width="944" height="944" rx="125" fill="url(#bg)"/>
+  <rect x="54" y="54" width="916" height="916" rx="110" fill="none" stroke="#20324f" stroke-width="18"/>
+  <rect x="66" y="66" width="892" height="892" rx="105" fill="none" stroke="url(#rim)" stroke-opacity="0.7" stroke-width="6" filter="url(#glowBlue)"/>
+
+  <!-- Left glass panel -->
+  <g transform="translate(0,0) rotate(-23 305 545)">
+    <rect x="165" y="335" width="255" height="390" rx="42" fill="rgba(255,255,255,0.04)"/>
+    <rect x="165" y="335" width="255" height="390" rx="42" fill="url(#glass)" stroke="url(#rim)" stroke-width="5" filter="url(#glowBlue)"/>
+    <path d="M210 355 L385 355 L245 720 L170 720 Z" fill="#ffffff" fill-opacity="0.12"/>
+    <path d="M225 470 L225 590 Q225 605 236 612 Q247 619 259 611 L348 550 Q360 542 360 530 Q360 518 348 510 L259 449 Q247 441 236 448 Q225 455 225 470 Z" fill="#e7f5ff" stroke="#d4eeff" stroke-width="4" filter="url(#glowBlue)"/>
+  </g>
+
+  <!-- Right glass panel -->
+  <g>
+    <rect x="642" y="214" width="260" height="430" rx="52" fill="url(#glass)" stroke="url(#rim)" stroke-width="5" filter="url(#glowBlue)"/>
+    <path d="M690 235 L870 235 L760 642 L660 642 Z" fill="#ffffff" fill-opacity="0.11"/>
+    <rect x="708" y="345" width="145" height="165" rx="12" fill="none" stroke="#d8efff" stroke-width="5" filter="url(#glowBlue)"/>
+    <line x1="780" y1="511" x2="780" y2="556" stroke="#d8efff" stroke-width="5" stroke-linecap="round" filter="url(#glowBlue)"/>
+    <line x1="742" y1="556" x2="818" y2="556" stroke="#d8efff" stroke-width="5" stroke-linecap="round" filter="url(#glowBlue)"/>
+  </g>
+
+  <!-- Streams -->
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M318 455 C 435 492, 508 430, 604 452 C 680 470, 758 503, 835 500" stroke="url(#streamRed)" stroke-width="42" filter="url(#glowStrong)"/>
+    <path d="M343 541 C 438 575, 520 513, 612 531 C 682 545, 747 563, 798 565" stroke="url(#streamGreen)" stroke-width="36" filter="url(#glowStrong)"/>
+    <path d="M298 633 C 412 680, 504 607, 615 626 C 684 638, 742 643, 804 636" stroke="url(#streamBlue)" stroke-width="34" filter="url(#glowStrong)"/>
+  </g>
+
+  <!-- Arrow tip on red stream -->
+  <path d="M836 466 L928 513 L832 565 L854 520 Z" fill="url(#streamRed)" filter="url(#glowStrong)"/>
+
+  <!-- subtle inner highlight -->
+  <rect x="84" y="84" width="856" height="856" rx="98" fill="none" stroke="#cfe8ff" stroke-opacity="0.12" stroke-width="3"/>
+</svg>
