@@ -630,7 +630,7 @@ public static class GstProcessJob
 '@
 }
 
-$script:AppVersion = '3.7.52f52'
+$script:AppVersion = '3.7.52f53'
 $script:AppName = "GStreamer Glass v$($script:AppVersion)"
 $script:ConfigDirectory = Join-Path $env:APPDATA 'GStreamerBasicWhipStreamer'
 $script:ConfigPath = Join-Path $script:ConfigDirectory 'settings.json'
@@ -14186,6 +14186,15 @@ $form.Add_Resize({
     }
     elseif ($form.Visible -and $script:GstProcess -and -not $script:GstProcess.HasExited) {
         Set-PreviewVisibility
+    }
+    elseif (
+        $form.Visible -and
+        $form.WindowState -ne [System.Windows.Forms.FormWindowState]::Minimized -and
+        -not ($script:GstProcess -and -not $script:GstProcess.HasExited)
+    ) {
+        $null = $form.BeginInvoke([Action]{
+            try { Sync-StandalonePreviewState -Quiet } catch {}
+        })
     }
 })
 
