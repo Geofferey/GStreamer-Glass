@@ -677,6 +677,43 @@ public static class GstControlledScenePreview
         string desktopPadName,
         string webcamPadName)
     {
+        StartCore(
+            description,
+            windowHandle,
+            width,
+            height,
+            "controlledpreview",
+            desktopPadName,
+            webcamPadName);
+    }
+
+    public static void StartLive(
+        string description,
+        long windowHandle,
+        int width,
+        int height,
+        string desktopPadName,
+        string webcamPadName)
+    {
+        StartCore(
+            description,
+            windowHandle,
+            width,
+            height,
+            "localpreview",
+            desktopPadName,
+            webcamPadName);
+    }
+
+    private static void StartCore(
+        string description,
+        long windowHandle,
+        int width,
+        int height,
+        string sinkName,
+        string desktopPadName,
+        string webcamPadName)
+    {
         lock (Gate)
         {
             StopUnsafe();
@@ -698,12 +735,13 @@ public static class GstControlledScenePreview
             if (pipeline == IntPtr.Zero)
                 throw new InvalidOperationException("gst_parse_launch returned no pipeline.");
 
-            sink = gst_bin_get_by_name(pipeline, "controlledpreview");
+            sink = gst_bin_get_by_name(pipeline, sinkName);
             bus = gst_element_get_bus(pipeline);
             if (sink == IntPtr.Zero || bus == IntPtr.Zero)
             {
                 StopUnsafe();
-                throw new InvalidOperationException("The controlled preview sink or pipeline bus was not found.");
+                throw new InvalidOperationException(
+                    "The controlled sink '" + sinkName + "' or pipeline bus was not found.");
             }
 
             bool needsScene = !String.IsNullOrEmpty(desktopPadName) || !String.IsNullOrEmpty(webcamPadName);
@@ -999,7 +1037,7 @@ public static class GstProcessJob
 '@
 }
 
-$script:AppVersion = '3.7.52f69'
+$script:AppVersion = '3.7.52f70'
 $script:AppName = "GStreamer Glass v$($script:AppVersion)"
 $script:ConfigDirectory = Join-Path $env:APPDATA 'GStreamerBasicWhipStreamer'
 $script:ConfigPath = Join-Path $script:ConfigDirectory 'settings.json'
@@ -1086,8 +1124,13 @@ $script:DynamicScenePreviewStarting = $false
 $script:DynamicScenePreviewStartedAt = $null
 $script:DynamicScenePreviewFallbackTriggered = $false
 $script:SuppressDynamicScenePreview = $false
+$script:ControlledLiveStreamActive = $false
+$script:SuppressControlledLiveStream = $false
+$script:ForceLiveScenePreviewBranch = $false
 $script:ControlledScenePreviewSurfaceHwnd = [IntPtr]::Zero
 $script:ControlledScenePreviewAppliedSize = [System.Drawing.Size]::Empty
+$script:ControlledLivePreviewSurfaceHwnd = [IntPtr]::Zero
+$script:ControlledLivePreviewAppliedSize = [System.Drawing.Size]::Empty
 $script:SceneDesktopPreviewProcess = $null
 $script:SceneWebcamPreviewProcess = $null
 $script:SceneDesktopPreviewHwnd = [IntPtr]::Zero
@@ -4343,6 +4386,12 @@ $chkDynamicScenePreviews.AutoSize = $true
 $chkDynamicScenePreviews.Checked = $false
 $toolTip.SetToolTip($chkDynamicScenePreviews, 'Runs the real scene compositor in-process so placement, size, opacity, and z-order update live without restarting.')
 
+$chkLiveSceneEditing = New-Object System.Windows.Forms.CheckBox
+$chkLiveSceneEditing.Text = 'Edit scene while live'
+$chkLiveSceneEditing.AutoSize = $true
+$chkLiveSceneEditing.Checked = $true
+$toolTip.SetToolTip($chkLiveSceneEditing, 'Runs compatible single-pipeline streams in-process so scene placement, size, and opacity change on the actual broadcast without restarting. Unsupported topologies automatically use the legacy launcher.')
+
 $chkStandardPreviewOffSceneTab = New-Object System.Windows.Forms.CheckBox
 $chkStandardPreviewOffSceneTab.Text = 'Standard preview off Scenes'
 $chkStandardPreviewOffSceneTab.AutoSize = $true
@@ -4527,7 +4576,7 @@ function Update-SceneSelectionChrome {
     $handleY = [Math]::Max(0, [int]$sceneWebcamElement.Height - [int]$sceneResizeHandle.Height - 1)
     $sceneResizeHandle.Location = New-Object System.Drawing.Point($handleX, $handleY)
     if ($sceneWebcamPreviewPanel) {
-        # f68 renders the already-composed scene into the canvas itself. The old
+        # f70 renders the already-composed scene into the canvas itself. The old
         # per-source child sink panel must stay hidden or it covers that output.
         $sceneWebcamPreviewPanel.Visible = $false
         $sceneWebcamPreviewPanel.SendToBack()
@@ -4705,7 +4754,7 @@ function Update-SceneCanvasFromValues {
 }
 
 function Sync-ControlledScenePreviewProperties {
-    if (-not $script:DynamicScenePreviewActive) { return }
+    if (-not (Test-ControlledSceneMutationActive)) { return }
     if (-not [GstControlledScenePreview]::IsRunning -or -not [GstControlledScenePreview]::HasWebcamPad) { return }
 
     try {
@@ -4728,7 +4777,7 @@ function Push-ControlledSceneGeometryFromElement {
     # Dragging occurs in scaled canvas coordinates. Convert directly to encoded
     # scene coordinates and mutate the live compositor pad without touching the
     # numeric controls or rebuilding command previews on every mouse-move event.
-    if (-not $script:DynamicScenePreviewActive) { return }
+    if (-not (Test-ControlledSceneMutationActive)) { return }
     if (-not [GstControlledScenePreview]::IsRunning -or -not [GstControlledScenePreview]::HasWebcamPad) { return }
 
     $outputWidth = [Math]::Max(1, [int]$numWidth.Value)
@@ -4950,7 +4999,8 @@ function Update-SceneUi {
     $usesCompositor = ($enabled -and [string]$cmbScenePreset.SelectedItem -eq 'Desktop + webcam')
     $numSceneInputQueueBuffers.Enabled = $usesCompositor
     $numSceneInputQueueCapMs.Enabled = $usesCompositor
-    $lblSceneStatus.Text = if ($enabled) { 'Scene composition enabled. Dynamic previews use the real controlled compositor and the stream uses the same geometry.' } else { 'Scene composition is disabled; the existing capture pipeline is unchanged.' }
+    $chkLiveSceneEditing.Enabled = ($usesCompositor -and $chkDynamicScenePreviews.Checked)
+    $lblSceneStatus.Text = if ($enabled) { 'Scene composition enabled. Dynamic previews and compatible live streams use the real controlled compositor.' } else { 'Scene composition is disabled; the existing capture pipeline is unchanged.' }
     Update-SceneCanvasFromValues
     try { $txtScenePipeline.Text = Build-SceneCaptureChain -LocalOnly } catch { $txtScenePipeline.Text = $_.Exception.Message }
     if (Get-Command Update-CommandPreview -ErrorAction SilentlyContinue) { Update-CommandPreview }
@@ -5010,6 +5060,19 @@ $btnRedrawScenePreview.Add_Click({ Invoke-ScenePreviewRedraw })
 $chkSceneEnabled.Add_CheckedChanged({ Reset-DynamicScenePreviewFallback; Update-SceneUi; Restart-DynamicScenePreviewIfActive; Sync-StandalonePreviewState -Quiet })
 $chkDynamicScenePreviews.Add_CheckedChanged({
     Reset-DynamicScenePreviewFallback
+    $script:SuppressControlledLiveStream = $false
+    if ($script:LoadingSettings) {
+        Update-SceneUi
+        Update-CommandPreview
+        return
+    }
+    if (-not $chkDynamicScenePreviews.Checked -and $script:ControlledLiveStreamActive) {
+        Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Dynamic scene control disabled; restarting the stream with the legacy launcher."
+        Stop-GstStream -Restart
+        Update-SceneUi
+        Update-CommandPreview
+        return
+    }
     if (-not $chkDynamicScenePreviews.Checked -and $script:DynamicScenePreviewActive) {
         Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Dynamic scene previews disabled; falling back to the normal composed preview."
         Stop-DynamicScenePreview -Quiet
@@ -5020,6 +5083,27 @@ $chkDynamicScenePreviews.Add_CheckedChanged({
     }
     Update-SceneCanvasFromValues
     Sync-StandalonePreviewState -Quiet
+    Update-CommandPreview
+})
+$chkLiveSceneEditing.Add_CheckedChanged({
+    $script:SuppressControlledLiveStream = $false
+    if ($script:LoadingSettings) {
+        Update-SceneUi
+        Update-CommandPreview
+        return
+    }
+
+    $externalStreamRunning = (
+        $script:GstProcess -and
+        -not $script:GstProcess.HasExited -and
+        -not $script:PreviewOnlyMode
+    )
+    if ($script:ControlledLiveStreamActive -or ($chkLiveSceneEditing.Checked -and $externalStreamRunning)) {
+        $mode = if ($chkLiveSceneEditing.Checked) { 'controlled live editing' } else { 'the legacy launcher' }
+        Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Live scene editing changed; restarting the stream with $mode."
+        Stop-GstStream -Restart
+    }
+    Update-SceneUi
     Update-CommandPreview
 })
 $chkStandardPreviewOffSceneTab.Add_CheckedChanged({
@@ -5967,6 +6051,8 @@ function Apply-ModernDashboardUi {
     Add-Field $r -Control $chkDynamicScenePreviews -Width 150 | Out-Null
     Add-Field $r -Control $chkStandardPreviewOffSceneTab -Width 190 | Out-Null
     $r = Add-Row $s
+    Add-Field $r -Control $chkLiveSceneEditing -Width 190 | Out-Null
+    $r = Add-Row $s
     Add-Field $r -Control $sceneEditorCanvas -Width 550 | Out-Null
     Save-SceneEditorCanvasHome
     $r = Add-Row $s
@@ -6720,7 +6806,11 @@ function Stop-StaleManagedProcesses {
 
 function Update-TrayMenuState {
     try {
-        $running = ($script:GstProcess -and -not $script:GstProcess.HasExited) -or [bool]$script:DynamicScenePreviewActive
+        $running = (
+            ($script:GstProcess -and -not $script:GstProcess.HasExited) -or
+            [bool]$script:DynamicScenePreviewActive -or
+            [bool]$script:ControlledLiveStreamActive
+        )
         $waiting = [bool]$script:WaitingForFullscreen
         $previewOnly = $running -and [bool]$script:PreviewOnlyMode
 
@@ -6834,7 +6924,10 @@ function Show-MainWindow {
                 # unwound, so standalone preview startup is safe again.
                 $script:TrayRestoreInProgress = $false
                 $script:DynamicPreviewUiReady = $true
-                if ($script:GstProcess -and -not $script:GstProcess.HasExited) {
+                if ($script:ControlledLiveStreamActive) {
+                    Sync-ControlledLivePreviewLayout
+                }
+                elseif ($script:GstProcess -and -not $script:GstProcess.HasExited) {
                     if ($script:PreviewParked) {
                         Restore-PreviewWindowFromParking
                     }
@@ -7081,7 +7174,11 @@ function Sync-StandalonePreviewState {
 
     if ($script:LoadingSettings) { return }
 
-    $running = ($script:GstProcess -and -not $script:GstProcess.HasExited) -or [bool]$script:DynamicScenePreviewActive
+    $running = (
+        ($script:GstProcess -and -not $script:GstProcess.HasExited) -or
+        [bool]$script:DynamicScenePreviewActive -or
+        [bool]$script:ControlledLiveStreamActive
+    )
 
     if ($script:DynamicScenePreviewActive -and -not (Test-UseDynamicScenePreview)) {
         if (-not $Quiet) {
@@ -8794,8 +8891,8 @@ function Apply-ThreadBudget {
 function Update-GstThreadCountStatus {
     if (-not $lblLiveGstThreads) { return }
     if (-not $script:GstProcess -or $script:GstProcess.HasExited) {
-        $lblLiveGstThreads.Text = if ($script:DynamicScenePreviewActive -and [GstControlledScenePreview]::IsRunning) {
-            'Live GST threads: controlled scene runs in-process'
+        $lblLiveGstThreads.Text = if (($script:DynamicScenePreviewActive -or $script:ControlledLiveStreamActive) -and [GstControlledScenePreview]::IsRunning) {
+            if ($script:ControlledLiveStreamActive) { 'Live GST threads: controlled broadcast runs in-process' } else { 'Live GST threads: controlled scene preview runs in-process' }
         }
         else {
             'Live GST threads: stopped'
@@ -11145,6 +11242,7 @@ function Build-CaptureChain {
 function Test-PreviewEnabledForCurrentPipeline {
     if (-not $chkPreview.Checked) { return $false }
     if ($script:ForceLocalPreviewMode) { return $true }
+    if ($script:ForceLiveScenePreviewBranch) { return $true }
     if ((Test-TransportEnabled) -and $chkHidePreviewDuringStream -and $chkHidePreviewDuringStream.Checked) { return $false }
     return $true
 }
@@ -11152,6 +11250,11 @@ function Test-PreviewEnabledForCurrentPipeline {
 function Test-PreviewVisibleNow {
     if (-not $chkPreview.Checked) { return $false }
     if ($script:PreviewOnlyMode) { return $true }
+    if ($script:ControlledLiveStreamActive) {
+        if ($script:SceneWorkspaceActive) { return $true }
+        if ((Test-TransportEnabled) -and $chkHidePreviewDuringStream -and $chkHidePreviewDuringStream.Checked) { return $false }
+        return $true
+    }
     if (($script:GstProcess -and -not $script:GstProcess.HasExited) -and (Test-TransportEnabled) -and $chkHidePreviewDuringStream -and $chkHidePreviewDuringStream.Checked) { return $false }
     return $true
 }
@@ -12391,6 +12494,7 @@ function Save-Settings {
             Preview           = $chkPreview.Checked
             HidePreviewDuringStream = $chkHidePreviewDuringStream.Checked
             DynamicScenePreviews = $chkDynamicScenePreviews.Checked
+            LiveSceneEditing   = $chkLiveSceneEditing.Checked
             StandardPreviewOffSceneTab = $chkStandardPreviewOffSceneTab.Checked
             AutoRestart       = $chkAutoRestart.Checked
             Verbose           = $chkVerbose.Checked
@@ -12779,6 +12883,7 @@ function Load-Settings {
         if ($null -ne $settings.Preview) { $chkPreview.Checked = [bool]$settings.Preview }
         if ($null -ne $settings.HidePreviewDuringStream) { $chkHidePreviewDuringStream.Checked = [bool]$settings.HidePreviewDuringStream }
         if ($null -ne $settings.DynamicScenePreviews) { $chkDynamicScenePreviews.Checked = [bool]$settings.DynamicScenePreviews }
+        if ($null -ne $settings.LiveSceneEditing) { $chkLiveSceneEditing.Checked = [bool]$settings.LiveSceneEditing }
         if ($null -ne $settings.StandardPreviewOffSceneTab) { $chkStandardPreviewOffSceneTab.Checked = [bool]$settings.StandardPreviewOffSceneTab }
         if ($null -ne $settings.AutoRestart) { $chkAutoRestart.Checked = [bool]$settings.AutoRestart }
         if ($null -ne $settings.Verbose) { $chkVerbose.Checked = [bool]$settings.Verbose }
@@ -13293,6 +13398,11 @@ function Set-PreviewVisibility {
 }
 
 function Try-AttachPreview {
+    if ($script:ControlledLiveStreamActive) {
+        Sync-ControlledLivePreviewLayout
+        return
+    }
+
     if ($script:DynamicScenePreviewActive) {
         Try-AttachDynamicScenePreview
         return
@@ -13321,7 +13431,10 @@ function Try-AttachPreview {
 function Test-UseDynamicScenePreview {
     try {
         if (-not (Test-DynamicScenePreviewWanted)) { return $false }
-        return (-not ($script:GstProcess -and -not $script:GstProcess.HasExited))
+        return (
+            -not $script:ControlledLiveStreamActive -and
+            -not ($script:GstProcess -and -not $script:GstProcess.HasExited)
+        )
     }
     catch {
         return $false
@@ -13350,10 +13463,15 @@ function Test-DynamicScenePreviewWanted {
     }
 }
 
-function Build-ControlledScenePreviewPipeline {
-    $sceneChain = Build-SceneCaptureChain -LocalOnly
-    $pipeline = "$sceneChain ! queue max-size-buffers=1 max-size-bytes=0 max-size-time=0 leaky=downstream ! d3d11videosink name=controlledpreview sync=false force-aspect-ratio=true"
+function ConvertTo-InProcessGstLaunchDescription {
+    param([Parameter(Mandatory)][string]$Description)
 
+    # -e/-v are gst-launch executable switches, not pipeline grammar.
+    $pipeline = [regex]::Replace(
+        $Description,
+        '^\s*(?:(?:-e|-v)\s+)+',
+        ''
+    )
     # Build-* emits quoted caps so Windows command-line parsing passes each caps
     # expression to gst-launch as one argument. gst_parse_launch receives the
     # description directly, so those shell-only quote characters must not be
@@ -13363,6 +13481,45 @@ function Build-ControlledScenePreviewPipeline {
         '"((?:audio|video|application)/[^"]+)"',
         '$1'
     )
+}
+
+function Build-ControlledScenePreviewPipeline {
+    $sceneChain = Build-SceneCaptureChain -LocalOnly
+    $pipeline = "$sceneChain ! queue max-size-buffers=1 max-size-bytes=0 max-size-time=0 leaky=downstream ! d3d11videosink name=controlledpreview sync=false force-aspect-ratio=true"
+    return (ConvertTo-InProcessGstLaunchDescription -Description $pipeline)
+}
+
+function Test-ControlledSceneMutationActive {
+    return (
+        ($script:DynamicScenePreviewActive -or $script:ControlledLiveStreamActive) -and
+        [GstControlledScenePreview]::IsRunning
+    )
+}
+
+function Test-ControlledLiveStreamRequested {
+    param([switch]$PreviewOnly)
+
+    try {
+        if ($PreviewOnly) { return $false }
+        if ($script:SuppressControlledLiveStream) { return $false }
+        if (-not $script:DynamicPreviewUiReady) { return $false }
+        if (-not $chkLiveSceneEditing -or -not $chkLiveSceneEditing.Checked) { return $false }
+        if (-not $chkDynamicScenePreviews -or -not $chkDynamicScenePreviews.Checked) { return $false }
+        if (-not $chkSceneEnabled -or -not $chkSceneEnabled.Checked) { return $false }
+        if ([string]$cmbScenePreset.SelectedItem -ne 'Desktop + webcam') { return $false }
+        if (-not $chkPreview -or -not $chkPreview.Checked) { return $false }
+        if (Test-FullscreenCaptureMode) { return $false }
+
+        # Unified-publisher and split-A/V modes have the scene capture in a
+        # different process from the primary pipeline. Keep their proven process
+        # topology until each bridge is migrated deliberately.
+        if (Test-DirectWebRtcUnifiedPublisher) { return $false }
+        if (Test-DirectWebRtcSplitAvPipelines) { return $false }
+        return $true
+    }
+    catch {
+        return $false
+    }
 }
 
 function Start-DynamicScenePreview {
@@ -13381,7 +13538,7 @@ function Start-DynamicScenePreview {
         Reset-PreviewAppliedState
 
         # The old implementation launched one sink window per source and stacked
-        # those HWNDs. f69 renders the actual scene compositor into one canvas.
+        # those HWNDs. f70 renders the actual scene compositor into one canvas.
         $sceneDesktopPreviewPanel.Visible = $true
         $sceneWebcamPreviewPanel.Visible = $false
         $lblSceneDesktop.Visible = $false
@@ -13551,7 +13708,54 @@ function Sync-DynamicScenePreviewLayout {
     catch {}
 }
 
+function Sync-ControlledLivePreviewLayout {
+    if (-not $script:ControlledLiveStreamActive) { return }
+    if (-not [GstControlledScenePreview]::IsRunning) { return }
+
+    try {
+        $showPreview = (
+            $form.Visible -and
+            $form.WindowState -ne [System.Windows.Forms.FormWindowState]::Minimized -and
+            (Test-PreviewVisibleNow)
+        )
+        $targetControl = $previewPanel
+        $targetSize = $previewPanel.ClientSize
+
+        if (-not $showPreview) {
+            $targetControl = Ensure-PreviewParkingWindow
+            $targetSize = New-Object System.Drawing.Size(16, 16)
+            $previewPlaceholder.Visible = $true
+            $previewPlaceholder.Text = 'Preview hidden during stream; open Scenes to edit live'
+        }
+        else {
+            $previewPlaceholder.Visible = $false
+        }
+
+        $null = $targetControl.Handle
+        $surfaceHandle = $targetControl.Handle
+        if (
+            $surfaceHandle -ne $script:ControlledLivePreviewSurfaceHwnd -or
+            $targetSize.Width -ne $script:ControlledLivePreviewAppliedSize.Width -or
+            $targetSize.Height -ne $script:ControlledLivePreviewAppliedSize.Height
+        ) {
+            [GstControlledScenePreview]::SetWindowHandle(
+                $surfaceHandle.ToInt64(),
+                [Math]::Max(1, $targetSize.Width),
+                [Math]::Max(1, $targetSize.Height)
+            )
+            $script:ControlledLivePreviewSurfaceHwnd = $surfaceHandle
+            $script:ControlledLivePreviewAppliedSize = $targetSize
+        }
+    }
+    catch {}
+}
+
 function Restart-DynamicScenePreviewIfActive {
+    if ($script:ControlledLiveStreamActive) {
+        Append-Log "[$(Get-Date -Format 'HH:mm:ss')] A scene source setting changed; restarting the live pipeline to rebuild its capture graph."
+        Stop-GstStream -Restart
+        return
+    }
     if (-not $script:DynamicScenePreviewActive) { return }
     Stop-DynamicScenePreview -Quiet
     Sync-StandalonePreviewState -Quiet
@@ -13730,6 +13934,8 @@ function Start-GstStream {
         [switch]$PreviewOnly
     )
 
+    if ($script:ControlledLiveStreamActive) { return }
+
     if ($script:DynamicScenePreviewActive) {
         if ($PreviewOnly) { return }
         Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Going live: stopping dynamic scene preview and starting the configured stream."
@@ -13802,7 +14008,10 @@ function Start-GstStream {
     $script:PreviewHwnd = [IntPtr]::Zero
     $script:PreviewParked = $false
     Reset-PreviewAppliedState
-    $script:PipelineHasPreview = Test-PreviewEnabledForCurrentPipeline
+    $controlledLiveRequested = [bool](Test-ControlledLiveStreamRequested -PreviewOnly:$PreviewOnly)
+    $script:ForceLiveScenePreviewBranch = $controlledLiveRequested
+    try { $script:PipelineHasPreview = Test-PreviewEnabledForCurrentPipeline }
+    finally { $script:ForceLiveScenePreviewBranch = $false }
     $script:PreviewOnlyMode = [bool]$PreviewOnly
     $previewPlaceholder.Visible = $true
     $previewPlaceholder.Text = if ($script:PipelineHasPreview) { 'Starting preview...' } else { 'Preview disabled for this pipeline' }
@@ -13833,6 +14042,7 @@ function Start-GstStream {
     Write-DirectWebRtcWebClientConfig
 
     try {
+        $script:ForceLiveScenePreviewBranch = $controlledLiveRequested
         $arguments = Build-GstArguments
         $videoArguments = ''
         $audioArguments = ''
@@ -13852,10 +14062,19 @@ function Start-GstStream {
         Append-Log "START ERROR: $($_.Exception.Message)"
         return
     }
+    finally {
+        $script:ForceLiveScenePreviewBranch = $false
+    }
 
     $transportEnabled = Test-TransportEnabled
     $runIsPreviewOnly = [bool]$PreviewOnly
     $runNeedsUnifiedPublisherHost = $transportEnabled -and (Test-DirectWebRtcUnifiedPublisherHostRequired)
+    $useControlledLiveStream = (
+        $controlledLiveRequested -and
+        -not $runNeedsUnifiedPublisherHost -and
+        [string]::IsNullOrWhiteSpace($videoArguments) -and
+        [string]::IsNullOrWhiteSpace($audioArguments)
+    )
     $script:ForceLocalPreviewMode = $false
     Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Starting full GStreamer pipeline..."
     Append-Log "Process disk logging: $(if ($processDiskLogging) { 'enabled' } else { 'disabled - UI log only' })"
@@ -13974,7 +14193,14 @@ function Start-GstStream {
     }
     $mainLaunchExecutable = $gstPath
     $mainLaunchArguments = $arguments
-    if ($runNeedsUnifiedPublisherHost) {
+    if ($useControlledLiveStream) {
+        Append-Log 'Live scene editing: enabled on the actual broadcast compositor (single in-process pipeline).'
+        Append-Log ('In-process pipeline: ' + (ConvertTo-InProcessGstLaunchDescription -Description $arguments))
+        if ($processDiskLogging) {
+            Append-Log 'Process disk logging note: the in-process pipeline reports terminal bus errors to the UI log; gst-launch stdout/stderr files are not created for this run.'
+        }
+    }
+    elseif ($runNeedsUnifiedPublisherHost) {
         $hostLaunch = Get-UnifiedPublisherHostLaunch -GstPath $gstPath -GstArguments $arguments
         $mainLaunchExecutable = [string]$hostLaunch.Executable
         $mainLaunchArguments = [string]$hostLaunch.Arguments
@@ -13993,6 +14219,73 @@ function Start-GstStream {
     if (-not [string]::IsNullOrWhiteSpace($audioArguments)) {
         Append-Log "Audio executable: $gstPath"
         Append-Log "Audio arguments: $audioArguments"
+    }
+
+    if ($useControlledLiveStream) {
+        try {
+            $pipelineDescription = ConvertTo-InProcessGstLaunchDescription -Description $arguments
+            $showLivePreviewAtStart = (
+                $form.Visible -and
+                $form.WindowState -ne [System.Windows.Forms.FormWindowState]::Minimized -and
+                (
+                    $script:SceneWorkspaceActive -or
+                    -not ($transportEnabled -and $chkHidePreviewDuringStream.Checked)
+                )
+            )
+            $renderTarget = if ($showLivePreviewAtStart) { $previewPanel } else { Ensure-PreviewParkingWindow }
+            $renderSize = if ($showLivePreviewAtStart) { $previewPanel.ClientSize } else { New-Object System.Drawing.Size(16, 16) }
+            $null = $renderTarget.Handle
+
+            $tracerEnvState = $null
+            try {
+                $tracerEnvState = Set-GstTracerEnvironment -Enable:([bool]$chkBufferLatenessTracer.Checked) -DebugSpec $gstDebugSpec -NoColor:([bool]$chkGstDebugNoColor.Checked)
+                [GstControlledScenePreview]::StartLive(
+                    $pipelineDescription,
+                    $renderTarget.Handle.ToInt64(),
+                    [Math]::Max(1, $renderSize.Width),
+                    [Math]::Max(1, $renderSize.Height),
+                    'sink_0',
+                    'sink_1'
+                )
+            }
+            finally {
+                Restore-GstTracerEnvironment $tracerEnvState
+            }
+
+            $script:ControlledLiveStreamActive = $true
+            $script:ControlledLivePreviewSurfaceHwnd = $renderTarget.Handle
+            $script:ControlledLivePreviewAppliedSize = $renderSize
+            $script:PreviewHwnd = [IntPtr]::Zero
+            $script:PreviewParked = -not $showLivePreviewAtStart
+            Sync-ControlledScenePreviewProperties
+            Sync-ControlledLivePreviewLayout
+            Save-ActiveProcessState
+
+            $mediaSuffix = if ($script:MediaMtxProcess -and -not $script:MediaMtxProcess.HasExited) { " + MediaMTX PID $($script:MediaMtxProcess.Id)" } else { '' }
+            if ($transportEnabled) {
+                $statusLabel.Text = "$([string]$cmbProtocol.SelectedItem) streaming - controlled in-process$mediaSuffix"
+            }
+            elseif ($chkRecordingEnabled.Checked) {
+                $statusLabel.Text = 'Recording locally - controlled in-process'
+            }
+            else {
+                $statusLabel.Text = 'Controlled live scene pipeline running'
+            }
+            $statusLabel.ForeColor = [System.Drawing.Color]::DarkGreen
+            Set-RunState $true
+            Append-Log "[$(Get-Date -Format 'HH:mm:ss')] LIVE SCENE CONTROL ACTIVE: editor geometry and opacity now mutate the broadcast compositor directly."
+            return
+        }
+        catch {
+            Append-Log "Controlled live stream start error: $($_.Exception.Message)"
+            Append-Log 'Falling back to the unchanged external gst-launch stream for this run.'
+            $script:SuppressControlledLiveStream = $true
+            $script:ControlledLiveStreamActive = $false
+            try { [GstControlledScenePreview]::Stop() } catch {}
+            $script:ControlledLivePreviewSurfaceHwnd = [IntPtr]::Zero
+            $script:ControlledLivePreviewAppliedSize = [System.Drawing.Size]::Empty
+            [System.Threading.Thread]::Sleep(750)
+        }
     }
 
     try {
@@ -14113,8 +14406,65 @@ function Start-GstStream {
         Append-Log "START ERROR: $($_.Exception.Message)"
     }
 }
+
+function Stop-ControlledLiveStream {
+    param([switch]$Restart)
+
+    if (-not $script:ControlledLiveStreamActive) { return $false }
+
+    $script:StopRequested = $true
+    $script:WaitingForFullscreen = $false
+    $script:RestartAt = if ($Restart) { (Get-Date).AddMilliseconds(800) } else { $null }
+    Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Stopping controlled in-process live pipeline..."
+
+    try { [GstControlledScenePreview]::Stop() }
+    catch { Append-Log "Controlled live pipeline stop warning: $($_.Exception.Message)" }
+
+    $script:ControlledLiveStreamActive = $false
+    $script:ControlledLivePreviewSurfaceHwnd = [IntPtr]::Zero
+    $script:ControlledLivePreviewAppliedSize = [System.Drawing.Size]::Empty
+    $script:PreviewHwnd = [IntPtr]::Zero
+    $script:PreviewParked = $false
+    $script:PipelineHasPreview = $false
+    $script:PreviewOnlyMode = $false
+    $script:ForceLocalPreviewMode = $false
+    $script:ForceLiveScenePreviewBranch = $false
+    Reset-PreviewAppliedState
+
+    $previewPlaceholder.Visible = $true
+    $previewPlaceholder.Text = if ($Restart) { 'Restarting stream...' } else { 'Preview stopped' }
+
+    Stop-ManagedMediaMtx
+    # MediaMTX may emit final diagnostics while it is being stopped. Drain that
+    # tail before discarding the paths so a failed relay shutdown remains visible.
+    $finalText = Drain-ManagedProcessLogs
+    if ($finalText) { Append-Log $finalText }
+    Reset-ProcessLogPaths
+    Remove-ActiveProcessState
+    if ((-not $Restart) -and $chkNetworkRestoreOnStop.Checked) {
+        Restore-NetworkTuning -Quiet | Out-Null
+    }
+
+    Set-RunState $false
+    if ($Restart) {
+        $statusLabel.Text = 'Restarting...'
+        $statusLabel.ForeColor = [System.Drawing.Color]::DarkOrange
+    }
+    else {
+        $statusLabel.Text = 'Stopped'
+        $statusLabel.ForeColor = [System.Drawing.Color]::Black
+        $script:StopRequested = $false
+        $null = $form.BeginInvoke([Action]{
+            try { Sync-StandalonePreviewState -Quiet } catch {}
+        })
+    }
+    return $true
+}
+
 function Stop-GstStream {
     param([switch]$Restart)
+
+    if (Stop-ControlledLiveStream -Restart:$Restart) { return }
 
     if ($script:DynamicScenePreviewActive) {
         Stop-DynamicScenePreview
@@ -14677,6 +15027,13 @@ $chkPreview.Add_CheckedChanged({
         Reset-DynamicScenePreviewFallback
     }
 
+    if ($script:ControlledLiveStreamActive -and -not $chkPreview.Checked) {
+        Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Preview disabled; restarting the live stream without in-process scene editing."
+        Stop-GstStream -Restart
+        Update-CommandPreview
+        return
+    }
+
     if ($script:DynamicScenePreviewActive -and -not $chkPreview.Checked) {
         Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Preview disabled; stopping dynamic scene preview."
         Stop-DynamicScenePreview
@@ -14724,6 +15081,14 @@ $chkPreview.Add_CheckedChanged({
 })
 $chkHidePreviewDuringStream.Add_CheckedChanged({
     if ($script:LoadingSettings) {
+        Update-CommandPreview
+        return
+    }
+
+    if ($script:ControlledLiveStreamActive) {
+        Sync-ControlledLivePreviewLayout
+        $previewState = if ($chkHidePreviewDuringStream.Checked) { 'shown only in the live Scene editor' } else { 'shown throughout the UI' }
+        Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Controlled live preview $previewState without restarting the stream."
         Update-CommandPreview
         return
     }
@@ -15466,6 +15831,21 @@ $pollTimer.Add_Tick({
 
     Try-AttachPreview
 
+    if ($script:ControlledLiveStreamActive) {
+        $controlledTerminal = $null
+        try { $controlledTerminal = [GstControlledScenePreview]::PollTerminalMessage() }
+        catch { $controlledTerminal = "bus polling failed: $($_.Exception.Message)" }
+
+        if ($controlledTerminal -or -not [GstControlledScenePreview]::IsRunning) {
+            $reason = if ($controlledTerminal) { $controlledTerminal } else { 'pipeline stopped unexpectedly' }
+            Append-Log "Controlled live stream terminal message: $reason"
+            Append-Log 'Live-control failure latched; restarting this stream with the legacy external launcher.'
+            $script:SuppressControlledLiveStream = $true
+            Stop-GstStream -Restart
+            return
+        }
+    }
+
     if ($script:DynamicScenePreviewActive) {
         $controlledTerminal = $null
         try { $controlledTerminal = [GstControlledScenePreview]::PollTerminalMessage() }
@@ -15496,7 +15876,7 @@ $pollTimer.Add_Tick({
         $script:MediaMtxProcess = $null
         $script:MediaMtxPathInUse = ''
 
-        if ($script:GstProcess -and -not $script:GstProcess.HasExited) {
+        if (($script:GstProcess -and -not $script:GstProcess.HasExited) -or $script:ControlledLiveStreamActive) {
             Append-Log (
                 'Stopping the stream because its managed MediaMTX server is no ' +
                 'longer running.'
@@ -15717,6 +16097,10 @@ function Invoke-ApplicationCleanup {
     catch {}
 
     try {
+        if ($script:ControlledLiveStreamActive) {
+            try { [GstControlledScenePreview]::Stop() } catch {}
+            $script:ControlledLiveStreamActive = $false
+        }
         Stop-DynamicScenePreview -Quiet
     }
     catch {}
