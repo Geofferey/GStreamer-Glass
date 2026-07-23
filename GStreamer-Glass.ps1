@@ -548,7 +548,7 @@ public static class GstProcessJob
 '@
 }
 
-$script:AppVersion = '3.6.7'
+$script:AppVersion = '3.6.8'
 $script:AppName = "GStreamer Glass v$($script:AppVersion)"
 $script:ConfigDirectory = Join-Path $env:APPDATA 'GStreamerBasicWhipStreamer'
 $script:ConfigPath = Join-Path $script:ConfigDirectory 'settings.json'
@@ -1227,10 +1227,18 @@ $toolTip.SetToolTip($chkFullscreenApp, 'When enabled, captures only the topmost 
 $lblCaptureModeStatus = New-Object System.Windows.Forms.Label
 $lblCaptureModeStatus.Text = 'Monitor capture active'
 $lblCaptureModeStatus.Location = New-Object System.Drawing.Point(275, 96)
-$lblCaptureModeStatus.Size = New-Object System.Drawing.Size(443, 25)
+$lblCaptureModeStatus.Size = New-Object System.Drawing.Size(300, 25)
 $lblCaptureModeStatus.TextAlign = 'MiddleLeft'
 $lblCaptureModeStatus.ForeColor = [System.Drawing.Color]::DimGray
 $settingsGroup.Controls.Add($lblCaptureModeStatus)
+
+$chkStartMinimized = New-Object System.Windows.Forms.CheckBox
+$chkStartMinimized.Text = 'Start minimized'
+$chkStartMinimized.Location = New-Object System.Drawing.Point(600, 96)
+$chkStartMinimized.Size = New-Object System.Drawing.Size(125, 25)
+$chkStartMinimized.Checked = $false
+$settingsGroup.Controls.Add($chkStartMinimized)
+$toolTip.SetToolTip($chkStartMinimized, 'Starts the app minimized. If Minimize to tray is enabled, startup goes directly to tray.')
 
 $null = Add-Label $settingsGroup 'Monitor' 15 130 60
 $numMonitor = New-Object System.Windows.Forms.NumericUpDown
@@ -1255,7 +1263,7 @@ $chkPreview.Location = New-Object System.Drawing.Point(235, 130)
 $chkPreview.Size = New-Object System.Drawing.Size(80, 23)
 $chkPreview.Checked = $false
 $settingsGroup.Controls.Add($chkPreview)
-$toolTip.SetToolTip($chkPreview, 'Shows or hides the local preview while streaming. The one-frame leaky preview branch is kept available so toggling does not restart the stream.')
+$toolTip.SetToolTip($chkPreview, 'Includes the local preview branch when the stream starts. Changing this while streaming restarts the pipeline to add/remove preview cleanly.')
 
 $chkAutoRestart = New-Object System.Windows.Forms.CheckBox
 $chkAutoRestart.Text = 'Auto-restart on exit'
@@ -1560,7 +1568,7 @@ $previewPanel.Anchor = 'Top,Bottom,Left,Right'
 $previewGroup.Controls.Add($previewPanel)
 
 $previewPlaceholder = New-Object System.Windows.Forms.Label
-$previewPlaceholder.Text = 'Preview hidden — stream can keep running'
+$previewPlaceholder.Text = 'Preview disabled for this pipeline'
 $previewPlaceholder.ForeColor = [System.Drawing.Color]::LightGray
 $previewPlaceholder.BackColor = [System.Drawing.Color]::Black
 $previewPlaceholder.TextAlign = 'MiddleCenter'
@@ -1930,6 +1938,22 @@ function Update-TrayMenuState {
     catch {
         # Tray state is non-critical and must never affect streaming.
     }
+}
+
+function Apply-StartMinimized {
+    if (-not $chkStartMinimized.Checked -or $script:ExitCleanupStarted) {
+        return
+    }
+
+    try {
+        if ($chkMinimizeToTray.Checked) {
+            Hide-MainWindowToTray
+        }
+        else {
+            $form.WindowState = [System.Windows.Forms.FormWindowState]::Minimized
+        }
+    }
+    catch {}
 }
 
 function Show-MainWindow {
@@ -2844,31 +2868,35 @@ function Build-VideoBranch {
 
     $encoder = Get-EncoderElementChain -Protocol $Protocol
 
-    # Runtime-toggleable preview:
-    # gst-launch pipelines are static after launch, so the preview branch must
-    # exist from the beginning. The checkbox only shows/hides the embedded
-    # d3d11videosink window; it does not rebuild the streaming pipeline.
-    $previewBranch = @(
-        'tee'
-        'name=rawtee'
-        'rawtee.'
-        '!'
-        'queue'
-        'max-size-buffers=1'
-        'max-size-bytes=0'
-        'max-size-time=0'
-        'leaky=downstream'
-        '!'
-        'd3d11videosink'
-        'name=localpreview'
-        'sync=false'
-        'force-aspect-ratio=true'
-        'rawtee.'
-        '!'
-        $encoder
-    ) -join ' '
+    if ($chkPreview.Checked) {
+        # Preview is a real pipeline branch again. If unchecked when the stream
+        # starts, no d3d11videosink branch is created at all. Changing the
+        # checkbox while streaming restarts the pipeline to add/remove this
+        # branch cleanly.
+        $previewBranch = @(
+            'tee'
+            'name=rawtee'
+            'rawtee.'
+            '!'
+            'queue'
+            'max-size-buffers=1'
+            'max-size-bytes=0'
+            'max-size-time=0'
+            'leaky=downstream'
+            '!'
+            'd3d11videosink'
+            'name=localpreview'
+            'sync=false'
+            'force-aspect-ratio=true'
+            'rawtee.'
+            '!'
+            $encoder
+        ) -join ' '
 
-    return "$capture ! $previewBranch"
+        return "$capture ! $previewBranch"
+    }
+
+    return "$capture ! $encoder"
 
 }
 
@@ -3120,6 +3148,7 @@ function Save-Settings {
             AutoRestart       = $chkAutoRestart.Checked
             Verbose           = $chkVerbose.Checked
             MinimizeToTray    = $chkMinimizeToTray.Checked
+            StartMinimized    = $chkStartMinimized.Checked
             Width             = [int]$numWidth.Value
             Height            = [int]$numHeight.Value
             Fps               = [int]$numFps.Value
@@ -3180,6 +3209,7 @@ function Load-Settings {
         if ($null -ne $settings.AutoRestart) { $chkAutoRestart.Checked = [bool]$settings.AutoRestart }
         if ($null -ne $settings.Verbose) { $chkVerbose.Checked = [bool]$settings.Verbose }
         if ($null -ne $settings.MinimizeToTray) { $chkMinimizeToTray.Checked = [bool]$settings.MinimizeToTray }
+        if ($null -ne $settings.StartMinimized) { $chkStartMinimized.Checked = [bool]$settings.StartMinimized }
         if ($settings.Width) { $numWidth.Value = [decimal]$settings.Width }
         if ($settings.Height) { $numHeight.Value = [decimal]$settings.Height }
         if ($settings.Fps) { $numFps.Value = [decimal]$settings.Fps }
@@ -3471,7 +3501,7 @@ function Set-PreviewVisibility {
 }
 
 function Try-AttachPreview {
-    if (-not $script:GstProcess -or $script:GstProcess.HasExited) {
+    if (-not $chkPreview.Checked -or -not $script:GstProcess -or $script:GstProcess.HasExited) {
         return
     }
 
@@ -3691,7 +3721,7 @@ function Start-GstStream {
     $script:PreviewHwnd = [IntPtr]::Zero
     $script:PreviewParked = $false
     $previewPlaceholder.Visible = $true
-    $previewPlaceholder.Text = if ($chkPreview.Checked) { 'Starting preview...' } else { 'Preview hidden — stream still running' }
+    $previewPlaceholder.Text = if ($chkPreview.Checked) { 'Starting preview...' } else { 'Preview disabled for this pipeline' }
 
     $gstPath = $txtGstPath.Text.Trim()
     Prepare-GStreamerRuntime -GstPath $gstPath
@@ -3868,9 +3898,10 @@ function Test-GStreamerElements {
         $elements.Add([string]$definition.Parser)
     }
 
-    # Preview branch is always present so it can be shown/hidden live.
-    $elements.Add('tee')
-    $elements.Add('d3d11videosink')
+    if ($chkPreview.Checked) {
+        $elements.Add('tee')
+        $elements.Add('d3d11videosink')
+    }
 
     $userAudioEnabled =
         $chkDesktopAudio.Checked -or
@@ -4093,16 +4124,17 @@ $chkFullscreenApp.Add_CheckedChanged({
 })
 $chkPreview.Add_CheckedChanged({
     if ($script:GstProcess -and -not $script:GstProcess.HasExited) {
-        Set-PreviewVisibility
-        $previewState = if ($chkPreview.Checked) { 'on' } else { 'off' }
-        Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Preview toggled $previewState without restarting stream."
+        $previewState = if ($chkPreview.Checked) { 'enabled' } else { 'disabled' }
+        Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Preview $previewState; restarting stream to apply preview pipeline branch."
+        $lowerTabs.SelectedTab = $tabLog
+        Stop-GstStream -Restart
     }
     else {
         $previewPlaceholder.Text = if ($chkPreview.Checked) {
-            'Preview will show when stream starts'
+            'Preview will start with the next stream'
         }
         else {
-            'Preview hidden — stream can keep running'
+            'Preview disabled for this pipeline'
         }
     }
 
@@ -4439,6 +4471,12 @@ $form.Add_Shown({
     Update-CommandPreview
     Update-TrayMenuState
     Append-Log "Application icon: $($script:AppIconSource)"
+
+    if ($chkStartMinimized.Checked) {
+        $null = $form.BeginInvoke([Action]{
+            Apply-StartMinimized
+        })
+    }
 })
 
 function Invoke-ApplicationCleanup {
