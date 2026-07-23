@@ -630,7 +630,7 @@ public static class GstProcessJob
 '@
 }
 
-$script:AppVersion = '3.7.52f62'
+$script:AppVersion = '3.7.52f63'
 $script:AppName = "GStreamer Glass v$($script:AppVersion)"
 $script:ConfigDirectory = Join-Path $env:APPDATA 'GStreamerBasicWhipStreamer'
 $script:ConfigPath = Join-Path $script:ConfigDirectory 'settings.json'
@@ -12740,8 +12740,13 @@ function Test-UseDynamicScenePreview {
 
 function Test-DynamicScenePreviewWanted {
     try {
+        $dynamicPreviewContextAllowed = (
+            $script:SceneWorkspaceActive -or
+            ($chkStandardPreviewOffSceneTab -and -not $chkStandardPreviewOffSceneTab.Checked)
+        )
+
         return (
-            $script:SceneWorkspaceActive -and
+            $dynamicPreviewContextAllowed -and
             -not $script:SuppressDynamicScenePreview -and
             $chkDynamicScenePreviews -and $chkDynamicScenePreviews.Checked -and
             $chkSceneEnabled -and $chkSceneEnabled.Checked -and
@@ -12831,6 +12836,9 @@ function Start-DynamicScenePreview {
         $statusLabel.ForeColor = [System.Drawing.Color]::DarkGreen
         Set-RunState $true
         Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Dynamic scene editor preview started."
+        if (-not $script:SceneWorkspaceActive -and $chkStandardPreviewOffSceneTab -and -not $chkStandardPreviewOffSceneTab.Checked) {
+            Show-DynamicScenePreviewInPreviewCard
+        }
         return $true
     }
     catch {
