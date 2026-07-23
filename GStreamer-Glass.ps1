@@ -414,6 +414,26 @@ public static class GstPreviewNative
         if (child != IntPtr.Zero && IsWindow(child))
             ShowWindow(child, visible ? SW_SHOW : SW_HIDE);
     }
+
+    public static bool ReparentEmbeddedWindow(IntPtr child, IntPtr parent, int width, int height, bool visible)
+    {
+        if (child == IntPtr.Zero || parent == IntPtr.Zero || !IsWindow(child))
+            return false;
+
+        SetParent(child, parent);
+        int style = GetWindowLong(child, GWL_STYLE);
+        style &= ~(WS_POPUP | WS_CAPTION | WS_THICKFRAME | WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX);
+        style |= WS_CHILD;
+        if (visible)
+            style |= WS_VISIBLE;
+        else
+            style &= ~WS_VISIBLE;
+
+        SetWindowLong(child, GWL_STYLE, style);
+        MoveWindow(child, 0, 0, Math.Max(1, width), Math.Max(1, height), true);
+        ShowWindow(child, visible ? SW_SHOW : SW_HIDE);
+        return true;
+    }
 }
 '@
 }
@@ -528,7 +548,7 @@ public static class GstProcessJob
 '@
 }
 
-$script:AppVersion = '3.6.6'
+$script:AppVersion = '3.6.7'
 $script:AppName = "GStreamer Glass v$($script:AppVersion)"
 $script:ConfigDirectory = Join-Path $env:APPDATA 'GStreamerBasicWhipStreamer'
 $script:ConfigPath = Join-Path $script:ConfigDirectory 'settings.json'
@@ -572,6 +592,8 @@ $script:MediaMtxStdErrPath = $null
 $script:MediaMtxStdOutPosition = [int64]0
 $script:MediaMtxStdErrPosition = [int64]0
 $script:PreviewHwnd = [IntPtr]::Zero
+$script:PreviewParkForm = $null
+$script:PreviewParked = $false
 $script:CaptureWindowHwnd = [IntPtr]::Zero
 $script:CaptureWindowTitle = ''
 $script:NextFullscreenProbe = [datetime]::MinValue
@@ -1925,6 +1947,9 @@ function Show-MainWindow {
         if ($script:GstProcess -and -not $script:GstProcess.HasExited) {
             $null = $form.BeginInvoke([Action]{
                 try {
+                    if ($script:PreviewParked) {
+                        Restore-PreviewWindowFromParking
+                    }
                     Try-AttachPreview
                     Set-PreviewVisibility
                 }
@@ -1942,11 +1967,11 @@ function Hide-MainWindowToTray {
 
     try {
         if ($script:PreviewHwnd -ne [IntPtr]::Zero) {
-            [GstPreviewNative]::SetWindowVisible($script:PreviewHwnd, $false)
+            Park-PreviewWindow
         }
 
         $previewPlaceholder.Visible = $true
-        $previewPlaceholder.Text = 'Preview hidden while app is in tray'
+        $previewPlaceholder.Text = 'Preview parked while app is in tray'
 
         $form.ShowInTaskbar = $false
         $form.Hide()
@@ -3339,6 +3364,66 @@ function Validate-Configuration {
     return $true
 }
 
+
+function Ensure-PreviewParkingWindow {
+    if ($script:PreviewParkForm -and -not $script:PreviewParkForm.IsDisposed) {
+        return $script:PreviewParkForm
+    }
+
+    $park = New-Object System.Windows.Forms.Form
+    $park.Text = 'GStreamer Glass Preview Parking'
+    $park.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::None
+    $park.ShowInTaskbar = $false
+    $park.StartPosition = [System.Windows.Forms.FormStartPosition]::Manual
+    $park.Location = New-Object System.Drawing.Point(-32000, -32000)
+    $park.Size = New-Object System.Drawing.Size(16, 16)
+    $park.Opacity = 0.01
+    $park.TopMost = $false
+
+    # Keep this window visible. Hiding/minimizing the parent is what makes the
+    # d3d11videosink preview come back black on some Windows systems.
+    $park.Show()
+    $script:PreviewParkForm = $park
+    return $script:PreviewParkForm
+}
+
+function Park-PreviewWindow {
+    if ($script:PreviewHwnd -eq [IntPtr]::Zero) {
+        return
+    }
+
+    try {
+        $park = Ensure-PreviewParkingWindow
+        [void][GstPreviewNative]::ReparentEmbeddedWindow(
+            $script:PreviewHwnd,
+            $park.Handle,
+            16,
+            16,
+            $true
+        )
+        $script:PreviewParked = $true
+    }
+    catch {}
+}
+
+function Restore-PreviewWindowFromParking {
+    if ($script:PreviewHwnd -eq [IntPtr]::Zero) {
+        return
+    }
+
+    try {
+        [void][GstPreviewNative]::ReparentEmbeddedWindow(
+            $script:PreviewHwnd,
+            $previewPanel.Handle,
+            $previewPanel.ClientSize.Width,
+            $previewPanel.ClientSize.Height,
+            $chkPreview.Checked
+        )
+        $script:PreviewParked = $false
+    }
+    catch {}
+}
+
 function Set-PreviewVisibility {
     $formIsHiddenForTray =
         (-not $form.Visible) -or
@@ -3347,7 +3432,7 @@ function Set-PreviewVisibility {
     if ($script:PreviewHwnd -eq [IntPtr]::Zero) {
         $previewPlaceholder.Visible = $true
         $previewPlaceholder.Text = if ($formIsHiddenForTray) {
-            'Preview hidden while app is in tray'
+            'Preview parked while app is in tray'
         }
         elseif ($chkPreview.Checked) {
             'Preview starting...'
@@ -3359,10 +3444,14 @@ function Set-PreviewVisibility {
     }
 
     if ($formIsHiddenForTray) {
-        [GstPreviewNative]::SetWindowVisible($script:PreviewHwnd, $false)
+        Park-PreviewWindow
         $previewPlaceholder.Visible = $true
-        $previewPlaceholder.Text = 'Preview hidden while app is in tray'
+        $previewPlaceholder.Text = 'Preview parked while app is in tray'
         return
+    }
+
+    if ($script:PreviewParked) {
+        Restore-PreviewWindowFromParking
     }
 
     if ($chkPreview.Checked) {
@@ -3391,6 +3480,7 @@ function Try-AttachPreview {
         if ($candidate -ne [IntPtr]::Zero) {
             if ([GstPreviewNative]::EmbedWindow($candidate, $previewPanel.Handle, $previewPanel.ClientSize.Width, $previewPanel.ClientSize.Height)) {
                 $script:PreviewHwnd = $candidate
+                $script:PreviewParked = $false
                 Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Preview window embedded for runtime toggle."
             }
         }
@@ -3599,6 +3689,7 @@ function Start-GstStream {
     $script:StopRequested = $false
     $script:RestartAt = $null
     $script:PreviewHwnd = [IntPtr]::Zero
+    $script:PreviewParked = $false
     $previewPlaceholder.Visible = $true
     $previewPlaceholder.Text = if ($chkPreview.Checked) { 'Starting preview...' } else { 'Preview hidden — stream still running' }
 
@@ -4196,6 +4287,9 @@ $form.Add_VisibleChanged({
     if ($form.Visible -and $script:GstProcess -and -not $script:GstProcess.HasExited) {
         $null = $form.BeginInvoke([Action]{
             try {
+                if ($script:PreviewParked) {
+                    Restore-PreviewWindowFromParking
+                }
                 Try-AttachPreview
                 Set-PreviewVisibility
             }
@@ -4203,7 +4297,7 @@ $form.Add_VisibleChanged({
         })
     }
     elseif (-not $form.Visible -and $script:PreviewHwnd -ne [IntPtr]::Zero) {
-        [GstPreviewNative]::SetWindowVisible($script:PreviewHwnd, $false)
+        Park-PreviewWindow
     }
 })
 
@@ -4392,6 +4486,11 @@ function Invoke-ApplicationCleanup {
     catch {}
 
     try {
+        if ($script:PreviewParkForm -and -not $script:PreviewParkForm.IsDisposed) {
+            $script:PreviewParkForm.Close()
+            $script:PreviewParkForm.Dispose()
+        }
+
         $trayMenu.Dispose()
     }
     catch {}
