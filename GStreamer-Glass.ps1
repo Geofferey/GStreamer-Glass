@@ -1138,7 +1138,7 @@ public static class GstProcessJob
 '@
 }
 
-$script:AppVersion = '3.7.52f79'
+$script:AppVersion = '3.7.52f80'
 $script:AppName = "GStreamer Glass v$($script:AppVersion)"
 $script:ConfigDirectory = Join-Path $env:APPDATA 'GStreamerBasicWhipStreamer'
 $script:ConfigPath = Join-Path $script:ConfigDirectory 'settings.json'
@@ -9054,6 +9054,20 @@ function Get-DirectWebRtcMediaStreamId {
     return $value.Trim()
 }
 
+function Get-WebRtcMediaStreamPadOptions {
+    param([bool]$HasAudio)
+
+    if (-not (Test-DirectWebRtcSeparateMediaStreams)) { return @() }
+
+    $videoMsid = Quote-GstValue (Get-DirectWebRtcMediaStreamId -Kind video)
+    $options = @("video_0::msid=$videoMsid")
+    if ($HasAudio) {
+        $audioMsid = Quote-GstValue (Get-DirectWebRtcMediaStreamId -Kind audio)
+        $options += "audio_0::msid=$audioMsid"
+    }
+    return $options
+}
+
 function Test-DirectWebRtcUnifiedPublisher {
     return ((Test-DirectWebRtcSplitAvPipelines) -and $chkDirectWebRtcUnifiedPublisher -and $chkDirectWebRtcUnifiedPublisher.Checked)
 }
@@ -12256,6 +12270,7 @@ function Build-DirectWebRtcUnifiedPublisherArguments {
         "max-bitrate=$maxBitrate",
         'meta="meta,name=gstglass-av"'
     )
+    $sinkProps += Get-WebRtcMediaStreamPadOptions -HasAudio $true
     if ($chkDirectWebRtcControlDataChannel.Checked) { $sinkProps += 'enable-control-data-channel=true' }
 
     # Preserve RTP-derived cadence across the process boundary.  The f10 graph
@@ -12489,13 +12504,15 @@ function Build-GstArguments {
             $startBitrate = [int64]$bitrateEnvelope.StartBitrate
             $maxBitrate = [int64]$bitrateEnvelope.MaxBitrate
             $webRtcSinkOptions = " do-fec=$([string]$recoveryFlags.Fec) do-retransmission=$([string]$recoveryFlags.Retransmission) congestion-control=$congestion enable-mitigation-modes=$mitigation min-bitrate=$minBitrate start-bitrate=$startBitrate max-bitrate=$maxBitrate"
+            $mediaStreamPadOptions = Get-WebRtcMediaStreamPadOptions -HasAudio $hasAudio
+            $webRtcMediaStreamOptions = if ($mediaStreamPadOptions.Count -gt 0) { ' ' + ($mediaStreamPadOptions -join ' ') } else { '' }
             $webRtcVideoQueue = Get-DirectWebRtcPacingQueue
 
             if ($hasAudio) {
-                $pipeline = "whipclientsink name=out video-caps=`"$mediaType`" audio-caps=`"$audioMediaType`"$timestampOption$webRtcSinkOptions$stunOption$turnOption signaller::whip-endpoint=$quotedDestination $video$videoSyncSuffix ! $webRtcVideoQueue ! out.video_0 $audioRaw ! $audioEncoded ! $(Get-AudioFinalQueue)$audioSyncSuffix ! out.audio_0"
+                $pipeline = "whipclientsink name=out video-caps=`"$mediaType`" audio-caps=`"$audioMediaType`"$webRtcMediaStreamOptions$timestampOption$webRtcSinkOptions$stunOption$turnOption signaller::whip-endpoint=$quotedDestination $video$videoSyncSuffix ! $webRtcVideoQueue ! out.video_0 $audioRaw ! $audioEncoded ! $(Get-AudioFinalQueue)$audioSyncSuffix ! out.audio_0"
             }
             else {
-                $pipeline = "$video$videoSyncSuffix ! $webRtcVideoQueue ! whipclientsink video-caps=`"$mediaType`"$timestampOption$webRtcSinkOptions$stunOption$turnOption signaller::whip-endpoint=$quotedDestination"
+                $pipeline = "$video$videoSyncSuffix ! $webRtcVideoQueue ! whipclientsink video-caps=`"$mediaType`"$webRtcMediaStreamOptions$timestampOption$webRtcSinkOptions$stunOption$turnOption signaller::whip-endpoint=$quotedDestination"
             }
         }
 
@@ -12552,6 +12569,7 @@ function Build-GstArguments {
                 "start-bitrate=$startBitrate",
                 "max-bitrate=$maxBitrate"
             )
+            $sinkProps += Get-WebRtcMediaStreamPadOptions -HasAudio $hasAudio
             if ((Test-DirectWebRtcSplitAvPipelines) -and (Test-DirectWebRtcSharedSignaling)) {
                 $sinkProps += 'meta="meta,name=gstglass-video,kind=video"'
             }
