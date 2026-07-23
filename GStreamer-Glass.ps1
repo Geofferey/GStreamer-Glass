@@ -1138,7 +1138,7 @@ public static class GstProcessJob
 '@
 }
 
-$script:AppVersion = '3.7.52f76'
+$script:AppVersion = '3.7.52f77'
 $script:AppName = "GStreamer Glass v$($script:AppVersion)"
 $script:ConfigDirectory = Join-Path $env:APPDATA 'GStreamerBasicWhipStreamer'
 $script:ConfigPath = Join-Path $script:ConfigDirectory 'settings.json'
@@ -1220,6 +1220,10 @@ $script:PreviewAppliedSize = [System.Drawing.Size]::Empty
 $script:PreviewAppliedVisible = $null
 $script:PreviewOnlyMode = $false
 $script:ForceLocalPreviewMode = $false
+$script:RecordingPipelineRequested = $false
+$script:RecordingPipelineActive = $false
+$script:RecordingOnlyMode = $false
+$script:RestartRecordingOnlyMode = $false
 $script:DynamicScenePreviewActive = $false
 $script:DynamicScenePreviewStarting = $false
 $script:DynamicScenePreviewStartedAt = $null
@@ -4079,7 +4083,23 @@ $chkRecordingEnabled.Location = New-Object System.Drawing.Point(15, 520)
 $chkRecordingEnabled.Size = New-Object System.Drawing.Size(160, 23)
 $chkRecordingEnabled.Checked = $false
 $settingsGroup.Controls.Add($chkRecordingEnabled)
-$toolTip.SetToolTip($chkRecordingEnabled, 'Records a local file from the same capture source while the selected transport keeps streaming.')
+$toolTip.SetToolTip($chkRecordingEnabled, 'Enables the recording controls and encoder settings. It does not start recording by itself.')
+
+$chkRecordWithStream = New-Object System.Windows.Forms.CheckBox
+$chkRecordWithStream.Text = 'Record with stream'
+$chkRecordWithStream.Location = New-Object System.Drawing.Point(180, 520)
+$chkRecordWithStream.Size = New-Object System.Drawing.Size(160, 23)
+$chkRecordWithStream.Checked = $false
+$settingsGroup.Controls.Add($chkRecordWithStream)
+$toolTip.SetToolTip($chkRecordWithStream, 'Automatically includes the recording branch whenever Go Live starts a transport stream. Preview-only pipelines never record.')
+
+$btnToggleRecording = New-Object System.Windows.Forms.Button
+$btnToggleRecording.Text = 'Start Recording'
+$btnToggleRecording.Location = New-Object System.Drawing.Point(350, 516)
+$btnToggleRecording.Size = New-Object System.Drawing.Size(145, 29)
+$btnToggleRecording.Enabled = $false
+$settingsGroup.Controls.Add($btnToggleRecording)
+$toolTip.SetToolTip($btnToggleRecording, 'Starts or stops recording explicitly. While live, applying the change restarts the stream so the recording branch can be added or removed safely.')
 
 $txtRecordingDirectory = New-Object System.Windows.Forms.TextBox
 $txtRecordingDirectory.Location = New-Object System.Drawing.Point(15, 548)
@@ -5954,6 +5974,93 @@ function Apply-ModernDashboardUi {
         return $section
     }
 
+    # A section whose body collapses behind a clickable chevron header. Returns the
+    # same body panel Add-Section returns, so existing Add-Row/Add-Field calls are
+    # unchanged -- the only difference is the header toggles the body's visibility.
+    # Because the pane is a TopDown FlowLayoutPanel, hiding the body makes the pane
+    # reflow and reclaim the vertical space, so a collapsed advanced group costs one
+    # header line. Starts collapsed by default (simple-first: advanced stays folded
+    # until asked for). Chevrons are BMP Geometric-Shapes glyphs (U+25B6/U+25BC),
+    # which GDI font-links reliably; astral emoji would render as tofu here.
+    function Add-CollapsibleSection {
+        param(
+            [System.Windows.Forms.FlowLayoutPanel]$Pane,
+            [string]$Title,
+            [bool]$Collapsed = $true
+        )
+        $chevronCollapsed = [char]::ConvertFromUtf32(0x25B6)
+        $chevronExpanded  = [char]::ConvertFromUtf32(0x25BC)
+
+        $header = New-Object System.Windows.Forms.Label
+        $header.AutoSize = $true
+        $header.Font = New-Object System.Drawing.Font('Segoe UI', 8, [System.Drawing.FontStyle]::Bold)
+        $header.ForeColor = $script:ColorAccent
+        $header.Margin = New-Object System.Windows.Forms.Padding(2, 12, 0, 4)
+        $header.Cursor = [System.Windows.Forms.Cursors]::Hand
+        $Pane.Controls.Add($header)
+
+        $section = New-Object System.Windows.Forms.FlowLayoutPanel
+        $section.FlowDirection = 'TopDown'
+        $section.WrapContents = $false
+        $section.AutoSize = $true
+        $section.AutoSizeMode = 'GrowAndShrink'
+        $section.Margin = New-Object System.Windows.Forms.Padding(0)
+        $Pane.Controls.Add($section)
+
+        $titleText = $Title.ToUpperInvariant()
+        # All state the click handler needs lives on the header's Tag, so the
+        # handler can be a plain scriptblock reading its sender -- no closures.
+        $header.Tag = @{
+            Section   = $section
+            Collapsed = $Collapsed
+            Title     = $titleText
+            ChevronC  = $chevronCollapsed
+            ChevronE  = $chevronExpanded
+        }
+
+        if ($Collapsed) {
+            $header.Text = "$chevronCollapsed  $titleText"
+            $section.Visible = $false
+        }
+        else {
+            $header.Text = "$chevronExpanded  $titleText"
+            $section.Visible = $true
+        }
+
+        $header.Add_Click({
+            param($sender, $eventArgs)
+            $state = $sender.Tag
+            $state.Collapsed = -not $state.Collapsed
+            if ($state.Collapsed) {
+                $sender.Text = "$($state.ChevronC)  $($state.Title)"
+                $state.Section.Visible = $false
+            }
+            else {
+                $sender.Text = "$($state.ChevronE)  $($state.Title)"
+                $state.Section.Visible = $true
+            }
+            if ($state.Section.Parent) { $state.Section.Parent.PerformLayout() }
+        })
+        $header.Add_MouseEnter({ param($sender, $eventArgs) $sender.ForeColor = $script:ColorText })
+        $header.Add_MouseLeave({ param($sender, $eventArgs) $sender.ForeColor = $script:ColorAccent })
+
+        return $section
+    }
+
+    # A muted, non-interactive label that marks the boundary between the common
+    # controls above it and the collapsible advanced groups below it.
+    function Add-PaneDivider {
+        param([System.Windows.Forms.FlowLayoutPanel]$Pane, [string]$Text = 'Advanced')
+        $divider = New-Object System.Windows.Forms.Label
+        $divider.Text = $Text.ToUpperInvariant()
+        $divider.AutoSize = $true
+        $divider.Font = New-Object System.Drawing.Font('Segoe UI', 7.5, [System.Drawing.FontStyle]::Bold)
+        $divider.ForeColor = $script:ColorMuted
+        $divider.Margin = New-Object System.Windows.Forms.Padding(2, 16, 0, 2)
+        $Pane.Controls.Add($divider)
+        return $divider
+    }
+
     function Add-Row {
         param([System.Windows.Forms.FlowLayoutPanel]$Section)
         $row = New-Object System.Windows.Forms.FlowLayoutPanel
@@ -6156,6 +6263,7 @@ function Apply-ModernDashboardUi {
     # ---------------- Video ----------------
     $paneVideo = New-SettingsPane $tabVideo
 
+    # Common (every-session) controls first.
     $s = Add-Section $paneVideo 'Capture'
     $r = Add-Row $s
     Add-Field $r -Label 'Capture method' -Control $cmbCaptureMethod -Width 260 | Out-Null
@@ -6174,17 +6282,6 @@ function Apply-ModernDashboardUi {
     Add-Field $r -Label 'Tune' -Control $cmbEncoderTune -Width 170 | Out-Null
     Add-Field $r -Label 'Multipass' -Control $cmbMultipass -Width 155 | Out-Null
 
-    $s = Add-Section $paneVideo 'Encoded sender queue'
-    $r = Add-Row $s
-    Add-Field $r -LabelControl $lblWebRtcSenderQueueMode -Control $cmbWebRtcSenderQueueMode -Width 180 | Out-Null
-    Add-Field $r -LabelControl $lblDirectWebRtcPacingMs -Control $numDirectWebRtcPacingMs -Width 90 | Out-Null
-
-    $s = Add-Section $paneVideo 'Clock / timing'
-    $r = Add-Row $s
-    Add-Field $r -Label 'Pipeline master clock' -Control $cmbVideoPipelineClockMode -Width 235 | Out-Null
-    Add-Field $r -Label 'Video timestamps' -Control $cmbVideoTimestampMode -Width 220 | Out-Null
-    Add-Field $r -Label 'Video sync mode' -Control $cmbVideoSyncMode -Width 130 | Out-Null
-
     $s = Add-Section $paneVideo 'Format'
     $r = Add-Row $s
     Add-Field $r -Label 'Width' -Control $numWidth -Width 90 | Out-Null
@@ -6199,13 +6296,27 @@ function Apply-ModernDashboardUi {
     Add-Field $r -Label 'Preset' -Control $cmbPreset -Width 120 | Out-Null
     Add-Field $r -Label 'Profile' -Control $cmbProfile -Width 170 | Out-Null
 
-    $s = Add-Section $paneVideo 'Keyframes'
+    # Advanced (set-once) controls below, folded by default.
+    Add-PaneDivider $paneVideo 'Advanced' | Out-Null
+
+    $s = Add-CollapsibleSection $paneVideo 'Encoded sender queue'
+    $r = Add-Row $s
+    Add-Field $r -LabelControl $lblWebRtcSenderQueueMode -Control $cmbWebRtcSenderQueueMode -Width 180 | Out-Null
+    Add-Field $r -LabelControl $lblDirectWebRtcPacingMs -Control $numDirectWebRtcPacingMs -Width 90 | Out-Null
+
+    $s = Add-CollapsibleSection $paneVideo 'Clock / timing'
+    $r = Add-Row $s
+    Add-Field $r -Label 'Pipeline master clock' -Control $cmbVideoPipelineClockMode -Width 235 | Out-Null
+    Add-Field $r -Label 'Video timestamps' -Control $cmbVideoTimestampMode -Width 220 | Out-Null
+    Add-Field $r -Label 'Video sync mode' -Control $cmbVideoSyncMode -Width 130 | Out-Null
+
+    $s = Add-CollapsibleSection $paneVideo 'Keyframes'
     $r = Add-Row $s
     Add-Field $r -Label 'GOP sec' -Control $numGopSeconds -Width 80 | Out-Null
     Add-Field $r -Control $chkUnifiedBridgeKeyframeGuard -Width 260 | Out-Null
     Add-Field $r -Label 'Interval ms' -Control $numUnifiedBridgeKeyframeIntervalMs -Width 90 | Out-Null
 
-    $s = Add-Section $paneVideo 'Quality tuning'
+    $s = Add-CollapsibleSection $paneVideo 'Quality tuning'
     $r = Add-Row $s
     Add-Field $r -Label 'B-frames' -Control $numBFrames -Width 80 | Out-Null
     Add-Field $r -Control $chkLookAhead -Width 110 | Out-Null
@@ -6285,31 +6396,7 @@ function Apply-ModernDashboardUi {
     # ---------------- Audio ----------------
     $paneAudio = New-SettingsPane $tabAudio
 
-    $s = Add-Section $paneAudio 'Clock / timing'
-    $r = Add-Row $s
-    Add-Field $r -Label 'A/V test mode' -Control $cmbAudioTransportMode -Width 270 | Out-Null
-    Add-Field $r -Label 'Split audio pipeline clock' -Control $cmbSplitAudioPipelineClockMode -Width 235 | Out-Null
-    $r = Add-Row $s
-    Add-Field $r -LabelControl $lblAudioClockMode -Control $cmbAudioClockMode -Width 230 | Out-Null
-    Add-Field $r -Control $chkWasapiLowLatencyOverride -Width 190 | Out-Null
-    $r = Add-Row $s
-    Add-Field $r -LabelControl $lblAudioTimingMode -Control $cmbAudioTimingMode -Width 270 | Out-Null
-    Add-Field $r -LabelControl $lblAudioSlaveMethod -Control $cmbAudioSlaveMethod -Width 180 | Out-Null
-    Add-Field $r -Label 'Audio sync mode' -Control $cmbAudioSyncMode -Width 130 | Out-Null
-    $r = Add-Row $s
-    Add-Field $r -Control $chkAudioBufferOverride -Width 165 | Out-Null
-    Add-Field $r -LabelControl $lblAudioBufferMs -Control $numAudioBufferMs -Width 80 | Out-Null
-    Add-Field $r -Control $chkAudioLatencyOverride -Width 165 | Out-Null
-    Add-Field $r -LabelControl $lblAudioLatencyMs -Control $numAudioLatencyMs -Width 80 | Out-Null
-    $r = Add-Row $s
-    Add-Field $r -Control $chkAudioSampleRateOverride -Width 175 | Out-Null
-    Add-Field $r -LabelControl $lblAudioSampleRate -Control $numAudioSampleRate -Width 115 | Out-Null
-
-    $s = Add-Section $paneAudio 'Audio queues'
-    $r = Add-Row $s
-    Add-Field $r -LabelControl $lblAudioQueueBuffers -Control $numAudioQueueBuffers -Width 90 | Out-Null
-    Add-Field $r -LabelControl $lblAudioQueueCapMs -Control $numAudioQueueCapMs -Width 100 | Out-Null
-
+    # Common (every-session) controls first: what you capture and how it's coded.
     $s = Add-Section $paneAudio 'Sources'
     $r = Add-Row $s
     Add-Field $r -Control $chkDesktopAudio -Width 180 | Out-Null
@@ -6332,7 +6419,35 @@ function Apply-ModernDashboardUi {
     $r = Add-Row $s
     Add-Field $r -Label 'Audio kbps' -Control $numAudioBitrate -Width 110 | Out-Null
 
-    $s = Add-Section $paneAudio 'Direct GST WebRTC Opus'
+    # Advanced (set-once) controls below, folded by default.
+    Add-PaneDivider $paneAudio 'Advanced' | Out-Null
+
+    $s = Add-CollapsibleSection $paneAudio 'Clock / timing'
+    $r = Add-Row $s
+    Add-Field $r -Label 'A/V test mode' -Control $cmbAudioTransportMode -Width 270 | Out-Null
+    Add-Field $r -Label 'Split audio pipeline clock' -Control $cmbSplitAudioPipelineClockMode -Width 235 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -LabelControl $lblAudioClockMode -Control $cmbAudioClockMode -Width 230 | Out-Null
+    Add-Field $r -Control $chkWasapiLowLatencyOverride -Width 190 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -LabelControl $lblAudioTimingMode -Control $cmbAudioTimingMode -Width 270 | Out-Null
+    Add-Field $r -LabelControl $lblAudioSlaveMethod -Control $cmbAudioSlaveMethod -Width 180 | Out-Null
+    Add-Field $r -Label 'Audio sync mode' -Control $cmbAudioSyncMode -Width 130 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Control $chkAudioBufferOverride -Width 165 | Out-Null
+    Add-Field $r -LabelControl $lblAudioBufferMs -Control $numAudioBufferMs -Width 80 | Out-Null
+    Add-Field $r -Control $chkAudioLatencyOverride -Width 165 | Out-Null
+    Add-Field $r -LabelControl $lblAudioLatencyMs -Control $numAudioLatencyMs -Width 80 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Control $chkAudioSampleRateOverride -Width 175 | Out-Null
+    Add-Field $r -LabelControl $lblAudioSampleRate -Control $numAudioSampleRate -Width 115 | Out-Null
+
+    $s = Add-CollapsibleSection $paneAudio 'Audio queues'
+    $r = Add-Row $s
+    Add-Field $r -LabelControl $lblAudioQueueBuffers -Control $numAudioQueueBuffers -Width 90 | Out-Null
+    Add-Field $r -LabelControl $lblAudioQueueCapMs -Control $numAudioQueueCapMs -Width 100 | Out-Null
+
+    $s = Add-CollapsibleSection $paneAudio 'Direct GST WebRTC Opus'
     $r = Add-Row $s
     Add-Field $r -Label 'Opus mode' -Control $cmbDirectWebRtcOpusMode -Width 190 | Out-Null
     Add-Field $r -Label 'Frame ms' -Control $cmbDirectWebRtcOpusFrameMs -Width 80 | Out-Null
@@ -6407,6 +6522,8 @@ function Apply-ModernDashboardUi {
     $s = Add-Section $paneRecording 'Recording'
     $r = Add-Row $s
     Add-Field $r -Control $chkRecordingEnabled -Width 170 | Out-Null
+    Add-Field $r -Control $chkRecordWithStream -Width 170 | Out-Null
+    Add-Field $r -Control $btnToggleRecording -Width 150 | Out-Null
     $r = Add-Row $s
     Add-Field $r -Label 'Output folder' -Control $txtRecordingDirectory -Width 425 | Out-Null
     Add-Field $r -Control $btnBrowseRecordingDirectory -Width 95 | Out-Null
@@ -6646,7 +6763,7 @@ function Apply-ModernDashboardUi {
         $cmbAudioTransportMode, $cmbSplitAudioPipelineClockMode, $cmbAudioClockMode, $cmbAudioTimingMode, $cmbAudioSlaveMethod, $cmbAudioSyncMode, $chkWasapiLowLatencyOverride, $chkAudioBufferOverride, $numAudioBufferMs, $chkAudioLatencyOverride, $numAudioLatencyMs, $chkAudioSampleRateOverride, $numAudioSampleRate, $chkDesktopAudio, $chkAudioMixerMode, $numDesktopVolume, $cmbDesktopAudioDevice, $btnRefreshAudioDevices, $chkMic, $numMicVolume, $cmbMicAudioDevice, $lblAudioDeviceStatus,
         $cmbAudioCodec, $lblAudioCodecStatus, $numAudioBitrate,
         $cmbDirectWebRtcOpusMode, $cmbDirectWebRtcOpusFrameMs, $cmbDirectWebRtcOpusAudioType, $chkDirectWebRtcOpusFec, $chkDirectWebRtcOpusDtx,
-        $chkRecordingEnabled, $txtRecordingDirectory, $btnBrowseRecordingDirectory,
+        $chkRecordingEnabled, $chkRecordWithStream, $btnToggleRecording, $txtRecordingDirectory, $btnBrowseRecordingDirectory,
         $txtRecordingTemplate, $cmbRecordingEncoder, $lblRecordingStatus,
         $cmbRecordingPreset, $cmbRecordingProfile, $cmbRecordingRateControl,
         $numRecordingWidth, $numRecordingHeight, $numRecordingFps,
@@ -6690,7 +6807,7 @@ function Apply-ModernDashboardUi {
         $chkDirectWebRtcOpusFec, $chkDirectWebRtcOpusDtx,
         $chkLookAhead, $chkAdaptiveQuantization, $chkTemporalAq,
         $chkDesktopAudio, $chkAudioMixerMode, $chkMic, $chkAudioSampleRateOverride,
-        $chkRecordingEnabled, $chkRecordingLookAhead, $chkRecordingSpatialAq,
+        $chkRecordingEnabled, $chkRecordWithStream, $chkRecordingLookAhead, $chkRecordingSpatialAq,
         $chkRecordingTemporalAq, $chkRecordingDesktopAudio, $chkRecordingMic,
         $chkNetworkTuningEnabled, $chkNetworkDscp, $chkNetworkDisablePowerSaving,
         $chkNetworkDisableEee, $chkNetworkRestoreOnStop, $chkNetworkRestoreOnExit,
@@ -7335,6 +7452,7 @@ function Set-RunState {
         $btnStart.Text = "$($script:Glyph.Start)  Start"
         $btnStop.Text = "$($script:Glyph.Stop)  Stop"
     }
+    Update-RecordingUi
     Update-TrayMenuState
 }
 
@@ -8243,6 +8361,7 @@ function Reset-AudioDefaults {
 
 function Reset-RecordingDefaults {
     $chkRecordingEnabled.Checked = $false
+    $chkRecordWithStream.Checked = $false
     $txtRecordingDirectory.Text = Join-Path ([Environment]::GetFolderPath('MyVideos')) 'GStreamer Glass'
     $txtRecordingTemplate.Text = 'Glass-{yyyyMMdd-HHmmss}-{protocol}-{width}x{height}-{fps}fps.mkv'
     $cmbRecordingEncoder.SelectedItem = $script:DefaultEncoderName
@@ -10250,7 +10369,11 @@ function Update-DirectWebRtcUi {
 
 
 function Test-RecordingEnabled {
-    return ($chkRecordingEnabled -and $chkRecordingEnabled.Checked)
+    return (
+        $chkRecordingEnabled -and
+        $chkRecordingEnabled.Checked -and
+        [bool]$script:RecordingPipelineRequested
+    )
 }
 
 function Get-SelectedRecordingEncoderDefinition {
@@ -10635,6 +10758,11 @@ function Update-RecordingUi {
     foreach ($control in @($txtRecordingDirectory,$btnBrowseRecordingDirectory,$txtRecordingTemplate,$cmbRecordingEncoder,$cmbRecordingRateControl,$numRecordingWidth,$numRecordingHeight,$numRecordingFps,$numRecordingVideoBitrate,$numRecordingMaxVideoBitrate,$numRecordingConstantQp,$numRecordingGopSeconds,$chkRecordingDesktopAudio,$chkRecordingMic,$numRecordingAudioBitrate,$txtRecordingCustomEncoderOptions)) {
         if ($control) { $control.Enabled = $enabled }
     }
+    if ($chkRecordWithStream) { $chkRecordWithStream.Enabled = $enabled }
+    if ($btnToggleRecording) {
+        $btnToggleRecording.Enabled = $enabled -and -not $script:WaitingForFullscreen
+        $btnToggleRecording.Text = if ($script:RecordingPipelineActive) { 'Stop Recording' } else { 'Start Recording' }
+    }
     $isNvenc = ($family -eq 'NVENC')
     $recordingRateControl = Get-ComboSelectedOrDefault $cmbRecordingRateControl 'constqp'
     $numRecordingConstantQp.Enabled = $enabled -and ($recordingRateControl -eq 'constqp' -or ($isNvenc -and $recordingRateControl -eq 'vbr'))
@@ -10650,10 +10778,14 @@ function Update-RecordingUi {
     $chkRecordingSpatialAq.Enabled = $enabled -and $support.AdaptiveQuantization
     $chkRecordingTemporalAq.Enabled = $enabled -and $support.AdaptiveQuantization
     $numRecordingAqStrength.Enabled = $enabled -and $support.AdaptiveQuantization -and ($chkRecordingSpatialAq.Checked -or $chkRecordingTemporalAq.Checked)
-    if ($enabled) {
+    if ($script:RecordingPipelineActive) {
+        $lblRecordingStatus.Text = "RECORDING * $codec * $kind * MKV"
+        $lblRecordingStatus.ForeColor = [System.Drawing.Color]::DarkGreen
+    }
+    elseif ($enabled) {
         $audioSummary = if ($chkRecordingDesktopAudio.Checked -or $chkRecordingMic.Checked) { 'Opus audio' } else { 'video only' }
         $rcSummary = Get-ComboSelectedOrDefault $cmbRecordingRateControl 'constqp'
-        $lblRecordingStatus.Text = "$codec * $kind * $rcSummary * MKV * $audioSummary"
+        $lblRecordingStatus.Text = "Ready * $codec * $kind * $rcSummary * MKV * $audioSummary"
         $lblRecordingStatus.ForeColor = [System.Drawing.Color]::DarkSlateBlue
     }
     else {
@@ -10661,6 +10793,55 @@ function Update-RecordingUi {
         $lblRecordingStatus.ForeColor = [System.Drawing.Color]::DimGray
     }
     Update-CommandPreview
+}
+
+function Invoke-ToggleRecording {
+    if (-not $chkRecordingEnabled.Checked) {
+        [System.Windows.Forms.MessageBox]::Show(
+            'Enable recording first, then use Start Recording.',
+            $script:AppName,
+            'OK',
+            'Information'
+        ) | Out-Null
+        return
+    }
+
+    $pipelineRunning = $script:GstProcess -and -not $script:GstProcess.HasExited
+
+    if ($script:RecordingPipelineActive) {
+        if ($script:RecordingOnlyMode) {
+            Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Stop Recording requested; stopping the local recording pipeline."
+            Stop-GstStream
+        }
+        else {
+            # Removing a tee/mux branch safely requires rebuilding the gst-launch
+            # graph. Clear the persistent policy too, otherwise the scheduled
+            # stream restart would immediately add recording again.
+            $chkRecordWithStream.Checked = $false
+            Save-Settings
+            Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Stop Recording requested; restarting the live stream without its recording branch."
+            Stop-GstStream -Restart
+        }
+        return
+    }
+
+    if ($pipelineRunning -and -not $script:PreviewOnlyMode -and (Test-TransportEnabled)) {
+        $chkRecordWithStream.Checked = $true
+        Save-Settings
+        Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Start Recording requested; restarting the live stream with its recording branch."
+        Stop-GstStream -Restart
+        return
+    }
+
+    if ($pipelineRunning -or $script:DynamicScenePreviewActive) {
+        $script:RestartRecordingOnlyMode = $true
+        Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Start Recording requested; replacing the preview-only pipeline with a local recording pipeline."
+        Stop-GstStream -Restart
+        return
+    }
+
+    Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Starting local recording."
+    Start-GstStream -RecordingOnly
 }
 
 function Get-SelectedEncoderDefinition {
@@ -12455,7 +12636,21 @@ function Convert-GstArgumentsToPowerShellPreview {
 }
 
 function Update-CommandPreview {
+    $originalRecordingRequest = [bool]$script:RecordingPipelineRequested
     try {
+        $pipelineRunning = $script:GstProcess -and -not $script:GstProcess.HasExited
+        if (-not $pipelineRunning) {
+            # The command pane describes the normal Start/Go Live action. Manual
+            # recording-only runs are launched by the dedicated button.
+            $script:RecordingPipelineRequested = [bool](
+                $chkRecordingEnabled -and
+                $chkRecordingEnabled.Checked -and
+                $chkRecordWithStream -and
+                $chkRecordWithStream.Checked -and
+                ((-not $chkTransportEnabled) -or $chkTransportEnabled.Checked)
+            )
+        }
+
         $gstPath = $txtGstPath.Text.Trim()
         if ([string]::IsNullOrWhiteSpace($gstPath)) {
             $gstPath = 'gst-launch-1.0.exe'
@@ -12496,8 +12691,10 @@ function Update-CommandPreview {
         }
 
         $txtCommand.Text = $previewText
+        $script:RecordingPipelineRequested = $originalRecordingRequest
     }
     catch {
+        $script:RecordingPipelineRequested = $originalRecordingRequest
         $txtCommand.Text = "Unable to build command: $($_.Exception.Message)"
     }
 }
@@ -12691,6 +12888,7 @@ function Save-Settings {
             SendAbsoluteTimestamps = (Test-SendAbsoluteTimestampsEnabled)
             TimingMode             = [string]$cmbTimingMode.SelectedItem
             RecordingEnabled  = $chkRecordingEnabled.Checked
+            RecordWithStream  = $chkRecordWithStream.Checked
             RecordingDirectory = $txtRecordingDirectory.Text
             RecordingTemplate = $txtRecordingTemplate.Text
             RecordingEncoder  = [string]$cmbRecordingEncoder.SelectedItem
@@ -13079,6 +13277,7 @@ function Load-Settings {
             $cmbTimingMode.SelectedItem = if ($loadedClockSignalingEnabled) { 'On / protocol clock signaling' } else { $script:DefaultTimingMode }
         }
         if ($null -ne $settings.RecordingEnabled) { $chkRecordingEnabled.Checked = [bool]$settings.RecordingEnabled }
+        if ($null -ne $settings.RecordWithStream) { $chkRecordWithStream.Checked = [bool]$settings.RecordWithStream }
         if ($settings.RecordingDirectory) { $txtRecordingDirectory.Text = [string]$settings.RecordingDirectory }
         if ($settings.RecordingTemplate) { $txtRecordingTemplate.Text = [string]$settings.RecordingTemplate }
         if ($settings.RecordingEncoder -and $cmbRecordingEncoder.Items.Contains([string]$settings.RecordingEncoder)) {
@@ -13258,7 +13457,7 @@ function Validate-Configuration {
         return $false
     }
 
-    if (-not (Test-TransportEnabled) -and -not $chkRecordingEnabled.Checked -and -not $chkPreview.Checked) {
+    if (-not (Test-TransportEnabled) -and -not (Test-RecordingEnabled) -and -not $chkPreview.Checked) {
         [System.Windows.Forms.MessageBox]::Show(
             'Enable transport, recording, or preview before starting.',
             $script:AppName,
@@ -13398,7 +13597,7 @@ function Validate-Configuration {
             ) | Out-Null
             return $false
         }
-        if ($chkRecordingEnabled.Checked -and ($chkRecordingDesktopAudio.Checked -or $chkRecordingMic.Checked)) {
+        if ((Test-RecordingEnabled) -and ($chkRecordingDesktopAudio.Checked -or $chkRecordingMic.Checked)) {
             [System.Windows.Forms.MessageBox]::Show(
                 'Unified A/V publisher lab currently supports local video-only recording. Disable Recording desktop/microphone audio so a second WASAPI source is not injected into the video capture process and allowed to contaminate this timing experiment.',
                 $script:AppName,
@@ -13463,7 +13662,7 @@ function Validate-Configuration {
     }
     }
 
-    if ($chkRecordingEnabled.Checked) {
+    if (Test-RecordingEnabled) {
         try {
             $script:ResolvedRecordingPath = Resolve-RecordingFilePath -EnsureDirectory -AvoidExisting
         }
@@ -13874,6 +14073,9 @@ function Start-DynamicScenePreview {
         $script:DynamicScenePreviewActive = $true
         $script:DynamicScenePreviewStartedAt = Get-Date
         $script:PreviewOnlyMode = $true
+        $script:RecordingPipelineRequested = $false
+        $script:RecordingPipelineActive = $false
+        $script:RecordingOnlyMode = $false
         $script:PipelineHasPreview = $false
         $script:PreviewHwnd = [IntPtr]::Zero
         Reset-PreviewAppliedState
@@ -13965,6 +14167,9 @@ function Stop-DynamicScenePreview {
     $script:DynamicScenePreviewStarting = $false
     $script:DynamicScenePreviewStartedAt = $null
     $script:PreviewOnlyMode = $false
+    $script:RecordingPipelineRequested = $false
+    $script:RecordingPipelineActive = $false
+    $script:RecordingOnlyMode = $false
     $script:ControlledScenePreviewSurfaceHwnd = [IntPtr]::Zero
     $script:ControlledScenePreviewAppliedSize = [System.Drawing.Size]::Empty
 
@@ -14268,14 +14473,16 @@ function Stop-ManagedMediaMtx {
 function Start-GstStream {
     param(
         [switch]$Automatic,
-        [switch]$PreviewOnly
+        [switch]$PreviewOnly,
+        [switch]$RecordingOnly
     )
 
     if ($script:ControlledLiveStreamActive) { return }
 
     if ($script:DynamicScenePreviewActive) {
         if ($PreviewOnly) { return }
-        Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Going live: stopping dynamic scene preview and starting the configured stream."
+        $transition = if ($RecordingOnly) { 'Starting recording' } else { 'Going live' }
+        Append-Log "[$(Get-Date -Format 'HH:mm:ss')] ${transition}: stopping dynamic scene preview and starting the requested pipeline."
         Stop-DynamicScenePreview -Quiet
     }
 
@@ -14286,19 +14493,34 @@ function Start-GstStream {
 
     if ($script:GstProcess -and -not $script:GstProcess.HasExited) {
         if ($script:PreviewOnlyMode -and -not $PreviewOnly) {
-            Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Going live: stopping local preview and starting the configured stream."
+            $transition = if ($RecordingOnly) { 'Starting recording' } else { 'Going live' }
+            Append-Log "[$(Get-Date -Format 'HH:mm:ss')] ${transition}: stopping local preview and starting the requested pipeline."
+            $script:RestartRecordingOnlyMode = [bool]$RecordingOnly
             Stop-GstStream -Restart
         }
         return
     }
 
-    $script:ForceLocalPreviewMode = [bool]$PreviewOnly
+    $configuredTransportEnabled = (-not $chkTransportEnabled) -or [bool]$chkTransportEnabled.Checked
+    $script:RecordingPipelineRequested = [bool](
+        $chkRecordingEnabled -and
+        $chkRecordingEnabled.Checked -and
+        (
+            $RecordingOnly -or
+            ((-not $PreviewOnly) -and $configuredTransportEnabled -and $chkRecordWithStream.Checked)
+        )
+    )
+    $script:RecordingOnlyMode = [bool]$RecordingOnly
+    $script:RecordingPipelineActive = $false
+    $script:ForceLocalPreviewMode = [bool]($PreviewOnly -or $RecordingOnly)
 
     if (-not (Validate-Configuration)) {
         $script:WaitingForFullscreen = $false
         $script:RestartAt = $null
         $script:PreviewOnlyMode = $false
         $script:ForceLocalPreviewMode = $false
+        $script:RecordingPipelineRequested = $false
+        $script:RecordingOnlyMode = $false
         Set-RunState $false
         return
     }
@@ -14310,6 +14532,7 @@ function Start-GstStream {
         $script:WaitingForFullscreen = $true
         $script:StopRequested = $false
         $script:RestartAt = (Get-Date).AddSeconds(2)
+        $script:RestartRecordingOnlyMode = [bool]$RecordingOnly
         $statusLabel.Text = 'Waiting for a fullscreen application'
         $statusLabel.ForeColor = [System.Drawing.Color]::DarkOrange
         Set-WaitingForFullscreenState
@@ -14318,6 +14541,8 @@ function Start-GstStream {
         }
         $script:PreviewOnlyMode = $false
         $script:ForceLocalPreviewMode = $false
+        $script:RecordingPipelineRequested = $false
+        $script:RecordingOnlyMode = $false
         return
     }
 
@@ -14345,7 +14570,7 @@ function Start-GstStream {
     $script:PreviewHwnd = [IntPtr]::Zero
     $script:PreviewParked = $false
     Reset-PreviewAppliedState
-    $controlledLiveRequested = [bool](Test-ControlledLiveStreamRequested -PreviewOnly:$PreviewOnly)
+    $controlledLiveRequested = [bool]((-not $RecordingOnly) -and (Test-ControlledLiveStreamRequested -PreviewOnly:$PreviewOnly))
     $script:ForceLiveScenePreviewBranch = $controlledLiveRequested
     try { $script:PipelineHasPreview = Test-PreviewEnabledForCurrentPipeline }
     finally { $script:ForceLiveScenePreviewBranch = $false }
@@ -14358,6 +14583,8 @@ function Start-GstStream {
         $statusLabel.ForeColor = [System.Drawing.Color]::DarkRed
         $script:PreviewOnlyMode = $false
         $script:ForceLocalPreviewMode = $false
+        $script:RecordingPipelineRequested = $false
+        $script:RecordingOnlyMode = $false
         Set-RunState $false
         return
     }
@@ -14372,6 +14599,8 @@ function Start-GstStream {
         $statusLabel.ForeColor = [System.Drawing.Color]::DarkRed
         $script:PreviewOnlyMode = $false
         $script:ForceLocalPreviewMode = $false
+        $script:RecordingPipelineRequested = $false
+        $script:RecordingOnlyMode = $false
         Set-RunState $false
         return
     }
@@ -14393,6 +14622,8 @@ function Start-GstStream {
     catch {
         $script:PreviewOnlyMode = $false
         $script:ForceLocalPreviewMode = $false
+        $script:RecordingPipelineRequested = $false
+        $script:RecordingOnlyMode = $false
         $statusLabel.Text = 'Start failed'
         $statusLabel.ForeColor = [System.Drawing.Color]::DarkRed
         Set-RunState $false
@@ -14480,7 +14711,7 @@ function Start-GstStream {
     if ($chkSceneEnabled.Checked -and [string]$cmbScenePreset.SelectedItem -eq 'Desktop + webcam') {
         Append-Log "Scene input queues: $([int]$numSceneInputQueueBuffers.Value) buffers / $([int]$numSceneInputQueueCapMs.Value) ms per input, leaky=downstream. 0 ms is emitted literally with no hidden fallback."
     }
-    if ($chkRecordingEnabled.Checked) {
+    if (Test-RecordingEnabled) {
         Append-Log "Recording file: $script:ResolvedRecordingPath"
         Append-Log "Recording encoder: $([string]$cmbRecordingEncoder.SelectedItem), $([int]$numRecordingVideoBitrate.Value) kbps, $([int]$numRecordingWidth.Value)x$([int]$numRecordingHeight.Value)@$([int]$numRecordingFps.Value)"
         Append-Log 'Recording branch guard: decoupled from the capture thread by a shallow non-leaky queue (recordq). Sustained disk/encoder overrun will backpressure capture rather than drop recorded frames; a software recording encoder can therefore throttle the live branch.'
@@ -14590,6 +14821,7 @@ function Start-GstStream {
             }
 
             $script:ControlledLiveStreamActive = $true
+            $script:RecordingPipelineActive = [bool](Test-RecordingEnabled)
             $script:ControlledLivePreviewSurfaceHwnd = $renderTarget.Handle
             $script:ControlledLivePreviewAppliedSize = $renderSize
             $script:PreviewHwnd = [IntPtr]::Zero
@@ -14602,7 +14834,7 @@ function Start-GstStream {
             if ($transportEnabled) {
                 $statusLabel.Text = "$([string]$cmbProtocol.SelectedItem) streaming - controlled worker PID $($script:GstProcess.Id)$mediaSuffix"
             }
-            elseif ($chkRecordingEnabled.Checked) {
+            elseif ($script:RecordingPipelineActive) {
                 $statusLabel.Text = "Recording locally - controlled worker PID $($script:GstProcess.Id)"
             }
             else {
@@ -14709,6 +14941,7 @@ function Start-GstStream {
         }
 
         Save-ActiveProcessState
+        $script:RecordingPipelineActive = [bool](Test-RecordingEnabled)
 
         $targetSuffix = if ((Test-FullscreenCaptureMode) -and $script:CaptureWindowTitle) { " - $($script:CaptureWindowTitle)" } else { '' }
         $mediaSuffix = if (
@@ -14725,7 +14958,7 @@ function Start-GstStream {
             $audioSuffix = if ($script:GstAudioProcess -and -not $script:GstAudioProcess.HasExited) { " + Audio PID $($script:GstAudioProcess.Id)" } else { '' }
             $statusLabel.Text = "$([string]$cmbProtocol.SelectedItem) streaming - GST PID $($script:GstProcess.Id)$videoSuffix$audioSuffix$mediaSuffix$targetSuffix"
         }
-        elseif ($chkRecordingEnabled.Checked) {
+        elseif ($script:RecordingPipelineActive) {
             $statusLabel.Text = "Recording locally - GST PID $($script:GstProcess.Id)$targetSuffix"
         }
         else {
@@ -14742,6 +14975,9 @@ function Start-GstStream {
         $script:GstAudioProcess = $null
         $script:PreviewOnlyMode = $false
         $script:ForceLocalPreviewMode = $false
+        $script:RecordingPipelineRequested = $false
+        $script:RecordingPipelineActive = $false
+        $script:RecordingOnlyMode = $false
         Stop-ManagedMediaMtx -Quiet
         if ($chkNetworkRestoreOnStop.Checked) { Restore-NetworkTuning -Quiet | Out-Null }
         Remove-ActiveProcessState
@@ -14759,6 +14995,12 @@ function Stop-ControlledLiveStream {
 
     $script:StopRequested = $true
     $script:WaitingForFullscreen = $false
+    if ($Restart) {
+        $script:RestartRecordingOnlyMode = [bool]($script:RestartRecordingOnlyMode -or $script:RecordingOnlyMode)
+    }
+    else {
+        $script:RestartRecordingOnlyMode = $false
+    }
     $script:RestartAt = if ($Restart) { (Get-Date).AddMilliseconds(800) } else { $null }
     $workerProcess = $script:GstProcess
     if ($workerProcess -and -not $workerProcess.HasExited) {
@@ -14784,6 +15026,9 @@ function Stop-ControlledLiveStream {
     $script:PipelineHasPreview = $false
     $script:PreviewOnlyMode = $false
     $script:ForceLocalPreviewMode = $false
+    $script:RecordingPipelineRequested = $false
+    $script:RecordingPipelineActive = $false
+    $script:RecordingOnlyMode = $false
     $script:ForceLiveScenePreviewBranch = $false
     Reset-PreviewAppliedState
 
@@ -14830,11 +15075,14 @@ function Stop-GstStream {
     $script:StopRequested = $true
     $script:WaitingForFullscreen = $false
     $wasPreviewOnly = [bool]$script:PreviewOnlyMode
+    $wasRecordingOnly = [bool]$script:RecordingOnlyMode
 
     if ($Restart) {
+        $script:RestartRecordingOnlyMode = [bool]($script:RestartRecordingOnlyMode -or $wasRecordingOnly)
         $script:RestartAt = (Get-Date).AddMilliseconds(800)
     }
     else {
+        $script:RestartRecordingOnlyMode = $false
         $script:RestartAt = $null
     }
 
@@ -14843,6 +15091,9 @@ function Stop-GstStream {
     $script:PipelineHasPreview = $false
     $script:PreviewOnlyMode = $false
     $script:ForceLocalPreviewMode = $false
+    $script:RecordingPipelineRequested = $false
+    $script:RecordingPipelineActive = $false
+    $script:RecordingOnlyMode = $false
     Reset-PreviewAppliedState
     $previewPlaceholder.Visible = $true
     $previewPlaceholder.Text = if ($wasPreviewOnly) { 'Preview stopped' } else { 'Preview stopped' }
@@ -15834,7 +16085,21 @@ $btnCopyDirectWebRtcViewer.Add_Click({
     }
 })
 
-$chkRecordingEnabled.Add_CheckedChanged({ Update-RecordingUi })
+$chkRecordingEnabled.Add_CheckedChanged({
+    if (-not $script:LoadingSettings -and -not $chkRecordingEnabled.Checked -and $script:RecordingPipelineActive) {
+        Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Recording disabled; removing the active recording branch."
+        if ($script:RecordingOnlyMode) { Stop-GstStream } else { Stop-GstStream -Restart }
+    }
+    Update-RecordingUi
+})
+$chkRecordWithStream.Add_CheckedChanged({
+    if (-not $script:LoadingSettings) { Save-Settings }
+    Update-RecordingUi
+})
+$btnToggleRecording.Add_Click({
+    $lowerTabs.SelectedTab = $tabLog
+    Invoke-ToggleRecording
+})
 $txtRecordingDirectory.Add_TextChanged($previewHandler)
 $txtRecordingTemplate.Add_TextChanged($previewHandler)
 $cmbRecordingEncoder.Add_SelectedIndexChanged({ Update-RecordingUi })
@@ -16291,6 +16556,7 @@ $pollTimer.Add_Tick({
         $exitCode = $script:GstProcess.ExitCode
         $wasRequested = $script:StopRequested
         $wasPreviewOnly = [bool]$script:PreviewOnlyMode
+        $wasRecordingOnly = [bool]$script:RecordingOnlyMode
         $wasControlledLive = [bool]$script:ControlledLiveStreamActive
 
         if ($wasControlledLive) {
@@ -16334,6 +16600,9 @@ $pollTimer.Add_Tick({
         $script:PreviewHwnd = [IntPtr]::Zero
         $script:PreviewOnlyMode = $false
         $script:ForceLocalPreviewMode = $false
+        $script:RecordingPipelineRequested = $false
+        $script:RecordingPipelineActive = $false
+        $script:RecordingOnlyMode = $false
         Reset-PreviewAppliedState
         $previewPlaceholder.Visible = $true
         $previewPlaceholder.Text = if ($wasPreviewOnly -and -not $wasRequested) { 'Preview failed' } else { 'Preview stopped' }
@@ -16366,6 +16635,7 @@ $pollTimer.Add_Tick({
                 Append-Log 'Controlled live worker failure latched; restarting with the legacy external launcher.'
             }
             elseif ((Test-FullscreenCaptureMode) -or $chkAutoRestart.Checked) {
+                $script:RestartRecordingOnlyMode = $wasRecordingOnly
                 $script:RestartAt = (Get-Date).AddSeconds(2)
                 if (Test-FullscreenCaptureMode) {
                     $script:WaitingForFullscreen = $true
@@ -16383,7 +16653,14 @@ $pollTimer.Add_Tick({
 
     if (-not $script:GstProcess -and $script:RestartAt -and (Get-Date) -ge $script:RestartAt) {
         $script:RestartAt = $null
-        Start-GstStream -Automatic
+        $restartRecordingOnly = [bool]$script:RestartRecordingOnlyMode
+        $script:RestartRecordingOnlyMode = $false
+        if ($restartRecordingOnly) {
+            Start-GstStream -Automatic -RecordingOnly
+        }
+        else {
+            Start-GstStream -Automatic
+        }
     }
 })
 $pollTimer.Start()
