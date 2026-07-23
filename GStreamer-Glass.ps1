@@ -999,7 +999,7 @@ public static class GstProcessJob
 '@
 }
 
-$script:AppVersion = '3.7.52f68'
+$script:AppVersion = '3.7.52f69'
 $script:AppName = "GStreamer Glass v$($script:AppVersion)"
 $script:ConfigDirectory = Join-Path $env:APPDATA 'GStreamerBasicWhipStreamer'
 $script:ConfigPath = Join-Path $script:ConfigDirectory 'settings.json'
@@ -13352,7 +13352,17 @@ function Test-DynamicScenePreviewWanted {
 
 function Build-ControlledScenePreviewPipeline {
     $sceneChain = Build-SceneCaptureChain -LocalOnly
-    return "$sceneChain ! queue max-size-buffers=1 max-size-bytes=0 max-size-time=0 leaky=downstream ! d3d11videosink name=controlledpreview sync=false force-aspect-ratio=true"
+    $pipeline = "$sceneChain ! queue max-size-buffers=1 max-size-bytes=0 max-size-time=0 leaky=downstream ! d3d11videosink name=controlledpreview sync=false force-aspect-ratio=true"
+
+    # Build-* emits quoted caps so Windows command-line parsing passes each caps
+    # expression to gst-launch as one argument. gst_parse_launch receives the
+    # description directly, so those shell-only quote characters must not be
+    # present. Preserve quotes on paths/string properties and unwrap caps only.
+    return [regex]::Replace(
+        $pipeline,
+        '"((?:audio|video|application)/[^"]+)"',
+        '$1'
+    )
 }
 
 function Start-DynamicScenePreview {
@@ -13371,7 +13381,7 @@ function Start-DynamicScenePreview {
         Reset-PreviewAppliedState
 
         # The old implementation launched one sink window per source and stacked
-        # those HWNDs. f68 renders the actual scene compositor into one canvas.
+        # those HWNDs. f69 renders the actual scene compositor into one canvas.
         $sceneDesktopPreviewPanel.Visible = $true
         $sceneWebcamPreviewPanel.Visible = $false
         $lblSceneDesktop.Visible = $false
@@ -13423,6 +13433,11 @@ function Start-DynamicScenePreview {
         Append-Log "Controlled scene preview start error: $($_.Exception.Message)"
         $script:SuppressDynamicScenePreview = $true
         Stop-DynamicScenePreview -Quiet
+
+        # A failed parse can still construct and then tear down a partial graph.
+        # Give Windows capture backends a bounded release window before the
+        # external normal-preview fallback opens the same desktop/camera again.
+        [System.Threading.Thread]::Sleep(750)
         return $false
     }
     finally {
