@@ -630,7 +630,7 @@ public static class GstProcessJob
 '@
 }
 
-$script:AppVersion = '3.7.52f10'
+$script:AppVersion = '3.7.52f11'
 $script:AppName = "GStreamer Glass v$($script:AppVersion)"
 $script:ConfigDirectory = Join-Path $env:APPDATA 'GStreamerBasicWhipStreamer'
 $script:ConfigPath = Join-Path $script:ConfigDirectory 'settings.json'
@@ -774,6 +774,8 @@ $script:DefaultDirectWebRtcUnifiedPublisher = $false
 $script:DefaultDirectWebRtcBridgeVideoPort = 5004
 $script:DefaultDirectWebRtcBridgeAudioPort = 5006
 $script:DefaultDirectWebRtcBridgeJitterMs = 0
+$script:DefaultDirectWebRtcPublisherQueueMs = 50
+$script:DefaultDirectWebRtcAudioBridgePacing = $true
 $script:DefaultDirectWebRtcStunServer = 'stun://stun.l.google.com:19302'
 $script:DefaultDirectWebRtcSmoothnessProfile = 'Sane defaults'
 $script:DefaultWebRtcRecoveryMode = 'None'
@@ -1645,7 +1647,24 @@ $numDirectWebRtcBridgeJitterMs.Minimum = 0
 $numDirectWebRtcBridgeJitterMs.Maximum = 2000
 $numDirectWebRtcBridgeJitterMs.Value = $script:DefaultDirectWebRtcBridgeJitterMs
 $settingsGroup.Controls.Add($numDirectWebRtcBridgeJitterMs)
-$toolTip.SetToolTip($numDirectWebRtcBridgeJitterMs, 'Optional jitterbuffer latency in the unified publisher for both localhost RTP legs. 0 disables and omits rtpjitterbuffer entirely.')
+$toolTip.SetToolTip($numDirectWebRtcBridgeJitterMs, 'Optional RTP cadence reconstruction latency in the unified publisher for both localhost RTP legs. 0 disables and omits rtpjitterbuffer. Enabled buffers do not drop on latency.')
+
+$numDirectWebRtcPublisherQueueMs = New-Object System.Windows.Forms.NumericUpDown
+$numDirectWebRtcPublisherQueueMs.Location = New-Object System.Drawing.Point(15, 548)
+$numDirectWebRtcPublisherQueueMs.Size = New-Object System.Drawing.Size(75, 23)
+$numDirectWebRtcPublisherQueueMs.Minimum = 0
+$numDirectWebRtcPublisherQueueMs.Maximum = 2000
+$numDirectWebRtcPublisherQueueMs.Value = $script:DefaultDirectWebRtcPublisherQueueMs
+$settingsGroup.Controls.Add($numDirectWebRtcPublisherQueueMs)
+$toolTip.SetToolTip($numDirectWebRtcPublisherQueueMs, 'Non-leaky time queue before each unified-publisher webrtcsink track. Satisfies the sink processing deadline and absorbs cross-process scheduling bursts. 0 disables and omits the queue.')
+
+$chkDirectWebRtcAudioBridgePacing = New-Object System.Windows.Forms.CheckBox
+$chkDirectWebRtcAudioBridgePacing.Text = 'Pace localhost audio RTP from timestamps'
+$chkDirectWebRtcAudioBridgePacing.Location = New-Object System.Drawing.Point(15, 548)
+$chkDirectWebRtcAudioBridgePacing.Size = New-Object System.Drawing.Size(300, 24)
+$chkDirectWebRtcAudioBridgePacing.Checked = $script:DefaultDirectWebRtcAudioBridgePacing
+$settingsGroup.Controls.Add($chkDirectWebRtcAudioBridgePacing)
+$toolTip.SetToolTip($chkDirectWebRtcAudioBridgePacing, 'Unified publisher only. sync=true on the audio bridge udpsink paces Opus RTP using the isolated audio pipeline clock instead of dumping packets immediately when its thread runs.')
 
 $txtDirectWebRtcStun = New-Object System.Windows.Forms.TextBox
 $txtDirectWebRtcStun.Location = New-Object System.Drawing.Point(15, 548)
@@ -4244,6 +4263,9 @@ function Apply-ModernDashboardUi {
     Add-Field $r -Label 'Audio RTP bridge' -Control $numDirectWebRtcBridgeAudioPort -Width 85 | Out-Null
     Add-Field $r -Label 'Bridge JBUF ms (0=off)' -Control $numDirectWebRtcBridgeJitterMs -Width 75 | Out-Null
     $r = Add-Row $s
+    Add-Field $r -Label 'Publisher queue ms (0=off)' -Control $numDirectWebRtcPublisherQueueMs -Width 75 | Out-Null
+    Add-Field $r -Control $chkDirectWebRtcAudioBridgePacing -Width 310 | Out-Null
+    $r = Add-Row $s
     Add-Field $r -Label 'Congestion' -Control $cmbDirectWebRtcCongestion -Width 110 | Out-Null
     Add-Field $r -Label 'Mitigation' -Control $cmbDirectWebRtcMitigation -Width 170 | Out-Null
     $r = Add-Row $s
@@ -6070,6 +6092,8 @@ function Reset-TransportDefaults {
     $numDirectWebRtcBridgeVideoPort.Value = $script:DefaultDirectWebRtcBridgeVideoPort
     $numDirectWebRtcBridgeAudioPort.Value = $script:DefaultDirectWebRtcBridgeAudioPort
     $numDirectWebRtcBridgeJitterMs.Value = $script:DefaultDirectWebRtcBridgeJitterMs
+    $numDirectWebRtcPublisherQueueMs.Value = $script:DefaultDirectWebRtcPublisherQueueMs
+    $chkDirectWebRtcAudioBridgePacing.Checked = $script:DefaultDirectWebRtcAudioBridgePacing
     $txtDirectWebRtcStun.Text = $script:DefaultDirectWebRtcStunServer
     $txtDirectWebRtcWebPath.Text = $script:DefaultDirectWebRtcWebPath
     if ($cmbDirectWebRtcBundledWebMode.Items.Contains($script:DefaultDirectWebRtcBundledWebMode)) { $cmbDirectWebRtcBundledWebMode.SelectedItem = $script:DefaultDirectWebRtcBundledWebMode }
@@ -7893,6 +7917,8 @@ function Update-DirectWebRtcUi {
         $numDirectWebRtcBridgeVideoPort,
         $numDirectWebRtcBridgeAudioPort,
         $numDirectWebRtcBridgeJitterMs,
+        $numDirectWebRtcPublisherQueueMs,
+        $chkDirectWebRtcAudioBridgePacing,
         $txtDirectWebRtcWebPath,
         $cmbDirectWebRtcBundledWebMode,
         $txtDirectWebRtcBundledWebDirectory,
@@ -7938,6 +7964,8 @@ function Update-DirectWebRtcUi {
     if ($numDirectWebRtcBridgeVideoPort) { $numDirectWebRtcBridgeVideoPort.Enabled = $unifiedPublisherEnabled }
     if ($numDirectWebRtcBridgeAudioPort) { $numDirectWebRtcBridgeAudioPort.Enabled = $unifiedPublisherEnabled }
     if ($numDirectWebRtcBridgeJitterMs) { $numDirectWebRtcBridgeJitterMs.Enabled = $unifiedPublisherEnabled }
+    if ($numDirectWebRtcPublisherQueueMs) { $numDirectWebRtcPublisherQueueMs.Enabled = $unifiedPublisherEnabled }
+    if ($chkDirectWebRtcAudioBridgePacing) { $chkDirectWebRtcAudioBridgePacing.Enabled = $unifiedPublisherEnabled }
 
     foreach ($control in @(
         $txtDirectWebRtcStun,
@@ -9537,7 +9565,8 @@ function Build-DirectWebRtcUnifiedAudioBridgeArguments {
     $directOpus = "opusenc bitrate=$directOpusBitrate bitrate-type=cbr frame-size=$directOpusFrameMs audio-type=$directOpusAudioType inband-fec=$directOpusFec dtx=$directOpusDtx ! opusparse ! `"audio/x-opus`""
     $audioPort = [int]$numDirectWebRtcBridgeAudioPort.Value
     $audioSyncSuffix = Get-AudioBranchSyncSuffix
-    $pipeline = "$audioRaw ! $directOpus ! $(Get-AudioFinalQueue)$audioSyncSuffix ! rtpopuspay pt=97 dtx=$directOpusDtx ! udpsink host=127.0.0.1 port=$audioPort sync=false async=false"
+    $audioBridgeSync = if ($chkDirectWebRtcAudioBridgePacing.Checked) { 'true' } else { 'false' }
+    $pipeline = "$audioRaw ! $directOpus ! $(Get-AudioFinalQueue)$audioSyncSuffix ! rtpopuspay pt=97 dtx=$directOpusDtx ! udpsink host=127.0.0.1 port=$audioPort sync=$audioBridgeSync async=false"
     $pipeline = Wrap-GstPipelineWithClockSelect -Pipeline $pipeline -ClockMode (Get-SplitAudioPipelineClockMode)
 
     $flags = '-e'
@@ -9583,6 +9612,7 @@ function Build-DirectWebRtcUnifiedPublisherArguments {
     $videoPort = [int]$numDirectWebRtcBridgeVideoPort.Value
     $audioPort = [int]$numDirectWebRtcBridgeAudioPort.Value
     $jitterMs = [int]$numDirectWebRtcBridgeJitterMs.Value
+    $publisherQueueMs = [int]$numDirectWebRtcPublisherQueueMs.Value
     $videoCaps = Quote-GstValue ([string]$videoRtp.RtpCaps)
     $audioCaps = Quote-GstValue 'application/x-rtp,media=(string)audio,encoding-name=(string)OPUS,payload=(int)97,clock-rate=(int)48000,encoding-params=(string)2'
 
@@ -9606,9 +9636,15 @@ function Build-DirectWebRtcUnifiedPublisherArguments {
         'meta="meta,name=gstglass-av"'
     )
 
-    $bridgeJitter = if ($jitterMs -gt 0) { "rtpjitterbuffer latency=$jitterMs drop-on-latency=true ! " } else { '' }
-    $videoInput = "udpsrc port=$videoPort do-timestamp=true caps=$videoCaps ! $bridgeJitter$($videoRtp.Receiver) ! out.video_0"
-    $audioInput = "udpsrc port=$audioPort do-timestamp=true caps=$audioCaps ! $bridgeJitter" + 'rtpopusdepay ! opusparse ! "audio/x-opus" ! out.audio_0'
+    # Preserve RTP-derived cadence across the process boundary.  The f10 graph
+    # forced udpsrc arrival timestamps and then fed webrtcsink with no buffering,
+    # which converted Windows scheduling bursts into choppy audio and triggered
+    # the internal appsink 20 ms processing-deadline warnings.
+    $bridgeJitter = if ($jitterMs -gt 0) { "rtpjitterbuffer latency=$jitterMs drop-on-latency=false do-lost=true ! " } else { '' }
+    $publisherQueueNs = [int64]$publisherQueueMs * 1000000
+    $publisherQueue = if ($publisherQueueMs -gt 0) { "queue max-size-buffers=0 max-size-bytes=0 max-size-time=$publisherQueueNs leaky=no ! " } else { '' }
+    $videoInput = "udpsrc port=$videoPort caps=$videoCaps ! $bridgeJitter$($videoRtp.Receiver) ! $publisherQueue" + 'out.video_0'
+    $audioInput = "udpsrc port=$audioPort caps=$audioCaps ! $bridgeJitter" + 'rtpopusdepay ! opusparse ! "audio/x-opus" ! ' + $publisherQueue + 'out.audio_0'
     $pipeline = (($sinkProps -join ' ') + $timestampOption + $stunOption + $webPathOption + $webDirectoryOption + " $videoInput $audioInput")
     $pipeline = Wrap-GstPipelineWithClockSelect -Pipeline $pipeline -ClockMode (Get-VideoPipelineClockMode)
 
@@ -10167,6 +10203,8 @@ function Save-Settings {
             DirectWebRtcBridgeVideoPort = [int]$numDirectWebRtcBridgeVideoPort.Value
             DirectWebRtcBridgeAudioPort = [int]$numDirectWebRtcBridgeAudioPort.Value
             DirectWebRtcBridgeJitterMs = [int]$numDirectWebRtcBridgeJitterMs.Value
+            DirectWebRtcPublisherQueueMs = [int]$numDirectWebRtcPublisherQueueMs.Value
+            DirectWebRtcAudioBridgePacing = [bool]$chkDirectWebRtcAudioBridgePacing.Checked
             DirectWebRtcStunServer = $txtDirectWebRtcStun.Text
             DirectWebRtcWebPath = $txtDirectWebRtcWebPath.Text
             DirectWebRtcBundledWebMode = [string]$cmbDirectWebRtcBundledWebMode.SelectedItem
@@ -10475,6 +10513,8 @@ function Load-Settings {
         if ($null -ne $settings.DirectWebRtcBridgeVideoPort) { $numDirectWebRtcBridgeVideoPort.Value = [decimal]([Math]::Min(65535, [Math]::Max(1, [int]$settings.DirectWebRtcBridgeVideoPort))) }
         if ($null -ne $settings.DirectWebRtcBridgeAudioPort) { $numDirectWebRtcBridgeAudioPort.Value = [decimal]([Math]::Min(65535, [Math]::Max(1, [int]$settings.DirectWebRtcBridgeAudioPort))) }
         if ($null -ne $settings.DirectWebRtcBridgeJitterMs) { $numDirectWebRtcBridgeJitterMs.Value = [decimal]([Math]::Min(2000, [Math]::Max(0, [int]$settings.DirectWebRtcBridgeJitterMs))) }
+        if ($null -ne $settings.DirectWebRtcPublisherQueueMs) { $numDirectWebRtcPublisherQueueMs.Value = [decimal]([Math]::Min(2000, [Math]::Max(0, [int]$settings.DirectWebRtcPublisherQueueMs))) }
+        if ($null -ne $settings.DirectWebRtcAudioBridgePacing) { $chkDirectWebRtcAudioBridgePacing.Checked = [bool]$settings.DirectWebRtcAudioBridgePacing }
         if ($null -ne $settings.DirectWebRtcStunServer) { $txtDirectWebRtcStun.Text = [string]$settings.DirectWebRtcStunServer }
         if ($null -ne $settings.DirectWebRtcWebPath) { $txtDirectWebRtcWebPath.Text = [string]$settings.DirectWebRtcWebPath }
         if ($settings.DirectWebRtcBundledWebMode -and $cmbDirectWebRtcBundledWebMode.Items.Contains([string]$settings.DirectWebRtcBundledWebMode)) { $cmbDirectWebRtcBundledWebMode.SelectedItem = [string]$settings.DirectWebRtcBundledWebMode }
@@ -11383,7 +11423,10 @@ function Start-GstStream {
             Append-Log "Direct WebRTC A/V pipeline topology: $([string](Get-DirectWebRtcAvPipelineMode))"
             if (Test-DirectWebRtcUnifiedPublisher) {
                 Append-Log "Direct WebRTC unified-publisher lab: independent video/audio capture processes feed localhost RTP ports $([int]$numDirectWebRtcBridgeVideoPort.Value)/$([int]$numDirectWebRtcBridgeAudioPort.Value); one publisher exposes producer gstglass-av with video_0 + audio_0 on signalling port $([int]$numDirectWebRtcSignalingPort.Value)."
-                Append-Log "Unified publisher RTP receive jitterbuffer: $(if ([int]$numDirectWebRtcBridgeJitterMs.Value -gt 0) { [string]([int]$numDirectWebRtcBridgeJitterMs.Value) + ' ms' } else { 'disabled / element omitted' }). Player uses one PeerConnection and does not open the split-audio WebSocket."
+                $bridgeJitterText = if ([int]$numDirectWebRtcBridgeJitterMs.Value -gt 0) { [string]([int]$numDirectWebRtcBridgeJitterMs.Value) + ' ms, non-dropping' } else { 'disabled / element omitted' }
+                $publisherQueueText = if ([int]$numDirectWebRtcPublisherQueueMs.Value -gt 0) { [string]([int]$numDirectWebRtcPublisherQueueMs.Value) + ' ms non-leaky per track' } else { 'disabled / element omitted' }
+                $audioBridgePacingText = if ($chkDirectWebRtcAudioBridgePacing.Checked) { 'enabled (sync=true)' } else { 'disabled (sync=false)' }
+                Append-Log "Unified publisher RTP timing repair: receive JBUF $bridgeJitterText; publisher queue $publisherQueueText; audio RTP pacing $audioBridgePacingText; udpsrc do-timestamp override omitted. Player uses one PeerConnection and does not open the split-audio WebSocket."
             }
             elseif (Test-DirectWebRtcSplitAvPipelines) {
                 if (Test-DirectWebRtcSharedSignaling) {
@@ -12203,6 +12246,8 @@ foreach ($control in @(
     $numDirectWebRtcBridgeVideoPort,
     $numDirectWebRtcBridgeAudioPort,
     $numDirectWebRtcBridgeJitterMs,
+    $numDirectWebRtcPublisherQueueMs,
+    $chkDirectWebRtcAudioBridgePacing,
     $txtDirectWebRtcStun,
     $txtDirectWebRtcWebPath,
     $cmbDirectWebRtcBundledWebMode,
