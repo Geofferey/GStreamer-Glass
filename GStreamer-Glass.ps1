@@ -630,7 +630,7 @@ public static class GstProcessJob
 '@
 }
 
-$script:AppVersion = '3.7.52f63'
+$script:AppVersion = '3.7.52f64'
 $script:AppName = "GStreamer Glass v$($script:AppVersion)"
 $script:ConfigDirectory = Join-Path $env:APPDATA 'GStreamerBasicWhipStreamer'
 $script:ConfigPath = Join-Path $script:ConfigDirectory 'settings.json'
@@ -750,6 +750,7 @@ $script:ExitCleanupStarted = $false
 $script:SuppressProtocolChange = $false
 $script:TrayHintShown = $false
 $script:StartupTrayHidePending = $false
+$script:TrayRestoreInProgress = $false
 $script:LastProtocol = 'WHIP'
 $script:ProtocolDestinations = [ordered]@{
     WHIP = 'http://10.0.0.25:8889/live/whip'
@@ -6255,6 +6256,11 @@ function Apply-StartMinimized {
 }
 
 function Show-MainWindow {
+    if ($script:TrayRestoreInProgress -or $script:ExitCleanupStarted) {
+        return
+    }
+
+    $script:TrayRestoreInProgress = $true
     try {
         $script:StartupTrayHidePending = $false
         $form.Opacity = 1
@@ -6266,22 +6272,35 @@ function Show-MainWindow {
         $form.BringToFront()
         $form.Activate()
 
-        # Tray restore can leave the embedded d3d11videosink HWND alive but not
-        # painting. Re-seat/show it on the UI thread without touching the stream.
-        if ($script:GstProcess -and -not $script:GstProcess.HasExited) {
-            $null = $form.BeginInvoke([Action]{
-                try {
+        # Finish preview restore on the next UI turn. VisibleChanged and Resize
+        # both fire inside Form.Show()/WindowState changes; starting or reparenting
+        # a dynamic preview from either event can race the form's native handles.
+        $null = $form.BeginInvoke([Action]{
+            try {
+                # The form is now visible and its restore/layout events have
+                # unwound, so standalone preview startup is safe again.
+                $script:TrayRestoreInProgress = $false
+                if ($script:GstProcess -and -not $script:GstProcess.HasExited) {
                     if ($script:PreviewParked) {
                         Restore-PreviewWindowFromParking
                     }
                     Try-AttachPreview
                     Set-PreviewVisibility
                 }
-                catch {}
-            })
-        }
+                else {
+                    Sync-StandalonePreviewState -Quiet
+                }
+            }
+            catch {}
+            finally {
+                $script:TrayRestoreInProgress = $false
+                Update-TrayMenuState
+            }
+        })
     }
-    catch {}
+    catch {
+        $script:TrayRestoreInProgress = $false
+    }
 }
 
 function Hide-MainWindowToTray {
@@ -6489,6 +6508,7 @@ function Test-StandalonePreviewAllowed {
     try {
         if (-not $form -or -not $form.Visible) { return $false }
         if ($script:StartupTrayHidePending) { return $false }
+        if ($script:TrayRestoreInProgress) { return $false }
         if ($form.WindowState -eq [System.Windows.Forms.FormWindowState]::Minimized) { return $false }
         return $true
     }
@@ -14767,7 +14787,13 @@ $btnOpenLogs.Add_Click({
     }
 })
 
-$notifyIcon.Add_DoubleClick({ Show-MainWindow })
+$notifyIcon.Add_MouseDoubleClick({
+    param($sender, $eventArgs)
+    if ($eventArgs.Button -eq [System.Windows.Forms.MouseButtons]::Left) {
+        Show-MainWindow
+    }
+})
+$trayMenu.Add_Opening({ Update-TrayMenuState })
 $trayShowItem.Add_Click({ Show-MainWindow })
 $trayStartItem.Add_Click({
     $lowerTabs.SelectedTab = $tabLog
@@ -15185,6 +15211,12 @@ $form.Add_FormClosing({
     Invoke-ApplicationCleanup
 })
 
+$form.Add_FormClosed({
+    # The application uses a tray-owned message loop so hiding the only form
+    # cannot end the process. Closing the form is the explicit loop terminator.
+    [System.Windows.Forms.Application]::ExitThread()
+})
+
 # Prepare the initial minimized-to-tray window state before Application.Run()
 # makes the form visible. Previously settings were loaded only from the Shown
 # event, so Start minimized could briefly paint the main window before hiding it.
@@ -15227,10 +15259,11 @@ catch {
 }
 
 try {
-    # Use a normal WinForms application message loop instead of ShowDialog().
-    # A modal ShowDialog() can return when the form is hidden, which made
-    # minimize-to-tray look like an application crash and triggered cleanup.
-    [System.Windows.Forms.Application]::Run($form)
+    # Keep the UI thread alive independently of the main form's Visible state.
+    # This prevents start-minimized-to-tray from disposing the NotifyIcon and
+    # leaving a dead/ghost tray icon when the main form is hidden immediately.
+    $form.Show()
+    [System.Windows.Forms.Application]::Run()
 }
 finally {
     Invoke-ApplicationCleanup
