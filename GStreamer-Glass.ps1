@@ -630,7 +630,7 @@ public static class GstProcessJob
 '@
 }
 
-$script:AppVersion = '3.7.52f4'
+$script:AppVersion = '3.7.52f5'
 $script:AppName = "GStreamer Glass v$($script:AppVersion)"
 $script:ConfigDirectory = Join-Path $env:APPDATA 'GStreamerBasicWhipStreamer'
 $script:ConfigPath = Join-Path $script:ConfigDirectory 'settings.json'
@@ -2038,6 +2038,13 @@ $btnResetOptions.Text = 'Reset Options Defaults'
 $btnResetOptions.Location = New-Object System.Drawing.Point(15, 548)
 $btnResetOptions.Size = New-Object System.Drawing.Size(160, 30)
 $settingsGroup.Controls.Add($btnResetOptions)
+
+$btnExportLabConfig = New-Object System.Windows.Forms.Button
+$btnExportLabConfig.Text = 'Export Lab Config'
+$btnExportLabConfig.Location = New-Object System.Drawing.Point(15, 548)
+$btnExportLabConfig.Size = New-Object System.Drawing.Size(160, 30)
+$settingsGroup.Controls.Add($btnExportLabConfig)
+$toolTip.SetToolTip($btnExportLabConfig, 'Export the complete current settings snapshot plus the exact generated gst-launch command to a portable JSON file.')
 
 $lblThreadingProfile = Add-Label $settingsGroup 'Threading profile' 15 548 120
 
@@ -4545,6 +4552,10 @@ function Apply-ModernDashboardUi {
     Add-Field $r -LabelControl $lblGstDebugSpec -Control $txtGstDebugSpec -Width 185 | Out-Null
     Add-Field $r -Control $chkGstDebugNoColor -Width 135 | Out-Null
 
+    $s = Add-Section $paneOptions 'Lab configuration'
+    $r = Add-Row $s
+    Add-Field $r -Control $btnExportLabConfig -Width 180 | Out-Null
+
     $s = Add-Section $paneOptions ''
     $r = Add-Row $s
     Add-Field $r -Control $btnResetOptions -Width 160 | Out-Null
@@ -4649,7 +4660,7 @@ function Apply-ModernDashboardUi {
         $chkNetworkRestoreOnStop, $chkNetworkRestoreOnExit, $chkNetworkRecoveryTask,
         $btnNetworkSnapshot, $btnNetworkApply, $btnNetworkRestore, $btnOpenNetworkRecovery,
         $lblNetworkStatus, $btnResetTransport, $btnResetWebRtcSane, $btnResetVideo, $btnResetAudio,
-        $btnResetRecording, $btnResetNetwork, $btnResetOptions, $btnResetAll,
+        $btnResetRecording, $btnResetNetwork, $btnResetOptions, $btnExportLabConfig, $btnResetAll,
         $txtGstPath, $btnBrowseGst, $btnDetectGst, $btnCheckGst,
         $chkPreview, $chkAutoRestart, $chkVerbose, $chkDiskProcessLogging, $chkMinimizeToTray,
         $chkStartMinimized
@@ -9903,6 +9914,79 @@ function Save-Settings {
     }
 }
 
+function Export-LabConfiguration {
+    try {
+        # Save first so the export is based on the exact current UI state.
+        Save-Settings
+        Update-CommandPreview
+
+        if (-not (Test-Path -LiteralPath $script:ConfigPath)) {
+            throw "The live settings file was not created: $script:ConfigPath"
+        }
+
+        $savedSettings =
+            Get-Content -LiteralPath $script:ConfigPath -Raw |
+            ConvertFrom-Json
+
+        # Keep the settings flat so this file can later be imported directly or
+        # used as settings.json. Metadata keys are prefixed and ignored by older
+        # builds that do not know about them.
+        $export = [ordered]@{
+            _Schema           = 'GStreamerGlassLabConfig'
+            _SchemaVersion    = 1
+            _AppVersion       = $script:AppVersion
+            _ExportedUtc      = [DateTime]::UtcNow.ToString('o')
+            _GeneratedCommand = [string]$txtCommand.Text
+        }
+
+        foreach ($property in $savedSettings.PSObject.Properties) {
+            $export[$property.Name] = $property.Value
+        }
+
+        $dialog = New-Object System.Windows.Forms.SaveFileDialog
+        try {
+            $dialog.Title = 'Export GStreamer Glass lab configuration'
+            $dialog.Filter = 'GStreamer Glass lab config (*.gstglass.json)|*.gstglass.json|JSON files (*.json)|*.json|All files (*.*)|*.*'
+            $dialog.DefaultExt = 'gstglass.json'
+            $dialog.AddExtension = $true
+            $dialog.OverwritePrompt = $true
+            $dialog.RestoreDirectory = $true
+            $dialog.FileName = 'GStreamer-Glass-' + $script:AppVersion + '-LabConfig-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '.gstglass.json'
+
+            if ($dialog.ShowDialog($form) -ne [System.Windows.Forms.DialogResult]::OK) {
+                return
+            }
+
+            $export |
+                ConvertTo-Json -Depth 12 |
+                Set-Content -LiteralPath $dialog.FileName -Encoding UTF8
+
+            Append-Log "Lab configuration exported: $($dialog.FileName)"
+            $statusLabel.Text = 'Lab config exported'
+            $statusLabel.ForeColor = [System.Drawing.Color]::DarkGreen
+
+            [System.Windows.Forms.MessageBox]::Show(
+                "Exported the complete UI configuration and exact generated command.`r`n`r`n$($dialog.FileName)",
+                $script:AppName,
+                [System.Windows.Forms.MessageBoxButtons]::OK,
+                [System.Windows.Forms.MessageBoxIcon]::Information
+            ) | Out-Null
+        }
+        finally {
+            $dialog.Dispose()
+        }
+    }
+    catch {
+        Append-Log "Could not export lab configuration: $($_.Exception.Message)"
+        [System.Windows.Forms.MessageBox]::Show(
+            "Could not export the lab configuration.`r`n`r`n$($_.Exception.Message)",
+            $script:AppName,
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Error
+        ) | Out-Null
+    }
+}
+
 function Load-Settings {
     if (-not (Test-Path -LiteralPath $script:ConfigPath)) {
         return
@@ -11828,6 +11912,7 @@ $btnResetAudio.Add_Click({ Reset-AudioDefaults; Save-Settings })
 $btnResetRecording.Add_Click({ Reset-RecordingDefaults; Save-Settings })
 $btnResetNetwork.Add_Click({ Reset-NetworkDefaults; Save-Settings })
 $btnResetOptions.Add_Click({ Reset-OptionsDefaults; Save-Settings })
+$btnExportLabConfig.Add_Click({ Export-LabConfiguration })
 $btnResetAll.Add_Click({
     $result = [System.Windows.Forms.MessageBox]::Show(
         'Reset all GStreamer Glass app settings to defaults? This will not restore or delete Windows network snapshots.',
