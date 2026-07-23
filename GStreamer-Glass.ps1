@@ -630,7 +630,7 @@ public static class GstProcessJob
 '@
 }
 
-$script:AppVersion = '3.7.52f5'
+$script:AppVersion = '3.7.52f6'
 $script:AppName = "GStreamer Glass v$($script:AppVersion)"
 $script:ConfigDirectory = Join-Path $env:APPDATA 'GStreamerBasicWhipStreamer'
 $script:ConfigPath = Join-Path $script:ConfigDirectory 'settings.json'
@@ -757,6 +757,8 @@ $script:DefaultAudioLatencyMs = 10
 $script:DefaultWasapiLowLatencyOverride = $false
 $script:DefaultAudioBufferOverride = $false
 $script:DefaultAudioLatencyOverride = $false
+$script:DefaultAudioSampleRateOverride = $false
+$script:DefaultAudioSampleRate = 48000
 $script:DefaultAudioMixerMode = $true
 $script:DefaultDirectWebRtcSignalingHost = '0.0.0.0'
 $script:DefaultDirectWebRtcSignalingPort = 8189
@@ -2782,6 +2784,26 @@ $numAudioLatencyMs.Minimum = 1
 $numAudioLatencyMs.Maximum = 1000
 $numAudioLatencyMs.Value = $script:DefaultAudioLatencyMs
 $settingsGroup.Controls.Add($numAudioLatencyMs)
+
+$chkAudioSampleRateOverride = New-Object System.Windows.Forms.CheckBox
+$chkAudioSampleRateOverride.Text = 'Override sample rate'
+$chkAudioSampleRateOverride.Location = New-Object System.Drawing.Point(15, 694)
+$chkAudioSampleRateOverride.Size = New-Object System.Drawing.Size(170, 23)
+$chkAudioSampleRateOverride.Checked = $script:DefaultAudioSampleRateOverride
+$settingsGroup.Controls.Add($chkAudioSampleRateOverride)
+$toolTip.SetToolTip($chkAudioSampleRateOverride, 'Unchecked emits no rate field in raw-audio caps and leaves sample-rate negotiation to GStreamer. Checked forces the selected processing rate on desktop, microphone, audiomixer output, split audio, and recording audio paths.')
+
+$lblAudioSampleRate = Add-Label $settingsGroup 'Rate Hz' 190 694 60
+$numAudioSampleRate = New-Object System.Windows.Forms.NumericUpDown
+$numAudioSampleRate.Location = New-Object System.Drawing.Point(250, 694)
+$numAudioSampleRate.Size = New-Object System.Drawing.Size(100, 23)
+$numAudioSampleRate.Minimum = 8000
+$numAudioSampleRate.Maximum = 192000
+$numAudioSampleRate.Increment = 100
+$numAudioSampleRate.Value = $script:DefaultAudioSampleRate
+$numAudioSampleRate.Enabled = $script:DefaultAudioSampleRateOverride
+$settingsGroup.Controls.Add($numAudioSampleRate)
+$toolTip.SetToolTip($numAudioSampleRate, 'Raw-audio processing rate in Hz. Opus accepts 8000, 12000, 16000, 24000, or 48000 Hz; other explicit values may be useful for non-Opus codec experiments and may intentionally fail with Opus.')
 $toolTip.SetToolTip($numAudioLatencyMs, 'WASAPI latency-time in milliseconds. This value is emitted only while Override latency-time is checked.')
 
 $null = Add-Label $settingsGroup 'Audio codec' 15 354 80
@@ -4307,6 +4329,9 @@ function Apply-ModernDashboardUi {
     Add-Field $r -LabelControl $lblAudioBufferMs -Control $numAudioBufferMs -Width 80 | Out-Null
     Add-Field $r -Control $chkAudioLatencyOverride -Width 165 | Out-Null
     Add-Field $r -LabelControl $lblAudioLatencyMs -Control $numAudioLatencyMs -Width 80 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Control $chkAudioSampleRateOverride -Width 175 | Out-Null
+    Add-Field $r -LabelControl $lblAudioSampleRate -Control $numAudioSampleRate -Width 115 | Out-Null
 
     $s = Add-Section $paneAudio 'Sources'
     $r = Add-Row $s
@@ -4639,7 +4664,7 @@ function Apply-ModernDashboardUi {
         $numBFrames, $chkLookAhead, $numLookAheadFrames,
         $chkAdaptiveQuantization, $chkTemporalAq, $numAqStrength,
         $txtCustomEncoderOptions,
-        $cmbAudioTransportMode, $cmbSplitAudioPipelineClockMode, $cmbAudioClockMode, $cmbAudioTimingMode, $cmbAudioSlaveMethod, $cmbAudioSyncMode, $chkWasapiLowLatencyOverride, $chkAudioBufferOverride, $numAudioBufferMs, $chkAudioLatencyOverride, $numAudioLatencyMs, $chkDesktopAudio, $chkAudioMixerMode, $numDesktopVolume, $cmbDesktopAudioDevice, $btnRefreshAudioDevices, $chkMic, $numMicVolume, $cmbMicAudioDevice, $lblAudioDeviceStatus,
+        $cmbAudioTransportMode, $cmbSplitAudioPipelineClockMode, $cmbAudioClockMode, $cmbAudioTimingMode, $cmbAudioSlaveMethod, $cmbAudioSyncMode, $chkWasapiLowLatencyOverride, $chkAudioBufferOverride, $numAudioBufferMs, $chkAudioLatencyOverride, $numAudioLatencyMs, $chkAudioSampleRateOverride, $numAudioSampleRate, $chkDesktopAudio, $chkAudioMixerMode, $numDesktopVolume, $cmbDesktopAudioDevice, $btnRefreshAudioDevices, $chkMic, $numMicVolume, $cmbMicAudioDevice, $lblAudioDeviceStatus,
         $cmbAudioCodec, $lblAudioCodecStatus, $numAudioBitrate,
         $cmbDirectWebRtcOpusMode, $cmbDirectWebRtcOpusFrameMs, $cmbDirectWebRtcOpusAudioType, $chkDirectWebRtcOpusFec, $chkDirectWebRtcOpusDtx,
         $chkRecordingEnabled, $txtRecordingDirectory, $btnBrowseRecordingDirectory,
@@ -4685,7 +4710,7 @@ function Apply-ModernDashboardUi {
         $cmbSplitPlayerSyncMode, $numSplitAudioStallSeconds, $numSplitAudioWarmupSeconds, $numSplitAvOffsetBaselineMs, $numSplitAvOffsetWarnMs,
         $chkDirectWebRtcOpusFec, $chkDirectWebRtcOpusDtx,
         $chkLookAhead, $chkAdaptiveQuantization, $chkTemporalAq,
-        $chkDesktopAudio, $chkAudioMixerMode, $chkMic,
+        $chkDesktopAudio, $chkAudioMixerMode, $chkMic, $chkAudioSampleRateOverride,
         $chkRecordingEnabled, $chkRecordingLookAhead, $chkRecordingSpatialAq,
         $chkRecordingTemporalAq, $chkRecordingDesktopAudio, $chkRecordingMic,
         $chkNetworkTuningEnabled, $chkNetworkDscp, $chkNetworkDisablePowerSaving,
@@ -5991,6 +6016,8 @@ function Reset-AudioDefaults {
     $numAudioBufferMs.Value = $script:DefaultAudioBufferMs
     $chkAudioLatencyOverride.Checked = $script:DefaultAudioLatencyOverride
     $numAudioLatencyMs.Value = $script:DefaultAudioLatencyMs
+    $chkAudioSampleRateOverride.Checked = $script:DefaultAudioSampleRateOverride
+    $numAudioSampleRate.Value = $script:DefaultAudioSampleRate
     $chkDesktopAudio.Checked = $true
     $chkAudioMixerMode.Checked = $script:DefaultAudioMixerMode
     $numDesktopVolume.Value = 100
@@ -6273,6 +6300,28 @@ function Get-WasapiLatencyTimeOption {
     $ms = [int]$numAudioLatencyMs.Value
     if ($ms -le 0) { return '' }
     return ('latency-time=' + ([int64]$ms * 1000))
+}
+
+function Get-AudioSampleRateOverrideValue {
+    if (-not $chkAudioSampleRateOverride -or -not $chkAudioSampleRateOverride.Checked) { return 0 }
+    $rate = [int]$numAudioSampleRate.Value
+    if ($rate -le 0) { return 0 }
+    return $rate
+}
+
+function Get-AudioRawCapsString {
+    param(
+        [ValidateSet('S16LE','F32LE')][string]$Format = 'S16LE',
+        [int]$Channels = 2
+    )
+
+    $fields = New-Object System.Collections.Generic.List[string]
+    $fields.Add('audio/x-raw')
+    $fields.Add("format=$Format")
+    $rate = Get-AudioSampleRateOverrideValue
+    if ($rate -gt 0) { $fields.Add("rate=$rate") }
+    if ($Channels -gt 0) { $fields.Add("channels=$Channels") }
+    return ('"' + ($fields -join ',') + '"')
 }
 
 function Clean-GstDevicePropertyValue {
@@ -6691,6 +6740,9 @@ function Get-EffectiveAudioTimingSummary {
         if (-not [string]::IsNullOrWhiteSpace($opt)) { $items.Add($opt) }
     }
 
+    $sampleRate = Get-AudioSampleRateOverrideValue
+    if ($sampleRate -gt 0) { $items.Add("raw-rate=$sampleRate") }
+
     if ($items.Count -eq 0) {
         $items.Add('plugin defaults; no WASAPI timing overrides emitted')
     }
@@ -7037,7 +7089,7 @@ function Build-RawAudioChain {
                 '!'
                 'audioresample'
                 '!'
-                '"audio/x-raw,format=S16LE,rate=48000,channels=2"'
+                (Get-AudioRawCapsString -Format 'S16LE' -Channels 2)
                 '!'
                 'volume'
                 "volume=$desktopVolume"
@@ -7053,7 +7105,7 @@ function Build-RawAudioChain {
             '!'
             'audioresample'
             '!'
-            '"audio/x-raw,format=S16LE,rate=48000,channels=2"'
+            (Get-AudioRawCapsString -Format 'S16LE' -Channels 2)
             '!'
             'volume'
             "volume=$micVolume"
@@ -7072,7 +7124,7 @@ function Build-RawAudioChain {
             '!'
             'audioresample'
             '!'
-            '"audio/x-raw,format=F32LE,rate=48000,channels=2"'
+            (Get-AudioRawCapsString -Format 'F32LE' -Channels 2)
             '!'
             'volume'
             "volume=$desktopVolume"
@@ -7091,7 +7143,7 @@ function Build-RawAudioChain {
             '!'
             'audioresample'
             '!'
-            '"audio/x-raw,format=F32LE,rate=48000,channels=2"'
+            (Get-AudioRawCapsString -Format 'F32LE' -Channels 2)
             '!'
             'volume'
             "volume=$micVolume"
@@ -7107,7 +7159,7 @@ function Build-RawAudioChain {
         '!'
         'audioconvert'
         '!'
-        '"audio/x-raw,format=S16LE,rate=48000,channels=2"'
+        (Get-AudioRawCapsString -Format 'S16LE' -Channels 2)
     ) -join ' '
 
     return "audiomixer name=mix $($mixBranches -join ' ') $mixOutput"
@@ -7127,7 +7179,7 @@ function Build-WhipSilentClockAudioChain {
         '!'
         'audioresample'
         '!'
-        '"audio/x-raw,format=S16LE,rate=48000,channels=2"'
+        (Get-AudioRawCapsString -Format 'S16LE' -Channels 2)
         '!'
         'volume'
         'volume=0.0'
@@ -7138,12 +7190,14 @@ function Build-WhipSilentClockAudioChain {
 function Build-SyntheticSilentAudioChain {
     # Completely bypasses WASAPI. Use this to prove whether the browser/WebRTC
     # audio track is fine when Windows audio driver timing is removed.
+    $explicitRate = Get-AudioSampleRateOverrideValue
+    $samplesPerBuffer = if ($explicitRate -gt 0) { [Math]::Max(1, [int][Math]::Round($explicitRate / 100.0)) } else { 480 }
     return @(
         'audiotestsrc'
         'is-live=true'
         'do-timestamp=true'
         'wave=silence'
-        'samplesperbuffer=480'
+        "samplesperbuffer=$samplesPerBuffer"
         '!'
         (Get-AudioInputQueue)
         '!'
@@ -7151,7 +7205,7 @@ function Build-SyntheticSilentAudioChain {
         '!'
         'audioresample'
         '!'
-        '"audio/x-raw,format=S16LE,rate=48000,channels=2"'
+        (Get-AudioRawCapsString -Format 'S16LE' -Channels 2)
         '!'
         'volume'
         'volume=0.0'
@@ -8076,14 +8130,14 @@ function Build-RecordingRawAudioChain {
     $micSource = Get-WasapiSourceString
 
     if ($desktopEnabled -and -not $micEnabled) {
-        return @($desktopSource,'!','queue','max-size-buffers=16','max-size-bytes=0','max-size-time=0','leaky=downstream','!','audioconvert','!','audioresample','!','"audio/x-raw,format=S16LE,rate=48000,channels=2"') -join ' '
+        return @($desktopSource,'!','queue','max-size-buffers=16','max-size-bytes=0','max-size-time=0','leaky=downstream','!','audioconvert','!','audioresample','!',(Get-AudioRawCapsString -Format 'S16LE' -Channels 2)) -join ' '
     }
     if (-not $desktopEnabled -and $micEnabled) {
-        return @($micSource,'!','queue','max-size-buffers=16','max-size-bytes=0','max-size-time=0','leaky=downstream','!','audioconvert','!','audioresample','!','"audio/x-raw,format=S16LE,rate=48000,channels=2"') -join ' '
+        return @($micSource,'!','queue','max-size-buffers=16','max-size-bytes=0','max-size-time=0','leaky=downstream','!','audioconvert','!','audioresample','!',(Get-AudioRawCapsString -Format 'S16LE' -Channels 2)) -join ' '
     }
-    $desktopMixBranch = @($desktopSource,'!','queue','max-size-buffers=16','max-size-bytes=0','max-size-time=0','leaky=downstream','!','audioconvert','!','audioresample','!','"audio/x-raw,format=F32LE,rate=48000,channels=2"','!','recordaudiomix.') -join ' '
-    $micMixBranch = @($micSource,'!','queue','max-size-buffers=16','max-size-bytes=0','max-size-time=0','leaky=downstream','!','audioconvert','!','audioresample','!','"audio/x-raw,format=F32LE,rate=48000,channels=2"','!','recordaudiomix.') -join ' '
-    $mixOutput = @('recordaudiomix.','!','queue','max-size-buffers=16','max-size-bytes=0','max-size-time=0','leaky=downstream','!','audioconvert','!','"audio/x-raw,format=S16LE,rate=48000,channels=2"') -join ' '
+    $desktopMixBranch = @($desktopSource,'!','queue','max-size-buffers=16','max-size-bytes=0','max-size-time=0','leaky=downstream','!','audioconvert','!','audioresample','!',(Get-AudioRawCapsString -Format 'F32LE' -Channels 2),'!','recordaudiomix.') -join ' '
+    $micMixBranch = @($micSource,'!','queue','max-size-buffers=16','max-size-bytes=0','max-size-time=0','leaky=downstream','!','audioconvert','!','audioresample','!',(Get-AudioRawCapsString -Format 'F32LE' -Channels 2),'!','recordaudiomix.') -join ' '
+    $mixOutput = @('recordaudiomix.','!','queue','max-size-buffers=16','max-size-bytes=0','max-size-time=0','leaky=downstream','!','audioconvert','!',(Get-AudioRawCapsString -Format 'S16LE' -Channels 2)) -join ' '
     return "audiomixer name=recordaudiomix $desktopMixBranch $micMixBranch $mixOutput"
 }
 
@@ -8373,7 +8427,7 @@ function Get-AudioEncoderChain {
         }
         'AAC_LIBAV' {
             $format = if ($Protocol -eq 'SRT') { 'adts' } else { 'raw' }
-            return "audioconvert ! `"audio/x-raw,format=F32LE,rate=48000,channels=2`" ! avenc_aac bitrate=$bitrateBps ! aacparse ! `"audio/mpeg,mpegversion=4,stream-format=$format,framed=true`""
+            return "audioconvert ! $(Get-AudioRawCapsString -Format 'F32LE' -Channels 2) ! avenc_aac bitrate=$bitrateBps ! aacparse ! `"audio/mpeg,mpegversion=4,stream-format=$format,framed=true`""
         }
         'AAC_VO' {
             $format = if ($Protocol -eq 'SRT') { 'adts' } else { 'raw' }
@@ -8389,7 +8443,7 @@ function Get-AudioEncoderChain {
             return "lamemp3enc target=bitrate cbr=true bitrate=$mp3Bitrate encoding-engine-quality=fast ! mpegaudioparse ! `"audio/mpeg,mpegversion=1,layer=3,parsed=true`""
         }
         'AC3' {
-            return "audioconvert ! `"audio/x-raw,format=F32LE,rate=48000,channels=2`" ! avenc_ac3 bitrate=$bitrateBps ! ac3parse ! `"audio/x-ac3,framed=true`""
+            return "audioconvert ! $(Get-AudioRawCapsString -Format 'F32LE' -Channels 2) ! avenc_ac3 bitrate=$bitrateBps ! ac3parse ! `"audio/x-ac3,framed=true`""
         }
         default {
             throw "Unsupported audio encoder family: $family"
@@ -9895,6 +9949,8 @@ function Save-Settings {
             AudioBufferMs = [int]$numAudioBufferMs.Value
             AudioLatencyOverride = [bool]$chkAudioLatencyOverride.Checked
             AudioLatencyMs = [int]$numAudioLatencyMs.Value
+            AudioSampleRateOverride = [bool]$chkAudioSampleRateOverride.Checked
+            AudioSampleRateHz = [int]$numAudioSampleRate.Value
             DesktopAudio      = $chkDesktopAudio.Checked
             AudioMixerMode    = $chkAudioMixerMode.Checked
             DesktopVolume     = [int]$numDesktopVolume.Value
@@ -10245,6 +10301,8 @@ function Load-Settings {
         if ($null -ne $settings.AudioBufferMs) { $numAudioBufferMs.Value = [decimal]$settings.AudioBufferMs }
         if ($null -ne $settings.AudioLatencyOverride) { $chkAudioLatencyOverride.Checked = [bool]$settings.AudioLatencyOverride }
         if ($null -ne $settings.AudioLatencyMs) { $numAudioLatencyMs.Value = [decimal]$settings.AudioLatencyMs }
+        if ($null -ne $settings.AudioSampleRateOverride) { $chkAudioSampleRateOverride.Checked = [bool]$settings.AudioSampleRateOverride }
+        if ($null -ne $settings.AudioSampleRateHz) { $numAudioSampleRate.Value = [decimal]$settings.AudioSampleRateHz }
         if ($null -ne $settings.DesktopAudio) { $chkDesktopAudio.Checked = [bool]$settings.DesktopAudio }
         if ($null -ne $settings.AudioMixerMode) { $chkAudioMixerMode.Checked = [bool]$settings.AudioMixerMode }
         if ($null -ne $settings.DesktopVolume) { $numDesktopVolume.Value = [decimal]$settings.DesktopVolume }
@@ -10908,7 +10966,7 @@ function Start-GstStream {
     $mixerSummary = if ($chkDesktopAudio.Checked -and ($chkMic.Checked -or $chkAudioMixerMode.Checked)) { 'audiomixer' } elseif ($chkDesktopAudio.Checked) { 'legacy direct desktop path' } else { 'not applicable' }
     Append-Log "Desktop audio path: $mixerSummary (mixer flag=$($chkAudioMixerMode.Checked); microphone=$($chkMic.Checked))."
     Append-Log "Video sync mode: $([string]$cmbVideoSyncMode.SelectedItem); Audio sync mode: $([string]$cmbAudioSyncMode.SelectedItem). Explicit modes insert clocksync before compatible send/mux sinks; local preview also honors Video sync mode."
-    Append-Log "Audio timing UI: clock=$([string]$cmbAudioClockMode.SelectedItem); mode=$([string]$cmbAudioTimingMode.SelectedItem); slave=$([string]$cmbAudioSlaveMethod.SelectedItem); low-latency override=$($chkWasapiLowLatencyOverride.Checked); buffer override=$($chkAudioBufferOverride.Checked) [$([int]$numAudioBufferMs.Value) ms]; latency override=$($chkAudioLatencyOverride.Checked) [$([int]$numAudioLatencyMs.Value) ms]."
+    Append-Log "Audio timing UI: clock=$([string]$cmbAudioClockMode.SelectedItem); mode=$([string]$cmbAudioTimingMode.SelectedItem); slave=$([string]$cmbAudioSlaveMethod.SelectedItem); low-latency override=$($chkWasapiLowLatencyOverride.Checked); buffer override=$($chkAudioBufferOverride.Checked) [$([int]$numAudioBufferMs.Value) ms]; latency override=$($chkAudioLatencyOverride.Checked) [$([int]$numAudioLatencyMs.Value) ms]; sample-rate override=$($chkAudioSampleRateOverride.Checked) [$([int]$numAudioSampleRate.Value) Hz]."
     Append-Log "Effective WASAPI source: $(Get-EffectiveAudioTimingSummary)"
     if (-not [string]::IsNullOrWhiteSpace($gstDebugSpec)) {
         Append-Log "GStreamer debug: GST_DEBUG=$gstDebugSpec, no color=$($chkGstDebugNoColor.Checked)."
@@ -11425,6 +11483,7 @@ $cmbAudioSyncMode.Add_SelectedIndexChanged($previewHandler)
 $chkWasapiLowLatencyOverride.Add_CheckedChanged({ Update-AudioTimingOptionUi; Update-CommandPreview })
 $chkAudioBufferOverride.Add_CheckedChanged({ Update-AudioTimingOptionUi; Update-CommandPreview })
 $chkAudioLatencyOverride.Add_CheckedChanged({ Update-AudioTimingOptionUi; Update-CommandPreview })
+$chkAudioSampleRateOverride.Add_CheckedChanged({ Update-AudioTimingOptionUi; Update-CommandPreview })
 
 function Update-AudioTimingOptionUi {
     $timing = Get-AudioTimingMode
@@ -11438,10 +11497,12 @@ function Update-AudioTimingOptionUi {
     $chkAudioLatencyOverride.Enabled = (-not $synthetic)
     $numAudioBufferMs.Enabled = (-not $synthetic -and $chkAudioBufferOverride.Checked)
     $numAudioLatencyMs.Enabled = (-not $synthetic -and $chkAudioLatencyOverride.Checked)
+    $numAudioSampleRate.Enabled = $chkAudioSampleRateOverride.Checked
 }
 
 $numAudioBufferMs.Add_ValueChanged($previewHandler)
 $numAudioLatencyMs.Add_ValueChanged($previewHandler)
+$numAudioSampleRate.Add_ValueChanged($previewHandler)
 $cmbDirectWebRtcOpusMode.Add_SelectedIndexChanged($previewHandler)
 $cmbDirectWebRtcOpusFrameMs.Add_SelectedIndexChanged($previewHandler)
 $cmbDirectWebRtcOpusAudioType.Add_SelectedIndexChanged($previewHandler)
