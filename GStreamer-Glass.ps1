@@ -520,6 +520,375 @@ public static class GstPreviewNative
 '@
 }
 
+if (-not ('GstControlledScenePreview' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+
+public static class GstControlledScenePreview
+{
+    private const string Gst = "gstreamer-1.0-0.dll";
+    private const string GstVideo = "gstvideo-1.0-0.dll";
+    private const string GObject = "gobject-2.0-0.dll";
+    private const string GLib = "glib-2.0-0.dll";
+
+    private const int GST_STATE_NULL = 1;
+    private const int GST_STATE_PLAYING = 4;
+    private const int GST_STATE_CHANGE_FAILURE = 0;
+    private const uint GST_MESSAGE_EOS = 1u << 0;
+    private const uint GST_MESSAGE_ERROR = 1u << 1;
+    private static readonly UIntPtr G_TYPE_INT = new UIntPtr(6u << 2);
+    private static readonly UIntPtr G_TYPE_UINT = new UIntPtr(7u << 2);
+    private static readonly UIntPtr G_TYPE_DOUBLE = new UIntPtr(15u << 2);
+    private static readonly UIntPtr G_TYPE_ENUM = new UIntPtr(12u << 2);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct GValue
+    {
+        public UIntPtr g_type;
+        public UIntPtr data0;
+        public UIntPtr data1;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct GError
+    {
+        public uint domain;
+        public int code;
+        public IntPtr message;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct GParamSpecPrefix
+    {
+        public IntPtr g_class;
+        public IntPtr name;
+        public uint flags;
+        public UIntPtr value_type;
+        public UIntPtr owner_type;
+    }
+
+    [DllImport(Gst, CallingConvention = CallingConvention.Cdecl)]
+    private static extern void gst_init(IntPtr argc, IntPtr argv);
+
+    [DllImport(Gst, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
+    private static extern IntPtr gst_parse_launch(string pipeline_description, out IntPtr error);
+
+    [DllImport(Gst, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
+    private static extern IntPtr gst_bin_get_by_name(IntPtr bin, string name);
+
+    [DllImport(Gst, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
+    private static extern IntPtr gst_element_get_static_pad(IntPtr element, string name);
+
+    [DllImport(Gst, CallingConvention = CallingConvention.Cdecl)]
+    private static extern int gst_element_set_state(IntPtr element, int state);
+
+    [DllImport(Gst, CallingConvention = CallingConvention.Cdecl)]
+    private static extern int gst_element_get_state(IntPtr element, out int state, out int pending, ulong timeout);
+
+    [DllImport(Gst, CallingConvention = CallingConvention.Cdecl)]
+    private static extern IntPtr gst_element_get_bus(IntPtr element);
+
+    [DllImport(Gst, CallingConvention = CallingConvention.Cdecl)]
+    private static extern IntPtr gst_bus_timed_pop_filtered(IntPtr bus, ulong timeout, uint types);
+
+    [DllImport(Gst, CallingConvention = CallingConvention.Cdecl)]
+    private static extern void gst_message_parse_error(IntPtr message, out IntPtr error, out IntPtr debug);
+
+    [DllImport(Gst, CallingConvention = CallingConvention.Cdecl)]
+    private static extern void gst_mini_object_unref(IntPtr mini_object);
+
+    [DllImport(Gst, CallingConvention = CallingConvention.Cdecl)]
+    private static extern void gst_object_unref(IntPtr obj);
+
+    [DllImport(GstVideo, CallingConvention = CallingConvention.Cdecl)]
+    private static extern void gst_video_overlay_set_window_handle(IntPtr overlay, UIntPtr handle);
+
+    [DllImport(GstVideo, CallingConvention = CallingConvention.Cdecl)]
+    private static extern int gst_video_overlay_set_render_rectangle(IntPtr overlay, int x, int y, int width, int height);
+
+    [DllImport(GstVideo, CallingConvention = CallingConvention.Cdecl)]
+    private static extern void gst_video_overlay_expose(IntPtr overlay);
+
+    [DllImport(GstVideo, CallingConvention = CallingConvention.Cdecl)]
+    private static extern void gst_video_overlay_handle_events(IntPtr overlay, int handle_events);
+
+    [DllImport(GObject, CallingConvention = CallingConvention.Cdecl)]
+    private static extern IntPtr g_value_init(ref GValue value, UIntPtr g_type);
+
+    [DllImport(GObject, CallingConvention = CallingConvention.Cdecl)]
+    private static extern void g_value_unset(ref GValue value);
+
+    [DllImport(GObject, CallingConvention = CallingConvention.Cdecl)]
+    private static extern void g_value_set_int(ref GValue value, int number);
+
+    [DllImport(GObject, CallingConvention = CallingConvention.Cdecl)]
+    private static extern void g_value_set_uint(ref GValue value, uint number);
+
+    [DllImport(GObject, CallingConvention = CallingConvention.Cdecl)]
+    private static extern void g_value_set_double(ref GValue value, double number);
+
+    [DllImport(GObject, CallingConvention = CallingConvention.Cdecl)]
+    private static extern void g_value_set_enum(ref GValue value, int number);
+
+    [DllImport(GObject, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
+    private static extern void g_object_set_property(IntPtr obj, string property_name, ref GValue value);
+
+    [DllImport(GObject, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
+    private static extern IntPtr g_object_class_find_property(IntPtr oclass, string property_name);
+
+    [DllImport(GLib, CallingConvention = CallingConvention.Cdecl)]
+    private static extern void g_error_free(IntPtr error);
+
+    [DllImport(GLib, CallingConvention = CallingConvention.Cdecl)]
+    private static extern void g_free(IntPtr memory);
+
+    private static readonly object Gate = new object();
+    private static bool initialized;
+    private static IntPtr pipeline;
+    private static IntPtr scene;
+    private static IntPtr sink;
+    private static IntPtr bus;
+    private static IntPtr desktopPad;
+    private static IntPtr webcamPad;
+
+    public static bool IsRunning
+    {
+        get { lock (Gate) { return pipeline != IntPtr.Zero; } }
+    }
+
+    public static bool HasWebcamPad
+    {
+        get { lock (Gate) { return webcamPad != IntPtr.Zero; } }
+    }
+
+    private static string ReadGError(IntPtr error)
+    {
+        if (error == IntPtr.Zero) return "Unknown GStreamer error";
+        GError value = (GError)Marshal.PtrToStructure(error, typeof(GError));
+        return value.message == IntPtr.Zero ? "Unknown GStreamer error" : Marshal.PtrToStringAnsi(value.message);
+    }
+
+    public static void Start(
+        string description,
+        long windowHandle,
+        int width,
+        int height,
+        string desktopPadName,
+        string webcamPadName)
+    {
+        lock (Gate)
+        {
+            StopUnsafe();
+            if (!initialized)
+            {
+                gst_init(IntPtr.Zero, IntPtr.Zero);
+                initialized = true;
+            }
+
+            IntPtr parseError;
+            pipeline = gst_parse_launch(description, out parseError);
+            if (parseError != IntPtr.Zero)
+            {
+                string message = ReadGError(parseError);
+                g_error_free(parseError);
+                StopUnsafe();
+                throw new InvalidOperationException("Pipeline parse failed: " + message);
+            }
+            if (pipeline == IntPtr.Zero)
+                throw new InvalidOperationException("gst_parse_launch returned no pipeline.");
+
+            sink = gst_bin_get_by_name(pipeline, "controlledpreview");
+            bus = gst_element_get_bus(pipeline);
+            if (sink == IntPtr.Zero || bus == IntPtr.Zero)
+            {
+                StopUnsafe();
+                throw new InvalidOperationException("The controlled preview sink or pipeline bus was not found.");
+            }
+
+            bool needsScene = !String.IsNullOrEmpty(desktopPadName) || !String.IsNullOrEmpty(webcamPadName);
+            if (needsScene)
+            {
+                scene = gst_bin_get_by_name(pipeline, "scene");
+                if (scene == IntPtr.Zero)
+                {
+                    StopUnsafe();
+                    throw new InvalidOperationException("The controlled scene compositor was not found.");
+                }
+
+                if (!String.IsNullOrEmpty(desktopPadName))
+                    desktopPad = gst_element_get_static_pad(scene, desktopPadName);
+                if (!String.IsNullOrEmpty(webcamPadName))
+                    webcamPad = gst_element_get_static_pad(scene, webcamPadName);
+
+                if ((!String.IsNullOrEmpty(desktopPadName) && desktopPad == IntPtr.Zero) ||
+                    (!String.IsNullOrEmpty(webcamPadName) && webcamPad == IntPtr.Zero))
+                {
+                    StopUnsafe();
+                    throw new InvalidOperationException("A required controlled compositor pad was not found.");
+                }
+            }
+
+            gst_video_overlay_set_window_handle(sink, new UIntPtr(unchecked((ulong)windowHandle)));
+            gst_video_overlay_handle_events(sink, 1);
+            gst_video_overlay_set_render_rectangle(sink, 0, 0, Math.Max(1, width), Math.Max(1, height));
+
+            int result = gst_element_set_state(pipeline, GST_STATE_PLAYING);
+            if (result == GST_STATE_CHANGE_FAILURE)
+            {
+                StopUnsafe();
+                throw new InvalidOperationException("GStreamer rejected the controlled preview PLAYING transition.");
+            }
+        }
+    }
+
+    private static void SetInt(IntPtr obj, string name, int number)
+    {
+        GValue value = new GValue();
+        g_value_init(ref value, G_TYPE_INT);
+        try { g_value_set_int(ref value, number); g_object_set_property(obj, name, ref value); }
+        finally { g_value_unset(ref value); }
+    }
+
+    private static void SetUInt(IntPtr obj, string name, uint number)
+    {
+        GValue value = new GValue();
+        g_value_init(ref value, G_TYPE_UINT);
+        try { g_value_set_uint(ref value, number); g_object_set_property(obj, name, ref value); }
+        finally { g_value_unset(ref value); }
+    }
+
+    private static void SetDouble(IntPtr obj, string name, double number)
+    {
+        GValue value = new GValue();
+        g_value_init(ref value, G_TYPE_DOUBLE);
+        try { g_value_set_double(ref value, number); g_object_set_property(obj, name, ref value); }
+        finally { g_value_unset(ref value); }
+    }
+
+    private static void SetEnum(IntPtr obj, string name, int number)
+    {
+        GValue value = new GValue();
+        UIntPtr enumType = G_TYPE_ENUM;
+        try
+        {
+            IntPtr objectClass = Marshal.ReadIntPtr(obj);
+            IntPtr paramSpec = objectClass == IntPtr.Zero
+                ? IntPtr.Zero
+                : g_object_class_find_property(objectClass, name);
+            if (paramSpec != IntPtr.Zero)
+            {
+                GParamSpecPrefix prefix = (GParamSpecPrefix)Marshal.PtrToStructure(paramSpec, typeof(GParamSpecPrefix));
+                if (prefix.value_type != UIntPtr.Zero) enumType = prefix.value_type;
+            }
+        }
+        catch { }
+        g_value_init(ref value, enumType);
+        try { g_value_set_enum(ref value, number); g_object_set_property(obj, name, ref value); }
+        finally { g_value_unset(ref value); }
+    }
+
+    public static void UpdateWebcam(int x, int y, int width, int height, double alpha, uint zorder, bool keepAspect)
+    {
+        lock (Gate)
+        {
+            if (webcamPad == IntPtr.Zero) return;
+            SetInt(webcamPad, "xpos", x);
+            SetInt(webcamPad, "ypos", y);
+            SetInt(webcamPad, "width", Math.Max(1, width));
+            SetInt(webcamPad, "height", Math.Max(1, height));
+            SetDouble(webcamPad, "alpha", Math.Max(0.0, Math.Min(1.0, alpha)));
+            SetUInt(webcamPad, "zorder", zorder);
+            SetEnum(webcamPad, "sizing-policy", keepAspect ? 1 : 0);
+        }
+    }
+
+    public static void Resize(int width, int height)
+    {
+        lock (Gate)
+        {
+            if (sink == IntPtr.Zero) return;
+            gst_video_overlay_set_render_rectangle(sink, 0, 0, Math.Max(1, width), Math.Max(1, height));
+            gst_video_overlay_expose(sink);
+        }
+    }
+
+    public static void SetWindowHandle(long windowHandle, int width, int height)
+    {
+        lock (Gate)
+        {
+            if (sink == IntPtr.Zero) return;
+            gst_video_overlay_set_window_handle(sink, new UIntPtr(unchecked((ulong)windowHandle)));
+            gst_video_overlay_set_render_rectangle(sink, 0, 0, Math.Max(1, width), Math.Max(1, height));
+            gst_video_overlay_expose(sink);
+        }
+    }
+
+    public static string PollTerminalMessage()
+    {
+        lock (Gate)
+        {
+            if (bus == IntPtr.Zero) return null;
+            IntPtr errorMessage = gst_bus_timed_pop_filtered(bus, 0, GST_MESSAGE_ERROR);
+            if (errorMessage != IntPtr.Zero)
+            {
+                try
+                {
+                    IntPtr error;
+                    IntPtr debug;
+                    gst_message_parse_error(errorMessage, out error, out debug);
+                    try
+                    {
+                        string text = ReadGError(error);
+                        string detail = debug == IntPtr.Zero ? null : Marshal.PtrToStringAnsi(debug);
+                        return String.IsNullOrEmpty(detail) ? text : text + Environment.NewLine + detail;
+                    }
+                    finally
+                    {
+                        if (error != IntPtr.Zero) g_error_free(error);
+                        if (debug != IntPtr.Zero) g_free(debug);
+                    }
+                }
+                finally { gst_mini_object_unref(errorMessage); }
+            }
+
+            IntPtr eosMessage = gst_bus_timed_pop_filtered(bus, 0, GST_MESSAGE_EOS);
+            if (eosMessage == IntPtr.Zero) return null;
+            gst_mini_object_unref(eosMessage);
+            return "Pipeline reached end of stream.";
+        }
+    }
+
+    public static void Stop()
+    {
+        lock (Gate) { StopUnsafe(); }
+    }
+
+    private static void StopUnsafe()
+    {
+        if (pipeline != IntPtr.Zero)
+        {
+            gst_element_set_state(pipeline, GST_STATE_NULL);
+            try
+            {
+                int current;
+                int pending;
+                gst_element_get_state(pipeline, out current, out pending, 2000000000UL);
+            }
+            catch { }
+        }
+        if (webcamPad != IntPtr.Zero) gst_object_unref(webcamPad);
+        if (desktopPad != IntPtr.Zero) gst_object_unref(desktopPad);
+        if (bus != IntPtr.Zero) gst_object_unref(bus);
+        if (sink != IntPtr.Zero) gst_object_unref(sink);
+        if (scene != IntPtr.Zero) gst_object_unref(scene);
+        if (pipeline != IntPtr.Zero) gst_object_unref(pipeline);
+        webcamPad = desktopPad = bus = sink = scene = pipeline = IntPtr.Zero;
+    }
+}
+'@
+}
+
 if (-not ('GstProcessJob' -as [type])) {
     Add-Type -TypeDefinition @'
 using System;
@@ -630,7 +999,7 @@ public static class GstProcessJob
 '@
 }
 
-$script:AppVersion = '3.7.52f67'
+$script:AppVersion = '3.7.52f68'
 $script:AppName = "GStreamer Glass v$($script:AppVersion)"
 $script:ConfigDirectory = Join-Path $env:APPDATA 'GStreamerBasicWhipStreamer'
 $script:ConfigPath = Join-Path $script:ConfigDirectory 'settings.json'
@@ -717,6 +1086,8 @@ $script:DynamicScenePreviewStarting = $false
 $script:DynamicScenePreviewStartedAt = $null
 $script:DynamicScenePreviewFallbackTriggered = $false
 $script:SuppressDynamicScenePreview = $false
+$script:ControlledScenePreviewSurfaceHwnd = [IntPtr]::Zero
+$script:ControlledScenePreviewAppliedSize = [System.Drawing.Size]::Empty
 $script:SceneDesktopPreviewProcess = $null
 $script:SceneWebcamPreviewProcess = $null
 $script:SceneDesktopPreviewHwnd = [IntPtr]::Zero
@@ -3970,7 +4341,7 @@ $chkDynamicScenePreviews = New-Object System.Windows.Forms.CheckBox
 $chkDynamicScenePreviews.Text = 'Dynamic previews'
 $chkDynamicScenePreviews.AutoSize = $true
 $chkDynamicScenePreviews.Checked = $false
-$toolTip.SetToolTip($chkDynamicScenePreviews, 'Experimental: try separate live desktop/webcam previews inside the scene editor. Off uses the original composed preview surface.')
+$toolTip.SetToolTip($chkDynamicScenePreviews, 'Runs the real scene compositor in-process so placement, size, opacity, and z-order update live without restarting.')
 
 $chkStandardPreviewOffSceneTab = New-Object System.Windows.Forms.CheckBox
 $chkStandardPreviewOffSceneTab.Text = 'Standard preview off Scenes'
@@ -4012,8 +4383,14 @@ $chkWebcamMirror = New-Object System.Windows.Forms.CheckBox
 $chkWebcamMirror.Text = 'Mirror webcam'
 $chkWebcamMirror.AutoSize = $true
 
+$chkWebcamAspectLock = New-Object System.Windows.Forms.CheckBox
+$chkWebcamAspectLock.Text = 'Lock aspect ratio'
+$chkWebcamAspectLock.AutoSize = $true
+$chkWebcamAspectLock.Checked = $true
+$toolTip.SetToolTip($chkWebcamAspectLock, 'Keeps webcam width and height coupled while resizing in the scene editor or changing geometry values.')
+
 $lblSceneStatus = New-Object System.Windows.Forms.Label
-$lblSceneStatus.Text = 'Concept mode is disabled; the existing capture pipeline is unchanged.'
+$lblSceneStatus.Text = 'Scene composition is disabled; the existing capture pipeline is unchanged.'
 $lblSceneStatus.AutoSize = $true
 
 $txtScenePipeline = New-Object System.Windows.Forms.TextBox
@@ -4032,6 +4409,7 @@ $script:ScenePointerMode = 'Move'
 $script:ScenePointerStart = [System.Drawing.Point]::Empty
 $script:SceneElementStartBounds = [System.Drawing.Rectangle]::Empty
 $script:SceneSourceDragActive = $false
+$script:WebcamAspectRatio = [double]$numWebcamWidth.Value / [double]$numWebcamHeight.Value
 
 $sceneSourcePalette = New-Object System.Windows.Forms.FlowLayoutPanel
 $sceneSourcePalette.Name = 'SceneSourcePalette'
@@ -4131,7 +4509,7 @@ function Update-SceneSelectionChrome {
     $outer = New-Object System.Drawing.Rectangle(0, 0, $sceneWebcamElement.Width, $sceneWebcamElement.Height)
     $region = New-Object System.Drawing.Region($outer)
 
-    if ((-not $script:DynamicScenePreviewActive) -and $sceneWebcamElement.Width -gt 6 -and $sceneWebcamElement.Height -gt 30) {
+    if ($sceneWebcamElement.Width -gt 6 -and $sceneWebcamElement.Height -gt 30) {
         # Windows PowerShell treats arithmetic placed directly after commas in a
         # New-Object TypeName(...) constructor as an operation on the accumulated
         # Object[] argument list. Calculate dimensions first so the constructor
@@ -4149,7 +4527,9 @@ function Update-SceneSelectionChrome {
     $handleY = [Math]::Max(0, [int]$sceneWebcamElement.Height - [int]$sceneResizeHandle.Height - 1)
     $sceneResizeHandle.Location = New-Object System.Drawing.Point($handleX, $handleY)
     if ($sceneWebcamPreviewPanel) {
-        $sceneWebcamPreviewPanel.Visible = [bool]$script:DynamicScenePreviewActive
+        # f68 renders the already-composed scene into the canvas itself. The old
+        # per-source child sink panel must stay hidden or it covers that output.
+        $sceneWebcamPreviewPanel.Visible = $false
         $sceneWebcamPreviewPanel.SendToBack()
     }
     $lblSceneWebcam.BringToFront()
@@ -4162,6 +4542,7 @@ function Set-SceneEditorChromeVisible {
     if ($lblSceneWebcam) { $lblSceneWebcam.Visible = $Visible }
     if ($sceneResizeHandle) { $sceneResizeHandle.Visible = $Visible }
     if ($sceneWebcamElement) {
+        $sceneWebcamElement.Visible = ($Visible -and [string]$cmbScenePreset.SelectedItem -ne 'Desktop only')
         $sceneWebcamElement.BorderStyle = if ($Visible) { [System.Windows.Forms.BorderStyle]::FixedSingle } else { [System.Windows.Forms.BorderStyle]::None }
         $sceneWebcamElement.Cursor = if ($Visible) { [System.Windows.Forms.Cursors]::SizeAll } else { [System.Windows.Forms.Cursors]::Default }
     }
@@ -4287,13 +4668,18 @@ function Update-SceneCanvasFromValues {
         $top = [Math]::Max(0, [Math]::Min($sceneEditorCanvas.ClientSize.Height - $height, $top))
         $sceneWebcamElement.Bounds = New-Object System.Drawing.Rectangle($left, $top, $width, $height)
         Update-SceneSelectionChrome
-        $sceneWebcamElement.Visible = ([string]$cmbScenePreset.SelectedItem -ne 'Desktop only')
+        $sceneWebcamElement.Visible = (
+            [string]$cmbScenePreset.SelectedItem -ne 'Desktop only' -and
+            -not $script:SceneEditorCanvasHostedInPreview
+        )
         $sceneWebcamElement.Enabled = $chkSceneEnabled.Checked
         $lblSceneDesktop.Text = "DESKTOP BACKGROUND`r`n$outputWidth x $outputHeight"
         $lblSceneWebcam.Text = "WEBCAM  $([int]$numWebcamWidth.Value) x $([int]$numWebcamHeight.Value)"
         if ($sceneDesktopPreviewPanel) {
+            # The former desktop-only sink panel is now the one composed-output
+            # surface. It fills the canvas beneath the hollow editor chrome.
             $sceneDesktopPreviewPanel.Visible = [bool]$script:DynamicScenePreviewActive
-            $sceneDesktopPreviewPanel.BringToFront()
+            if ($script:DynamicScenePreviewActive) { $sceneDesktopPreviewPanel.BringToFront() }
         }
         $usingLegacyScenePreview = (
             $script:SceneWorkspaceActive -and
@@ -4311,8 +4697,71 @@ function Update-SceneCanvasFromValues {
         if (Get-Command Sync-DynamicScenePreviewLayout -ErrorAction SilentlyContinue) {
             Sync-DynamicScenePreviewLayout
         }
+        if (Get-Command Sync-ControlledScenePreviewProperties -ErrorAction SilentlyContinue) {
+            Sync-ControlledScenePreviewProperties
+        }
     }
     finally { $script:UpdatingSceneEditor = $false }
+}
+
+function Sync-ControlledScenePreviewProperties {
+    if (-not $script:DynamicScenePreviewActive) { return }
+    if (-not [GstControlledScenePreview]::IsRunning -or -not [GstControlledScenePreview]::HasWebcamPad) { return }
+
+    try {
+        [GstControlledScenePreview]::UpdateWebcam(
+            [int]$numWebcamX.Value,
+            [int]$numWebcamY.Value,
+            [int]$numWebcamWidth.Value,
+            [int]$numWebcamHeight.Value,
+            ([double]$numWebcamOpacity.Value / 100.0),
+            [uint32]1,
+            [bool]$chkWebcamAspectLock.Checked
+        )
+    }
+    catch {
+        Append-Log "Controlled scene property update failed: $($_.Exception.Message)"
+    }
+}
+
+function Push-ControlledSceneGeometryFromElement {
+    # Dragging occurs in scaled canvas coordinates. Convert directly to encoded
+    # scene coordinates and mutate the live compositor pad without touching the
+    # numeric controls or rebuilding command previews on every mouse-move event.
+    if (-not $script:DynamicScenePreviewActive) { return }
+    if (-not [GstControlledScenePreview]::IsRunning -or -not [GstControlledScenePreview]::HasWebcamPad) { return }
+
+    $outputWidth = [Math]::Max(1, [int]$numWidth.Value)
+    $outputHeight = [Math]::Max(1, [int]$numHeight.Value)
+    $scaleX = [double]$outputWidth / [Math]::Max(1, $sceneEditorCanvas.ClientSize.Width)
+    $scaleY = [double]$outputHeight / [Math]::Max(1, $sceneEditorCanvas.ClientSize.Height)
+
+    $x = [Math]::Max(0, [int][Math]::Round($sceneWebcamElement.Left * $scaleX))
+    $y = [Math]::Max(0, [int][Math]::Round($sceneWebcamElement.Top * $scaleY))
+    $width = [Math]::Max(1, [int][Math]::Round($sceneWebcamElement.Width * $scaleX))
+    $height = [Math]::Max(1, [int][Math]::Round($sceneWebcamElement.Height * $scaleY))
+
+    try {
+        [GstControlledScenePreview]::UpdateWebcam(
+            $x,
+            $y,
+            $width,
+            $height,
+            ([double]$numWebcamOpacity.Value / 100.0),
+            [uint32]1,
+            [bool]$chkWebcamAspectLock.Checked
+        )
+    }
+    catch {
+        Append-Log "Controlled scene drag update failed: $($_.Exception.Message)"
+    }
+}
+
+function Capture-WebcamAspectRatio {
+    if ([int]$numWebcamHeight.Value -gt 0) {
+        $script:WebcamAspectRatio = [double]$numWebcamWidth.Value / [double]$numWebcamHeight.Value
+    }
+    if ($script:WebcamAspectRatio -le 0) { $script:WebcamAspectRatio = 16.0 / 9.0 }
 }
 
 function Set-SceneValuesFromElement {
@@ -4353,8 +4802,32 @@ $scenePointerMove = {
     $dy = $cursor.Y - $script:ScenePointerStart.Y
     $start = $script:SceneElementStartBounds
     if ($script:ScenePointerMode -eq 'Resize') {
-        $newWidth = [Math]::Max(24, [Math]::Min($sceneEditorCanvas.ClientSize.Width - $start.Left, $start.Width + $dx))
-        $newHeight = [Math]::Max(18, [Math]::Min($sceneEditorCanvas.ClientSize.Height - $start.Top, $start.Height + $dy))
+        $maxWidth = [Math]::Max(24, $sceneEditorCanvas.ClientSize.Width - $start.Left)
+        $maxHeight = [Math]::Max(18, $sceneEditorCanvas.ClientSize.Height - $start.Top)
+        $newWidth = [Math]::Max(24, [Math]::Min($maxWidth, $start.Width + $dx))
+        $newHeight = [Math]::Max(18, [Math]::Min($maxHeight, $start.Height + $dy))
+
+        if ($chkWebcamAspectLock.Checked) {
+            $displayAspect = if ($start.Height -gt 0) { [double]$start.Width / [double]$start.Height } else { $script:WebcamAspectRatio }
+            if ($displayAspect -le 0) { $displayAspect = 16.0 / 9.0 }
+
+            if ([Math]::Abs($dx) -ge [Math]::Abs($dy * $displayAspect)) {
+                $newHeight = [Math]::Max(18, [int][Math]::Round($newWidth / $displayAspect))
+            }
+            else {
+                $newWidth = [Math]::Max(24, [int][Math]::Round($newHeight * $displayAspect))
+            }
+
+            if ($newWidth -gt $maxWidth) {
+                $newWidth = $maxWidth
+                $newHeight = [Math]::Max(18, [int][Math]::Round($newWidth / $displayAspect))
+            }
+            if ($newHeight -gt $maxHeight) {
+                $newHeight = $maxHeight
+                $newWidth = [Math]::Max(24, [int][Math]::Round($newHeight * $displayAspect))
+            }
+        }
+
         $sceneWebcamElement.Size = New-Object System.Drawing.Size($newWidth, $newHeight)
         Update-SceneSelectionChrome
     }
@@ -4363,6 +4836,7 @@ $scenePointerMove = {
         $newTop = [Math]::Max(0, [Math]::Min($sceneEditorCanvas.ClientSize.Height - $start.Height, $start.Top + $dy))
         $sceneWebcamElement.Location = New-Object System.Drawing.Point($newLeft, $newTop)
     }
+    Push-ControlledSceneGeometryFromElement
 }
 
 $scenePointerUp = {
@@ -4371,6 +4845,7 @@ $scenePointerUp = {
     $script:ScenePointerActive = $false
     $sceneWebcamElement.Capture = $false
     Set-SceneValuesFromElement
+    if (-not $chkWebcamAspectLock.Checked) { Capture-WebcamAspectRatio }
 }
 
 foreach ($dragControl in @($sceneWebcamElement, $lblSceneWebcam, $sceneResizeHandle)) {
@@ -4469,13 +4944,13 @@ function Set-WebcamLayoutPreset {
 function Update-SceneUi {
     if ($script:UpdatingSceneEditor) { return }
     $enabled = $chkSceneEnabled.Checked
-    foreach ($control in @($cmbScenePreset,$cmbSceneCompositor,$cmbWebcamDevice,$btnRefreshWebcams,$cmbWebcamLayout,$numWebcamWidth,$numWebcamHeight,$numWebcamX,$numWebcamY,$numWebcamFps,$numWebcamOpacity,$numWebcamBorder,$chkWebcamMirror)) {
+    foreach ($control in @($cmbScenePreset,$cmbSceneCompositor,$cmbWebcamDevice,$btnRefreshWebcams,$cmbWebcamLayout,$numWebcamWidth,$numWebcamHeight,$numWebcamX,$numWebcamY,$numWebcamFps,$numWebcamOpacity,$numWebcamBorder,$chkWebcamMirror,$chkWebcamAspectLock)) {
         $control.Enabled = $enabled
     }
     $usesCompositor = ($enabled -and [string]$cmbScenePreset.SelectedItem -eq 'Desktop + webcam')
     $numSceneInputQueueBuffers.Enabled = $usesCompositor
     $numSceneInputQueueCapMs.Enabled = $usesCompositor
-    $lblSceneStatus.Text = if ($enabled) { 'Experimental scene composition will replace the normal capture source when the next pipeline starts.' } else { 'Concept mode is disabled; the existing capture pipeline is unchanged.' }
+    $lblSceneStatus.Text = if ($enabled) { 'Scene composition enabled. Dynamic previews use the real controlled compositor and the stream uses the same geometry.' } else { 'Scene composition is disabled; the existing capture pipeline is unchanged.' }
     Update-SceneCanvasFromValues
     try { $txtScenePipeline.Text = Build-SceneCaptureChain -LocalOnly } catch { $txtScenePipeline.Text = $_.Exception.Message }
     if (Get-Command Update-CommandPreview -ErrorAction SilentlyContinue) { Update-CommandPreview }
@@ -4539,8 +5014,8 @@ $chkDynamicScenePreviews.Add_CheckedChanged({
         Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Dynamic scene previews disabled; falling back to the normal composed preview."
         Stop-DynamicScenePreview -Quiet
     }
-    elseif ($chkDynamicScenePreviews.Checked -and $script:SceneWorkspaceActive -and $script:PreviewOnlyMode -and $script:GstProcess -and -not $script:GstProcess.HasExited) {
-        Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Dynamic scene previews enabled; restarting local preview to try the experimental source preview path."
+    elseif ($chkDynamicScenePreviews.Checked -and $script:PreviewOnlyMode -and $script:GstProcess -and -not $script:GstProcess.HasExited -and (Test-DynamicScenePreviewWanted)) {
+        Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Dynamic scene previews enabled; restarting local preview with the controlled compositor."
         Stop-GstStream
     }
     Update-SceneCanvasFromValues
@@ -4557,14 +5032,57 @@ $chkStandardPreviewOffSceneTab.Add_CheckedChanged({
     elseif ((-not $chkStandardPreviewOffSceneTab.Checked) -and (-not $script:SceneWorkspaceActive) -and $script:DynamicScenePreviewActive) {
         Show-DynamicScenePreviewInPreviewCard
     }
+    elseif ((-not $chkStandardPreviewOffSceneTab.Checked) -and $script:PreviewOnlyMode -and $script:GstProcess -and -not $script:GstProcess.HasExited -and (Test-DynamicScenePreviewWanted)) {
+        Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Dynamic preview sharing enabled off Scenes; switching the local preview to the controlled compositor."
+        Stop-GstStream
+        Sync-StandalonePreviewState -Quiet
+    }
     Update-CommandPreview
 })
 $cmbScenePreset.Add_SelectedIndexChanged({ Reset-DynamicScenePreviewFallback; Update-SceneUi; Restart-DynamicScenePreviewIfActive })
-$cmbSceneCompositor.Add_SelectedIndexChanged({ Update-SceneUi })
+$cmbSceneCompositor.Add_SelectedIndexChanged({ Reset-DynamicScenePreviewFallback; Update-SceneUi; Restart-DynamicScenePreviewIfActive })
 $cmbWebcamDevice.Add_SelectedIndexChanged({ Reset-DynamicScenePreviewFallback; Update-SceneUi; Restart-DynamicScenePreviewIfActive })
 $cmbWebcamLayout.Add_SelectedIndexChanged({ Set-WebcamLayoutPreset; Update-SceneUi })
-foreach ($control in @($numWebcamWidth,$numWebcamHeight,$numWebcamX,$numWebcamY,$numWebcamFps,$numWebcamOpacity,$numWebcamBorder,$numSceneInputQueueBuffers,$numSceneInputQueueCapMs)) { $control.Add_ValueChanged({ Update-SceneUi }) }
+$numWebcamWidth.Add_ValueChanged({
+    if ($script:UpdatingSceneEditor -or $script:LoadingSettings) { return }
+    if ($chkWebcamAspectLock.Checked) {
+        $script:UpdatingSceneEditor = $true
+        try {
+            $ratio = [Math]::Max(0.0001, $script:WebcamAspectRatio)
+            $height = [Math]::Min([int]$numWebcamHeight.Maximum, [Math]::Max([int]$numWebcamHeight.Minimum, [int][Math]::Round([double]$numWebcamWidth.Value / $ratio)))
+            $width = [Math]::Min([int]$numWebcamWidth.Maximum, [Math]::Max([int]$numWebcamWidth.Minimum, [int][Math]::Round($height * $ratio)))
+            $numWebcamWidth.Value = [decimal]$width
+            $numWebcamHeight.Value = [decimal]$height
+        }
+        finally { $script:UpdatingSceneEditor = $false }
+    }
+    else { Capture-WebcamAspectRatio }
+    Update-SceneUi
+})
+$numWebcamHeight.Add_ValueChanged({
+    if ($script:UpdatingSceneEditor -or $script:LoadingSettings) { return }
+    if ($chkWebcamAspectLock.Checked) {
+        $script:UpdatingSceneEditor = $true
+        try {
+            $ratio = [Math]::Max(0.0001, $script:WebcamAspectRatio)
+            $width = [Math]::Min([int]$numWebcamWidth.Maximum, [Math]::Max([int]$numWebcamWidth.Minimum, [int][Math]::Round([double]$numWebcamHeight.Value * $ratio)))
+            $height = [Math]::Min([int]$numWebcamHeight.Maximum, [Math]::Max([int]$numWebcamHeight.Minimum, [int][Math]::Round($width / $ratio)))
+            $numWebcamWidth.Value = [decimal]$width
+            $numWebcamHeight.Value = [decimal]$height
+        }
+        finally { $script:UpdatingSceneEditor = $false }
+    }
+    else { Capture-WebcamAspectRatio }
+    Update-SceneUi
+})
+$chkWebcamAspectLock.Add_CheckedChanged({
+    if ($chkWebcamAspectLock.Checked) { Capture-WebcamAspectRatio }
+    Update-SceneUi
+})
+foreach ($control in @($numWebcamX,$numWebcamY,$numWebcamFps,$numWebcamOpacity,$numWebcamBorder,$numSceneInputQueueBuffers,$numSceneInputQueueCapMs)) { $control.Add_ValueChanged({ Update-SceneUi }) }
 $numWebcamFps.Add_ValueChanged({ Reset-DynamicScenePreviewFallback; Restart-DynamicScenePreviewIfActive })
+$numSceneInputQueueBuffers.Add_ValueChanged({ Reset-DynamicScenePreviewFallback; Restart-DynamicScenePreviewIfActive })
+$numSceneInputQueueCapMs.Add_ValueChanged({ Reset-DynamicScenePreviewFallback; Restart-DynamicScenePreviewIfActive })
 $numWidth.Add_ValueChanged({ Resize-LiveSceneCanvas; Resize-DynamicScenePreviewCardCanvas; Update-SceneCanvasFromValues })
 $numHeight.Add_ValueChanged({ Resize-LiveSceneCanvas; Resize-DynamicScenePreviewCardCanvas; Update-SceneCanvasFromValues })
 $chkWebcamMirror.Add_CheckedChanged({ Reset-DynamicScenePreviewFallback; Update-SceneUi; Restart-DynamicScenePreviewIfActive })
@@ -5438,7 +5956,7 @@ function Apply-ModernDashboardUi {
     $r = Add-Row $s
     Add-Field $r -Control $btnResetVideo -Width 160 | Out-Null
 
-    # ---------------- Scenes (Concept) ----------------
+    # ---------------- Scenes ----------------
     $paneScenes = New-SettingsPane $tabScenes
     $script:SceneSettingsPane = $paneScenes
     $s = Add-Section $paneScenes 'Scene editor'
@@ -5485,6 +6003,8 @@ function Apply-ModernDashboardUi {
     Add-Field $r -Label 'Height' -Control $numWebcamHeight -Width 80 | Out-Null
     Add-Field $r -Label 'X' -Control $numWebcamX -Width 80 | Out-Null
     Add-Field $r -Label 'Y' -Control $numWebcamY -Width 80 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Control $chkWebcamAspectLock -Width 140 | Out-Null
 
     $s = Add-Section $paneScenes 'Generated scene capture chain'
     $r = Add-Row $s
@@ -6585,8 +7105,10 @@ function Sync-StandalonePreviewState {
         (Test-StandalonePreviewAllowed)
     ) {
         if (Test-UseDynamicScenePreview) {
-            [void](Start-DynamicScenePreview)
-            return
+            if (Start-DynamicScenePreview) { return }
+            if (-not $Quiet) {
+                Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Controlled scene preview failed; starting the normal composed preview fallback."
+            }
         }
 
         if (-not $Quiet) {
@@ -8272,7 +8794,12 @@ function Apply-ThreadBudget {
 function Update-GstThreadCountStatus {
     if (-not $lblLiveGstThreads) { return }
     if (-not $script:GstProcess -or $script:GstProcess.HasExited) {
-        $lblLiveGstThreads.Text = 'Live GST threads: stopped'
+        $lblLiveGstThreads.Text = if ($script:DynamicScenePreviewActive -and [GstControlledScenePreview]::IsRunning) {
+            'Live GST threads: controlled scene runs in-process'
+        }
+        else {
+            'Live GST threads: stopped'
+        }
         return
     }
     try {
@@ -10580,6 +11107,7 @@ function Build-SceneCaptureChain {
     $cameraFps = [int]$numWebcamFps.Value
     $cameraIndex = Get-SelectedWebcamIndex
     $alpha = ([double]$numWebcamOpacity.Value / 100.0).ToString('0.00', [Globalization.CultureInfo]::InvariantCulture)
+    $sizingPolicy = if ($chkWebcamAspectLock.Checked) { 'keep-aspect-ratio' } else { 'none' }
     $mirror = if ($chkWebcamMirror.Checked) { ' ! videoflip method=horizontal-flip' } else { '' }
     $webcamSource = Add-VideoSourceTimestampOption "mfvideosrc device-index=$cameraIndex"
     $preset = [string]$cmbScenePreset.SelectedItem
@@ -10600,10 +11128,10 @@ function Build-SceneCaptureChain {
 
     $desktop = Build-DesktopCaptureChain -LocalOnly:$LocalOnly
     if ([string]$cmbSceneCompositor.SelectedItem -eq 'CPU compatibility') {
-        return "$desktop ! d3d11download ! $cpuConvert$sceneInputBoundary ! scene.sink_0 $webcamSource ! video/x-raw,framerate=$cameraFps/1 ! $cpuConvert$mirror ! videoscale ! video/x-raw,format=BGRA,width=$cameraWidth,height=$cameraHeight$sceneInputBoundary ! scene.sink_1 compositor name=scene background=black$cpuCompositorWorkers sink_0::xpos=0 sink_0::ypos=0 sink_1::xpos=$cameraX sink_1::ypos=$cameraY sink_1::alpha=$alpha ! $cpuConvert ! video/x-raw,format=BGRA,width=$canvasWidth,height=$canvasHeight,framerate=$canvasFps/1 ! d3d11upload ! d3d11convert ! `"video/x-raw(memory:D3D11Memory),format=NV12,width=$canvasWidth,height=$canvasHeight,framerate=$canvasFps/1`""
+        return "$desktop ! d3d11download ! $cpuConvert$sceneInputBoundary ! scene.sink_0 $webcamSource ! video/x-raw,framerate=$cameraFps/1 ! $cpuConvert$mirror ! videoscale ! video/x-raw,format=BGRA,width=$cameraWidth,height=$cameraHeight$sceneInputBoundary ! scene.sink_1 compositor name=scene background=black$cpuCompositorWorkers sink_0::xpos=0 sink_0::ypos=0 sink_0::width=$canvasWidth sink_0::height=$canvasHeight sink_0::zorder=0 sink_1::xpos=$cameraX sink_1::ypos=$cameraY sink_1::width=$cameraWidth sink_1::height=$cameraHeight sink_1::alpha=$alpha sink_1::zorder=1 sink_1::sizing-policy=$sizingPolicy ! $cpuConvert ! video/x-raw,format=BGRA,width=$canvasWidth,height=$canvasHeight,framerate=$canvasFps/1 ! d3d11upload ! d3d11convert ! `"video/x-raw(memory:D3D11Memory),format=NV12,width=$canvasWidth,height=$canvasHeight,framerate=$canvasFps/1`""
     }
 
-    return "$desktop$sceneInputBoundary ! scene.sink_0 $webcamSource ! video/x-raw,framerate=$cameraFps/1 ! $cpuConvert$mirror ! videoscale ! video/x-raw,format=BGRA,width=$cameraWidth,height=$cameraHeight ! d3d11upload ! d3d11convert ! `"video/x-raw(memory:D3D11Memory),format=BGRA,width=$cameraWidth,height=$cameraHeight`"$sceneInputBoundary ! scene.sink_1 d3d11compositor name=scene background=black sink_0::xpos=0 sink_0::ypos=0 sink_1::xpos=$cameraX sink_1::ypos=$cameraY sink_1::alpha=$alpha ! d3d11convert ! `"video/x-raw(memory:D3D11Memory),format=NV12,width=$canvasWidth,height=$canvasHeight,framerate=$canvasFps/1`""
+    return "$desktop$sceneInputBoundary ! scene.sink_0 $webcamSource ! video/x-raw,framerate=$cameraFps/1 ! $cpuConvert$mirror ! videoscale ! video/x-raw,format=BGRA,width=$cameraWidth,height=$cameraHeight ! d3d11upload ! d3d11convert ! `"video/x-raw(memory:D3D11Memory),format=BGRA,width=$cameraWidth,height=$cameraHeight`"$sceneInputBoundary ! scene.sink_1 d3d11compositor name=scene background=black ignore-inactive-pads=true sink_0::xpos=0 sink_0::ypos=0 sink_0::width=$canvasWidth sink_0::height=$canvasHeight sink_0::zorder=0 sink_1::xpos=$cameraX sink_1::ypos=$cameraY sink_1::width=$cameraWidth sink_1::height=$cameraHeight sink_1::alpha=$alpha sink_1::zorder=1 sink_1::sizing-policy=$sizingPolicy ! d3d11convert ! `"video/x-raw(memory:D3D11Memory),format=NV12,width=$canvasWidth,height=$canvasHeight,framerate=$canvasFps/1`""
 }
 
 function Build-CaptureChain {
@@ -11829,6 +12357,7 @@ function Save-Settings {
             WebcamOpacity     = [int]$numWebcamOpacity.Value
             WebcamBorder      = [int]$numWebcamBorder.Value
             WebcamMirror      = $chkWebcamMirror.Checked
+            WebcamAspectLock  = $chkWebcamAspectLock.Checked
             FullscreenApp     = Test-FullscreenCaptureMode
             SendAbsoluteTimestamps = (Test-SendAbsoluteTimestampsEnabled)
             TimingMode             = [string]$cmbTimingMode.SelectedItem
@@ -12197,6 +12726,8 @@ function Load-Settings {
             }
         }
         if ($null -ne $settings.WebcamMirror) { $chkWebcamMirror.Checked = [bool]$settings.WebcamMirror }
+        if ($null -ne $settings.WebcamAspectLock) { $chkWebcamAspectLock.Checked = [bool]$settings.WebcamAspectLock }
+        Capture-WebcamAspectRatio
         if ($null -ne $settings.SceneEnabled) { $chkSceneEnabled.Checked = [bool]$settings.SceneEnabled }
         Update-SceneUi
         $loadedClockSignalingEnabled = $false
@@ -12819,45 +13350,9 @@ function Test-DynamicScenePreviewWanted {
     }
 }
 
-function Build-DynamicSceneDesktopPreviewPipeline {
-    $desktop = Build-DesktopCaptureChain -LocalOnly
-    return "$desktop ! queue max-size-buffers=1 max-size-bytes=0 max-size-time=0 leaky=downstream ! d3d11videosink name=scenedesktoppreview sync=false force-aspect-ratio=true"
-}
-
-function Build-DynamicSceneWebcamPreviewPipeline {
-    $cameraIndex = Get-SelectedWebcamIndex
-    $cameraFps = [int]$numWebcamFps.Value
-    $cpuWorkers = Get-CpuWorkerLimit
-    $cpuConvert = if ($cpuWorkers -gt 0) { "videoconvert n-threads=$cpuWorkers" } else { 'videoconvert' }
-    $mirror = if ($chkWebcamMirror.Checked) { ' ! videoflip method=horizontal-flip' } else { '' }
-    $webcamSource = Add-VideoSourceTimestampOption "mfvideosrc device-index=$cameraIndex"
-    return "$webcamSource ! video/x-raw,framerate=$cameraFps/1 ! $cpuConvert$mirror ! videoscale ! video/x-raw,format=BGRA,framerate=$cameraFps/1 ! d3d11upload ! d3d11convert ! `"video/x-raw(memory:D3D11Memory),format=NV12`" ! queue max-size-buffers=1 max-size-bytes=0 max-size-time=0 leaky=downstream ! d3d11videosink name=scenewebcampreview sync=false force-aspect-ratio=true"
-}
-
-function Start-DynamicScenePreviewProcess {
-    param(
-        [Parameter(Mandatory)][string]$Role,
-        [Parameter(Mandatory)][string]$Pipeline
-    )
-
-    $gstPath = Resolve-GstLaunchSelection -RequestedPath $txtGstPath.Text -UpdateControl
-    Prepare-GStreamerRuntime -GstPath $gstPath
-    Initialize-GstJob
-
-    $flags = '-e'
-    if ($chkVerbose.Checked) { $flags += ' -v' }
-    $arguments = "$flags $Pipeline"
-    Append-Log "Dynamic scene $Role preview arguments: $arguments"
-
-    $process = Start-Process -FilePath $gstPath -ArgumentList $arguments -WindowStyle Hidden -PassThru
-    Set-GstProcessPriority -Process $process
-
-    if ($script:JobHandle -ne [IntPtr]::Zero) {
-        try { [GstProcessJob]::AssignProcess($script:JobHandle, $process.Handle) }
-        catch { Append-Log "WARNING: Dynamic scene $Role preview could not be assigned to the kill-on-close job: $($_.Exception.Message)" }
-    }
-
-    return $process
+function Build-ControlledScenePreviewPipeline {
+    $sceneChain = Build-SceneCaptureChain -LocalOnly
+    return "$sceneChain ! queue max-size-buffers=1 max-size-bytes=0 max-size-time=0 leaky=downstream ! d3d11videosink name=controlledpreview sync=false force-aspect-ratio=true"
 }
 
 function Start-DynamicScenePreview {
@@ -12875,34 +13370,58 @@ function Start-DynamicScenePreview {
         $script:PreviewHwnd = [IntPtr]::Zero
         Reset-PreviewAppliedState
 
-        $sceneDesktopPreviewPanel.Visible = ([string]$cmbScenePreset.SelectedItem -ne 'Webcam only')
-        $sceneWebcamPreviewPanel.Visible = ([string]$cmbScenePreset.SelectedItem -ne 'Desktop only')
-        $lblSceneDesktop.Visible = -not $sceneDesktopPreviewPanel.Visible
-        Update-SceneCanvasFromValues
-        Update-SceneSelectionChrome
-
+        # The old implementation launched one sink window per source and stacked
+        # those HWNDs. f68 renders the actual scene compositor into one canvas.
+        $sceneDesktopPreviewPanel.Visible = $true
+        $sceneWebcamPreviewPanel.Visible = $false
+        $lblSceneDesktop.Visible = $false
         $script:SceneDesktopPreviewHwnd = [IntPtr]::Zero
         $script:SceneWebcamPreviewHwnd = [IntPtr]::Zero
+        $script:SceneDesktopPreviewProcess = $null
+        $script:SceneWebcamPreviewProcess = $null
 
-        if ([string]$cmbScenePreset.SelectedItem -ne 'Webcam only') {
-            $script:SceneDesktopPreviewProcess = Start-DynamicScenePreviewProcess -Role Desktop -Pipeline (Build-DynamicSceneDesktopPreviewPipeline)
-        }
-
-        if ([string]$cmbScenePreset.SelectedItem -ne 'Desktop only') {
-            $script:SceneWebcamPreviewProcess = Start-DynamicScenePreviewProcess -Role Webcam -Pipeline (Build-DynamicSceneWebcamPreviewPipeline)
-        }
-
-        $statusLabel.Text = 'Dynamic scene preview'
-        $statusLabel.ForeColor = [System.Drawing.Color]::DarkGreen
-        Set-RunState $true
-        Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Dynamic scene editor preview started."
         if (-not $script:SceneWorkspaceActive -and $chkStandardPreviewOffSceneTab -and -not $chkStandardPreviewOffSceneTab.Checked) {
             Show-DynamicScenePreviewInPreviewCard
         }
+
+        Update-SceneCanvasFromValues
+        Update-SceneSelectionChrome
+
+        $gstPath = Resolve-GstLaunchSelection -RequestedPath $txtGstPath.Text -UpdateControl
+        Prepare-GStreamerRuntime -GstPath $gstPath
+        $binDirectory = Split-Path -Parent (Normalize-GstLaunchPath $gstPath)
+        $nativeRuntime = Join-Path $binDirectory 'gstreamer-1.0-0.dll'
+        if (-not (Test-Path -LiteralPath $nativeRuntime)) {
+            throw "The selected GStreamer runtime does not contain gstreamer-1.0-0.dll: $binDirectory"
+        }
+
+        $pipeline = Build-ControlledScenePreviewPipeline
+        $preset = [string]$cmbScenePreset.SelectedItem
+        $desktopPadName = if ($preset -eq 'Desktop + webcam') { 'sink_0' } else { '' }
+        $webcamPadName = if ($preset -eq 'Desktop + webcam') { 'sink_1' } else { '' }
+        $null = $sceneDesktopPreviewPanel.Handle
+        Append-Log "Controlled scene preview pipeline: $pipeline"
+        [GstControlledScenePreview]::Start(
+            $pipeline,
+            $sceneDesktopPreviewPanel.Handle.ToInt64(),
+            $sceneDesktopPreviewPanel.ClientSize.Width,
+            $sceneDesktopPreviewPanel.ClientSize.Height,
+            $desktopPadName,
+            $webcamPadName
+        )
+        $script:ControlledScenePreviewSurfaceHwnd = $sceneDesktopPreviewPanel.Handle
+        $script:ControlledScenePreviewAppliedSize = $sceneDesktopPreviewPanel.ClientSize
+        Sync-ControlledScenePreviewProperties
+
+        $statusLabel.Text = 'Controlled scene preview'
+        $statusLabel.ForeColor = [System.Drawing.Color]::DarkGreen
+        Set-RunState $true
+        Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Controlled scene compositor started; geometry and opacity are live."
         return $true
     }
     catch {
-        Append-Log "Dynamic scene preview start error: $($_.Exception.Message)"
+        Append-Log "Controlled scene preview start error: $($_.Exception.Message)"
+        $script:SuppressDynamicScenePreview = $true
         Stop-DynamicScenePreview -Quiet
         return $false
     }
@@ -12916,19 +13435,13 @@ function Stop-DynamicScenePreview {
 
     $hadDynamic = [bool]$script:DynamicScenePreviewActive
 
-    foreach ($entry in @(
-        @{ Role = 'desktop'; Process = $script:SceneDesktopPreviewProcess },
-        @{ Role = 'webcam'; Process = $script:SceneWebcamPreviewProcess }
-    )) {
-        $process = $entry['Process']
-        if ($process -and -not $process.HasExited) {
-            if (-not $Quiet) {
-                Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Stopping dynamic scene $($entry['Role']) preview - PID $($process.Id)..."
-            }
-            try { Stop-ProcessTreeById -ProcessId $process.Id } catch {}
-            try { $process.WaitForExit(1500) | Out-Null } catch {}
+    if ([GstControlledScenePreview]::IsRunning) {
+        if (-not $Quiet) {
+            Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Stopping controlled scene compositor..."
         }
-        try { if ($process) { $process.Dispose() } } catch {}
+        try { [GstControlledScenePreview]::Stop() } catch {
+            Append-Log "Controlled scene preview stop warning: $($_.Exception.Message)"
+        }
     }
 
     $script:SceneDesktopPreviewProcess = $null
@@ -12939,6 +13452,8 @@ function Stop-DynamicScenePreview {
     $script:DynamicScenePreviewStarting = $false
     $script:DynamicScenePreviewStartedAt = $null
     $script:PreviewOnlyMode = $false
+    $script:ControlledScenePreviewSurfaceHwnd = [IntPtr]::Zero
+    $script:ControlledScenePreviewAppliedSize = [System.Drawing.Size]::Empty
 
     if ($sceneDesktopPreviewPanel) { $sceneDesktopPreviewPanel.Visible = $false }
     if ($sceneWebcamPreviewPanel) { $sceneWebcamPreviewPanel.Visible = $false }
@@ -12955,45 +13470,15 @@ function Stop-DynamicScenePreview {
 
 function Try-AttachDynamicScenePreview {
     if (-not $script:DynamicScenePreviewActive) { return }
-
-    foreach ($entry in @(
-        @{ Role = 'desktop'; Process = $script:SceneDesktopPreviewProcess; HwndName = 'SceneDesktopPreviewHwnd'; Panel = $sceneDesktopPreviewPanel },
-        @{ Role = 'webcam'; Process = $script:SceneWebcamPreviewProcess; HwndName = 'SceneWebcamPreviewHwnd'; Panel = $sceneWebcamPreviewPanel }
-    )) {
-        $process = $entry['Process']
-        $panel = $entry['Panel']
-        if (-not $process -or $process.HasExited -or -not $panel -or -not $panel.Visible) { continue }
-
-        $current = (Get-Variable -Scope Script -Name ([string]$entry['HwndName']) -ValueOnly)
-        if ($current -eq [IntPtr]::Zero) {
-            $candidate = [GstPreviewNative]::FindPreviewWindow($process.Id)
-            if ($candidate -ne [IntPtr]::Zero) {
-                if ([GstPreviewNative]::EmbedWindow($candidate, $panel.Handle, $panel.ClientSize.Width, $panel.ClientSize.Height)) {
-                    Set-Variable -Scope Script -Name ([string]$entry['HwndName']) -Value $candidate
-                    Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Dynamic scene $($entry['Role']) preview embedded."
-                }
-            }
-        }
-    }
-
     Sync-DynamicScenePreviewLayout
 }
 
 function Test-DynamicScenePreviewAttached {
-    if (-not $script:DynamicScenePreviewActive) { return $false }
-
-    $preset = [string]$cmbScenePreset.SelectedItem
-    $needsDesktop = ($preset -ne 'Webcam only')
-    $needsWebcam = ($preset -ne 'Desktop only')
-
-    if ($needsDesktop -and $script:SceneDesktopPreviewHwnd -eq [IntPtr]::Zero) { return $false }
-    if ($needsWebcam -and $script:SceneWebcamPreviewHwnd -eq [IntPtr]::Zero) { return $false }
-
-    return $true
+    return ($script:DynamicScenePreviewActive -and [GstControlledScenePreview]::IsRunning)
 }
 
 function Invoke-DynamicScenePreviewFallback {
-    param([string]$Reason = 'did not attach its source preview window(s) within 4 seconds')
+    param([string]$Reason = 'reported a pipeline error')
 
     if (-not $script:DynamicScenePreviewActive) { return }
     if ($script:DynamicScenePreviewFallbackTriggered) { return }
@@ -13004,7 +13489,7 @@ function Invoke-DynamicScenePreviewFallback {
     Append-Log (
         "[$(Get-Date -Format 'HH:mm:ss')] Dynamic scene preview $Reason; " +
         'falling back to the normal composed preview in the scene editor. ' +
-        'Scene objects will not redraw dynamically until the dynamic preview path works.'
+        'Scene objects will not redraw dynamically until Dynamic previews is retried.'
     )
 
     Stop-DynamicScenePreview -Quiet
@@ -13030,13 +13515,22 @@ function Sync-DynamicScenePreviewLayout {
     if (-not $script:DynamicScenePreviewActive) { return }
 
     try {
-        if ($sceneDesktopPreviewPanel -and $script:SceneDesktopPreviewHwnd -ne [IntPtr]::Zero) {
-            [GstPreviewNative]::ResizeEmbeddedWindow($script:SceneDesktopPreviewHwnd, $sceneDesktopPreviewPanel.ClientSize.Width, $sceneDesktopPreviewPanel.ClientSize.Height)
-            [GstPreviewNative]::SetWindowVisible($script:SceneDesktopPreviewHwnd, $sceneDesktopPreviewPanel.Visible)
-        }
-        if ($sceneWebcamPreviewPanel -and $script:SceneWebcamPreviewHwnd -ne [IntPtr]::Zero) {
-            [GstPreviewNative]::ResizeEmbeddedWindow($script:SceneWebcamPreviewHwnd, $sceneWebcamPreviewPanel.ClientSize.Width, $sceneWebcamPreviewPanel.ClientSize.Height)
-            [GstPreviewNative]::SetWindowVisible($script:SceneWebcamPreviewHwnd, $sceneWebcamPreviewPanel.Visible)
+        if ([GstControlledScenePreview]::IsRunning -and $sceneDesktopPreviewPanel -and $sceneDesktopPreviewPanel.IsHandleCreated) {
+            $surfaceHandle = $sceneDesktopPreviewPanel.Handle
+            $surfaceSize = $sceneDesktopPreviewPanel.ClientSize
+            if (
+                $surfaceHandle -ne $script:ControlledScenePreviewSurfaceHwnd -or
+                $surfaceSize.Width -ne $script:ControlledScenePreviewAppliedSize.Width -or
+                $surfaceSize.Height -ne $script:ControlledScenePreviewAppliedSize.Height
+            ) {
+                [GstControlledScenePreview]::SetWindowHandle(
+                    $surfaceHandle.ToInt64(),
+                    $surfaceSize.Width,
+                    $surfaceSize.Height
+                )
+                $script:ControlledScenePreviewSurfaceHwnd = $surfaceHandle
+                $script:ControlledScenePreviewAppliedSize = $surfaceSize
+            }
         }
     }
     catch {}
@@ -13228,8 +13722,8 @@ function Start-GstStream {
     }
 
     if ($PreviewOnly -and (Test-UseDynamicScenePreview)) {
-        [void](Start-DynamicScenePreview)
-        return
+        if (Start-DynamicScenePreview) { return }
+        Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Controlled scene preview failed; continuing with the normal composed preview fallback."
     }
 
     if ($script:GstProcess -and -not $script:GstProcess.HasExited) {
@@ -14958,19 +15452,17 @@ $pollTimer.Add_Tick({
     Try-AttachPreview
 
     if ($script:DynamicScenePreviewActive) {
-        $desktopExited = $script:SceneDesktopPreviewProcess -and $script:SceneDesktopPreviewProcess.HasExited
-        $webcamExited = $script:SceneWebcamPreviewProcess -and $script:SceneWebcamPreviewProcess.HasExited
-        if ($desktopExited -or $webcamExited) {
-            Invoke-DynamicScenePreviewFallback -Reason 'source process exited'
+        $controlledTerminal = $null
+        try { $controlledTerminal = [GstControlledScenePreview]::PollTerminalMessage() }
+        catch { $controlledTerminal = "bus polling failed: $($_.Exception.Message)" }
+
+        if ($controlledTerminal) {
+            Append-Log "Controlled scene compositor terminal message: $controlledTerminal"
+            Invoke-DynamicScenePreviewFallback -Reason 'reported a terminal pipeline error'
             return
         }
-
-        if (
-            $script:DynamicScenePreviewStartedAt -and
-            -not (Test-DynamicScenePreviewAttached) -and
-            ((Get-Date) - $script:DynamicScenePreviewStartedAt).TotalSeconds -ge 4
-        ) {
-            Invoke-DynamicScenePreviewFallback
+        if (-not [GstControlledScenePreview]::IsRunning) {
+            Invoke-DynamicScenePreviewFallback -Reason 'stopped unexpectedly'
             return
         }
     }
