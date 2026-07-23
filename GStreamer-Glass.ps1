@@ -522,7 +522,7 @@ public static class GstProcessJob
 '@
 }
 
-$script:AppVersion = '3.6.1'
+$script:AppVersion = '3.6.2'
 $script:AppName = "GStreamer Glass v$($script:AppVersion)"
 $script:ConfigDirectory = Join-Path $env:APPDATA 'GStreamerBasicWhipStreamer'
 $script:ConfigPath = Join-Path $script:ConfigDirectory 'settings.json'
@@ -1470,7 +1470,7 @@ $audioNote.ForeColor = [System.Drawing.Color]::DimGray
 $settingsGroup.Controls.Add($audioNote)
 
 $protocolNote = New-Object System.Windows.Forms.Label
-$protocolNote.Text = 'Audio defaults: WHIP/RTSP use Opus; SRT/RTMP use AAC. Only compatible codecs are listed for each protocol.'
+$protocolNote.Text = 'Audio defaults: WHIP/RTSP use Opus; SRT/RTMP use AAC. SRT pins video/audio to MPEG-TS PID 256/257 in program 1.'
 $protocolNote.Location = New-Object System.Drawing.Point(15, 418)
 $protocolNote.Size = New-Object System.Drawing.Size(700, 22)
 $protocolNote.ForeColor = [System.Drawing.Color]::DimGray
@@ -2902,9 +2902,26 @@ function Build-GstArguments {
 
         'SRT' {
             $latency = [int]$numSrtLatency.Value
-            $pipeline = "mpegtsmux name=mux alignment=7 pat-interval=900 pmt-interval=900 ! srtsink uri=$quotedDestination latency=$latency wait-for-connection=true auto-reconnect=true $video ! mux."
+
+            $programMap = if ($hasAudio) {
+                'prog-map="program_map,sink_256=1,sink_257=1"'
+            }
+            else {
+                'prog-map="program_map,sink_256=1"'
+            }
+
+            $pipeline =
+                "mpegtsmux name=mux alignment=7 " +
+                "pat-interval=900 pmt-interval=900 " +
+                "$programMap " +
+                "! srtsink uri=$quotedDestination " +
+                "latency=$latency wait-for-connection=true " +
+                "auto-reconnect=true " +
+                "$video ! mux.sink_256"
+
             if ($hasAudio) {
-                $pipeline += " $audioRaw ! $audioEncoded ! mux."
+                $pipeline +=
+                    " $audioRaw ! $audioEncoded ! mux.sink_257"
             }
         }
 
@@ -3515,6 +3532,17 @@ function Start-GstStream {
 
     Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Starting full GStreamer pipeline..."
     Append-Log "Protocol: $([string]$cmbProtocol.SelectedItem)"
+
+    if ([string]$cmbProtocol.SelectedItem -eq 'SRT') {
+        $srtTracks = if ($chkDesktopAudio.Checked -or $chkMic.Checked) {
+            'video PID 256 + audio PID 257, both in program 1'
+        }
+        else {
+            'video PID 256 in program 1'
+        }
+
+        Append-Log "SRT MPEG-TS mapping: $srtTracks"
+    }
     if ($chkFullscreenApp.Checked) {
         Append-Log "Fullscreen capture target: $($script:CaptureWindowTitle) (HWND $([uint64]$script:CaptureWindowHwnd.ToInt64()))"
     }
