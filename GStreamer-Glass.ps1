@@ -528,7 +528,7 @@ public static class GstProcessJob
 '@
 }
 
-$script:AppVersion = '3.6.5'
+$script:AppVersion = '3.6.6'
 $script:AppName = "GStreamer Glass v$($script:AppVersion)"
 $script:ConfigDirectory = Join-Path $env:APPDATA 'GStreamerBasicWhipStreamer'
 $script:ConfigPath = Join-Path $script:ConfigDirectory 'settings.json'
@@ -1920,12 +1920,16 @@ function Show-MainWindow {
         $form.BringToFront()
         $form.Activate()
 
-        if ($script:PreviewHwnd -ne [IntPtr]::Zero) {
-            [GstPreviewNative]::ResizeEmbeddedWindow(
-                $script:PreviewHwnd,
-                $previewPanel.ClientSize.Width,
-                $previewPanel.ClientSize.Height
-            )
+        # Tray restore can leave the embedded d3d11videosink HWND alive but not
+        # painting. Re-seat/show it on the UI thread without touching the stream.
+        if ($script:GstProcess -and -not $script:GstProcess.HasExited) {
+            $null = $form.BeginInvoke([Action]{
+                try {
+                    Try-AttachPreview
+                    Set-PreviewVisibility
+                }
+                catch {}
+            })
         }
     }
     catch {}
@@ -1937,6 +1941,13 @@ function Hide-MainWindowToTray {
     }
 
     try {
+        if ($script:PreviewHwnd -ne [IntPtr]::Zero) {
+            [GstPreviewNative]::SetWindowVisible($script:PreviewHwnd, $false)
+        }
+
+        $previewPlaceholder.Visible = $true
+        $previewPlaceholder.Text = 'Preview hidden while app is in tray'
+
         $form.ShowInTaskbar = $false
         $form.Hide()
 
@@ -3329,14 +3340,28 @@ function Validate-Configuration {
 }
 
 function Set-PreviewVisibility {
+    $formIsHiddenForTray =
+        (-not $form.Visible) -or
+        ($form.WindowState -eq [System.Windows.Forms.FormWindowState]::Minimized)
+
     if ($script:PreviewHwnd -eq [IntPtr]::Zero) {
         $previewPlaceholder.Visible = $true
-        $previewPlaceholder.Text = if ($chkPreview.Checked) {
+        $previewPlaceholder.Text = if ($formIsHiddenForTray) {
+            'Preview hidden while app is in tray'
+        }
+        elseif ($chkPreview.Checked) {
             'Preview starting...'
         }
         else {
             'Preview hidden — stream still running'
         }
+        return
+    }
+
+    if ($formIsHiddenForTray) {
+        [GstPreviewNative]::SetWindowVisible($script:PreviewHwnd, $false)
+        $previewPlaceholder.Visible = $true
+        $previewPlaceholder.Text = 'Preview hidden while app is in tray'
         return
     }
 
@@ -4161,6 +4186,24 @@ $form.Add_Resize({
         $form.WindowState -eq [System.Windows.Forms.FormWindowState]::Minimized
     ) {
         Hide-MainWindowToTray
+    }
+    elseif ($form.Visible -and $script:GstProcess -and -not $script:GstProcess.HasExited) {
+        Set-PreviewVisibility
+    }
+})
+
+$form.Add_VisibleChanged({
+    if ($form.Visible -and $script:GstProcess -and -not $script:GstProcess.HasExited) {
+        $null = $form.BeginInvoke([Action]{
+            try {
+                Try-AttachPreview
+                Set-PreviewVisibility
+            }
+            catch {}
+        })
+    }
+    elseif (-not $form.Visible -and $script:PreviewHwnd -ne [IntPtr]::Zero) {
+        [GstPreviewNative]::SetWindowVisible($script:PreviewHwnd, $false)
     }
 })
 
