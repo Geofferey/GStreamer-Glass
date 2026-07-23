@@ -4458,7 +4458,7 @@ $tabCommand.Controls.Add($txtCommand)
 
 $customArgsTopPanel = New-Object System.Windows.Forms.Panel
 $customArgsTopPanel.Dock = 'Top'
-$customArgsTopPanel.Height = 76
+$customArgsTopPanel.Height = 62
 $tabCustomGstArgs.Controls.Add($customArgsTopPanel)
 
 $chkCustomGstArgumentsEnabled = New-Object System.Windows.Forms.CheckBox
@@ -4468,7 +4468,7 @@ $chkCustomGstArgumentsEnabled.Location = New-Object System.Drawing.Point(8, 8)
 $customArgsTopPanel.Controls.Add($chkCustomGstArgumentsEnabled)
 
 $lblCustomGstArgumentsHelp = New-Object System.Windows.Forms.Label
-$lblCustomGstArgumentsHelp.Text = 'Arguments only. Paste everything after gst-launch-1.0.exe. Shell wrappers/operators are rejected.'
+$lblCustomGstArgumentsHelp.Text = 'Arguments only: paste everything after gst-launch-1.0.exe. Shell wrappers/operators are rejected.'
 $lblCustomGstArgumentsHelp.AutoSize = $true
 $lblCustomGstArgumentsHelp.Location = New-Object System.Drawing.Point(8, 34)
 $customArgsTopPanel.Controls.Add($lblCustomGstArgumentsHelp)
@@ -4489,8 +4489,9 @@ $customArgsTopPanel.Controls.Add($btnClearCustomGstArgs)
 
 $txtCustomGstArguments = New-Object System.Windows.Forms.TextBox
 $txtCustomGstArguments.Multiline = $true
-$txtCustomGstArguments.ScrollBars = 'Both'
-$txtCustomGstArguments.WordWrap = $false
+$txtCustomGstArguments.ScrollBars = 'Vertical'
+$txtCustomGstArguments.WordWrap = $true
+$txtCustomGstArguments.HideSelection = $false
 $txtCustomGstArguments.AcceptsReturn = $true
 $txtCustomGstArguments.AcceptsTab = $true
 $txtCustomGstArguments.Font = New-Object System.Drawing.Font('Consolas', 9)
@@ -6851,14 +6852,33 @@ function Apply-ModernDashboardUi {
 
     $tabLog.Text = " $($script:Glyph.Logs)  Logs "
     $tabCommand.Text = " $($script:Glyph.Command)  Command Preview "
+    $tabCustomGstArgs.Text = " $($script:Glyph.Command)  Custom Args "
     $txtLog.BackColor = [System.Drawing.ColorTranslator]::FromHtml('#08111F')
     $txtLog.ForeColor = [System.Drawing.ColorTranslator]::FromHtml('#D1D5DB')
     $txtLog.BorderStyle = [System.Windows.Forms.BorderStyle]::None
     $txtCommand.BackColor = [System.Drawing.ColorTranslator]::FromHtml('#08111F')
     $txtCommand.ForeColor = [System.Drawing.ColorTranslator]::FromHtml('#D1D5DB')
     $txtCommand.BorderStyle = [System.Windows.Forms.BorderStyle]::None
+    $txtCustomGstArguments.BackColor = [System.Drawing.ColorTranslator]::FromHtml('#08111F')
+    $txtCustomGstArguments.ForeColor = [System.Drawing.ColorTranslator]::FromHtml('#D1D5DB')
+    $txtCustomGstArguments.BorderStyle = [System.Windows.Forms.BorderStyle]::None
+    $lblCustomGstArgumentsHelp.ForeColor = $script:ColorMuted
+    $customArgsTopPanel.BackColor = $script:ColorSurface
 
     Style-Tree $form
+
+    # Style-Tree gives ordinary text inputs a form-field treatment. The command
+    # panes are code editors, so restyle them after the recursive pass.
+    foreach ($editor in @($txtCommand, $txtCustomGstArguments)) {
+        if ($editor) {
+            $editor.BackColor = [System.Drawing.ColorTranslator]::FromHtml('#08111F')
+            $editor.ForeColor = [System.Drawing.ColorTranslator]::FromHtml('#D1D5DB')
+            $editor.BorderStyle = [System.Windows.Forms.BorderStyle]::None
+            $editor.Font = New-Object System.Drawing.Font('Consolas', 9)
+        }
+    }
+    if ($customArgsTopPanel) { $customArgsTopPanel.BackColor = $script:ColorSurface }
+    if ($lblCustomGstArgumentsHelp) { $lblCustomGstArgumentsHelp.ForeColor = $script:ColorMuted }
 
     foreach ($realControl in @(
         $chkTransportEnabled, $cmbProtocol, $lblDestination, $txtDestination,
@@ -6899,6 +6919,7 @@ function Apply-ModernDashboardUi {
         $btnResetRecording, $btnResetNetwork, $btnResetOptions, $btnExportLabConfig, $btnResetAll,
         $txtGstPath, $btnBrowseGst, $btnDetectGst, $btnCheckGst,
         $chkPreview, $chkHidePreviewDuringStream, $chkAutoRestart, $chkVerbose, $chkDiskProcessLogging, $chkMinimizeToTray,
+        $chkCustomGstArgumentsEnabled, $txtCustomGstArguments, $btnUseGeneratedAsCustomGstArgs, $btnClearCustomGstArgs,
         $chkStartMinimized, $btnRedrawScenePreview
     )) {
         if ($realControl) {
@@ -6928,6 +6949,7 @@ function Apply-ModernDashboardUi {
         $chkNetworkDisableEee, $chkNetworkRestoreOnStop, $chkNetworkRestoreOnExit,
         $chkNetworkRecoveryTask,
         $chkPreview, $chkHidePreviewDuringStream, $chkAutoRestart, $chkVerbose, $chkDiskProcessLogging,
+        $chkCustomGstArgumentsEnabled,
         $chkMinimizeToTray, $chkStartMinimized
     )) {
         # This list is hand-maintained and has occasionally picked up non-CheckBox
@@ -6966,6 +6988,9 @@ function Apply-ModernDashboardUi {
     $previewPlaceholder.ForeColor = $script:ColorMuted
     $txtLog.BackColor = [System.Drawing.ColorTranslator]::FromHtml('#08111F')
     $txtCommand.BackColor = [System.Drawing.ColorTranslator]::FromHtml('#08111F')
+    $txtCustomGstArguments.BackColor = [System.Drawing.ColorTranslator]::FromHtml('#08111F')
+    $txtCustomGstArguments.ForeColor = [System.Drawing.ColorTranslator]::FromHtml('#D1D5DB')
+    $txtCustomGstArguments.BorderStyle = [System.Windows.Forms.BorderStyle]::None
 }
 
 Apply-ModernDashboardUi
