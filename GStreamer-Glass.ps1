@@ -630,7 +630,7 @@ public static class GstProcessJob
 '@
 }
 
-$script:AppVersion = '3.7.52f11'
+$script:AppVersion = '3.7.52f12'
 $script:AppName = "GStreamer Glass v$($script:AppVersion)"
 $script:ConfigDirectory = Join-Path $env:APPDATA 'GStreamerBasicWhipStreamer'
 $script:ConfigPath = Join-Path $script:ConfigDirectory 'settings.json'
@@ -776,6 +776,8 @@ $script:DefaultDirectWebRtcBridgeAudioPort = 5006
 $script:DefaultDirectWebRtcBridgeJitterMs = 0
 $script:DefaultDirectWebRtcPublisherQueueMs = 50
 $script:DefaultDirectWebRtcAudioBridgePacing = $true
+$script:DefaultUnifiedBridgeKeyframeGuard = $false
+$script:DefaultUnifiedBridgeKeyframeIntervalMs = 500
 $script:DefaultDirectWebRtcStunServer = 'stun://stun.l.google.com:19302'
 $script:DefaultDirectWebRtcSmoothnessProfile = 'Sane defaults'
 $script:DefaultWebRtcRecoveryMode = 'None'
@@ -2456,6 +2458,24 @@ $numGopSeconds.Minimum = 1
 $numGopSeconds.Maximum = 10
 $numGopSeconds.Value = 1
 $settingsGroup.Controls.Add($numGopSeconds)
+
+$chkUnifiedBridgeKeyframeGuard = New-Object System.Windows.Forms.CheckBox
+$chkUnifiedBridgeKeyframeGuard.Text = 'Unified bridge periodic keyframes'
+$chkUnifiedBridgeKeyframeGuard.Location = New-Object System.Drawing.Point(15, 548)
+$chkUnifiedBridgeKeyframeGuard.Size = New-Object System.Drawing.Size(250, 24)
+$chkUnifiedBridgeKeyframeGuard.Checked = $script:DefaultUnifiedBridgeKeyframeGuard
+$settingsGroup.Controls.Add($chkUnifiedBridgeKeyframeGuard)
+$toolTip.SetToolTip($chkUnifiedBridgeKeyframeGuard, 'Unified publisher only. Overrides GOP seconds with a short periodic IDR interval because browser PLI/FIR keyframe requests cannot cross the localhost RTP/process boundary. Off emits no override and uses GOP sec.')
+
+$numUnifiedBridgeKeyframeIntervalMs = New-Object System.Windows.Forms.NumericUpDown
+$numUnifiedBridgeKeyframeIntervalMs.Location = New-Object System.Drawing.Point(15, 548)
+$numUnifiedBridgeKeyframeIntervalMs.Size = New-Object System.Drawing.Size(85, 23)
+$numUnifiedBridgeKeyframeIntervalMs.Minimum = 100
+$numUnifiedBridgeKeyframeIntervalMs.Maximum = 10000
+$numUnifiedBridgeKeyframeIntervalMs.Increment = 100
+$numUnifiedBridgeKeyframeIntervalMs.Value = $script:DefaultUnifiedBridgeKeyframeIntervalMs
+$settingsGroup.Controls.Add($numUnifiedBridgeKeyframeIntervalMs)
+$toolTip.SetToolTip($numUnifiedBridgeKeyframeIntervalMs, 'Periodic IDR/keyframe interval in milliseconds for the unified publisher video bridge. The value is converted to encoder GOP frames using the current FPS. Smaller values recover joins/reconnects faster but increase bitrate and encoder work.')
 
 
 $null = Add-Label $settingsGroup 'Rate control' 15 520 90
@@ -4341,9 +4361,14 @@ function Apply-ModernDashboardUi {
     Add-Field $r -Label 'Max kbps' -Control $numMaxVideoBitrate -Width 100 | Out-Null
     $r = Add-Row $s
     Add-Field $r -Label 'CQ/QP' -Control $numConstantQp -Width 70 | Out-Null
-    Add-Field $r -Label 'GOP sec' -Control $numGopSeconds -Width 80 | Out-Null
     Add-Field $r -Label 'Preset' -Control $cmbPreset -Width 120 | Out-Null
     Add-Field $r -Label 'Profile' -Control $cmbProfile -Width 170 | Out-Null
+
+    $s = Add-Section $paneVideo 'Keyframes'
+    $r = Add-Row $s
+    Add-Field $r -Label 'GOP sec' -Control $numGopSeconds -Width 80 | Out-Null
+    Add-Field $r -Control $chkUnifiedBridgeKeyframeGuard -Width 260 | Out-Null
+    Add-Field $r -Label 'Interval ms' -Control $numUnifiedBridgeKeyframeIntervalMs -Width 90 | Out-Null
 
     $s = Add-Section $paneVideo 'Quality tuning'
     $r = Add-Row $s
@@ -4751,7 +4776,7 @@ function Apply-ModernDashboardUi {
         $chkStartMediaMtx, $txtMediaMtxPath, $btnBrowseMediaMtx,
         $cmbDirectWebRtcBundledWebMode, $txtDirectWebRtcBundledWebDirectory, $btnBrowseDirectWebRtcBundledWebDirectory, $btnDetectDirectWebRtcBundledWebDirectory,
         $cmbDirectWebRtcWorkingWebMode, $txtDirectWebRtcWebDirectory, $btnBrowseDirectWebRtcWebDirectory, $btnDetectDirectWebRtcWebDirectory,
-        $numWidth, $numHeight, $numFps, $numVideoBitrate, $numGopSeconds,
+        $numWidth, $numHeight, $numFps, $numVideoBitrate, $numGopSeconds, $chkUnifiedBridgeKeyframeGuard, $numUnifiedBridgeKeyframeIntervalMs,
         $cmbRateControl, $numMaxVideoBitrate, $numConstantQp,
         $cmbEncoder, $lblEncoderStatus, $cmbPreset, $cmbProfile,
         $cmbEncoderTune, $cmbMultipass, $cmbVideoPipelineClockMode, $cmbVideoTimestampMode, $cmbVideoSyncMode, $numVbvBuffer,
@@ -6122,6 +6147,8 @@ function Reset-VideoDefaults {
     $numMaxVideoBitrate.Value = 0
     $numConstantQp.Value = 20
     $numGopSeconds.Value = 1
+    $chkUnifiedBridgeKeyframeGuard.Checked = $script:DefaultUnifiedBridgeKeyframeGuard
+    $numUnifiedBridgeKeyframeIntervalMs.Value = $script:DefaultUnifiedBridgeKeyframeIntervalMs
     $cmbEncoder.SelectedItem = $script:DefaultEncoderName
     $cmbRateControl.SelectedItem = 'cbr'
     $cmbPreset.SelectedItem = 'p1'
@@ -7903,6 +7930,23 @@ function Get-DirectWebRtcViewerUrl {
     return (Add-DirectWebRtcViewerQuery ($address.TrimEnd('/') + $path + '/'))
 }
 
+function Update-UnifiedBridgeKeyframeUi {
+    if (-not $chkUnifiedBridgeKeyframeGuard -or -not $numUnifiedBridgeKeyframeIntervalMs) { return }
+
+    $codecSupported = $false
+    try {
+        $definition = Get-SelectedEncoderDefinition
+        $codecSupported = ([string]$definition.Codec -in @('H264','H265'))
+    }
+    catch {
+        $codecSupported = $false
+    }
+
+    $available = (Test-DirectWebRtcUnifiedPublisher) -and $codecSupported
+    $chkUnifiedBridgeKeyframeGuard.Enabled = $available
+    $numUnifiedBridgeKeyframeIntervalMs.Enabled = $available -and $chkUnifiedBridgeKeyframeGuard.Checked
+}
+
 function Update-DirectWebRtcUi {
     $directEnabled = Test-DirectWebRtcProtocol
     $webRtcTransportEnabled = Test-WebRtcTransportProtocol
@@ -7966,6 +8010,7 @@ function Update-DirectWebRtcUi {
     if ($numDirectWebRtcBridgeJitterMs) { $numDirectWebRtcBridgeJitterMs.Enabled = $unifiedPublisherEnabled }
     if ($numDirectWebRtcPublisherQueueMs) { $numDirectWebRtcPublisherQueueMs.Enabled = $unifiedPublisherEnabled }
     if ($chkDirectWebRtcAudioBridgePacing) { $chkDirectWebRtcAudioBridgePacing.Enabled = $unifiedPublisherEnabled }
+    Update-UnifiedBridgeKeyframeUi
 
     foreach ($control in @(
         $txtDirectWebRtcStun,
@@ -8740,6 +8785,14 @@ function Get-EncoderElementChain {
     $maxVideoBitrateKbps = [int]$numMaxVideoBitrate.Value
     $constantQp = [int]$numConstantQp.Value
     $gopSize = [Math]::Max(1, $fps * [int]$numGopSeconds.Value)
+    if (
+        (Test-DirectWebRtcUnifiedPublisher) -and
+        $codec -in @('H264','H265') -and
+        $chkUnifiedBridgeKeyframeGuard.Checked
+    ) {
+        $bridgeKeyframeMs = [int]$numUnifiedBridgeKeyframeIntervalMs.Value
+        $gopSize = [Math]::Max(1, [int][Math]::Ceiling(($fps * $bridgeKeyframeMs) / 1000.0))
+    }
     $preset = [string]$cmbPreset.SelectedItem
     $rateControl = Get-ComboSelectedOrDefault $cmbRateControl 'cbr'
     $tune = Get-ComboSelectedOrDefault $cmbEncoderTune 'ultra-low-latency'
@@ -9027,6 +9080,7 @@ function Update-EncoderUi {
         }
     }
 
+    Update-UnifiedBridgeKeyframeUi
     Update-CommandPreview
 }
 
@@ -10342,6 +10396,8 @@ function Save-Settings {
             MaxVideoBitrateKbps = [int]$numMaxVideoBitrate.Value
             ConstantQp        = [int]$numConstantQp.Value
             GopSeconds        = [int]$numGopSeconds.Value
+            UnifiedBridgeKeyframeGuard = [bool]$chkUnifiedBridgeKeyframeGuard.Checked
+            UnifiedBridgeKeyframeIntervalMs = [int]$numUnifiedBridgeKeyframeIntervalMs.Value
             Encoder           = [string]$cmbEncoder.SelectedItem
             Preset            = [string]$cmbPreset.SelectedItem
             Profile           = [string]$cmbProfile.SelectedItem
@@ -10679,6 +10735,8 @@ function Load-Settings {
         if ($null -ne $settings.MaxVideoBitrateKbps) { $numMaxVideoBitrate.Value = [decimal]$settings.MaxVideoBitrateKbps }
         if ($null -ne $settings.ConstantQp) { $numConstantQp.Value = [decimal]$settings.ConstantQp }
         if ($settings.GopSeconds) { $numGopSeconds.Value = [decimal]$settings.GopSeconds }
+        if ($null -ne $settings.UnifiedBridgeKeyframeGuard) { $chkUnifiedBridgeKeyframeGuard.Checked = [bool]$settings.UnifiedBridgeKeyframeGuard }
+        if ($null -ne $settings.UnifiedBridgeKeyframeIntervalMs) { $numUnifiedBridgeKeyframeIntervalMs.Value = [decimal]([Math]::Min(10000, [Math]::Max(100, [int]$settings.UnifiedBridgeKeyframeIntervalMs))) }
         if ($settings.Encoder -and $cmbEncoder.Items.Contains([string]$settings.Encoder)) {
             $cmbEncoder.SelectedItem = [string]$settings.Encoder
         }
@@ -11427,6 +11485,13 @@ function Start-GstStream {
                 $publisherQueueText = if ([int]$numDirectWebRtcPublisherQueueMs.Value -gt 0) { [string]([int]$numDirectWebRtcPublisherQueueMs.Value) + ' ms non-leaky per track' } else { 'disabled / element omitted' }
                 $audioBridgePacingText = if ($chkDirectWebRtcAudioBridgePacing.Checked) { 'enabled (sync=true)' } else { 'disabled (sync=false)' }
                 Append-Log "Unified publisher RTP timing repair: receive JBUF $bridgeJitterText; publisher queue $publisherQueueText; audio RTP pacing $audioBridgePacingText; udpsrc do-timestamp override omitted. Player uses one PeerConnection and does not open the split-audio WebSocket."
+                if ($chkUnifiedBridgeKeyframeGuard.Checked) {
+                    $effectiveKeyframeFrames = [Math]::Max(1, [int][Math]::Ceiling(([int]$numFps.Value * [int]$numUnifiedBridgeKeyframeIntervalMs.Value) / 1000.0))
+                    Append-Log "Unified publisher keyframe guard: periodic IDR every $([int]$numUnifiedBridgeKeyframeIntervalMs.Value) ms -> encoder GOP $effectiveKeyframeFrames frames at $([int]$numFps.Value) FPS. This is the fallback for PLI/FIR requests that cannot cross the RTP process boundary."
+                }
+                else {
+                    Append-Log "Unified publisher keyframe guard: off; encoder uses Video-tab GOP $([int]$numGopSeconds.Value) sec."
+                }
             }
             elseif (Test-DirectWebRtcSplitAvPipelines) {
                 if (Test-DirectWebRtcSharedSignaling) {
@@ -12190,6 +12255,8 @@ $cmbRateControl.Add_SelectedIndexChanged({ Update-EncoderUi })
 $numMaxVideoBitrate.Add_ValueChanged($previewHandler)
 $numConstantQp.Add_ValueChanged($previewHandler)
 $numGopSeconds.Add_ValueChanged($previewHandler)
+$chkUnifiedBridgeKeyframeGuard.Add_CheckedChanged({ Update-UnifiedBridgeKeyframeUi; Update-CommandPreview })
+$numUnifiedBridgeKeyframeIntervalMs.Add_ValueChanged($previewHandler)
 $cmbPreset.Add_SelectedIndexChanged($previewHandler)
 $cmbProfile.Add_SelectedIndexChanged($previewHandler)
 $cmbEncoderTune.Add_SelectedIndexChanged({ Update-EncoderUi })
