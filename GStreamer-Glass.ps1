@@ -630,7 +630,7 @@ public static class GstProcessJob
 '@
 }
 
-$script:AppVersion = '3.7.52f65'
+$script:AppVersion = '3.7.52f66'
 $script:AppName = "GStreamer Glass v$($script:AppVersion)"
 $script:ConfigDirectory = Join-Path $env:APPDATA 'GStreamerBasicWhipStreamer'
 $script:ConfigPath = Join-Path $script:ConfigDirectory 'settings.json'
@@ -751,6 +751,7 @@ $script:SuppressProtocolChange = $false
 $script:TrayHintShown = $false
 $script:StartupTrayHidePending = $false
 $script:TrayRestoreInProgress = $false
+$script:DynamicPreviewUiReady = $false
 $script:LastProtocol = 'WHIP'
 $script:ProtocolDestinations = [ordered]@{
     WHIP = 'http://10.0.0.25:8889/live/whip'
@@ -6280,6 +6281,7 @@ function Show-MainWindow {
                 # The form is now visible and its restore/layout events have
                 # unwound, so standalone preview startup is safe again.
                 $script:TrayRestoreInProgress = $false
+                $script:DynamicPreviewUiReady = $true
                 if ($script:GstProcess -and -not $script:GstProcess.HasExited) {
                     if ($script:PreviewParked) {
                         Restore-PreviewWindowFromParking
@@ -6311,6 +6313,11 @@ function Hide-MainWindowToTray {
     }
 
     try {
+        # Dynamic source windows must never be created or reparented while the
+        # main UI is entering tray-hidden state. They become eligible again only
+        # after Show-MainWindow completes its deferred restore/layout turn.
+        $script:DynamicPreviewUiReady = $false
+
         if ($script:PreviewOnlyMode) {
             Sync-StandalonePreviewState
         }
@@ -12767,6 +12774,7 @@ function Test-DynamicScenePreviewWanted {
 
         return (
             $dynamicPreviewContextAllowed -and
+            $script:DynamicPreviewUiReady -and
             -not $script:SuppressDynamicScenePreview -and
             $chkDynamicScenePreviews -and $chkDynamicScenePreviews.Checked -and
             $chkSceneEnabled -and $chkSceneEnabled.Checked -and
@@ -14819,6 +14827,10 @@ $trayExitItem.Add_Click({
 })
 
 $form.Add_Resize({
+    if ($form.WindowState -eq [System.Windows.Forms.FormWindowState]::Minimized) {
+        $script:DynamicPreviewUiReady = $false
+    }
+
     if ($form.WindowState -eq [System.Windows.Forms.FormWindowState]::Minimized -and $script:PreviewOnlyMode) {
         Sync-StandalonePreviewState
     }
@@ -14844,7 +14856,18 @@ $form.Add_Resize({
         -not ($script:GstProcess -and -not $script:GstProcess.HasExited)
     ) {
         $null = $form.BeginInvoke([Action]{
-            try { Sync-StandalonePreviewState -Quiet } catch {}
+            try {
+                if (
+                    $form.Visible -and
+                    $form.WindowState -ne [System.Windows.Forms.FormWindowState]::Minimized -and
+                    -not $script:StartupTrayHidePending -and
+                    -not $script:TrayRestoreInProgress
+                ) {
+                    $script:DynamicPreviewUiReady = $true
+                }
+                Sync-StandalonePreviewState -Quiet
+            }
+            catch {}
         })
     }
 
@@ -14868,7 +14891,18 @@ $form.Add_VisibleChanged({
     }
     elseif ($form.Visible -and -not ($script:GstProcess -and -not $script:GstProcess.HasExited)) {
         $null = $form.BeginInvoke([Action]{
-            try { Sync-StandalonePreviewState -Quiet } catch {}
+            try {
+                if (
+                    $form.Visible -and
+                    $form.WindowState -ne [System.Windows.Forms.FormWindowState]::Minimized -and
+                    -not $script:StartupTrayHidePending -and
+                    -not $script:TrayRestoreInProgress
+                ) {
+                    $script:DynamicPreviewUiReady = $true
+                }
+                Sync-StandalonePreviewState -Quiet
+            }
+            catch {}
         })
     }
     elseif (-not $form.Visible -and $script:PreviewOnlyMode) {
@@ -15104,12 +15138,16 @@ $form.Add_Shown({
     Append-Log "Application icon: $($script:AppIconSource)"
 
     if ($chkStartMinimized.Checked) {
+        # Do not let dynamic preview processes touch hidden/zero-sized controls
+        # during startup. Show-MainWindow enables them after a real restore.
+        $script:DynamicPreviewUiReady = $false
         $null = $form.BeginInvoke([Action]{
             Apply-StartMinimized
         })
     }
     elseif ($script:StartupTrayHidePending) {
         $script:StartupTrayHidePending = $false
+        $script:DynamicPreviewUiReady = $true
         try {
             $form.Opacity = 1
             $form.ShowInTaskbar = $true
@@ -15117,6 +15155,7 @@ $form.Add_Shown({
         catch {}
     }
     else {
+        $script:DynamicPreviewUiReady = $true
         Sync-StandalonePreviewState -Quiet
     }
 })
