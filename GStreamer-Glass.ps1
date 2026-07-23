@@ -1138,7 +1138,7 @@ public static class GstProcessJob
 '@
 }
 
-$script:AppVersion = '3.7.52f75'
+$script:AppVersion = '3.7.52f76'
 $script:AppName = "GStreamer Glass v$($script:AppVersion)"
 $script:ConfigDirectory = Join-Path $env:APPDATA 'GStreamerBasicWhipStreamer'
 $script:ConfigPath = Join-Path $script:ConfigDirectory 'settings.json'
@@ -2893,7 +2893,7 @@ $chkHidePreviewDuringStream.Text = 'Hide preview during stream'
 $chkHidePreviewDuringStream.AutoSize = $true
 $chkHidePreviewDuringStream.Checked = $false
 $settingsGroup.Controls.Add($chkHidePreviewDuringStream)
-$toolTip.SetToolTip($chkHidePreviewDuringStream, 'When enabled, Show Preview is used for standalone preview while stopped, but the live transport pipeline omits/hides the local preview branch.')
+$toolTip.SetToolTip($chkHidePreviewDuringStream, 'When enabled, Show Preview is used while stopped, but live video is hidden in both the main Preview card and Scenes canvas. Scene drag/resize controls remain available for live editing.')
 
 $chkAutoRestart = New-Object System.Windows.Forms.CheckBox
 $chkAutoRestart.Text = 'Auto-restart on exit'
@@ -4869,8 +4869,23 @@ function Update-SceneCanvasFromValues {
     finally { $script:UpdatingSceneEditor = $false }
 }
 
+function Test-ControlledLiveWorkerRunning {
+    return (
+        $script:ControlledLiveStreamActive -and
+        $script:GstProcess -and
+        -not $script:GstProcess.HasExited -and
+        $script:ControlledLiveWorkerWriter
+    )
+}
+
 function Sync-ControlledScenePreviewProperties {
-    if (-not (Test-ControlledSceneMutationActive)) { return }
+    $mutationActive = if ($script:ControlledLiveStreamActive) {
+        [bool](Test-ControlledLiveWorkerRunning)
+    }
+    else {
+        ($script:DynamicScenePreviewActive -and [GstControlledScenePreview]::IsRunning)
+    }
+    if (-not $mutationActive) { return }
 
     try {
         if ($script:ControlledLiveStreamActive) {
@@ -4906,7 +4921,13 @@ function Push-ControlledSceneGeometryFromElement {
     # Dragging occurs in scaled canvas coordinates. Convert directly to encoded
     # scene coordinates and mutate the live compositor pad without touching the
     # numeric controls or rebuilding command previews on every mouse-move event.
-    if (-not (Test-ControlledSceneMutationActive)) { return }
+    $mutationActive = if ($script:ControlledLiveStreamActive) {
+        [bool](Test-ControlledLiveWorkerRunning)
+    }
+    else {
+        ($script:DynamicScenePreviewActive -and [GstControlledScenePreview]::IsRunning)
+    }
+    if (-not $mutationActive) { return }
 
     $outputWidth = [Math]::Max(1, [int]$numWidth.Value)
     $outputHeight = [Math]::Max(1, [int]$numHeight.Value)
@@ -6103,8 +6124,6 @@ function Apply-ModernDashboardUi {
     Add-Field $r -Label 'Congestion' -Control $cmbDirectWebRtcCongestion -Width 110 | Out-Null
     Add-Field $r -Label 'Mitigation' -Control $cmbDirectWebRtcMitigation -Width 170 | Out-Null
     $r = Add-Row $s
-    Add-Field $r -Label 'Start kbps (0=Video)' -Control $numDirectWebRtcStartBitrateKbps -Width 105 | Out-Null
-    $r = Add-Row $s
     Add-Field $r -LabelControl $lblWebRtcRecoveryMode -Control $cmbWebRtcRecoveryMode -Width 135 | Out-Null
     Add-Field $r -LabelControl $lblDirectWebRtcSmoothnessProfile -Control $cmbDirectWebRtcSmoothnessProfile -Width 155 | Out-Null
 
@@ -6171,10 +6190,12 @@ function Apply-ModernDashboardUi {
     Add-Field $r -Label 'Width' -Control $numWidth -Width 90 | Out-Null
     Add-Field $r -Label 'Height' -Control $numHeight -Width 90 | Out-Null
     Add-Field $r -Label 'FPS' -Control $numFps -Width 80 | Out-Null
+    $r = Add-Row $s
     Add-Field $r -Label 'Video kbps' -Control $numVideoBitrate -Width 110 | Out-Null
     Add-Field $r -Label 'Max kbps' -Control $numMaxVideoBitrate -Width 100 | Out-Null
-    $r = Add-Row $s
+    Add-Field $r -Label 'Start kbps (0=Video)' -Control $numDirectWebRtcStartBitrateKbps -Width 105 | Out-Null
     Add-Field $r -Label 'CQ/QP' -Control $numConstantQp -Width 70 | Out-Null
+    $r = Add-Row $s
     Add-Field $r -Label 'Preset' -Control $cmbPreset -Width 120 | Out-Null
     Add-Field $r -Label 'Profile' -Control $cmbProfile -Width 170 | Out-Null
 
@@ -11423,7 +11444,6 @@ function Test-PreviewVisibleNow {
     if (-not $chkPreview.Checked) { return $false }
     if ($script:PreviewOnlyMode) { return $true }
     if ($script:ControlledLiveStreamActive) {
-        if ($script:SceneWorkspaceActive) { return $true }
         if ((Test-TransportEnabled) -and $chkHidePreviewDuringStream -and $chkHidePreviewDuringStream.Checked) { return $false }
         return $true
     }
@@ -13538,13 +13558,14 @@ function Set-PreviewVisibility {
     $formIsHiddenForTray =
         (-not $form.Visible) -or
         ($form.WindowState -eq [System.Windows.Forms.FormWindowState]::Minimized)
+    $previewVisibleNow = [bool](Test-PreviewVisibleNow)
 
     if ($script:PreviewHwnd -eq [IntPtr]::Zero) {
         $previewPlaceholder.Visible = $true
         $previewPlaceholder.Text = if ($formIsHiddenForTray) {
             'Preview parked while app is in tray'
         }
-        elseif (Test-PreviewVisibleNow) {
+        elseif ($previewVisibleNow) {
             'Preview starting...'
         }
         else {
@@ -13560,11 +13581,28 @@ function Set-PreviewVisibility {
         return
     }
 
-    if ($script:PreviewParked) {
-        Restore-PreviewWindowFromParking
+    if (-not $previewVisibleNow) {
+        # Reparent the foreign renderer into the hidden parking form instead of
+        # merely hiding its HWND. Controlled-live layout polling and D3D11 sink
+        # repaint events can otherwise make it flash back over the Scene editor.
+        if (-not $script:PreviewParked) { Park-PreviewWindow }
+        if (-not $script:PreviewParked -and $script:PreviewAppliedVisible -ne $false) {
+            [GstPreviewNative]::SetWindowVisible($script:PreviewHwnd, $false)
+            $script:PreviewAppliedVisible = $false
+        }
+        $previewPlaceholder.Visible = $true
+        $previewPlaceholder.Text = if ($chkHidePreviewDuringStream -and $chkHidePreviewDuringStream.Checked -and (Test-TransportEnabled)) {
+            'Preview hidden during stream'
+        }
+        else {
+            'Preview hidden - stream still running'
+        }
+        return
     }
 
-    if (Test-PreviewVisibleNow) {
+    if ($script:PreviewParked) { Restore-PreviewWindowFromParking }
+
+    if ($previewVisibleNow) {
         # Only touch the renderer window when something actually changed. This runs
         # every poll tick; unconditional resize/show on a live d3d11videosink is a
         # stutter source.
@@ -13585,22 +13623,7 @@ function Set-PreviewVisibility {
             [GstPreviewNative]::SetWindowVisible($script:PreviewHwnd, $true)
             $script:PreviewAppliedVisible = $true
         }
-
         $previewPlaceholder.Visible = $false
-    }
-    else {
-        if ($script:PreviewAppliedVisible -ne $false) {
-            [GstPreviewNative]::SetWindowVisible($script:PreviewHwnd, $false)
-            $script:PreviewAppliedVisible = $false
-        }
-
-        $previewPlaceholder.Visible = $true
-        $previewPlaceholder.Text = if ($chkHidePreviewDuringStream -and $chkHidePreviewDuringStream.Checked -and (Test-TransportEnabled)) {
-            'Preview hidden during stream'
-        }
-        else {
-            'Preview hidden - stream still running'
-        }
     }
 }
 
@@ -13694,15 +13717,6 @@ function Build-ControlledScenePreviewPipeline {
     $sceneChain = Build-SceneCaptureChain -LocalOnly
     $pipeline = "$sceneChain ! queue max-size-buffers=1 max-size-bytes=0 max-size-time=0 leaky=downstream ! d3d11videosink name=controlledpreview sync=false force-aspect-ratio=true"
     return (ConvertTo-InProcessGstLaunchDescription -Description $pipeline)
-}
-
-function Test-ControlledLiveWorkerRunning {
-    return (
-        $script:ControlledLiveStreamActive -and
-        $script:GstProcess -and
-        -not $script:GstProcess.HasExited -and
-        $script:ControlledLiveWorkerWriter
-    )
 }
 
 function Close-ControlledLiveWorkerPipe {
@@ -13821,11 +13835,6 @@ function Start-ControlledLiveWorker {
         try { if ($process) { $process.Dispose() } } catch {}
         throw
     }
-}
-
-function Test-ControlledSceneMutationActive {
-    if ($script:ControlledLiveStreamActive) { return [bool](Test-ControlledLiveWorkerRunning) }
-    return ($script:DynamicScenePreviewActive -and [GstControlledScenePreview]::IsRunning)
 }
 
 function Test-ControlledLiveStreamRequested {
@@ -14048,16 +14057,24 @@ function Sync-ControlledLivePreviewLayout {
         if ($script:PreviewHwnd -eq [IntPtr]::Zero) {
             $candidate = [GstPreviewNative]::FindPreviewWindow($script:GstProcess.Id)
             if ($candidate -ne [IntPtr]::Zero) {
+                $attachVisible = (
+                    $form.Visible -and
+                    $form.WindowState -ne [System.Windows.Forms.FormWindowState]::Minimized -and
+                    (Test-PreviewVisibleNow)
+                )
+                $attachTarget = if ($attachVisible) { $previewPanel } else { Ensure-PreviewParkingWindow }
+                $attachSize = if ($attachVisible) { $previewPanel.ClientSize } else { New-Object System.Drawing.Size(16, 16) }
+                $null = $attachTarget.Handle
                 if ([GstPreviewNative]::EmbedWindow(
                     $candidate,
-                    $previewPanel.Handle,
-                    $previewPanel.ClientSize.Width,
-                    $previewPanel.ClientSize.Height
+                    $attachTarget.Handle,
+                    $attachSize.Width,
+                    $attachSize.Height
                 )) {
                     $script:PreviewHwnd = $candidate
-                    $script:PreviewParked = $false
+                    $script:PreviewParked = -not $attachVisible
                     Reset-PreviewAppliedState
-                    Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Controlled worker preview window embedded."
+                    Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Controlled worker preview window $(if ($attachVisible) { 'embedded' } else { 'parked while hidden' })."
                 }
             }
         }
@@ -14552,10 +14569,7 @@ function Start-GstStream {
             $showLivePreviewAtStart = (
                 $form.Visible -and
                 $form.WindowState -ne [System.Windows.Forms.FormWindowState]::Minimized -and
-                (
-                    $script:SceneWorkspaceActive -or
-                    -not ($transportEnabled -and $chkHidePreviewDuringStream.Checked)
-                )
+                -not ($transportEnabled -and $chkHidePreviewDuringStream.Checked)
             )
             $renderTarget = if ($showLivePreviewAtStart) { $previewPanel } else { Ensure-PreviewParkingWindow }
             $renderSize = if ($showLivePreviewAtStart) { $previewPanel.ClientSize } else { New-Object System.Drawing.Size(16, 16) }
@@ -15429,7 +15443,7 @@ $chkHidePreviewDuringStream.Add_CheckedChanged({
 
     if ($script:ControlledLiveStreamActive) {
         Sync-ControlledLivePreviewLayout
-        $previewState = if ($chkHidePreviewDuringStream.Checked) { 'shown only in the live Scene editor' } else { 'shown throughout the UI' }
+        $previewState = if ($chkHidePreviewDuringStream.Checked) { 'hidden throughout the UI; scene editing chrome remains available' } else { 'shown throughout the UI' }
         Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Controlled live preview $previewState without restarting the stream."
         Update-CommandPreview
         return
