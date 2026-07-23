@@ -1037,7 +1037,7 @@ public static class GstProcessJob
 '@
 }
 
-$script:AppVersion = '3.7.52f71'
+$script:AppVersion = '3.7.52f72'
 $script:AppName = "GStreamer Glass v$($script:AppVersion)"
 $script:ConfigDirectory = Join-Path $env:APPDATA 'GStreamerBasicWhipStreamer'
 $script:ConfigPath = Join-Path $script:ConfigDirectory 'settings.json'
@@ -4990,7 +4990,21 @@ function Set-WebcamLayoutPreset {
     }
 }
 
+function Update-LiveSceneEditingGate {
+    if (-not $chkLiveSceneEditing) { return }
+
+    # This is deliberately based on configuration state, not preview runtime
+    # state. The user must be able to opt in before either preview or stream is
+    # started, and an editor-layout synchronization must never leave it stale.
+    $chkLiveSceneEditing.Enabled = (
+        $chkDynamicScenePreviews -and $chkDynamicScenePreviews.Checked -and
+        $chkSceneEnabled -and $chkSceneEnabled.Checked -and
+        [string]$cmbScenePreset.SelectedItem -eq 'Desktop + webcam'
+    )
+}
+
 function Update-SceneUi {
+    Update-LiveSceneEditingGate
     if ($script:UpdatingSceneEditor) { return }
     $enabled = $chkSceneEnabled.Checked
     foreach ($control in @($cmbScenePreset,$cmbSceneCompositor,$cmbWebcamDevice,$btnRefreshWebcams,$cmbWebcamLayout,$numWebcamWidth,$numWebcamHeight,$numWebcamX,$numWebcamY,$numWebcamFps,$numWebcamOpacity,$numWebcamBorder,$chkWebcamMirror,$chkWebcamAspectLock)) {
@@ -4999,7 +5013,6 @@ function Update-SceneUi {
     $usesCompositor = ($enabled -and [string]$cmbScenePreset.SelectedItem -eq 'Desktop + webcam')
     $numSceneInputQueueBuffers.Enabled = $usesCompositor
     $numSceneInputQueueCapMs.Enabled = $usesCompositor
-    $chkLiveSceneEditing.Enabled = ($usesCompositor -and $chkDynamicScenePreviews.Checked)
     $lblSceneStatus.Text = if ($enabled) { 'Scene composition enabled. Dynamic previews and compatible live streams use the real controlled compositor.' } else { 'Scene composition is disabled; the existing capture pipeline is unchanged.' }
     Update-SceneCanvasFromValues
     try { $txtScenePipeline.Text = Build-SceneCaptureChain -LocalOnly } catch { $txtScenePipeline.Text = $_.Exception.Message }
@@ -5061,6 +5074,11 @@ $chkSceneEnabled.Add_CheckedChanged({ Reset-DynamicScenePreviewFallback; Update-
 $chkDynamicScenePreviews.Add_CheckedChanged({
     Reset-DynamicScenePreviewFallback
     $script:SuppressControlledLiveStream = $false
+
+    # Re-evaluate the opt-in gate immediately from checkbox state. It must not
+    # depend on the controlled preview having finished its asynchronous handoff.
+    Update-LiveSceneEditingGate
+
     if ($script:LoadingSettings) {
         Update-SceneUi
         Update-CommandPreview
@@ -5081,6 +5099,7 @@ $chkDynamicScenePreviews.Add_CheckedChanged({
         Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Dynamic scene previews enabled; restarting local preview with the controlled compositor."
         Stop-GstStream
     }
+    Update-SceneUi
     Update-SceneCanvasFromValues
     Sync-StandalonePreviewState -Quiet
     Update-CommandPreview
