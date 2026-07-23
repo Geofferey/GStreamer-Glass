@@ -522,7 +522,7 @@ public static class GstProcessJob
 '@
 }
 
-$script:AppVersion = '3.5.0'
+$script:AppVersion = '3.6.0'
 $script:AppName = "GStreamer Glass v$($script:AppVersion)"
 $script:ConfigDirectory = Join-Path $env:APPDATA 'GStreamerBasicWhipStreamer'
 $script:ConfigPath = Join-Path $script:ConfigDirectory 'settings.json'
@@ -668,6 +668,54 @@ $script:EncoderCatalog = [ordered]@{
     }
 }
 $script:DefaultEncoderName = 'NVIDIA NVENC H.264 (D3D11)'
+
+$script:AudioCodecCatalog = [ordered]@{
+    'Opus' = [ordered]@{
+        Codec = 'OPUS'; Element = 'opusenc'; Parser = ''; Family = 'OPUS'
+        Protocols = @('WHIP', 'SRT', 'RTSP')
+    }
+    'AAC (Media Foundation)' = [ordered]@{
+        Codec = 'AAC'; Element = 'mfaacenc'; Parser = 'aacparse'; Family = 'AAC_MF'
+        Protocols = @('SRT', 'RTMP', 'RTSP')
+    }
+    'AAC (FDK)' = [ordered]@{
+        Codec = 'AAC'; Element = 'fdkaacenc'; Parser = 'aacparse'; Family = 'AAC_FDK'
+        Protocols = @('SRT', 'RTMP', 'RTSP')
+    }
+    'AAC (libav)' = [ordered]@{
+        Codec = 'AAC'; Element = 'avenc_aac'; Parser = 'aacparse'; Family = 'AAC_LIBAV'
+        Protocols = @('SRT', 'RTMP', 'RTSP')
+    }
+    'AAC (VisualOn)' = [ordered]@{
+        Codec = 'AAC'; Element = 'voaacenc'; Parser = 'aacparse'; Family = 'AAC_VO'
+        Protocols = @('SRT', 'RTMP', 'RTSP')
+    }
+    'MP3 (LAME)' = [ordered]@{
+        Codec = 'MP3'; Element = 'lamemp3enc'; Parser = 'mpegaudioparse'; Family = 'MP3'
+        Protocols = @('SRT', 'RTMP', 'RTSP')
+    }
+    'AC-3 (libav)' = [ordered]@{
+        Codec = 'AC3'; Element = 'avenc_ac3'; Parser = 'ac3parse'; Family = 'AC3'
+        Protocols = @('SRT', 'RTSP')
+    }
+}
+
+$script:DefaultAudioCodecByProtocol = [ordered]@{
+    WHIP = 'Opus'
+    SRT  = 'AAC (Media Foundation)'
+    RTMP = 'AAC (Media Foundation)'
+    RTSP = 'Opus'
+}
+
+$script:ProtocolAudioCodecs = [ordered]@{
+    WHIP = 'Opus'
+    SRT  = 'AAC (Media Foundation)'
+    RTMP = 'AAC (Media Foundation)'
+    RTSP = 'Opus'
+}
+
+$script:SuppressAudioCodecChange = $false
+
 
 function Get-ApplicationIcon {
     # In a compiled PS12EXE/PS2EXE build, prefer the icon embedded in the EXE.
@@ -1060,8 +1108,8 @@ $script:AppIcon = Get-ApplicationIcon
 $form = New-Object System.Windows.Forms.Form
 $form.Text = $script:AppName
 $form.StartPosition = 'CenterScreen'
-$form.Size = New-Object System.Drawing.Size(1220, 1026)
-$form.MinimumSize = New-Object System.Drawing.Size(1110, 926)
+$form.Size = New-Object System.Drawing.Size(1220, 1106)
+$form.MinimumSize = New-Object System.Drawing.Size(1110, 1006)
 $form.AutoScaleMode = [System.Windows.Forms.AutoScaleMode]::Dpi
 $form.Font = New-Object System.Drawing.Font('Segoe UI', 9)
 $form.Icon = $script:AppIcon
@@ -1092,7 +1140,7 @@ function Add-Label {
 $settingsGroup = New-Object System.Windows.Forms.GroupBox
 $settingsGroup.Text = 'Stream Settings'
 $settingsGroup.Location = New-Object System.Drawing.Point(10, 10)
-$settingsGroup.Size = New-Object System.Drawing.Size(735, 506)
+$settingsGroup.Size = New-Object System.Drawing.Size(735, 586)
 $form.Controls.Add($settingsGroup)
 
 $null = Add-Label $settingsGroup 'GStreamer executable' 15 25 130
@@ -1311,16 +1359,61 @@ $cmbRtspTransport.SelectedItem = 'TCP'
 $cmbRtspTransport.Enabled = $false
 $settingsGroup.Controls.Add($cmbRtspTransport)
 
+$null = Add-Label $settingsGroup 'B-frames' 15 278 60
+$numBFrames = New-Object System.Windows.Forms.NumericUpDown
+$numBFrames.Location = New-Object System.Drawing.Point(75, 278)
+$numBFrames.Size = New-Object System.Drawing.Size(55, 23)
+$numBFrames.Minimum = 0
+$numBFrames.Maximum = 4
+$numBFrames.Value = 0
+$settingsGroup.Controls.Add($numBFrames)
+$toolTip.SetToolTip($numBFrames, 'Leave at 0 for lowest latency and WebRTC-compatible H.264.')
+
+$chkLookAhead = New-Object System.Windows.Forms.CheckBox
+$chkLookAhead.Text = 'Look-ahead'
+$chkLookAhead.Location = New-Object System.Drawing.Point(150, 278)
+$chkLookAhead.Size = New-Object System.Drawing.Size(90, 23)
+$chkLookAhead.Checked = $false
+$settingsGroup.Controls.Add($chkLookAhead)
+$toolTip.SetToolTip($chkLookAhead, 'Enables encoder look-ahead where supported; this adds frame latency.')
+
+$null = Add-Label $settingsGroup 'Frames' 240 278 48
+$numLookAheadFrames = New-Object System.Windows.Forms.NumericUpDown
+$numLookAheadFrames.Location = New-Object System.Drawing.Point(288, 278)
+$numLookAheadFrames.Size = New-Object System.Drawing.Size(55, 23)
+$numLookAheadFrames.Minimum = 1
+$numLookAheadFrames.Maximum = 64
+$numLookAheadFrames.Value = 20
+$numLookAheadFrames.Enabled = $false
+$settingsGroup.Controls.Add($numLookAheadFrames)
+
+$chkAdaptiveQuantization = New-Object System.Windows.Forms.CheckBox
+$chkAdaptiveQuantization.Text = 'Adaptive quantization'
+$chkAdaptiveQuantization.Location = New-Object System.Drawing.Point(365, 278)
+$chkAdaptiveQuantization.Size = New-Object System.Drawing.Size(150, 23)
+$chkAdaptiveQuantization.Checked = $false
+$settingsGroup.Controls.Add($chkAdaptiveQuantization)
+
+$null = Add-Label $settingsGroup 'AQ strength' 525 278 75
+$numAqStrength = New-Object System.Windows.Forms.NumericUpDown
+$numAqStrength.Location = New-Object System.Drawing.Point(600, 278)
+$numAqStrength.Size = New-Object System.Drawing.Size(55, 23)
+$numAqStrength.Minimum = 1
+$numAqStrength.Maximum = 15
+$numAqStrength.Value = 8
+$numAqStrength.Enabled = $false
+$settingsGroup.Controls.Add($numAqStrength)
+
 $chkDesktopAudio = New-Object System.Windows.Forms.CheckBox
 $chkDesktopAudio.Text = 'Desktop audio'
-$chkDesktopAudio.Location = New-Object System.Drawing.Point(15, 278)
+$chkDesktopAudio.Location = New-Object System.Drawing.Point(15, 316)
 $chkDesktopAudio.Size = New-Object System.Drawing.Size(115, 23)
 $chkDesktopAudio.Checked = $true
 $settingsGroup.Controls.Add($chkDesktopAudio)
 
-$null = Add-Label $settingsGroup 'Volume %' 130 278 65
+$null = Add-Label $settingsGroup 'Volume %' 130 316 65
 $numDesktopVolume = New-Object System.Windows.Forms.NumericUpDown
-$numDesktopVolume.Location = New-Object System.Drawing.Point(195, 278)
+$numDesktopVolume.Location = New-Object System.Drawing.Point(195, 316)
 $numDesktopVolume.Size = New-Object System.Drawing.Size(65, 23)
 $numDesktopVolume.Minimum = 0
 $numDesktopVolume.Maximum = 200
@@ -1329,23 +1422,39 @@ $settingsGroup.Controls.Add($numDesktopVolume)
 
 $chkMic = New-Object System.Windows.Forms.CheckBox
 $chkMic.Text = 'Default microphone'
-$chkMic.Location = New-Object System.Drawing.Point(280, 278)
+$chkMic.Location = New-Object System.Drawing.Point(280, 316)
 $chkMic.Size = New-Object System.Drawing.Size(140, 23)
 $chkMic.Checked = $false
 $settingsGroup.Controls.Add($chkMic)
 
-$null = Add-Label $settingsGroup 'Volume %' 420 278 65
+$null = Add-Label $settingsGroup 'Volume %' 420 316 65
 $numMicVolume = New-Object System.Windows.Forms.NumericUpDown
-$numMicVolume.Location = New-Object System.Drawing.Point(485, 278)
+$numMicVolume.Location = New-Object System.Drawing.Point(485, 316)
 $numMicVolume.Size = New-Object System.Drawing.Size(65, 23)
 $numMicVolume.Minimum = 0
 $numMicVolume.Maximum = 200
 $numMicVolume.Value = 100
 $settingsGroup.Controls.Add($numMicVolume)
 
-$null = Add-Label $settingsGroup 'Audio kbps' 570 278 75
+$null = Add-Label $settingsGroup 'Audio codec' 15 354 80
+$cmbAudioCodec = New-Object System.Windows.Forms.ComboBox
+$cmbAudioCodec.Location = New-Object System.Drawing.Point(95, 354)
+$cmbAudioCodec.Size = New-Object System.Drawing.Size(210, 23)
+$cmbAudioCodec.DropDownStyle = 'DropDownList'
+$settingsGroup.Controls.Add($cmbAudioCodec)
+$toolTip.SetToolTip($cmbAudioCodec, 'A compatible selection is remembered independently for each protocol.')
+
+$lblAudioCodecStatus = New-Object System.Windows.Forms.Label
+$lblAudioCodecStatus.Text = 'Protocol default'
+$lblAudioCodecStatus.Location = New-Object System.Drawing.Point(315, 354)
+$lblAudioCodecStatus.Size = New-Object System.Drawing.Size(245, 23)
+$lblAudioCodecStatus.TextAlign = 'MiddleLeft'
+$lblAudioCodecStatus.ForeColor = [System.Drawing.Color]::DimGray
+$settingsGroup.Controls.Add($lblAudioCodecStatus)
+
+$null = Add-Label $settingsGroup 'Audio kbps' 570 354 75
 $numAudioBitrate = New-Object System.Windows.Forms.NumericUpDown
-$numAudioBitrate.Location = New-Object System.Drawing.Point(645, 278)
+$numAudioBitrate.Location = New-Object System.Drawing.Point(645, 354)
 $numAudioBitrate.Size = New-Object System.Drawing.Size(70, 23)
 $numAudioBitrate.Minimum = 32
 $numAudioBitrate.Maximum = 512
@@ -1355,35 +1464,35 @@ $settingsGroup.Controls.Add($numAudioBitrate)
 
 $audioNote = New-Object System.Windows.Forms.Label
 $audioNote.Text = 'Desktop audio uses WASAPI loopback; microphone uses the default Windows capture device.'
-$audioNote.Location = New-Object System.Drawing.Point(15, 316)
+$audioNote.Location = New-Object System.Drawing.Point(15, 392)
 $audioNote.Size = New-Object System.Drawing.Size(700, 22)
 $audioNote.ForeColor = [System.Drawing.Color]::DimGray
 $settingsGroup.Controls.Add($audioNote)
 
 $protocolNote = New-Object System.Windows.Forms.Label
-$protocolNote.Text = 'Audio: WHIP/RTSP/SRT use Opus; RTMP uses Media Foundation AAC. Video compatibility depends on protocol, server, and viewer.'
-$protocolNote.Location = New-Object System.Drawing.Point(15, 342)
+$protocolNote.Text = 'Audio defaults: WHIP/RTSP use Opus; SRT/RTMP use AAC. Only compatible codecs are listed for each protocol.'
+$protocolNote.Location = New-Object System.Drawing.Point(15, 418)
 $protocolNote.Size = New-Object System.Drawing.Size(700, 22)
 $protocolNote.ForeColor = [System.Drawing.Color]::DimGray
 $settingsGroup.Controls.Add($protocolNote)
 
 $latencyNote = New-Object System.Windows.Forms.Label
-$latencyNote.Text = 'Low-latency defaults: D3D11 capture, no B-frame reordering where controllable, 1-second GOP, and leaky queues that discard stale media.'
-$latencyNote.Location = New-Object System.Drawing.Point(15, 373)
+$latencyNote.Text = 'Low-latency defaults: B-frames 0, look-ahead off, AQ off, 1-second GOP, and leaky queues. Controls enable only where supported.'
+$latencyNote.Location = New-Object System.Drawing.Point(15, 446)
 $latencyNote.Size = New-Object System.Drawing.Size(700, 38)
 $latencyNote.ForeColor = [System.Drawing.Color]::DimGray
 $settingsGroup.Controls.Add($latencyNote)
 
 $changesNote = New-Object System.Windows.Forms.Label
 $changesNote.Text = 'Changes apply on the next Start or Restart Pipeline.'
-$changesNote.Location = New-Object System.Drawing.Point(15, 428)
+$changesNote.Location = New-Object System.Drawing.Point(15, 492)
 $changesNote.Size = New-Object System.Drawing.Size(700, 22)
 $changesNote.ForeColor = [System.Drawing.Color]::DarkSlateBlue
 $settingsGroup.Controls.Add($changesNote)
 
 $chkStartMediaMtx = New-Object System.Windows.Forms.CheckBox
 $chkStartMediaMtx.Text = 'Start/stop MediaMTX with stream'
-$chkStartMediaMtx.Location = New-Object System.Drawing.Point(15, 466)
+$chkStartMediaMtx.Location = New-Object System.Drawing.Point(15, 546)
 $chkStartMediaMtx.Size = New-Object System.Drawing.Size(220, 25)
 $chkStartMediaMtx.Checked = $false
 $settingsGroup.Controls.Add($chkStartMediaMtx)
@@ -1393,7 +1502,7 @@ $toolTip.SetToolTip(
 )
 
 $txtMediaMtxPath = New-Object System.Windows.Forms.TextBox
-$txtMediaMtxPath.Location = New-Object System.Drawing.Point(240, 466)
+$txtMediaMtxPath.Location = New-Object System.Drawing.Point(240, 546)
 $txtMediaMtxPath.Size = New-Object System.Drawing.Size(400, 23)
 $txtMediaMtxPath.Text = Find-MediaMtx
 $settingsGroup.Controls.Add($txtMediaMtxPath)
@@ -1404,20 +1513,20 @@ $toolTip.SetToolTip(
 
 $btnBrowseMediaMtx = New-Object System.Windows.Forms.Button
 $btnBrowseMediaMtx.Text = 'Browse...'
-$btnBrowseMediaMtx.Location = New-Object System.Drawing.Point(650, 464)
+$btnBrowseMediaMtx.Location = New-Object System.Drawing.Point(650, 544)
 $btnBrowseMediaMtx.Size = New-Object System.Drawing.Size(68, 27)
 $settingsGroup.Controls.Add($btnBrowseMediaMtx)
 
 $previewGroup = New-Object System.Windows.Forms.GroupBox
 $previewGroup.Text = 'Local Preview (experimental)'
 $previewGroup.Location = New-Object System.Drawing.Point(755, 10)
-$previewGroup.Size = New-Object System.Drawing.Size(440, 506)
+$previewGroup.Size = New-Object System.Drawing.Size(440, 586)
 $previewGroup.Anchor = 'Top,Right'
 $form.Controls.Add($previewGroup)
 
 $previewPanel = New-Object System.Windows.Forms.Panel
 $previewPanel.Location = New-Object System.Drawing.Point(12, 24)
-$previewPanel.Size = New-Object System.Drawing.Size(416, 464)
+$previewPanel.Size = New-Object System.Drawing.Size(416, 544)
 $previewPanel.BackColor = [System.Drawing.Color]::Black
 $previewPanel.Anchor = 'Top,Bottom,Left,Right'
 $previewGroup.Controls.Add($previewPanel)
@@ -1432,7 +1541,7 @@ $previewPanel.Controls.Add($previewPlaceholder)
 
 $commandGroup = New-Object System.Windows.Forms.GroupBox
 $commandGroup.Text = 'Generated Command'
-$commandGroup.Location = New-Object System.Drawing.Point(10, 526)
+$commandGroup.Location = New-Object System.Drawing.Point(10, 606)
 $commandGroup.Size = New-Object System.Drawing.Size(1185, 120)
 $commandGroup.Anchor = 'Top,Left,Right'
 $form.Controls.Add($commandGroup)
@@ -1450,40 +1559,40 @@ $commandGroup.Controls.Add($txtCommand)
 
 $btnStart = New-Object System.Windows.Forms.Button
 $btnStart.Text = 'Start Stream'
-$btnStart.Location = New-Object System.Drawing.Point(10, 656)
+$btnStart.Location = New-Object System.Drawing.Point(10, 736)
 $btnStart.Size = New-Object System.Drawing.Size(120, 34)
 $btnStart.Font = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Bold)
 $form.Controls.Add($btnStart)
 
 $btnStop = New-Object System.Windows.Forms.Button
 $btnStop.Text = 'Stop'
-$btnStop.Location = New-Object System.Drawing.Point(140, 656)
+$btnStop.Location = New-Object System.Drawing.Point(140, 736)
 $btnStop.Size = New-Object System.Drawing.Size(90, 34)
 $btnStop.Enabled = $false
 $form.Controls.Add($btnStop)
 
 $btnRestart = New-Object System.Windows.Forms.Button
 $btnRestart.Text = 'Restart Pipeline'
-$btnRestart.Location = New-Object System.Drawing.Point(240, 656)
+$btnRestart.Location = New-Object System.Drawing.Point(240, 736)
 $btnRestart.Size = New-Object System.Drawing.Size(125, 34)
 $btnRestart.Enabled = $false
 $form.Controls.Add($btnRestart)
 
 $btnCopyCommand = New-Object System.Windows.Forms.Button
 $btnCopyCommand.Text = 'Copy Command'
-$btnCopyCommand.Location = New-Object System.Drawing.Point(375, 656)
+$btnCopyCommand.Location = New-Object System.Drawing.Point(375, 736)
 $btnCopyCommand.Size = New-Object System.Drawing.Size(115, 34)
 $form.Controls.Add($btnCopyCommand)
 
 $btnClearLog = New-Object System.Windows.Forms.Button
 $btnClearLog.Text = 'Clear Log'
-$btnClearLog.Location = New-Object System.Drawing.Point(500, 656)
+$btnClearLog.Location = New-Object System.Drawing.Point(500, 736)
 $btnClearLog.Size = New-Object System.Drawing.Size(90, 34)
 $form.Controls.Add($btnClearLog)
 
 $statusLabel = New-Object System.Windows.Forms.Label
 $statusLabel.Text = 'Stopped'
-$statusLabel.Location = New-Object System.Drawing.Point(720, 661)
+$statusLabel.Location = New-Object System.Drawing.Point(720, 741)
 $statusLabel.Size = New-Object System.Drawing.Size(475, 25)
 $statusLabel.TextAlign = 'MiddleRight'
 $statusLabel.Anchor = 'Top,Right'
@@ -1525,7 +1634,7 @@ $notifyIcon.Visible = $true
 
 $logGroup = New-Object System.Windows.Forms.GroupBox
 $logGroup.Text = 'GStreamer Output'
-$logGroup.Location = New-Object System.Drawing.Point(10, 701)
+$logGroup.Location = New-Object System.Drawing.Point(10, 781)
 $logGroup.Size = New-Object System.Drawing.Size(1185, 275)
 $logGroup.Anchor = 'Top,Bottom,Left,Right'
 $form.Controls.Add($logGroup)
@@ -2052,6 +2161,195 @@ function Get-SelectedEncoderDefinition {
     return $script:EncoderCatalog[$name]
 }
 
+function Get-SelectedAudioCodecDefinition {
+    $name = [string]$cmbAudioCodec.SelectedItem
+    if (
+        [string]::IsNullOrWhiteSpace($name) -or
+        -not $script:AudioCodecCatalog.Contains($name)
+    ) {
+        $protocol = [string]$cmbProtocol.SelectedItem
+        $name = [string]$script:DefaultAudioCodecByProtocol[$protocol]
+    }
+
+    return $script:AudioCodecCatalog[$name]
+}
+
+function Test-AudioCodecProtocolCompatibility {
+    param(
+        [Parameter(Mandatory)][string]$AudioCodecName,
+        [Parameter(Mandatory)][string]$Protocol
+    )
+
+    if (-not $script:AudioCodecCatalog.Contains($AudioCodecName)) {
+        return $false
+    }
+
+    return $Protocol -in @($script:AudioCodecCatalog[$AudioCodecName].Protocols)
+}
+
+function Get-CompatibleAudioCodecNames {
+    param([Parameter(Mandatory)][string]$Protocol)
+
+    $names = New-Object System.Collections.Generic.List[string]
+    foreach ($name in $script:AudioCodecCatalog.Keys) {
+        if (Test-AudioCodecProtocolCompatibility -AudioCodecName $name -Protocol $Protocol) {
+            $names.Add([string]$name)
+        }
+    }
+
+    return @($names)
+}
+
+function Update-AudioCodecChoices {
+    param([switch]$PreserveCurrent)
+
+    $protocol = [string]$cmbProtocol.SelectedItem
+    if ([string]::IsNullOrWhiteSpace($protocol)) {
+        return
+    }
+
+    $current = [string]$cmbAudioCodec.SelectedItem
+    if (
+        $PreserveCurrent -and
+        -not [string]::IsNullOrWhiteSpace($current) -and
+        (Test-AudioCodecProtocolCompatibility -AudioCodecName $current -Protocol $protocol)
+    ) {
+        $script:ProtocolAudioCodecs[$protocol] = $current
+    }
+
+    $desired = [string]$script:ProtocolAudioCodecs[$protocol]
+    $compatible = Get-CompatibleAudioCodecNames -Protocol $protocol
+
+    if ($desired -notin $compatible) {
+        $desired = [string]$script:DefaultAudioCodecByProtocol[$protocol]
+    }
+
+    $script:SuppressAudioCodecChange = $true
+    try {
+        $cmbAudioCodec.BeginUpdate()
+        $cmbAudioCodec.Items.Clear()
+        foreach ($name in $compatible) {
+            $null = $cmbAudioCodec.Items.Add($name)
+        }
+
+        if ($cmbAudioCodec.Items.Contains($desired)) {
+            $cmbAudioCodec.SelectedItem = $desired
+        }
+        elseif ($cmbAudioCodec.Items.Count -gt 0) {
+            $cmbAudioCodec.SelectedIndex = 0
+        }
+    }
+    finally {
+        $cmbAudioCodec.EndUpdate()
+        $script:SuppressAudioCodecChange = $false
+    }
+
+    $selected = [string]$cmbAudioCodec.SelectedItem
+    if ($selected) {
+        $script:ProtocolAudioCodecs[$protocol] = $selected
+        $lblAudioCodecStatus.Text =
+            "$protocol compatible • $([string]$script:AudioCodecCatalog[$selected].Codec)"
+        $lblAudioCodecStatus.ForeColor = [System.Drawing.Color]::DimGray
+    }
+
+    Update-CommandPreview
+}
+
+function Get-EncoderControlSupport {
+    $definition = Get-SelectedEncoderDefinition
+    $family = [string]$definition.Family
+    $codec = [string]$definition.Codec
+
+    $supportsBFrames = $false
+    $supportsLookAhead = $false
+    $supportsAq = $false
+
+    switch ($family) {
+        'NVENC' {
+            $supportsBFrames = $true
+            $supportsLookAhead = $true
+            $supportsAq = $true
+        }
+        'AMF' {
+            $supportsBFrames = ($codec -eq 'H264')
+            $supportsLookAhead = ($codec -in @('H264', 'H265'))
+        }
+        'QSV' {
+            $supportsBFrames = ($codec -in @('H264', 'H265'))
+            $supportsLookAhead = ($codec -in @('H264', 'H265'))
+        }
+        'MF' {
+            $supportsBFrames = ($codec -in @('H264', 'H265'))
+        }
+        'X264' {
+            $supportsBFrames = $true
+            $supportsLookAhead = $true
+            $supportsAq = $true
+        }
+        'X265' {
+            $supportsBFrames = $true
+            $supportsLookAhead = $true
+            $supportsAq = $true
+        }
+        'AOM' { $supportsLookAhead = $true }
+        'RAV1E' { $supportsLookAhead = $true }
+        'VPX' { $supportsLookAhead = $true }
+    }
+
+    return [pscustomobject]@{
+        BFrames = $supportsBFrames
+        LookAhead = $supportsLookAhead
+        AdaptiveQuantization = $supportsAq
+    }
+}
+
+function Get-AudioEncoderChain {
+    param([Parameter(Mandatory)][string]$Protocol)
+
+    $definition = Get-SelectedAudioCodecDefinition
+    $family = [string]$definition.Family
+    $bitrateKbps = [int]$numAudioBitrate.Value
+    $bitrateBps = $bitrateKbps * 1000
+
+    switch ($family) {
+        'OPUS' {
+            return "opusenc bitrate=$bitrateBps bitrate-type=cbr frame-size=10 audio-type=restricted-lowdelay ! `"audio/x-opus`""
+        }
+        'AAC_MF' {
+            $aacBitrate = Get-NearestAacBitrate -RequestedKbps $bitrateKbps
+            $format = if ($Protocol -eq 'SRT') { 'adts' } else { 'raw' }
+            return "mfaacenc bitrate=$aacBitrate ! aacparse ! `"audio/mpeg,mpegversion=4,stream-format=$format,framed=true`""
+        }
+        'AAC_FDK' {
+            $format = if ($Protocol -eq 'SRT') { 'adts' } else { 'raw' }
+            return "fdkaacenc bitrate=$bitrateBps rate-control=cbr ! aacparse ! `"audio/mpeg,mpegversion=4,stream-format=$format,framed=true`""
+        }
+        'AAC_LIBAV' {
+            $format = if ($Protocol -eq 'SRT') { 'adts' } else { 'raw' }
+            return "audioconvert ! `"audio/x-raw,format=F32LE,rate=48000,channels=2`" ! avenc_aac bitrate=$bitrateBps ! aacparse ! `"audio/mpeg,mpegversion=4,stream-format=$format,framed=true`""
+        }
+        'AAC_VO' {
+            $format = if ($Protocol -eq 'SRT') { 'adts' } else { 'raw' }
+            return "voaacenc bitrate=$bitrateBps ! aacparse ! `"audio/mpeg,mpegversion=4,stream-format=$format`""
+        }
+        'MP3' {
+            $valid = @(32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320)
+            $mp3Bitrate = [int](
+                $valid |
+                Sort-Object { [Math]::Abs($_ - $bitrateKbps) } |
+                Select-Object -First 1
+            )
+            return "lamemp3enc target=bitrate cbr=true bitrate=$mp3Bitrate encoding-engine-quality=fast ! mpegaudioparse ! `"audio/mpeg,mpegversion=1,layer=3,parsed=true`""
+        }
+        'AC3' {
+            return "audioconvert ! `"audio/x-raw,format=F32LE,rate=48000,channels=2`" ! avenc_ac3 bitrate=$bitrateBps ! ac3parse ! `"audio/x-ac3,framed=true`""
+        }
+        default {
+            throw "Unsupported audio encoder family: $family"
+        }
+    }
+}
+
 function Test-CodecProtocolCompatibility {
     param(
         [Parameter(Mandatory)][string]$Codec,
@@ -2124,6 +2422,25 @@ function Get-EncoderElementChain {
     $videoBitrateBps = $videoBitrateKbps * 1000
     $gopSize = [Math]::Max(1, $fps * [int]$numGopSeconds.Value)
     $preset = [string]$cmbPreset.SelectedItem
+    $controlSupport = Get-EncoderControlSupport
+    $bFrames = if ($controlSupport.BFrames) { [int]$numBFrames.Value } else { 0 }
+    $lookAheadFrames = if (
+        $controlSupport.LookAhead -and
+        $chkLookAhead.Checked
+    ) {
+        [int]$numLookAheadFrames.Value
+    }
+    else {
+        0
+    }
+    $aqEnabled =
+        $controlSupport.AdaptiveQuantization -and
+        $chkAdaptiveQuantization.Checked
+    $aqStrength = [int]$numAqStrength.Value
+    $aqStrengthFloat = ($aqStrength / 8.0).ToString(
+        '0.###',
+        [System.Globalization.CultureInfo]::InvariantCulture
+    )
 
     $parts = New-Object System.Collections.Generic.List[string]
 
@@ -2149,15 +2466,23 @@ function Get-EncoderElementChain {
 
     switch ($family) {
         'NVENC' {
+            $zeroLatency = ($bFrames -eq 0 -and $lookAheadFrames -eq 0)
             $parts.Add("bitrate=$videoBitrateKbps")
             $parts.Add('rc-mode=cbr')
             $parts.Add("preset=$preset")
             $parts.Add('tune=ultra-low-latency')
-            $parts.Add('zerolatency=true')
-            $parts.Add('bframes=0')
-            $parts.Add('b-adapt=false')
+            $parts.Add("zerolatency=$($zeroLatency.ToString().ToLowerInvariant())")
+            $parts.Add("bframes=$bFrames")
+            $parts.Add(
+                "b-adapt=$((($bFrames -gt 0) -and ($lookAheadFrames -gt 0)).ToString().ToLowerInvariant())"
+            )
             $parts.Add("gop-size=$gopSize")
-            $parts.Add('rc-lookahead=0')
+            $parts.Add("rc-lookahead=$lookAheadFrames")
+            $parts.Add("spatial-aq=$($aqEnabled.ToString().ToLowerInvariant())")
+            $parts.Add("temporal-aq=$($aqEnabled.ToString().ToLowerInvariant())")
+            if ($aqEnabled) {
+                $parts.Add("aq-strength=$aqStrength")
+            }
             if ($codec -in @('H264', 'H265')) {
                 $parts.Add('repeat-sequence-header=true')
             }
@@ -2167,24 +2492,44 @@ function Get-EncoderElementChain {
             $parts.Add('rate-control=cbr')
             $parts.Add('preset=speed')
             $parts.Add(
-                $(if ($codec -eq 'AV1') { 'usage=low-latency' } else { 'usage=ultra-low-latency' })
+                $(if ($codec -eq 'AV1') {
+                    'usage=low-latency'
+                }
+                else {
+                    'usage=ultra-low-latency'
+                })
             )
             $parts.Add("gop-size=$gopSize")
-            $parts.Add('pre-analysis=false')
+            $parts.Add(
+                "pre-analysis=$((($lookAheadFrames -gt 0)).ToString().ToLowerInvariant())"
+            )
             $parts.Add('pre-encode=false')
             if ($codec -eq 'H264') {
-                $parts.Add('b-frames=0')
-                $parts.Add('max-b-frames=0')
-                $parts.Add('adaptive-mini-gop=false')
+                $parts.Add("b-frames=$bFrames")
+                $parts.Add("max-b-frames=$bFrames")
+                $parts.Add(
+                    "adaptive-mini-gop=$((($bFrames -gt 0) -and ($lookAheadFrames -gt 0)).ToString().ToLowerInvariant())"
+                )
+            }
+            if ($lookAheadFrames -gt 0 -and $codec -in @('H264', 'H265')) {
+                $parts.Add("pa-lookahead-buffer-depth=$lookAheadFrames")
             }
         }
         'QSV' {
             $parts.Add("bitrate=$videoBitrateKbps")
-            $parts.Add('rate-control=cbr')
+            if ($lookAheadFrames -gt 0 -and $codec -in @('H264', 'H265')) {
+                $parts.Add('rate-control=la-hrd')
+                $parts.Add("rc-lookahead=$lookAheadFrames")
+            }
+            else {
+                $parts.Add('rate-control=cbr')
+                if ($codec -in @('H264', 'H265')) {
+                    $parts.Add('rc-lookahead=0')
+                }
+            }
             $parts.Add("gop-size=$gopSize")
             if ($codec -in @('H264', 'H265')) {
-                $parts.Add('b-frames=0')
-                $parts.Add('rc-lookahead=0')
+                $parts.Add("b-frames=$bFrames")
             }
         }
         'MF' {
@@ -2192,14 +2537,29 @@ function Get-EncoderElementChain {
             $parts.Add('rc-mode=cbr')
             $parts.Add("gop-size=$gopSize")
             $parts.Add('low-latency=true')
-            $parts.Add('bframes=0')
+            if ($controlSupport.BFrames) {
+                $parts.Add("bframes=$bFrames")
+            }
         }
         'X264' {
             $parts.Add("bitrate=$videoBitrateKbps")
             $parts.Add('speed-preset=ultrafast')
             $parts.Add('tune=zerolatency')
             $parts.Add("key-int-max=$gopSize")
-            $parts.Add('bframes=0')
+            $parts.Add("bframes=$bFrames")
+            $parts.Add(
+                "b-adapt=$((($bFrames -gt 0) -and ($lookAheadFrames -gt 0)).ToString().ToLowerInvariant())"
+            )
+            $parts.Add("rc-lookahead=$lookAheadFrames")
+            $parts.Add('sync-lookahead=0')
+            $parts.Add("mb-tree=$($aqEnabled.ToString().ToLowerInvariant())")
+            $x264AqOptions = if ($aqEnabled) {
+                "aq-mode=2:aq-strength=$aqStrengthFloat"
+            }
+            else {
+                'aq-mode=0'
+            }
+            $parts.Add("option-string=$x264AqOptions")
             $parts.Add('sliced-threads=true')
             $parts.Add('byte-stream=true')
             $parts.Add('aud=true')
@@ -2209,7 +2569,17 @@ function Get-EncoderElementChain {
             $parts.Add('speed-preset=ultrafast')
             $parts.Add('tune=zerolatency')
             $parts.Add("key-int-max=$gopSize")
-            $parts.Add('option-string=bframes=0:rc-lookahead=0')
+            $x265Options = New-Object System.Collections.Generic.List[string]
+            $x265Options.Add("bframes=$bFrames")
+            $x265Options.Add("rc-lookahead=$lookAheadFrames")
+            if ($aqEnabled) {
+                $x265Options.Add('aq-mode=2')
+                $x265Options.Add("aq-strength=$aqStrengthFloat")
+            }
+            else {
+                $x265Options.Add('aq-mode=0')
+            }
+            $parts.Add("option-string=$($x265Options -join ':')")
         }
         'OPENH264' {
             $parts.Add("bitrate=$videoBitrateBps")
@@ -2223,7 +2593,7 @@ function Get-EncoderElementChain {
             $parts.Add("target-bitrate=$videoBitrateKbps")
             $parts.Add('end-usage=cbr')
             $parts.Add('cpu-used=8')
-            $parts.Add('lag-in-frames=0')
+            $parts.Add("lag-in-frames=$lookAheadFrames")
             $parts.Add("keyframe-max-dist=$gopSize")
             $parts.Add('row-mt=true')
         }
@@ -2236,18 +2606,18 @@ function Get-EncoderElementChain {
         }
         'RAV1E' {
             $parts.Add("bitrate=$videoBitrateBps")
-            $parts.Add('low-latency=true')
+            $parts.Add("low-latency=$(($lookAheadFrames -eq 0).ToString().ToLowerInvariant())")
             $parts.Add('speed-preset=10')
             $parts.Add("max-key-frame-interval=$gopSize")
             $parts.Add('min-key-frame-interval=1')
-            $parts.Add('rdo-lookahead-frames=0')
+            $parts.Add("rdo-lookahead-frames=$lookAheadFrames")
         }
         'VPX' {
             $parts.Add("target-bitrate=$videoBitrateBps")
             $parts.Add('deadline=1')
             $parts.Add('end-usage=cbr')
             $parts.Add("keyframe-max-dist=$gopSize")
-            $parts.Add('lag-in-frames=0')
+            $parts.Add("lag-in-frames=$lookAheadFrames")
         }
         default {
             throw "Unsupported encoder family: $family"
@@ -2280,8 +2650,36 @@ function Update-EncoderUi {
     $cmbPreset.Enabled = ($family -eq 'NVENC')
     $cmbProfile.Enabled = ($codec -eq 'H264')
 
+    $controlSupport = Get-EncoderControlSupport
+    $numBFrames.Enabled = $controlSupport.BFrames
+    $chkLookAhead.Enabled = $controlSupport.LookAhead
+    $numLookAheadFrames.Enabled =
+        $controlSupport.LookAhead -and $chkLookAhead.Checked
+    $chkAdaptiveQuantization.Enabled =
+        $controlSupport.AdaptiveQuantization
+    $numAqStrength.Enabled =
+        $controlSupport.AdaptiveQuantization -and
+        $chkAdaptiveQuantization.Checked
+
     $memoryLabel = if ($inputType -eq 'D3D11') { 'D3D11 zero-copy path' } else { 'CPU/system-memory path' }
-    $lblEncoderStatus.Text = "$codec • $kind • $memoryLabel"
+    $latencyFlags = New-Object System.Collections.Generic.List[string]
+    if ($numBFrames.Enabled -and [int]$numBFrames.Value -gt 0) {
+        $latencyFlags.Add("B=$([int]$numBFrames.Value)")
+    }
+    if ($chkLookAhead.Enabled -and $chkLookAhead.Checked) {
+        $latencyFlags.Add("LA=$([int]$numLookAheadFrames.Value)")
+    }
+    if ($chkAdaptiveQuantization.Enabled -and $chkAdaptiveQuantization.Checked) {
+        $latencyFlags.Add('AQ')
+    }
+
+    $flagText = if ($latencyFlags.Count -gt 0) {
+        ' • ' + ($latencyFlags -join ', ')
+    }
+    else {
+        ''
+    }
+    $lblEncoderStatus.Text = "$codec • $kind • $memoryLabel$flagText"
 
     if ($protocol) {
         $compatible = Test-CodecProtocolCompatibility -Codec $codec -Protocol $protocol
@@ -2380,17 +2778,40 @@ function Build-GstArguments {
     $mediaType = Get-CodecMediaType -Codec $codec
     $audioRaw = Build-RawAudioChain
     $hasAudio = -not [string]::IsNullOrWhiteSpace($audioRaw)
-    $audioBitrate = [int]$numAudioBitrate.Value * 1000
+    $audioCodecName = [string]$cmbAudioCodec.SelectedItem
+    $audioDefinition = Get-SelectedAudioCodecDefinition
+    $audioMediaType = switch ([string]$audioDefinition.Codec) {
+        'OPUS' { 'audio/x-opus' }
+        'AAC'  { 'audio/mpeg' }
+        'MP3'  { 'audio/mpeg' }
+        'AC3'  { 'audio/x-ac3' }
+        default { throw "Unsupported audio codec: $([string]$audioDefinition.Codec)" }
+    }
+    $audioEncoded = if ($hasAudio) {
+        Get-AudioEncoderChain -Protocol $protocol
+    }
+    else {
+        ''
+    }
     $video = Build-VideoBranch -Protocol $protocol
 
     if (-not (Test-CodecProtocolCompatibility -Codec $codec -Protocol $protocol)) {
         throw "$codec is not supported by the $protocol pipeline template."
     }
 
+    if (
+        $hasAudio -and
+        -not (Test-AudioCodecProtocolCompatibility `
+            -AudioCodecName $audioCodecName `
+            -Protocol $protocol)
+    ) {
+        throw "$audioCodecName is not supported by the $protocol pipeline template."
+    }
+
     switch ($protocol) {
         'WHIP' {
             if ($hasAudio) {
-                $pipeline = "whipclientsink name=out video-caps=`"$mediaType`" audio-caps=`"audio/x-opus`" signaller::whip-endpoint=$quotedDestination $video ! out.video_0 $audioRaw ! opusenc bitrate=$audioBitrate bitrate-type=cbr frame-size=10 audio-type=restricted-lowdelay ! `"audio/x-opus`" ! out.audio_0"
+                $pipeline = "whipclientsink name=out video-caps=`"$mediaType`" audio-caps=`"$audioMediaType`" signaller::whip-endpoint=$quotedDestination $video ! out.video_0 $audioRaw ! $audioEncoded ! out.audio_0"
             }
             else {
                 $pipeline = "$video ! whipclientsink video-caps=`"$mediaType`" signaller::whip-endpoint=$quotedDestination"
@@ -2401,32 +2822,35 @@ function Build-GstArguments {
             $latency = [int]$numSrtLatency.Value
             $pipeline = "mpegtsmux name=mux alignment=7 pat-interval=900 pmt-interval=900 ! srtsink uri=$quotedDestination latency=$latency wait-for-connection=true auto-reconnect=true $video ! mux."
             if ($hasAudio) {
-                $pipeline += " $audioRaw ! opusenc bitrate=$audioBitrate bitrate-type=cbr frame-size=10 audio-type=restricted-lowdelay ! `"audio/x-opus`" ! mux."
+                $pipeline += " $audioRaw ! $audioEncoded ! mux."
             }
         }
 
         'RTMP' {
-            $aacBitrate = Get-NearestAacBitrate -RequestedKbps ([int]$numAudioBitrate.Value)
-
             if ($codec -eq 'H264') {
                 $pipeline = "flvmux name=mux streamable=true ! rtmp2sink location=$quotedDestination async-connect=true $video ! mux."
                 if ($hasAudio) {
-                    $pipeline += " $audioRaw ! mfaacenc bitrate=$aacBitrate ! aacparse ! `"audio/mpeg,mpegversion=4,stream-format=raw`" ! mux."
+                    $pipeline += " $audioRaw ! $audioEncoded ! mux."
                 }
             }
             else {
                 $pipeline = "eflvmux name=mux streamable=true ! rtmp2sink location=$quotedDestination async-connect=true $video ! mux.video"
                 if ($hasAudio) {
-                    $pipeline += " $audioRaw ! mfaacenc bitrate=$aacBitrate ! aacparse ! `"audio/mpeg,mpegversion=4,stream-format=raw`" ! mux.audio"
+                    $pipeline += " $audioRaw ! $audioEncoded ! mux.audio"
                 }
             }
         }
 
         'RTSP' {
-            $transport = if ([string]$cmbRtspTransport.SelectedItem -eq 'UDP') { 'udp' } else { 'tcp' }
+            $transport = if ([string]$cmbRtspTransport.SelectedItem -eq 'UDP') {
+                'udp'
+            }
+            else {
+                'tcp'
+            }
             $pipeline = "rtspclientsink name=out location=$quotedDestination protocols=$transport latency=0 rtx-time=0 $video ! out.sink_0"
             if ($hasAudio) {
-                $pipeline += " $audioRaw ! opusenc bitrate=$audioBitrate bitrate-type=cbr frame-size=10 audio-type=restricted-lowdelay ! `"audio/x-opus`" ! out.sink_1"
+                $pipeline += " $audioRaw ! $audioEncoded ! out.sink_1"
             }
         }
 
@@ -2468,6 +2892,17 @@ function Update-ProtocolUi {
             $script:ProtocolDestinations[$script:LastProtocol] = $txtDestination.Text.Trim()
         }
 
+        $currentAudioCodec = [string]$cmbAudioCodec.SelectedItem
+        if (
+            $script:LastProtocol -and
+            -not [string]::IsNullOrWhiteSpace($currentAudioCodec) -and
+            (Test-AudioCodecProtocolCompatibility `
+                -AudioCodecName $currentAudioCodec `
+                -Protocol $script:LastProtocol)
+        ) {
+            $script:ProtocolAudioCodecs[$script:LastProtocol] = $currentAudioCodec
+        }
+
         $txtDestination.Text = [string]$script:ProtocolDestinations[$protocol]
     }
 
@@ -2483,6 +2918,7 @@ function Update-ProtocolUi {
         'RTSP' { $toolTip.SetToolTip($txtDestination, 'Example: rtsp://server:8554/live') }
     }
 
+    Update-AudioCodecChoices
     Update-EncoderUi
 }
 
@@ -2523,6 +2959,15 @@ function Save-Settings {
             Encoder           = [string]$cmbEncoder.SelectedItem
             Preset            = [string]$cmbPreset.SelectedItem
             Profile           = [string]$cmbProfile.SelectedItem
+            BFrames           = [int]$numBFrames.Value
+            LookAhead         = $chkLookAhead.Checked
+            LookAheadFrames   = [int]$numLookAheadFrames.Value
+            AdaptiveQuantization = $chkAdaptiveQuantization.Checked
+            AqStrength        = [int]$numAqStrength.Value
+            WhipAudioCodec    = [string]$script:ProtocolAudioCodecs.WHIP
+            SrtAudioCodec     = [string]$script:ProtocolAudioCodecs.SRT
+            RtmpAudioCodec    = [string]$script:ProtocolAudioCodecs.RTMP
+            RtspAudioCodec    = [string]$script:ProtocolAudioCodecs.RTSP
             DesktopAudio      = $chkDesktopAudio.Checked
             DesktopVolume     = [int]$numDesktopVolume.Value
             Microphone        = $chkMic.Checked
@@ -2576,6 +3021,33 @@ function Load-Settings {
         }
         if ($settings.Preset -and $cmbPreset.Items.Contains([string]$settings.Preset)) { $cmbPreset.SelectedItem = [string]$settings.Preset }
         if ($settings.Profile -and $cmbProfile.Items.Contains([string]$settings.Profile)) { $cmbProfile.SelectedItem = [string]$settings.Profile }
+        if ($null -ne $settings.BFrames) { $numBFrames.Value = [decimal]$settings.BFrames }
+        if ($null -ne $settings.LookAhead) { $chkLookAhead.Checked = [bool]$settings.LookAhead }
+        if ($settings.LookAheadFrames) { $numLookAheadFrames.Value = [decimal]$settings.LookAheadFrames }
+        if ($null -ne $settings.AdaptiveQuantization) {
+            $chkAdaptiveQuantization.Checked = [bool]$settings.AdaptiveQuantization
+        }
+        if ($settings.AqStrength) { $numAqStrength.Value = [decimal]$settings.AqStrength }
+
+        foreach ($audioSetting in @(
+            @('WhipAudioCodec', 'WHIP'),
+            @('SrtAudioCodec', 'SRT'),
+            @('RtmpAudioCodec', 'RTMP'),
+            @('RtspAudioCodec', 'RTSP')
+        )) {
+            $propertyName = $audioSetting[0]
+            $protocolName = $audioSetting[1]
+            $value = [string]$settings.$propertyName
+            if (
+                -not [string]::IsNullOrWhiteSpace($value) -and
+                (Test-AudioCodecProtocolCompatibility `
+                    -AudioCodecName $value `
+                    -Protocol $protocolName)
+            ) {
+                $script:ProtocolAudioCodecs[$protocolName] = $value
+            }
+        }
+
         if ($null -ne $settings.DesktopAudio) { $chkDesktopAudio.Checked = [bool]$settings.DesktopAudio }
         if ($null -ne $settings.DesktopVolume) { $numDesktopVolume.Value = [decimal]$settings.DesktopVolume }
         if ($null -ne $settings.Microphone) { $chkMic.Checked = [bool]$settings.Microphone }
@@ -2669,6 +3141,38 @@ function Validate-Configuration {
     if (-not (Test-CodecProtocolCompatibility -Codec $codec -Protocol $protocol)) {
         [System.Windows.Forms.MessageBox]::Show(
             "$codec is not supported by the $protocol pipeline template.`r`n`r`nSelect another encoder or protocol.",
+            $script:AppName,
+            'OK',
+            'Warning'
+        ) | Out-Null
+        return $false
+    }
+
+    if ($chkDesktopAudio.Checked -or $chkMic.Checked) {
+        $audioCodecName = [string]$cmbAudioCodec.SelectedItem
+        if (
+            -not (Test-AudioCodecProtocolCompatibility `
+                -AudioCodecName $audioCodecName `
+                -Protocol $protocol)
+        ) {
+            [System.Windows.Forms.MessageBox]::Show(
+                "$audioCodecName is not compatible with $protocol.",
+                $script:AppName,
+                'OK',
+                'Warning'
+            ) | Out-Null
+            return $false
+        }
+    }
+
+    if (
+        $protocol -eq 'WHIP' -and
+        $codec -eq 'H264' -and
+        $numBFrames.Enabled -and
+        [int]$numBFrames.Value -gt 0
+    ) {
+        [System.Windows.Forms.MessageBox]::Show(
+            'H.264 B-frames are not compatible with normal WebRTC playback. Set B-frames to 0 for WHIP.',
             $script:AppName,
             'OK',
             'Warning'
@@ -3091,27 +3595,81 @@ function Test-GStreamerElements {
         }
     }
 
+    $hasAudio = $chkDesktopAudio.Checked -or $chkMic.Checked
+    $audioDefinition = if ($hasAudio) {
+        Get-SelectedAudioCodecDefinition
+    }
+    else {
+        $null
+    }
+
     switch ($protocol) {
         'WHIP' {
             $elements.Add('whipclientsink')
-            if ($chkDesktopAudio.Checked -or $chkMic.Checked) { $elements.Add('opusenc') }
+
+            $videoPayloader = switch ($codec) {
+                'H264' { 'rtph264pay' }
+                'H265' { 'rtph265pay' }
+                'AV1'  { 'rtpav1pay' }
+                'VP8'  { 'rtpvp8pay' }
+                'VP9'  { 'rtpvp9pay' }
+            }
+
+            if ($videoPayloader) {
+                $elements.Add($videoPayloader)
+            }
+
+            if ($hasAudio) {
+                $elements.Add([string]$audioDefinition.Element)
+                if (-not [string]::IsNullOrWhiteSpace([string]$audioDefinition.Parser)) {
+                    $elements.Add([string]$audioDefinition.Parser)
+                }
+                if ([string]$audioDefinition.Codec -eq 'OPUS') {
+                    $elements.Add('rtpopuspay')
+                }
+            }
         }
+
         'SRT' {
             $elements.Add('mpegtsmux')
             $elements.Add('srtsink')
-            if ($chkDesktopAudio.Checked -or $chkMic.Checked) { $elements.Add('opusenc') }
+            if ($hasAudio) {
+                $elements.Add([string]$audioDefinition.Element)
+                if (-not [string]::IsNullOrWhiteSpace([string]$audioDefinition.Parser)) {
+                    $elements.Add([string]$audioDefinition.Parser)
+                }
+            }
         }
+
         'RTMP' {
             $elements.Add($(if ($codec -eq 'H264') { 'flvmux' } else { 'eflvmux' }))
             $elements.Add('rtmp2sink')
-            if ($chkDesktopAudio.Checked -or $chkMic.Checked) {
-                $elements.Add('mfaacenc')
-                $elements.Add('aacparse')
+            if ($hasAudio) {
+                $elements.Add([string]$audioDefinition.Element)
+                if (-not [string]::IsNullOrWhiteSpace([string]$audioDefinition.Parser)) {
+                    $elements.Add([string]$audioDefinition.Parser)
+                }
             }
         }
+
         'RTSP' {
             $elements.Add('rtspclientsink')
-            if ($chkDesktopAudio.Checked -or $chkMic.Checked) { $elements.Add('opusenc') }
+            if ($hasAudio) {
+                $elements.Add([string]$audioDefinition.Element)
+                if (-not [string]::IsNullOrWhiteSpace([string]$audioDefinition.Parser)) {
+                    $elements.Add([string]$audioDefinition.Parser)
+                }
+
+                $audioPayloader = switch ([string]$audioDefinition.Codec) {
+                    'OPUS' { 'rtpopuspay' }
+                    'AAC'  { 'rtpmp4apay' }
+                    'MP3'  { 'rtpmpapay' }
+                    'AC3'  { 'rtpac3pay' }
+                }
+                if ($audioPayloader) {
+                    $elements.Add($audioPayloader)
+                }
+            }
         }
     }
 
@@ -3133,10 +3691,30 @@ function Test-GStreamerElements {
     if (-not (Test-CodecProtocolCompatibility -Codec $codec -Protocol $protocol)) {
         $compatibilityWarning = "$codec is not supported by the $protocol pipeline template."
     }
+    elseif (
+        $hasAudio -and
+        -not (Test-AudioCodecProtocolCompatibility `
+            -AudioCodecName ([string]$cmbAudioCodec.SelectedItem) `
+            -Protocol $protocol)
+    ) {
+        $compatibilityWarning =
+            "$([string]$cmbAudioCodec.SelectedItem) is not supported by $protocol."
+    }
 
     if ($missing.Count -eq 0 -and -not $compatibilityWarning) {
+        $audioSummary = if ($hasAudio) {
+            [string]$cmbAudioCodec.SelectedItem
+        }
+        else {
+            'Disabled'
+        }
+
         [System.Windows.Forms.MessageBox]::Show(
-            "All elements required by the current configuration were found.`r`n`r`nEncoder: $([string]$definition.Element) ($codec)",
+            (
+                "All elements required by the current configuration were found." +
+                "`r`n`r`nVideo: $([string]$definition.Element) ($codec)" +
+                "`r`nAudio: $audioSummary"
+            ),
             $script:AppName,
             'OK',
             'Information'
@@ -3172,6 +3750,22 @@ $txtDestination.Add_TextChanged({
 })
 $cmbProtocol.Add_SelectedIndexChanged({ Update-ProtocolUi })
 $cmbEncoder.Add_SelectedIndexChanged({ Update-EncoderUi })
+$cmbAudioCodec.Add_SelectedIndexChanged({
+    if (-not $script:SuppressAudioCodecChange) {
+        $protocol = [string]$cmbProtocol.SelectedItem
+        $selected = [string]$cmbAudioCodec.SelectedItem
+        if (
+            -not [string]::IsNullOrWhiteSpace($protocol) -and
+            -not [string]::IsNullOrWhiteSpace($selected) -and
+            (Test-AudioCodecProtocolCompatibility `
+                -AudioCodecName $selected `
+                -Protocol $protocol)
+        ) {
+            $script:ProtocolAudioCodecs[$protocol] = $selected
+        }
+        Update-AudioCodecChoices -PreserveCurrent
+    }
+})
 $numMonitor.Add_ValueChanged({ Update-CaptureModeUi; Update-CommandPreview })
 $chkCursor.Add_CheckedChanged($previewHandler)
 $chkFullscreenApp.Add_CheckedChanged({
@@ -3198,11 +3792,20 @@ $numVideoBitrate.Add_ValueChanged($previewHandler)
 $numGopSeconds.Add_ValueChanged($previewHandler)
 $cmbPreset.Add_SelectedIndexChanged($previewHandler)
 $cmbProfile.Add_SelectedIndexChanged($previewHandler)
+$numBFrames.Add_ValueChanged({ Update-EncoderUi })
+$chkLookAhead.Add_CheckedChanged({ Update-EncoderUi })
+$numLookAheadFrames.Add_ValueChanged({ Update-EncoderUi })
+$chkAdaptiveQuantization.Add_CheckedChanged({ Update-EncoderUi })
+$numAqStrength.Add_ValueChanged({ Update-EncoderUi })
 $numSrtLatency.Add_ValueChanged($previewHandler)
 $cmbRtspTransport.Add_SelectedIndexChanged($previewHandler)
-$chkDesktopAudio.Add_CheckedChanged($previewHandler)
+$chkDesktopAudio.Add_CheckedChanged({
+    Update-AudioCodecChoices -PreserveCurrent
+})
 $numDesktopVolume.Add_ValueChanged($previewHandler)
-$chkMic.Add_CheckedChanged($previewHandler)
+$chkMic.Add_CheckedChanged({
+    Update-AudioCodecChoices -PreserveCurrent
+})
 $numMicVolume.Add_ValueChanged($previewHandler)
 $numAudioBitrate.Add_ValueChanged($previewHandler)
 $chkStartMediaMtx.Add_CheckedChanged({
@@ -3437,6 +4040,7 @@ $form.Add_Shown({
     Update-CaptureModeUi
     Update-MediaMtxUi
     Update-ProtocolUi
+    Update-AudioCodecChoices
     Update-EncoderUi
     Update-CommandPreview
     Update-TrayMenuState
