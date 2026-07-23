@@ -630,7 +630,7 @@ public static class GstProcessJob
 '@
 }
 
-$script:AppVersion = '3.7.52f8'
+$script:AppVersion = '3.7.52f9'
 $script:AppName = "GStreamer Glass v$($script:AppVersion)"
 $script:ConfigDirectory = Join-Path $env:APPDATA 'GStreamerBasicWhipStreamer'
 $script:ConfigPath = Join-Path $script:ConfigDirectory 'settings.json'
@@ -9287,8 +9287,8 @@ function Write-DirectWebRtcWebClientConfig {
             splitAudioSignalingPort = if (Test-DirectWebRtcSplitAvPipelines) { [int](Get-DirectWebRtcSplitAudioSignalingPort) } else { 0 }
             sharedSignaling = [bool](Test-DirectWebRtcSharedSignaling)
             splitSharedSignaling = [bool](Test-DirectWebRtcSharedSignaling)
-            videoProducerName = 'GStreamer Glass Video'
-            splitAudioProducerName = 'GStreamer Glass Audio'
+            videoProducerName = 'gstglass-video'
+            splitAudioProducerName = 'gstglass-audio'
             webPath = [string]$playerSettings.WebPath
             bundledWebMode = [string]$playerSettings.BundledWebMode
             bundledWebDirectory = [string]$playerSettings.BundledWebDirectory
@@ -9373,7 +9373,7 @@ function Build-DirectWebRtcAudioOnlyArguments {
     if ($sharedSignaling) {
         $sharedUri = Quote-GstValue (Get-DirectWebRtcSharedSignallerUri)
         $sinkProps += "signaller::uri=$sharedUri"
-        $sinkProps += 'meta="meta,name=GStreamer Glass Audio,kind=audio"'
+        $sinkProps += 'meta="meta,name=gstglass-audio,kind=audio"'
     }
     else {
         $sinkProps += 'run-signalling-server=true'
@@ -9612,7 +9612,7 @@ function Build-GstArguments {
                 "max-bitrate=$maxBitrate"
             )
             if ((Test-DirectWebRtcSplitAvPipelines) -and (Test-DirectWebRtcSharedSignaling)) {
-                $sinkProps += 'meta="meta,name=GStreamer Glass Video,kind=video"'
+                $sinkProps += 'meta="meta,name=gstglass-video,kind=video"'
             }
 
             $pipeline = (($sinkProps -join ' ') + $timestampOption + $stunOption + $webPathOption + $webDirectoryOption + " $directVideo")
