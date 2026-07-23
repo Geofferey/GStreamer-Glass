@@ -4,11 +4,11 @@
     Basic Windows GUI wrapper for low-latency GStreamer desktop streaming.
 
 .DESCRIPTION
-    Captures a Windows desktop through D3D11, encodes through a selectable
-    hardware or software encoder, and publishes through WHIP, SRT, RTMP, or
-    RTSP. Desktop loopback audio and the
-    default microphone can be enabled independently. Optional fullscreen-app
-    capture targets a topmost fullscreen HWND through Windows Graphics Capture.
+    Captures a Windows desktop through selectable GStreamer capture backends,
+    encodes through a selectable hardware or software encoder, and publishes
+    through WHIP, SRT, RTMP, or RTSP. Desktop loopback audio and the default
+    microphone can be enabled independently. Optional fullscreen-app capture
+    targets a topmost fullscreen HWND through Windows Graphics Capture.
 
     The optional preview uses a leaky GPU-side tee and d3d11videosink. The GUI
     attempts to re-parent the GStreamer preview window into the form. This is an
@@ -52,6 +52,69 @@ public static class GstExecutableBrowser
             "MediaMTX server (mediamtx.exe)|mediamtx.exe|" +
             "Executable files (*.exe)|*.exe|All files (*.*)|*.*",
             "MediaMTX executable browser");
+    }
+
+    public static string SelectFolder(string currentPath, string description)
+    {
+        string selectedPath = String.Empty;
+        Exception dialogError = null;
+
+        Thread dialogThread = new Thread(() =>
+        {
+            try
+            {
+                using (FolderBrowserDialog dialog = new FolderBrowserDialog())
+                {
+                    dialog.Description = String.IsNullOrWhiteSpace(description)
+                        ? "Select folder"
+                        : description;
+                    dialog.ShowNewFolderButton = true;
+
+                    if (!String.IsNullOrWhiteSpace(currentPath))
+                    {
+                        try
+                        {
+                            string expanded =
+                                Environment.ExpandEnvironmentVariables(currentPath.Trim());
+
+                            if (Directory.Exists(expanded))
+                                dialog.SelectedPath = expanded;
+                            else
+                            {
+                                string parent = Path.GetDirectoryName(expanded);
+                                if (!String.IsNullOrWhiteSpace(parent) &&
+                                    Directory.Exists(parent))
+                                    dialog.SelectedPath = parent;
+                            }
+                        }
+                        catch
+                        {
+                            // A stale saved path must not prevent the picker opening.
+                        }
+                    }
+
+                    if (dialog.ShowDialog() == DialogResult.OK)
+                        selectedPath = dialog.SelectedPath ?? String.Empty;
+                }
+            }
+            catch (Exception ex)
+            {
+                dialogError = ex;
+            }
+        });
+
+        dialogThread.Name = "Recording folder browser";
+        dialogThread.IsBackground = true;
+        dialogThread.SetApartmentState(ApartmentState.STA);
+        dialogThread.Start();
+        dialogThread.Join();
+
+        if (dialogError != null)
+            throw new InvalidOperationException(
+                "The folder browser could not be opened.",
+                dialogError);
+
+        return selectedPath;
     }
 
     private static string SelectExecutable(
@@ -135,6 +198,25 @@ public static class GstExecutableBrowser
 
         return selectedPath;
     }
+}
+'@
+}
+
+
+if (-not ('GstUiNative' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+
+public static class GstUiNative
+{
+    public const int WM_VSCROLL = 0x0115;
+    public const int SB_BOTTOM = 7;
+    public const int EM_SCROLLCARET = 0x00B7;
+    public const int WM_SETREDRAW = 0x000B;
+
+    [DllImport("user32.dll", CharSet = CharSet.Auto)]
+    public static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
 }
 '@
 }
@@ -548,12 +630,27 @@ public static class GstProcessJob
 '@
 }
 
-$script:AppVersion = '3.6.9'
+$script:AppVersion = '3.7.52'
 $script:AppName = "GStreamer Glass v$($script:AppVersion)"
 $script:ConfigDirectory = Join-Path $env:APPDATA 'GStreamerBasicWhipStreamer'
 $script:ConfigPath = Join-Path $script:ConfigDirectory 'settings.json'
 $script:LogDirectory = Join-Path $env:LOCALAPPDATA 'GStreamerBasicWhipStreamer\Logs'
 $script:ProcessStatePath = Join-Path $script:ConfigDirectory 'active-gstreamer-process.json'
+$script:NetworkRecoveryDirectory = Join-Path $env:ProgramData 'GStreamerGlass\Recovery'
+$script:NetworkSnapshotPath = Join-Path $script:NetworkRecoveryDirectory 'network-snapshot-latest.json'
+$script:NetworkAppliedStatePath = Join-Path $script:NetworkRecoveryDirectory 'applied-state.json'
+$script:NetworkRecoveryScriptPath = Join-Path $script:NetworkRecoveryDirectory 'Restore-GStreamerGlassNetwork.ps1'
+$script:NetworkRecoveryTaskName = 'GStreamerGlass-NetworkRecovery'
+$script:NetworkTuningApplied = $false
+$script:ApplyingDirectWebRtcSmoothnessProfile = $false
+$script:ApplyingThreadingProfile = $false
+$script:ApplyingThreadBudget = $false
+$script:DefaultAudioOutputDeviceLabel = 'Default output device (loopback)'
+$script:DefaultAudioInputDeviceLabel = 'Default input device / microphone'
+$script:AudioOutputDeviceMap = @{}
+$script:AudioInputDeviceMap = @{}
+$script:PendingAudioOutputDeviceLabel = ''
+$script:PendingAudioInputDeviceLabel = ''
 
 # Resolve the directory beside the script during development and beside the
 # compiled executable when packaged by PS12EXE/PS2EXE.
@@ -579,6 +676,7 @@ $script:AppIconSource = 'Windows default application icon'
 
 $script:BasePathEnvironment = $env:PATH
 $script:GstProcess = $null
+$script:GstAudioProcess = $null
 $script:MediaMtxProcess = $null
 $script:MediaMtxPathInUse = ''
 $script:StopRequested = $false
@@ -587,6 +685,10 @@ $script:StdOutPath = $null
 $script:StdErrPath = $null
 $script:StdOutPosition = [int64]0
 $script:StdErrPosition = [int64]0
+$script:StdOutAudioPath = $null
+$script:StdErrAudioPath = $null
+$script:StdOutAudioPosition = [int64]0
+$script:StdErrAudioPosition = [int64]0
 $script:MediaMtxStdOutPath = $null
 $script:MediaMtxStdErrPath = $null
 $script:MediaMtxStdOutPosition = [int64]0
@@ -595,6 +697,22 @@ $script:PreviewHwnd = [IntPtr]::Zero
 $script:PreviewParkForm = $null
 $script:PreviewParked = $false
 $script:PipelineHasPreview = $false
+# Cache of the last preview geometry/visibility actually pushed to the embedded
+# renderer window. Set-PreviewVisibility runs on every 400 ms poll tick; without
+# this it re-issues SetWindowPos/ShowWindow on the live d3d11videosink window
+# 2.5x/second forever, which can force needless swapchain work and visible hitching.
+$script:PreviewAppliedSize = [System.Drawing.Size]::Empty
+$script:PreviewAppliedVisible = $null
+$script:SettingsTabs = $null
+$script:SettingsTabTransport = $null
+$script:SettingsTabVideo = $null
+$script:SettingsTabScenes = $null
+$script:SettingsTabAudio = $null
+$script:SettingsTabPlayer = $null
+$script:SettingsTabRecording = $null
+$script:SettingsTabNetwork = $null
+$script:SettingsTabOptions = $null
+$script:ResolvedRecordingPath = ''
 $script:CaptureWindowHwnd = [IntPtr]::Zero
 $script:CaptureWindowTitle = ''
 $script:NextFullscreenProbe = [datetime]::MinValue
@@ -609,6 +727,116 @@ $script:ProtocolDestinations = [ordered]@{
     SRT  = 'srt://10.0.0.25:8890?mode=caller&streamid=publish:live'
     RTMP = 'rtmp://10.0.0.25/live'
     RTSP = 'rtsp://10.0.0.25:8554/live'
+    'GST WebRTC' = 'http://0.0.0.0:8889/'
+}
+
+# Direct GStreamer WebRTC defaults:
+#   8889 = HTTP viewer, matching MediaMTX WebRTC HTTP delivery.
+#   8189 = TCP/WebSocket signalling for this gst-launch/webrtcsink mode.
+# Note: in MediaMTX 8189 is UDP media/ICE. GStreamer webrtcsink's exposed
+# signalling-server-port is TCP/WebSocket signalling; the actual WebRTC media
+# still negotiates separately through ICE/UDP. Pinning media itself to UDP 8189
+# requires a helper using the GStreamer API to set the ICE min/max RTP port on
+# each created webrtcbin/ICE agent.
+$script:DefaultDirectWebRtcWebAddress = 'http://0.0.0.0:8889/'
+$script:DefaultDirectWebRtcWebPath = '/live'
+$script:DefaultDirectWebRtcWebDirectory = ''
+$script:DefaultDirectWebRtcBundledWebMode = 'Auto-detect beside EXE'
+$script:DefaultDirectWebRtcBundledWebDirectory = ''
+$script:DefaultDirectWebRtcWorkingWebMode = 'Auto: LocalAppData'
+$script:DefaultDirectWebRtcWorkingWebDirectory = Join-Path $env:LOCALAPPDATA 'GStreamerGlass\WebRoot\gstwebrtc-api\dist'
+$script:DirectWebRtcRuntimeWebDirectory = $script:DefaultDirectWebRtcWorkingWebDirectory
+$script:DefaultTimingMode = 'Receiver/server timestamps (default)'
+$script:DefaultAudioTransportMode = 'Normal audio'
+$script:DefaultAudioClockMode = 'WASAPI clock'
+$script:DefaultAudioTimingMode = 'WASAPI normal'
+$script:DefaultAudioSlaveMethod = 'Auto'
+$script:DefaultAudioBufferMs = 20
+$script:DefaultAudioLatencyMs = 10
+$script:DefaultDirectWebRtcSignalingHost = '0.0.0.0'
+$script:DefaultDirectWebRtcSignalingPort = 8189
+$script:DefaultDirectWebRtcStunServer = 'stun://stun.l.google.com:19302'
+$script:DefaultDirectWebRtcSmoothnessProfile = 'Sane defaults'
+$script:DefaultWebRtcRecoveryMode = 'None'
+$script:DefaultWebRtcSenderQueueMode = 'Leaky live'
+$script:DefaultDirectWebRtcPacingMs = 0
+$script:DefaultDirectWebRtcPlayerJitterMs = 20
+$script:DefaultDirectWebRtcVideoJitterMs = 10
+$script:DefaultDirectWebRtcOpusMode = 'Explicit Opus encoder'
+$script:DefaultDirectWebRtcOpusFrameMs = '10'
+$script:DefaultDirectWebRtcOpusAudioType = 'restricted-lowdelay'
+$script:DefaultDirectWebRtcOpusFec = $false
+$script:DefaultDirectWebRtcOpusDtx = $false
+$script:DefaultJbufWatchdogMode = 'Warn only'
+$script:DefaultJbufMaxMs = 30
+$script:DefaultPlayerStatsOverlay = $true
+$script:DefaultPlayerJbufDebug = $false
+$script:DefaultPlayerUrlOverrides = $false
+$script:DefaultPlayerAvRenderMode = 'Synced single media element'
+$script:DefaultDirectWebRtcAvPipelineMode = 'Single pipeline'
+$script:DefaultSplitPlayerSyncMode = 'Off / free-run'
+$script:DefaultSplitAudioStallSeconds = 3
+$script:DefaultSplitAvOffsetWarnMs = 140
+$script:DefaultDirectWebRtcSplitAudioPortOffset = 1
+$script:DefaultVideoSyncMode = 'Default'
+$script:DefaultAudioSyncMode = 'Default'
+
+# Runtime/threading defaults. These are queue/process knobs exposed for diagnosing
+# scheduler/backpressure issues where a live stream glitches despite plenty of CPU/GPU headroom.
+$script:DefaultThreadingProfile = 'Live strict'
+$script:DefaultGstProcessPriority = 'High'
+$script:DefaultQueueLeakMode = 'Downstream - drop old'
+$script:DefaultCaptureQueueBuffers = 2
+$script:DefaultAudioQueueBuffers = 4
+$script:DefaultAudioQueueCapMs = 0
+$script:DefaultBufferLatenessTracer = $false
+$script:DefaultThreadBudget = 'Automatic'
+$script:DefaultCpuWorkerLimit = 0
+
+# GStreamer diagnostic logging defaults. Verbose output only adds gst-launch -v;
+# GST_DEBUG is much deeper and can be extremely noisy, so it is opt-in.
+$script:DefaultGstDebugMode = 'Off'
+$script:DefaultGstDebugSpec = '*:4'
+$script:DefaultGstDebugNoColor = $true
+
+$script:DirectWebRtcProtocolName = 'GST WebRTC'
+
+# Capture method definitions. The display text is persisted so settings remain
+# human-readable, while the Method/Element values drive pipeline generation.
+$script:DefaultCaptureMethodName = 'Monitor - D3D11 / DXGI'
+$script:CaptureMethodCatalog = [ordered]@{
+    'Monitor - D3D11 / DXGI' = [ordered]@{
+        Method = 'MonitorD3D11Dxgi'
+        Element = 'd3d11screencapturesrc'
+        CaptureApi = 'dxgi'
+        SourceMemory = 'D3D11'
+        RequiresFullscreenWindow = $false
+        Description = 'Default Desktop Duplication path. Fastest monitor capture, but it can conflict with Sunshine/Moonlight.'
+    }
+    'Monitor - D3D11 / WGC' = [ordered]@{
+        Method = 'MonitorD3D11Wgc'
+        Element = 'd3d11screencapturesrc'
+        CaptureApi = 'wgc'
+        SourceMemory = 'D3D11'
+        RequiresFullscreenWindow = $false
+        Description = 'Windows Graphics Capture monitor path. Best first test when Moonlight/Sunshine breaks whole-display capture.'
+    }
+    'Fullscreen App - D3D11 / WGC' = [ordered]@{
+        Method = 'FullscreenAppD3D11Wgc'
+        Element = 'd3d11screencapturesrc'
+        CaptureApi = 'wgc'
+        SourceMemory = 'D3D11'
+        RequiresFullscreenWindow = $true
+        Description = 'Captures the topmost fullscreen application window using Windows Graphics Capture.'
+    }
+    'GDI fallback - CPU capture' = [ordered]@{
+        Method = 'MonitorGdi'
+        Element = 'gdiscreencapsrc'
+        CaptureApi = 'gdi'
+        SourceMemory = 'System'
+        RequiresFullscreenWindow = $false
+        Description = 'Emergency compatibility capture through GDI. Slower, but useful when GPU capture backends fight each other.'
+    }
 }
 
 # Encoder definitions stay deliberately opinionated: every template favors
@@ -698,10 +926,16 @@ $script:EncoderCatalog = [ordered]@{
 }
 $script:DefaultEncoderName = 'NVIDIA NVENC H.264 (D3D11)'
 
+
+$script:RateControlModes = @('cbr', 'vbr', 'constqp')
+$script:NvencTuneModes = @('default', 'high-quality', 'low-latency', 'ultra-low-latency', 'lossless')
+$script:NvencMultipassModes = @('default', 'disabled', 'two-pass-quarter', 'two-pass')
+$script:QueueProfiles = @('Lowest latency', 'Balanced', 'Stable / recording')
+
 $script:AudioCodecCatalog = [ordered]@{
     'Opus' = [ordered]@{
         Codec = 'OPUS'; Element = 'opusenc'; Parser = ''; Family = 'OPUS'
-        Protocols = @('WHIP', 'SRT', 'RTSP')
+        Protocols = @('WHIP', 'GST WebRTC', 'SRT', 'RTSP')
     }
     'AAC (Media Foundation)' = [ordered]@{
         Codec = 'AAC'; Element = 'mfaacenc'; Parser = 'aacparse'; Family = 'AAC_MF'
@@ -731,6 +965,7 @@ $script:AudioCodecCatalog = [ordered]@{
 
 $script:DefaultAudioCodecByProtocol = [ordered]@{
     WHIP = 'Opus'
+    'GST WebRTC' = 'Opus'
     SRT  = 'Opus'
     RTMP = 'AAC (Media Foundation)'
     RTSP = 'Opus'
@@ -738,6 +973,7 @@ $script:DefaultAudioCodecByProtocol = [ordered]@{
 
 $script:ProtocolAudioCodecs = [ordered]@{
     WHIP = 'Opus'
+    'GST WebRTC' = 'Opus'
     SRT  = 'Opus'
     RTMP = 'AAC (Media Foundation)'
     RTSP = 'Opus'
@@ -1137,8 +1373,8 @@ $script:AppIcon = Get-ApplicationIcon
 $form = New-Object System.Windows.Forms.Form
 $form.Text = $script:AppName
 $form.StartPosition = 'CenterScreen'
-$form.Size = New-Object System.Drawing.Size(1220, 900)
-$form.MinimumSize = New-Object System.Drawing.Size(1000, 720)
+$form.Size = New-Object System.Drawing.Size(1640, 960)
+$form.MinimumSize = New-Object System.Drawing.Size(1280, 760)
 $form.AutoScaleMode = [System.Windows.Forms.AutoScaleMode]::Dpi
 $form.Font = New-Object System.Drawing.Font('Segoe UI', 9)
 $form.Icon = $script:AppIcon
@@ -1205,9 +1441,17 @@ $cmbProtocol = New-Object System.Windows.Forms.ComboBox
 $cmbProtocol.Location = New-Object System.Drawing.Point(85, 60)
 $cmbProtocol.Size = New-Object System.Drawing.Size(100, 23)
 $cmbProtocol.DropDownStyle = 'DropDownList'
-$null = $cmbProtocol.Items.AddRange(@('WHIP', 'SRT', 'RTMP', 'RTSP'))
+$null = $cmbProtocol.Items.AddRange(@('WHIP', 'GST WebRTC', 'SRT', 'RTMP', 'RTSP'))
 $cmbProtocol.SelectedItem = 'WHIP'
 $settingsGroup.Controls.Add($cmbProtocol)
+
+$chkTransportEnabled = New-Object System.Windows.Forms.CheckBox
+$chkTransportEnabled.Text = 'Enable transport'
+$chkTransportEnabled.Location = New-Object System.Drawing.Point(15, 32)
+$chkTransportEnabled.Size = New-Object System.Drawing.Size(160, 24)
+$chkTransportEnabled.Checked = $true
+$settingsGroup.Controls.Add($chkTransportEnabled)
+$toolTip.SetToolTip($chkTransportEnabled, 'Enables the network transport sink (WHIP/SRT/RTMP/RTSP). Disable this for local recording/preview only.')
 
 $lblDestination = Add-Label $settingsGroup 'WHIP endpoint' 200 60 100
 $txtDestination = New-Object System.Windows.Forms.TextBox
@@ -1216,6 +1460,17 @@ $txtDestination.Size = New-Object System.Drawing.Size(418, 23)
 $txtDestination.Text = $script:ProtocolDestinations.WHIP
 $settingsGroup.Controls.Add($txtDestination)
 
+$cmbCaptureMethod = New-Object System.Windows.Forms.ComboBox
+$cmbCaptureMethod.Location = New-Object System.Drawing.Point(15, 96)
+$cmbCaptureMethod.Size = New-Object System.Drawing.Size(245, 23)
+$cmbCaptureMethod.DropDownStyle = 'DropDownList'
+$null = $cmbCaptureMethod.Items.AddRange(@($script:CaptureMethodCatalog.Keys))
+$cmbCaptureMethod.SelectedItem = $script:DefaultCaptureMethodName
+$settingsGroup.Controls.Add($cmbCaptureMethod)
+$toolTip.SetToolTip($cmbCaptureMethod, 'Choose the GStreamer capture backend. Try Monitor - D3D11 / WGC when Sunshine/Moonlight breaks whole-display DXGI capture.')
+
+# Legacy compatibility flag for older settings and event paths. Hidden now that
+# capture is controlled by the Capture Method dropdown.
 $chkFullscreenApp = New-Object System.Windows.Forms.CheckBox
 $chkFullscreenApp.Text = 'Only capture fullscreen app (WGC)'
 $chkFullscreenApp.Location = New-Object System.Drawing.Point(15, 96)
@@ -1223,7 +1478,9 @@ $chkFullscreenApp.Size = New-Object System.Drawing.Size(245, 25)
 $chkFullscreenApp.Font = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Bold)
 $chkFullscreenApp.Checked = $false
 $settingsGroup.Controls.Add($chkFullscreenApp)
-$toolTip.SetToolTip($chkFullscreenApp, 'When enabled, captures only the topmost visible fullscreen application window through Windows Graphics Capture. The pipeline is rebuilt automatically when the fullscreen app changes.')
+$toolTip.SetToolTip($chkFullscreenApp, 'Legacy compatibility flag. Use the Capture Method dropdown instead.')
+$chkFullscreenApp.Visible = $false
+$chkFullscreenApp.TabStop = $false
 
 $lblCaptureModeStatus = New-Object System.Windows.Forms.Label
 $lblCaptureModeStatus.Text = 'Monitor capture active'
@@ -1258,6 +1515,279 @@ $chkCursor.Size = New-Object System.Drawing.Size(75, 23)
 $chkCursor.Checked = $true
 $settingsGroup.Controls.Add($chkCursor)
 
+# Legacy compatibility flag for older settings. The live UI now uses Timing mode.
+$chkSendAbsoluteTimestamps = New-Object System.Windows.Forms.CheckBox
+$chkSendAbsoluteTimestamps.Text = 'Legacy absolute timestamps'
+$chkSendAbsoluteTimestamps.Location = New-Object System.Drawing.Point(235, 130)
+$chkSendAbsoluteTimestamps.Size = New-Object System.Drawing.Size(220, 23)
+$chkSendAbsoluteTimestamps.Checked = $false
+$chkSendAbsoluteTimestamps.Visible = $false
+$chkSendAbsoluteTimestamps.TabStop = $false
+$settingsGroup.Controls.Add($chkSendAbsoluteTimestamps)
+
+$lblTimingMode = Add-Label $settingsGroup 'Timing mode' 235 130 85
+$cmbTimingMode = New-Object System.Windows.Forms.ComboBox
+$cmbTimingMode.Location = New-Object System.Drawing.Point(325, 130)
+$cmbTimingMode.Size = New-Object System.Drawing.Size(245, 23)
+$cmbTimingMode.DropDownStyle = 'DropDownList'
+$null = $cmbTimingMode.Items.AddRange([string[]]@(
+    'Receiver/server timestamps (default)',
+    'Send absolute timestamps / clock signalling'
+))
+$cmbTimingMode.SelectedItem = $script:DefaultTimingMode
+$settingsGroup.Controls.Add($cmbTimingMode)
+$toolTip.SetToolTip($cmbTimingMode, 'Protocol-aware timing mode. WHIP/GST WebRTC map Send absolute timestamps to do-clock-signalling=true. RTSP maps it to NTP sender reports. Keep default while isolating rubber-band/desync.')
+
+$lblTimestampStatus = New-Object System.Windows.Forms.Label
+$lblTimestampStatus.Text = 'Timing: receiver/server timestamps'
+$lblTimestampStatus.Location = New-Object System.Drawing.Point(580, 130)
+$lblTimestampStatus.Size = New-Object System.Drawing.Size(215, 23)
+$lblTimestampStatus.TextAlign = 'MiddleLeft'
+$lblTimestampStatus.ForeColor = [System.Drawing.Color]::DimGray
+$settingsGroup.Controls.Add($lblTimestampStatus)
+
+$lblDirectWebRtcStatus = New-Object System.Windows.Forms.Label
+$lblDirectWebRtcStatus.Text = 'Direct WebRTC disabled'
+$lblDirectWebRtcStatus.Location = New-Object System.Drawing.Point(15, 548)
+$lblDirectWebRtcStatus.Size = New-Object System.Drawing.Size(535, 23)
+$lblDirectWebRtcStatus.TextAlign = 'MiddleLeft'
+$lblDirectWebRtcStatus.ForeColor = [System.Drawing.Color]::DimGray
+$settingsGroup.Controls.Add($lblDirectWebRtcStatus)
+
+$txtDirectWebRtcSignalingHost = New-Object System.Windows.Forms.TextBox
+$txtDirectWebRtcSignalingHost.Location = New-Object System.Drawing.Point(15, 548)
+$txtDirectWebRtcSignalingHost.Size = New-Object System.Drawing.Size(155, 23)
+$txtDirectWebRtcSignalingHost.Text = $script:DefaultDirectWebRtcSignalingHost
+$settingsGroup.Controls.Add($txtDirectWebRtcSignalingHost)
+$toolTip.SetToolTip($txtDirectWebRtcSignalingHost, 'Address used by GStreamer webrtcsink for its built-in signalling server. 0.0.0.0 listens on all local interfaces.')
+
+$numDirectWebRtcSignalingPort = New-Object System.Windows.Forms.NumericUpDown
+$numDirectWebRtcSignalingPort.Location = New-Object System.Drawing.Point(15, 548)
+$numDirectWebRtcSignalingPort.Size = New-Object System.Drawing.Size(85, 23)
+$numDirectWebRtcSignalingPort.Minimum = 1
+$numDirectWebRtcSignalingPort.Maximum = 65535
+$numDirectWebRtcSignalingPort.Value = $script:DefaultDirectWebRtcSignalingPort
+$settingsGroup.Controls.Add($numDirectWebRtcSignalingPort)
+$toolTip.SetToolTip($numDirectWebRtcSignalingPort, 'TCP/WebSocket signalling port for webrtcsink. TCP/WebSocket signalling port. Default 8189 for proxy compatibility; media still negotiates separately through WebRTC ICE/UDP.')
+
+$txtDirectWebRtcStun = New-Object System.Windows.Forms.TextBox
+$txtDirectWebRtcStun.Location = New-Object System.Drawing.Point(15, 548)
+$txtDirectWebRtcStun.Size = New-Object System.Drawing.Size(250, 23)
+$txtDirectWebRtcStun.Text = $script:DefaultDirectWebRtcStunServer
+$settingsGroup.Controls.Add($txtDirectWebRtcStun)
+$toolTip.SetToolTip($txtDirectWebRtcStun, 'STUN server for Direct GStreamer WebRTC. Leave blank for no STUN.')
+
+$txtDirectWebRtcWebPath = New-Object System.Windows.Forms.TextBox
+$txtDirectWebRtcWebPath.Location = New-Object System.Drawing.Point(15, 548)
+$txtDirectWebRtcWebPath.Size = New-Object System.Drawing.Size(120, 23)
+$txtDirectWebRtcWebPath.Text = $script:DefaultDirectWebRtcWebPath
+$settingsGroup.Controls.Add($txtDirectWebRtcWebPath)
+$toolTip.SetToolTip($txtDirectWebRtcWebPath, 'Path where GStreamer should serve the WebRTC viewer. Example: /live makes the viewer URL http://127.0.0.1:8889/live/')
+
+$txtDirectWebRtcWebDirectory = New-Object System.Windows.Forms.TextBox
+$txtDirectWebRtcWebDirectory.Location = New-Object System.Drawing.Point(15, 548)
+$txtDirectWebRtcWebDirectory.Size = New-Object System.Drawing.Size(260, 23)
+$txtDirectWebRtcWebDirectory.Text = $script:DefaultDirectWebRtcWorkingWebDirectory
+$settingsGroup.Controls.Add($txtDirectWebRtcWebDirectory)
+$toolTip.SetToolTip($txtDirectWebRtcWebDirectory, 'Optional gstwebrtc-api/dist directory for the built-in webrtcsink web UI. If blank, GStreamer Glass searches common install paths. Missing assets usually means the web port answers but returns 404.')
+
+$btnBrowseDirectWebRtcWebDirectory = New-Object System.Windows.Forms.Button
+$btnBrowseDirectWebRtcWebDirectory.Text = 'Browse working'
+$btnBrowseDirectWebRtcWebDirectory.Location = New-Object System.Drawing.Point(15, 548)
+$btnBrowseDirectWebRtcWebDirectory.Size = New-Object System.Drawing.Size(80, 27)
+$settingsGroup.Controls.Add($btnBrowseDirectWebRtcWebDirectory)
+$toolTip.SetToolTip($btnBrowseDirectWebRtcWebDirectory, 'Select the gstwebrtc-api/dist folder used by webrtcsink run-web-server.')
+
+$btnDetectDirectWebRtcWebDirectory = New-Object System.Windows.Forms.Button
+$btnDetectDirectWebRtcWebDirectory.Text = 'Detect working'
+$btnDetectDirectWebRtcWebDirectory.Location = New-Object System.Drawing.Point(15, 548)
+$btnDetectDirectWebRtcWebDirectory.Size = New-Object System.Drawing.Size(80, 27)
+$settingsGroup.Controls.Add($btnDetectDirectWebRtcWebDirectory)
+$toolTip.SetToolTip($btnDetectDirectWebRtcWebDirectory, 'Detect/create the writable working web UI folder. This is the folder actually served by webrtcsink.')
+
+$cmbDirectWebRtcBundledWebMode = New-Object System.Windows.Forms.ComboBox
+$cmbDirectWebRtcBundledWebMode.Location = New-Object System.Drawing.Point(15, 548)
+$cmbDirectWebRtcBundledWebMode.Size = New-Object System.Drawing.Size(180, 23)
+$cmbDirectWebRtcBundledWebMode.DropDownStyle = 'DropDownList'
+$null = $cmbDirectWebRtcBundledWebMode.Items.AddRange([string[]]@('Auto-detect beside EXE','Manual path'))
+$cmbDirectWebRtcBundledWebMode.SelectedItem = $script:DefaultDirectWebRtcBundledWebMode
+$settingsGroup.Controls.Add($cmbDirectWebRtcBundledWebMode)
+$toolTip.SetToolTip($cmbDirectWebRtcBundledWebMode, 'Bundled static web UI source. Auto finds gstwebrtc-api\dist beside GStreamer Glass.exe / the source script. Manual is for dev or custom installs.')
+
+$txtDirectWebRtcBundledWebDirectory = New-Object System.Windows.Forms.TextBox
+$txtDirectWebRtcBundledWebDirectory.Location = New-Object System.Drawing.Point(15, 548)
+$txtDirectWebRtcBundledWebDirectory.Size = New-Object System.Drawing.Size(300, 23)
+$txtDirectWebRtcBundledWebDirectory.Text = $script:DefaultDirectWebRtcBundledWebDirectory
+$settingsGroup.Controls.Add($txtDirectWebRtcBundledWebDirectory)
+$toolTip.SetToolTip($txtDirectWebRtcBundledWebDirectory, 'Bundled gstwebrtc-api\dist folder. Usually beside the EXE. Must contain index.html and player.js.')
+
+$btnBrowseDirectWebRtcBundledWebDirectory = New-Object System.Windows.Forms.Button
+$btnBrowseDirectWebRtcBundledWebDirectory.Text = 'Browse source'
+$btnBrowseDirectWebRtcBundledWebDirectory.Location = New-Object System.Drawing.Point(15, 548)
+$btnBrowseDirectWebRtcBundledWebDirectory.Size = New-Object System.Drawing.Size(100, 27)
+$settingsGroup.Controls.Add($btnBrowseDirectWebRtcBundledWebDirectory)
+$toolTip.SetToolTip($btnBrowseDirectWebRtcBundledWebDirectory, 'Select the bundled/static gstwebrtc-api\dist source folder.')
+
+$btnDetectDirectWebRtcBundledWebDirectory = New-Object System.Windows.Forms.Button
+$btnDetectDirectWebRtcBundledWebDirectory.Text = 'Detect source'
+$btnDetectDirectWebRtcBundledWebDirectory.Location = New-Object System.Drawing.Point(15, 548)
+$btnDetectDirectWebRtcBundledWebDirectory.Size = New-Object System.Drawing.Size(100, 27)
+$settingsGroup.Controls.Add($btnDetectDirectWebRtcBundledWebDirectory)
+$toolTip.SetToolTip($btnDetectDirectWebRtcBundledWebDirectory, 'Detect the bundled/static web UI source folder beside the app/script.')
+
+$cmbDirectWebRtcWorkingWebMode = New-Object System.Windows.Forms.ComboBox
+$cmbDirectWebRtcWorkingWebMode.Location = New-Object System.Drawing.Point(15, 548)
+$cmbDirectWebRtcWorkingWebMode.Size = New-Object System.Drawing.Size(160, 23)
+$cmbDirectWebRtcWorkingWebMode.DropDownStyle = 'DropDownList'
+$null = $cmbDirectWebRtcWorkingWebMode.Items.AddRange([string[]]@('Auto: LocalAppData','Manual path'))
+$cmbDirectWebRtcWorkingWebMode.SelectedItem = $script:DefaultDirectWebRtcWorkingWebMode
+$settingsGroup.Controls.Add($cmbDirectWebRtcWorkingWebMode)
+$toolTip.SetToolTip($cmbDirectWebRtcWorkingWebMode, 'Working/served web UI directory. Auto uses %%LOCALAPPDATA%%\GStreamerGlass so no admin rights are needed.')
+
+
+$cmbDirectWebRtcCongestion = New-Object System.Windows.Forms.ComboBox
+$cmbDirectWebRtcCongestion.Location = New-Object System.Drawing.Point(15, 548)
+$cmbDirectWebRtcCongestion.Size = New-Object System.Drawing.Size(110, 23)
+$cmbDirectWebRtcCongestion.DropDownStyle = 'DropDownList'
+$null = $cmbDirectWebRtcCongestion.Items.AddRange([string[]]@('gcc','homegrown','disabled'))
+$cmbDirectWebRtcCongestion.SelectedItem = 'disabled'
+$settingsGroup.Controls.Add($cmbDirectWebRtcCongestion)
+$toolTip.SetToolTip($cmbDirectWebRtcCongestion, 'WebRTC bitrate adaptation for WHIP/GST WebRTC. Disabled/fixed bitrate is the sane debug default; gcc can create rubber-band behavior while adapting.')
+
+$cmbDirectWebRtcMitigation = New-Object System.Windows.Forms.ComboBox
+$cmbDirectWebRtcMitigation.Location = New-Object System.Drawing.Point(15, 548)
+$cmbDirectWebRtcMitigation.Size = New-Object System.Drawing.Size(150, 23)
+$cmbDirectWebRtcMitigation.DropDownStyle = 'DropDownList'
+$null = $cmbDirectWebRtcMitigation.Items.AddRange([string[]]@('none','downscaled','downsampled','downsampled+downscaled'))
+$cmbDirectWebRtcMitigation.SelectedItem = 'none'
+$settingsGroup.Controls.Add($cmbDirectWebRtcMitigation)
+$toolTip.SetToolTip($cmbDirectWebRtcMitigation, 'Allows webrtcsink to lower resolution and/or framerate under congestion. Use none for deterministic low-latency LAN tests.')
+
+$chkDirectWebRtcFec = New-Object System.Windows.Forms.CheckBox
+$chkDirectWebRtcFec.Text = 'FEC'
+$chkDirectWebRtcFec.Location = New-Object System.Drawing.Point(15, 548)
+$chkDirectWebRtcFec.Size = New-Object System.Drawing.Size(70, 24)
+$chkDirectWebRtcFec.Checked = $false
+$settingsGroup.Controls.Add($chkDirectWebRtcFec)
+$toolTip.SetToolTip($chkDirectWebRtcFec, 'Forward error correction. Can help loss, but may add overhead.')
+
+$chkDirectWebRtcRetransmission = New-Object System.Windows.Forms.CheckBox
+$chkDirectWebRtcRetransmission.Text = 'Retransmit'
+$chkDirectWebRtcRetransmission.Location = New-Object System.Drawing.Point(15, 548)
+$chkDirectWebRtcRetransmission.Size = New-Object System.Drawing.Size(110, 24)
+$chkDirectWebRtcRetransmission.Checked = $false
+$settingsGroup.Controls.Add($chkDirectWebRtcRetransmission)
+$toolTip.SetToolTip($chkDirectWebRtcRetransmission, 'Allow WebRTC retransmission requests. Disable only for brutal LAN latency experiments.')
+
+$chkDirectWebRtcFec.Visible = $false
+$chkDirectWebRtcRetransmission.Visible = $false
+
+$lblWebRtcRecoveryMode = Add-Label $settingsGroup 'Recovery' 15 548 80
+
+$cmbWebRtcRecoveryMode = New-Object System.Windows.Forms.ComboBox
+$cmbWebRtcRecoveryMode.Location = New-Object System.Drawing.Point(15, 548)
+$cmbWebRtcRecoveryMode.Size = New-Object System.Drawing.Size(135, 23)
+$cmbWebRtcRecoveryMode.DropDownStyle = 'DropDownList'
+$null = $cmbWebRtcRecoveryMode.Items.AddRange([string[]]@('None','RTX only','FEC + RTX'))
+$cmbWebRtcRecoveryMode.SelectedItem = $script:DefaultWebRtcRecoveryMode
+$settingsGroup.Controls.Add($cmbWebRtcRecoveryMode)
+$toolTip.SetToolTip($cmbWebRtcRecoveryMode, 'WebRTC recovery mode for WHIP and GST WebRTC. None is the cleanest sane default. RTX can help loss but can add bursts; FEC can add overhead and visible stutter on low-latency desktop streams.')
+
+$lblWebRtcSenderQueueMode = Add-Label $settingsGroup 'Sender queue' 15 548 105
+
+$cmbWebRtcSenderQueueMode = New-Object System.Windows.Forms.ComboBox
+$cmbWebRtcSenderQueueMode.Location = New-Object System.Drawing.Point(15, 548)
+$cmbWebRtcSenderQueueMode.Size = New-Object System.Drawing.Size(165, 23)
+$cmbWebRtcSenderQueueMode.DropDownStyle = 'DropDownList'
+$null = $cmbWebRtcSenderQueueMode.Items.AddRange([string[]]@('Leaky live','Small cushion','Non-leaky experimental'))
+$cmbWebRtcSenderQueueMode.SelectedItem = $script:DefaultWebRtcSenderQueueMode
+$settingsGroup.Controls.Add($cmbWebRtcSenderQueueMode)
+$toolTip.SetToolTip($cmbWebRtcSenderQueueMode, 'Encoded-video queue behavior for WHIP and GST WebRTC. Leaky live drops late frames instead of rubber-banding. Non-leaky is diagnostic only.')
+
+$lblDirectWebRtcSmoothnessProfile = Add-Label $settingsGroup 'Smooth profile' 15 548 100
+
+$cmbDirectWebRtcSmoothnessProfile = New-Object System.Windows.Forms.ComboBox
+$cmbDirectWebRtcSmoothnessProfile.Location = New-Object System.Drawing.Point(15, 548)
+$cmbDirectWebRtcSmoothnessProfile.Size = New-Object System.Drawing.Size(150, 23)
+$cmbDirectWebRtcSmoothnessProfile.DropDownStyle = 'DropDownList'
+$null = $cmbDirectWebRtcSmoothnessProfile.Items.AddRange([string[]]@('Sane defaults','Lowest latency','Balanced smooth','WAN smooth','Adaptive viewer','Custom'))
+$cmbDirectWebRtcSmoothnessProfile.SelectedItem = $script:DefaultDirectWebRtcSmoothnessProfile
+$settingsGroup.Controls.Add($cmbDirectWebRtcSmoothnessProfile)
+$toolTip.SetToolTip($cmbDirectWebRtcSmoothnessProfile, 'Direct GST WebRTC smoothing preset. Balanced smooth adds a tiny sender pacing queue and receiver jitter target. WAN smooth adds more cushion. Adaptive viewer lets the bundled browser player raise/lower jitter target from WebRTC stats.')
+
+$lblDirectWebRtcPacingMs = Add-Label $settingsGroup 'Video sender q cap ms' 15 548 140
+
+$numDirectWebRtcPacingMs = New-Object System.Windows.Forms.NumericUpDown
+$numDirectWebRtcPacingMs.Location = New-Object System.Drawing.Point(15, 548)
+$numDirectWebRtcPacingMs.Size = New-Object System.Drawing.Size(70, 23)
+$numDirectWebRtcPacingMs.Minimum = 0
+$numDirectWebRtcPacingMs.Maximum = 500
+$numDirectWebRtcPacingMs.Increment = 10
+$numDirectWebRtcPacingMs.Value = $script:DefaultDirectWebRtcPacingMs
+$settingsGroup.Controls.Add($numDirectWebRtcPacingMs)
+$toolTip.SetToolTip($numDirectWebRtcPacingMs, 'Sender-side encoded video queue max-size-time for WHIP/GST WebRTC. This is NOT the browser JBUF target and not deterministic latency. 0-80ms is sane; high values can drift/rubber-band.')
+
+$lblDirectWebRtcPlayerJitterMs = Add-Label $settingsGroup 'Audio JBUF ms' 15 548 130
+
+$numDirectWebRtcPlayerJitterMs = New-Object System.Windows.Forms.NumericUpDown
+$numDirectWebRtcPlayerJitterMs.Location = New-Object System.Drawing.Point(15, 548)
+$numDirectWebRtcPlayerJitterMs.Size = New-Object System.Drawing.Size(70, 23)
+$numDirectWebRtcPlayerJitterMs.Minimum = 0
+$numDirectWebRtcPlayerJitterMs.Maximum = 500
+$numDirectWebRtcPlayerJitterMs.Increment = 10
+$numDirectWebRtcPlayerJitterMs.Value = $script:DefaultDirectWebRtcPlayerJitterMs
+$settingsGroup.Controls.Add($numDirectWebRtcPlayerJitterMs)
+$toolTip.SetToolTip($numDirectWebRtcPlayerJitterMs, 'Chrome receiver jitterBufferTarget for the bundled GST WebRTC audio receiver, in milliseconds. 0 disables the override.')
+
+$lblDirectWebRtcVideoJitterMs = Add-Label $settingsGroup 'Video JBUF ms' 15 548 130
+
+$numDirectWebRtcVideoJitterMs = New-Object System.Windows.Forms.NumericUpDown
+$numDirectWebRtcVideoJitterMs.Location = New-Object System.Drawing.Point(15, 548)
+$numDirectWebRtcVideoJitterMs.Size = New-Object System.Drawing.Size(70, 23)
+$numDirectWebRtcVideoJitterMs.Minimum = 0
+$numDirectWebRtcVideoJitterMs.Maximum = 500
+$numDirectWebRtcVideoJitterMs.Increment = 5
+$numDirectWebRtcVideoJitterMs.Value = $script:DefaultDirectWebRtcVideoJitterMs
+$settingsGroup.Controls.Add($numDirectWebRtcVideoJitterMs)
+$toolTip.SetToolTip($numDirectWebRtcVideoJitterMs, 'Chrome receiver jitterBufferTarget for the bundled GST WebRTC video receiver, in milliseconds. 0 disables the override.')
+
+$btnOpenDirectWebRtcViewer = New-Object System.Windows.Forms.Button
+$btnOpenDirectWebRtcViewer.Text = 'Open viewer'
+$btnOpenDirectWebRtcViewer.Location = New-Object System.Drawing.Point(15, 548)
+$btnOpenDirectWebRtcViewer.Size = New-Object System.Drawing.Size(100, 28)
+$settingsGroup.Controls.Add($btnOpenDirectWebRtcViewer)
+$toolTip.SetToolTip($btnOpenDirectWebRtcViewer, 'Open the Direct GStreamer WebRTC web viewer URL in your default browser.')
+
+$btnCopyDirectWebRtcViewer = New-Object System.Windows.Forms.Button
+$btnCopyDirectWebRtcViewer.Text = 'Copy URL'
+$btnCopyDirectWebRtcViewer.Location = New-Object System.Drawing.Point(15, 548)
+$btnCopyDirectWebRtcViewer.Size = New-Object System.Drawing.Size(90, 28)
+$settingsGroup.Controls.Add($btnCopyDirectWebRtcViewer)
+$toolTip.SetToolTip($btnCopyDirectWebRtcViewer, 'Copy the Direct GStreamer WebRTC local viewer URL.')
+
+$btnRefreshDirectWebRtcWebUi = New-Object System.Windows.Forms.Button
+$btnRefreshDirectWebRtcWebUi.Text = 'Force refresh UI'
+$btnRefreshDirectWebRtcWebUi.Location = New-Object System.Drawing.Point(15, 548)
+$btnRefreshDirectWebRtcWebUi.Size = New-Object System.Drawing.Size(120, 28)
+$settingsGroup.Controls.Add($btnRefreshDirectWebRtcWebUi)
+$toolTip.SetToolTip($btnRefreshDirectWebRtcWebUi, 'Force-copy versioned static web player assets from bundled source to the writable working dir, excluding runtime gstglass-config.js, then rewrite config from Player tab values.')
+
+$btnOpenDirectWebRtcServedDir = New-Object System.Windows.Forms.Button
+$btnOpenDirectWebRtcServedDir.Text = 'Open served dir'
+$btnOpenDirectWebRtcServedDir.Location = New-Object System.Drawing.Point(15, 548)
+$btnOpenDirectWebRtcServedDir.Size = New-Object System.Drawing.Size(120, 28)
+$settingsGroup.Controls.Add($btnOpenDirectWebRtcServedDir)
+$toolTip.SetToolTip($btnOpenDirectWebRtcServedDir, 'Open the writable working/served web UI folder under LocalAppData or your manual path.')
+
+$btnOpenDirectWebRtcBundledDir = New-Object System.Windows.Forms.Button
+$btnOpenDirectWebRtcBundledDir.Text = 'Open bundled dir'
+$btnOpenDirectWebRtcBundledDir.Location = New-Object System.Drawing.Point(15, 548)
+$btnOpenDirectWebRtcBundledDir.Size = New-Object System.Drawing.Size(120, 28)
+$settingsGroup.Controls.Add($btnOpenDirectWebRtcBundledDir)
+$toolTip.SetToolTip($btnOpenDirectWebRtcBundledDir, 'Open the bundled gstwebrtc-api/dist folder shipped beside this script/app.')
+
+$lblDirectWebRtcWebUiStatus = Add-Label $settingsGroup 'Web UI status: not checked' 15 548 520
+
 $chkPreview = New-Object System.Windows.Forms.CheckBox
 $chkPreview.Text = 'Show Preview'
 $chkPreview.Location = New-Object System.Drawing.Point(235, 130)
@@ -1279,6 +1809,7 @@ $chkVerbose.Location = New-Object System.Drawing.Point(480, 130)
 $chkVerbose.Size = New-Object System.Drawing.Size(120, 23)
 $chkVerbose.Checked = $false
 $settingsGroup.Controls.Add($chkVerbose)
+$toolTip.SetToolTip($chkVerbose, 'Adds gst-launch -v. This is element/caps verbosity, not full GST_DEBUG logging. Use GST debug below for deep logs.')
 
 $chkMinimizeToTray = New-Object System.Windows.Forms.CheckBox
 $chkMinimizeToTray.Text = 'Minimize to tray'
@@ -1287,6 +1818,465 @@ $chkMinimizeToTray.Size = New-Object System.Drawing.Size(120, 23)
 $chkMinimizeToTray.Checked = $true
 $settingsGroup.Controls.Add($chkMinimizeToTray)
 $toolTip.SetToolTip($chkMinimizeToTray, 'Hides the main window in the notification area when minimized. Closing the window still exits and terminates GStreamer.')
+
+# Windows/network tuning controls. These are intentionally opt-in because they can touch global or adapter-level OS settings.
+$chkNetworkTuningEnabled = New-Object System.Windows.Forms.CheckBox
+$chkNetworkTuningEnabled.Text = 'Enable Windows network tuning while active'
+$chkNetworkTuningEnabled.Location = New-Object System.Drawing.Point(15, 548)
+$chkNetworkTuningEnabled.Size = New-Object System.Drawing.Size(300, 24)
+$chkNetworkTuningEnabled.Checked = $false
+$settingsGroup.Controls.Add($chkNetworkTuningEnabled)
+$toolTip.SetToolTip($chkNetworkTuningEnabled, 'Opt-in. GStreamer Glass snapshots current adapter/global settings before applying OS-level network tuning.')
+
+$cmbNetworkAdapter = New-Object System.Windows.Forms.ComboBox
+$cmbNetworkAdapter.Location = New-Object System.Drawing.Point(15, 548)
+$cmbNetworkAdapter.Size = New-Object System.Drawing.Size(360, 23)
+$cmbNetworkAdapter.DropDownStyle = 'DropDownList'
+$settingsGroup.Controls.Add($cmbNetworkAdapter)
+$toolTip.SetToolTip($cmbNetworkAdapter, 'Adapter to tune. Refresh picks the first Up adapter if possible.')
+
+$btnRefreshNetworkAdapters = New-Object System.Windows.Forms.Button
+$btnRefreshNetworkAdapters.Text = 'Refresh'
+$btnRefreshNetworkAdapters.Location = New-Object System.Drawing.Point(15, 548)
+$btnRefreshNetworkAdapters.Size = New-Object System.Drawing.Size(80, 28)
+$settingsGroup.Controls.Add($btnRefreshNetworkAdapters)
+
+$cmbNetworkProfile = New-Object System.Windows.Forms.ComboBox
+$cmbNetworkProfile.Location = New-Object System.Drawing.Point(15, 548)
+$cmbNetworkProfile.Size = New-Object System.Drawing.Size(180, 23)
+$cmbNetworkProfile.DropDownStyle = 'DropDownList'
+$null = $cmbNetworkProfile.Items.AddRange([string[]]@('No changes','Low latency LAN','Stable WAN','Custom'))
+$cmbNetworkProfile.SelectedItem = 'No changes'
+$settingsGroup.Controls.Add($cmbNetworkProfile)
+$toolTip.SetToolTip($cmbNetworkProfile, 'Profile helper. No changes leaves tuning off; Low latency LAN and Stable WAN prefill conservative defaults.')
+
+$chkNetworkDscp = New-Object System.Windows.Forms.CheckBox
+$chkNetworkDscp.Text = 'DSCP / QoS mark transport'
+$chkNetworkDscp.Location = New-Object System.Drawing.Point(15, 548)
+$chkNetworkDscp.Size = New-Object System.Drawing.Size(210, 24)
+$chkNetworkDscp.Checked = $false
+$settingsGroup.Controls.Add($chkNetworkDscp)
+$toolTip.SetToolTip($chkNetworkDscp, 'Creates a Windows QoS policy for gst-launch-1.0.exe. Useful only when your LAN/VPN/router honors DSCP.')
+
+$numNetworkDscp = New-Object System.Windows.Forms.NumericUpDown
+$numNetworkDscp.Location = New-Object System.Drawing.Point(15, 548)
+$numNetworkDscp.Size = New-Object System.Drawing.Size(70, 23)
+$numNetworkDscp.Minimum = 0
+$numNetworkDscp.Maximum = 63
+$numNetworkDscp.Value = 34
+$settingsGroup.Controls.Add($numNetworkDscp)
+$toolTip.SetToolTip($numNetworkDscp, 'DSCP value. 34 is AF41/video-ish; 46 is EF/voice-like and more aggressive.')
+
+$cmbNetworkQosProtocol = New-Object System.Windows.Forms.ComboBox
+$cmbNetworkQosProtocol.Location = New-Object System.Drawing.Point(15, 548)
+$cmbNetworkQosProtocol.Size = New-Object System.Drawing.Size(80, 23)
+$cmbNetworkQosProtocol.DropDownStyle = 'DropDownList'
+$null = $cmbNetworkQosProtocol.Items.AddRange([string[]]@('UDP','TCP','Any'))
+$cmbNetworkQosProtocol.SelectedItem = 'UDP'
+$settingsGroup.Controls.Add($cmbNetworkQosProtocol)
+
+$txtNetworkPorts = New-Object System.Windows.Forms.TextBox
+$txtNetworkPorts.Location = New-Object System.Drawing.Point(15, 548)
+$txtNetworkPorts.Size = New-Object System.Drawing.Size(160, 23)
+$txtNetworkPorts.Text = ''
+$settingsGroup.Controls.Add($txtNetworkPorts)
+$toolTip.SetToolTip($txtNetworkPorts, 'Optional destination port or range for QoS policy, e.g. 8890 or 8889-8890. Leave blank to match all gst-launch traffic for the protocol.')
+
+$cmbNetworkUso = New-Object System.Windows.Forms.ComboBox
+$cmbNetworkUso.Location = New-Object System.Drawing.Point(15, 548)
+$cmbNetworkUso.Size = New-Object System.Drawing.Size(130, 23)
+$cmbNetworkUso.DropDownStyle = 'DropDownList'
+$null = $cmbNetworkUso.Items.AddRange([string[]]@('Leave unchanged','Enable','Disable'))
+$cmbNetworkUso.SelectedItem = 'Leave unchanged'
+$settingsGroup.Controls.Add($cmbNetworkUso)
+$toolTip.SetToolTip($cmbNetworkUso, 'Global UDP Segmentation Offload. Leave unchanged unless testing CPU/latency behavior.')
+
+$cmbNetworkUro = New-Object System.Windows.Forms.ComboBox
+$cmbNetworkUro.Location = New-Object System.Drawing.Point(15, 548)
+$cmbNetworkUro.Size = New-Object System.Drawing.Size(130, 23)
+$cmbNetworkUro.DropDownStyle = 'DropDownList'
+$null = $cmbNetworkUro.Items.AddRange([string[]]@('Leave unchanged','Enable','Disable'))
+$cmbNetworkUro.SelectedItem = 'Leave unchanged'
+$settingsGroup.Controls.Add($cmbNetworkUro)
+$toolTip.SetToolTip($cmbNetworkUro, 'Global UDP Receive Offload. Disable can be worth testing for receive-side latency; Enable can help throughput.')
+
+$chkNetworkDisablePowerSaving = New-Object System.Windows.Forms.CheckBox
+$chkNetworkDisablePowerSaving.Text = 'Disable adapter power saving'
+$chkNetworkDisablePowerSaving.Location = New-Object System.Drawing.Point(15, 548)
+$chkNetworkDisablePowerSaving.Size = New-Object System.Drawing.Size(210, 24)
+$chkNetworkDisablePowerSaving.Checked = $false
+$settingsGroup.Controls.Add($chkNetworkDisablePowerSaving)
+
+$cmbNetworkInterruptModeration = New-Object System.Windows.Forms.ComboBox
+$cmbNetworkInterruptModeration.Location = New-Object System.Drawing.Point(15, 548)
+$cmbNetworkInterruptModeration.Size = New-Object System.Drawing.Size(150, 23)
+$cmbNetworkInterruptModeration.DropDownStyle = 'DropDownList'
+$null = $cmbNetworkInterruptModeration.Items.AddRange([string[]]@('Leave unchanged','Disable','Enable / Adaptive'))
+$cmbNetworkInterruptModeration.SelectedItem = 'Leave unchanged'
+$settingsGroup.Controls.Add($cmbNetworkInterruptModeration)
+$toolTip.SetToolTip($cmbNetworkInterruptModeration, 'Driver advanced property when present. Disable can reduce latency but increases CPU/interrupt load.')
+
+$chkNetworkDisableEee = New-Object System.Windows.Forms.CheckBox
+$chkNetworkDisableEee.Text = 'Disable EEE / Green Ethernet'
+$chkNetworkDisableEee.Location = New-Object System.Drawing.Point(15, 548)
+$chkNetworkDisableEee.Size = New-Object System.Drawing.Size(220, 24)
+$chkNetworkDisableEee.Checked = $false
+$settingsGroup.Controls.Add($chkNetworkDisableEee)
+
+$chkNetworkRestoreOnStop = New-Object System.Windows.Forms.CheckBox
+$chkNetworkRestoreOnStop.Text = 'Restore tuning when stream stops'
+$chkNetworkRestoreOnStop.Location = New-Object System.Drawing.Point(15, 548)
+$chkNetworkRestoreOnStop.Size = New-Object System.Drawing.Size(240, 24)
+$chkNetworkRestoreOnStop.Checked = $true
+$settingsGroup.Controls.Add($chkNetworkRestoreOnStop)
+
+$chkNetworkRestoreOnExit = New-Object System.Windows.Forms.CheckBox
+$chkNetworkRestoreOnExit.Text = 'Restore tuning on app exit'
+$chkNetworkRestoreOnExit.Location = New-Object System.Drawing.Point(15, 548)
+$chkNetworkRestoreOnExit.Size = New-Object System.Drawing.Size(220, 24)
+$chkNetworkRestoreOnExit.Checked = $true
+$settingsGroup.Controls.Add($chkNetworkRestoreOnExit)
+
+$chkNetworkRecoveryTask = New-Object System.Windows.Forms.CheckBox
+$chkNetworkRecoveryTask.Text = 'Create recovery task/script before applying'
+$chkNetworkRecoveryTask.Location = New-Object System.Drawing.Point(15, 548)
+$chkNetworkRecoveryTask.Size = New-Object System.Drawing.Size(280, 24)
+$chkNetworkRecoveryTask.Checked = $true
+$settingsGroup.Controls.Add($chkNetworkRecoveryTask)
+$toolTip.SetToolTip($chkNetworkRecoveryTask, 'Writes a restore script and attempts to register a logon recovery task. The script remains in ProgramData even if task registration fails.')
+
+$btnNetworkSnapshot = New-Object System.Windows.Forms.Button
+$btnNetworkSnapshot.Text = 'Snapshot'
+$btnNetworkSnapshot.Location = New-Object System.Drawing.Point(15, 548)
+$btnNetworkSnapshot.Size = New-Object System.Drawing.Size(90, 30)
+$settingsGroup.Controls.Add($btnNetworkSnapshot)
+
+$btnNetworkApply = New-Object System.Windows.Forms.Button
+$btnNetworkApply.Text = 'Apply Now'
+$btnNetworkApply.Location = New-Object System.Drawing.Point(15, 548)
+$btnNetworkApply.Size = New-Object System.Drawing.Size(90, 30)
+$settingsGroup.Controls.Add($btnNetworkApply)
+
+$btnNetworkRestore = New-Object System.Windows.Forms.Button
+$btnNetworkRestore.Text = 'Restore Previous'
+$btnNetworkRestore.Location = New-Object System.Drawing.Point(15, 548)
+$btnNetworkRestore.Size = New-Object System.Drawing.Size(120, 30)
+$settingsGroup.Controls.Add($btnNetworkRestore)
+
+$btnOpenNetworkRecovery = New-Object System.Windows.Forms.Button
+$btnOpenNetworkRecovery.Text = 'Open Recovery Folder'
+$btnOpenNetworkRecovery.Location = New-Object System.Drawing.Point(15, 548)
+$btnOpenNetworkRecovery.Size = New-Object System.Drawing.Size(150, 30)
+$settingsGroup.Controls.Add($btnOpenNetworkRecovery)
+
+$lblNetworkStatus = New-Object System.Windows.Forms.Label
+$lblNetworkStatus.Text = 'Network tuning disabled'
+$lblNetworkStatus.Location = New-Object System.Drawing.Point(15, 548)
+$lblNetworkStatus.Size = New-Object System.Drawing.Size(520, 40)
+$lblNetworkStatus.TextAlign = 'MiddleLeft'
+$lblNetworkStatus.ForeColor = [System.Drawing.Color]::DimGray
+$settingsGroup.Controls.Add($lblNetworkStatus)
+
+# Per-tab reset buttons. These restore GStreamer Glass app defaults only; they do not overwrite Windows network snapshots.
+$btnResetTransport = New-Object System.Windows.Forms.Button
+$btnResetTransport.Text = 'Reset Transport Defaults'
+$btnResetTransport.Location = New-Object System.Drawing.Point(15, 548)
+$btnResetTransport.Size = New-Object System.Drawing.Size(170, 30)
+$settingsGroup.Controls.Add($btnResetTransport)
+
+$btnResetWebRtcSane = New-Object System.Windows.Forms.Button
+$btnResetWebRtcSane.Text = 'Reset WebRTC Sane Defaults'
+$btnResetWebRtcSane.Location = New-Object System.Drawing.Point(15, 548)
+$btnResetWebRtcSane.Size = New-Object System.Drawing.Size(190, 30)
+$settingsGroup.Controls.Add($btnResetWebRtcSane)
+
+$btnResetVideo = New-Object System.Windows.Forms.Button
+$btnResetVideo.Text = 'Reset Video Defaults'
+$btnResetVideo.Location = New-Object System.Drawing.Point(15, 548)
+$btnResetVideo.Size = New-Object System.Drawing.Size(150, 30)
+$settingsGroup.Controls.Add($btnResetVideo)
+
+$btnResetAudio = New-Object System.Windows.Forms.Button
+$btnResetAudio.Text = 'Reset Audio Defaults'
+$btnResetAudio.Location = New-Object System.Drawing.Point(15, 548)
+$btnResetAudio.Size = New-Object System.Drawing.Size(150, 30)
+$settingsGroup.Controls.Add($btnResetAudio)
+
+$btnResetRecording = New-Object System.Windows.Forms.Button
+$btnResetRecording.Text = 'Reset Recording Defaults'
+$btnResetRecording.Location = New-Object System.Drawing.Point(15, 548)
+$btnResetRecording.Size = New-Object System.Drawing.Size(170, 30)
+$settingsGroup.Controls.Add($btnResetRecording)
+
+$btnResetNetwork = New-Object System.Windows.Forms.Button
+$btnResetNetwork.Text = 'Reset Network Tab Defaults'
+$btnResetNetwork.Location = New-Object System.Drawing.Point(15, 548)
+$btnResetNetwork.Size = New-Object System.Drawing.Size(180, 30)
+$settingsGroup.Controls.Add($btnResetNetwork)
+
+$btnResetOptions = New-Object System.Windows.Forms.Button
+$btnResetOptions.Text = 'Reset Options Defaults'
+$btnResetOptions.Location = New-Object System.Drawing.Point(15, 548)
+$btnResetOptions.Size = New-Object System.Drawing.Size(160, 30)
+$settingsGroup.Controls.Add($btnResetOptions)
+
+$lblThreadingProfile = Add-Label $settingsGroup 'Threading profile' 15 548 120
+
+$cmbThreadingProfile = New-Object System.Windows.Forms.ComboBox
+$cmbThreadingProfile.Location = New-Object System.Drawing.Point(15, 548)
+$cmbThreadingProfile.Size = New-Object System.Drawing.Size(165, 23)
+$cmbThreadingProfile.DropDownStyle = 'DropDownList'
+$null = $cmbThreadingProfile.Items.AddRange([string[]]@('Live strict','Balanced','Non-blocking brutal','Blocking diagnostic','Custom'))
+$cmbThreadingProfile.SelectedItem = $script:DefaultThreadingProfile
+$settingsGroup.Controls.Add($cmbThreadingProfile)
+$toolTip.SetToolTip($cmbThreadingProfile, 'Runtime queue/threading profile. Live strict keeps queues tiny and leaky. Blocking diagnostic intentionally allows backpressure to prove where stalls start.')
+
+$lblGstProcessPriority = Add-Label $settingsGroup 'GST priority' 15 548 90
+
+$cmbGstProcessPriority = New-Object System.Windows.Forms.ComboBox
+$cmbGstProcessPriority.Location = New-Object System.Drawing.Point(15, 548)
+$cmbGstProcessPriority.Size = New-Object System.Drawing.Size(120, 23)
+$cmbGstProcessPriority.DropDownStyle = 'DropDownList'
+$null = $cmbGstProcessPriority.Items.AddRange([string[]]@('Normal','Above normal','High'))
+$cmbGstProcessPriority.SelectedItem = $script:DefaultGstProcessPriority
+$settingsGroup.Controls.Add($cmbGstProcessPriority)
+$toolTip.SetToolTip($cmbGstProcessPriority, 'Windows process priority for gst-launch after start. High can help capture/encode threads get scheduled under game load.')
+
+$lblThreadBudget = Add-Label $settingsGroup 'Thread budget' 15 548 100
+$cmbThreadBudget = New-Object System.Windows.Forms.ComboBox
+$cmbThreadBudget.DropDownStyle = 'DropDownList'
+$null = $cmbThreadBudget.Items.AddRange([string[]]@('Automatic','Lean','Balanced','Isolated','Custom'))
+$cmbThreadBudget.SelectedItem = $script:DefaultThreadBudget
+$settingsGroup.Controls.Add($cmbThreadBudget)
+$toolTip.SetToolTip($cmbThreadBudget, 'Controls optional GStreamer queue thread boundaries and supported CPU worker limits. This cannot cap driver, WASAPI, or WebRTC internal threads.')
+
+$lblCpuWorkerLimit = Add-Label $settingsGroup 'CPU workers' 15 548 90
+$numCpuWorkerLimit = New-Object System.Windows.Forms.NumericUpDown
+$numCpuWorkerLimit.Minimum = 0
+$numCpuWorkerLimit.Maximum = 32
+$numCpuWorkerLimit.Value = $script:DefaultCpuWorkerLimit
+$settingsGroup.Controls.Add($numCpuWorkerLimit)
+$toolTip.SetToolTip($numCpuWorkerLimit, 'Worker cap for supported CPU elements such as compositor, videoconvert, and x264enc. 0 leaves the element on automatic. It does not cap total process threads.')
+
+$chkBudgetCaptureQueue = New-Object System.Windows.Forms.CheckBox
+$chkBudgetCaptureQueue.Text = 'Capture -> encoder thread'
+$chkBudgetCaptureQueue.AutoSize = $true
+$chkBudgetCaptureQueue.Checked = $true
+$settingsGroup.Controls.Add($chkBudgetCaptureQueue)
+
+$chkBudgetSenderQueue = New-Object System.Windows.Forms.CheckBox
+$chkBudgetSenderQueue.Text = 'Encoder -> sender thread'
+$chkBudgetSenderQueue.AutoSize = $true
+$chkBudgetSenderQueue.Checked = $true
+$settingsGroup.Controls.Add($chkBudgetSenderQueue)
+
+$chkBudgetAudioInputQueue = New-Object System.Windows.Forms.CheckBox
+$chkBudgetAudioInputQueue.Text = 'Audio input thread'
+$chkBudgetAudioInputQueue.AutoSize = $true
+$chkBudgetAudioInputQueue.Checked = $true
+$settingsGroup.Controls.Add($chkBudgetAudioInputQueue)
+
+$chkBudgetAudioFinalQueue = New-Object System.Windows.Forms.CheckBox
+$chkBudgetAudioFinalQueue.Text = 'Audio sender thread'
+$chkBudgetAudioFinalQueue.AutoSize = $true
+$chkBudgetAudioFinalQueue.Checked = $true
+$settingsGroup.Controls.Add($chkBudgetAudioFinalQueue)
+
+$chkBudgetSceneInputQueues = New-Object System.Windows.Forms.CheckBox
+$chkBudgetSceneInputQueues.Text = 'Scene input threads (required)'
+$chkBudgetSceneInputQueues.AutoSize = $true
+$chkBudgetSceneInputQueues.Checked = $true
+$settingsGroup.Controls.Add($chkBudgetSceneInputQueues)
+
+$lblLiveGstThreads = New-Object System.Windows.Forms.Label
+$lblLiveGstThreads.Text = 'Live GST threads: stopped'
+$lblLiveGstThreads.AutoSize = $true
+$settingsGroup.Controls.Add($lblLiveGstThreads)
+$toolTip.SetToolTip($lblLiveGstThreads, 'Observed Windows thread count for gst-launch-1.0.exe. Includes GStreamer, plugin, driver, audio, GPU, networking, and housekeeping threads.')
+
+$lblQueueLeakMode = Add-Label $settingsGroup 'Queue leak' 15 548 90
+
+$cmbQueueLeakMode = New-Object System.Windows.Forms.ComboBox
+$cmbQueueLeakMode.Location = New-Object System.Drawing.Point(15, 548)
+$cmbQueueLeakMode.Size = New-Object System.Drawing.Size(170, 23)
+$cmbQueueLeakMode.DropDownStyle = 'DropDownList'
+$null = $cmbQueueLeakMode.Items.AddRange([string[]]@('Downstream - drop old','Upstream - drop new','No leak - block'))
+$cmbQueueLeakMode.SelectedItem = $script:DefaultQueueLeakMode
+$settingsGroup.Controls.Add($cmbQueueLeakMode)
+$toolTip.SetToolTip($cmbQueueLeakMode, 'How live queues behave when full. Downstream drops old frames and is usually right for live desktop. No leak blocks upstream and can rubber-band.')
+
+$lblCaptureQueueBuffers = Add-Label $settingsGroup 'Capture q buffers' 15 548 120
+
+$numCaptureQueueBuffers = New-Object System.Windows.Forms.NumericUpDown
+$numCaptureQueueBuffers.Location = New-Object System.Drawing.Point(15, 548)
+$numCaptureQueueBuffers.Size = New-Object System.Drawing.Size(70, 23)
+$numCaptureQueueBuffers.Minimum = 1
+$numCaptureQueueBuffers.Maximum = 16
+$numCaptureQueueBuffers.Increment = 1
+$numCaptureQueueBuffers.Value = $script:DefaultCaptureQueueBuffers
+$settingsGroup.Controls.Add($numCaptureQueueBuffers)
+$toolTip.SetToolTip($numCaptureQueueBuffers, 'Queue depth immediately before the encoder. Lower = lower latency; higher = more cushion when compositor/GPU scheduling hiccups.')
+
+$lblAudioQueueBuffers = Add-Label $settingsGroup 'Audio q buffers' 15 548 110
+
+$numAudioQueueBuffers = New-Object System.Windows.Forms.NumericUpDown
+$numAudioQueueBuffers.Location = New-Object System.Drawing.Point(15, 548)
+$numAudioQueueBuffers.Size = New-Object System.Drawing.Size(70, 23)
+$numAudioQueueBuffers.Minimum = 1
+$numAudioQueueBuffers.Maximum = 32
+$numAudioQueueBuffers.Increment = 1
+$numAudioQueueBuffers.Value = $script:DefaultAudioQueueBuffers
+$settingsGroup.Controls.Add($numAudioQueueBuffers)
+$toolTip.SetToolTip($numAudioQueueBuffers, 'Audio queue buffer depth. If audio clock is dragging video, smaller/leaky audio queues help reveal it.')
+
+$lblAudioQueueCapMs = Add-Label $settingsGroup 'Audio queue cap ms' 15 548 130
+
+$numAudioQueueCapMs = New-Object System.Windows.Forms.NumericUpDown
+$numAudioQueueCapMs.Location = New-Object System.Drawing.Point(15, 548)
+$numAudioQueueCapMs.Size = New-Object System.Drawing.Size(80, 23)
+$numAudioQueueCapMs.Minimum = 0
+$numAudioQueueCapMs.Maximum = 500
+$numAudioQueueCapMs.Increment = 10
+$numAudioQueueCapMs.Value = $script:DefaultAudioQueueCapMs
+$settingsGroup.Controls.Add($numAudioQueueCapMs)
+$toolTip.SetToolTip($numAudioQueueCapMs, 'Optional audio queue time cap. 0 disables time cap. Nonzero caps below the safe live-audio floor are clamped at runtime to avoid GStreamer latency errors.')
+
+$chkBufferLatenessTracer = New-Object System.Windows.Forms.CheckBox
+$chkBufferLatenessTracer.Text = 'Buffer lateness tracer'
+$chkBufferLatenessTracer.Location = New-Object System.Drawing.Point(15, 548)
+$chkBufferLatenessTracer.Size = New-Object System.Drawing.Size(190, 24)
+$chkBufferLatenessTracer.Checked = $script:DefaultBufferLatenessTracer
+$settingsGroup.Controls.Add($chkBufferLatenessTracer)
+$toolTip.SetToolTip($chkBufferLatenessTracer, 'Enables GST_TRACERS=buffer-lateness and GST_DEBUG=GST_TRACER:7 for gst-launch. Use only while diagnosing; logs get noisy.')
+
+$lblGstDebugMode = Add-Label $settingsGroup 'GST debug' 15 548 90
+
+$cmbGstDebugMode = New-Object System.Windows.Forms.ComboBox
+$cmbGstDebugMode.Location = New-Object System.Drawing.Point(15, 548)
+$cmbGstDebugMode.Size = New-Object System.Drawing.Size(170, 23)
+$cmbGstDebugMode.DropDownStyle = 'DropDownList'
+$null = $cmbGstDebugMode.Items.AddRange([string[]]@('Off','ERROR (*:1)','WARNING (*:2)','INFO (*:3)','DEBUG (*:4)','LOG (*:5)','TRACE (*:6)','FULL/MEMDUMP (*:9)','Custom'))
+$cmbGstDebugMode.SelectedItem = $script:DefaultGstDebugMode
+$settingsGroup.Controls.Add($cmbGstDebugMode)
+$toolTip.SetToolTip($cmbGstDebugMode, 'Sets GST_DEBUG for the gst-launch process only. DEBUG/TRACE/FULL are very noisy but useful for latency/desync diagnosis.')
+
+$lblGstDebugSpec = Add-Label $settingsGroup 'GST_DEBUG spec' 15 548 120
+
+$txtGstDebugSpec = New-Object System.Windows.Forms.TextBox
+$txtGstDebugSpec.Location = New-Object System.Drawing.Point(15, 548)
+$txtGstDebugSpec.Size = New-Object System.Drawing.Size(185, 23)
+$txtGstDebugSpec.Text = $script:DefaultGstDebugSpec
+$settingsGroup.Controls.Add($txtGstDebugSpec)
+$toolTip.SetToolTip($txtGstDebugSpec, 'Custom GST_DEBUG value, for example *:4,webrtc*:6,rtp*:6,rtpjitterbuffer:6,wasapi*:6. Used only when mode is Custom; presets show their generated spec here.')
+
+$chkGstDebugNoColor = New-Object System.Windows.Forms.CheckBox
+$chkGstDebugNoColor.Text = 'No debug color'
+$chkGstDebugNoColor.Location = New-Object System.Drawing.Point(15, 548)
+$chkGstDebugNoColor.Size = New-Object System.Drawing.Size(135, 24)
+$chkGstDebugNoColor.Checked = $script:DefaultGstDebugNoColor
+$settingsGroup.Controls.Add($chkGstDebugNoColor)
+$toolTip.SetToolTip($chkGstDebugNoColor, 'Sets GST_DEBUG_NO_COLOR=1 so redirected logs are readable in the app/log files.')
+
+$lblJbufWatchdogMode = Add-Label $settingsGroup 'JBUF watchdog' 15 548 115
+
+$cmbJbufWatchdogMode = New-Object System.Windows.Forms.ComboBox
+$cmbJbufWatchdogMode.Location = New-Object System.Drawing.Point(15, 548)
+$cmbJbufWatchdogMode.Size = New-Object System.Drawing.Size(170, 23)
+$cmbJbufWatchdogMode.DropDownStyle = 'DropDownList'
+$null = $cmbJbufWatchdogMode.Items.AddRange([string[]]@('Off','Warn only','Auto-reconnect viewer'))
+$cmbJbufWatchdogMode.SelectedItem = $script:DefaultJbufWatchdogMode
+$settingsGroup.Controls.Add($cmbJbufWatchdogMode)
+$toolTip.SetToolTip($cmbJbufWatchdogMode, 'Browser-side guard for growing WebRTC jitter buffer. Warn only paints status; Auto-reconnect viewer tears down the browser PeerConnection when JBUF keeps exceeding the threshold.')
+
+$lblJbufMaxMs = Add-Label $settingsGroup 'JBUF max ms' 15 548 100
+
+$numJbufMaxMs = New-Object System.Windows.Forms.NumericUpDown
+$numJbufMaxMs.Location = New-Object System.Drawing.Point(15, 548)
+$numJbufMaxMs.Size = New-Object System.Drawing.Size(80, 23)
+$numJbufMaxMs.Minimum = 5
+$numJbufMaxMs.Maximum = 500
+$numJbufMaxMs.Increment = 5
+$numJbufMaxMs.Value = $script:DefaultJbufMaxMs
+$settingsGroup.Controls.Add($numJbufMaxMs)
+$toolTip.SetToolTip($numJbufMaxMs, 'Browser-side JBUF warning/reconnect threshold. This is a watchdog threshold, not a guaranteed hard browser limit.')
+
+$chkPlayerStatsOverlay = New-Object System.Windows.Forms.CheckBox
+$chkPlayerStatsOverlay.Text = 'Stats overlay'
+$chkPlayerStatsOverlay.Location = New-Object System.Drawing.Point(15, 548)
+$chkPlayerStatsOverlay.Size = New-Object System.Drawing.Size(130, 24)
+$chkPlayerStatsOverlay.Checked = $script:DefaultPlayerStatsOverlay
+$settingsGroup.Controls.Add($chkPlayerStatsOverlay)
+$toolTip.SetToolTip($chkPlayerStatsOverlay, 'Show the browser player stats overlay. Written to gstglass-config.js as statsOverlay.')
+
+$chkPlayerJbufDebug = New-Object System.Windows.Forms.CheckBox
+$chkPlayerJbufDebug.Text = 'JBUF debug logging'
+$chkPlayerJbufDebug.Location = New-Object System.Drawing.Point(15, 548)
+$chkPlayerJbufDebug.Size = New-Object System.Drawing.Size(155, 24)
+$chkPlayerJbufDebug.Checked = $script:DefaultPlayerJbufDebug
+$settingsGroup.Controls.Add($chkPlayerJbufDebug)
+$toolTip.SetToolTip($chkPlayerJbufDebug, 'Enable browser console logging for player.js JBUF target/config resolution.')
+
+$chkPlayerUrlOverrides = New-Object System.Windows.Forms.CheckBox
+$chkPlayerUrlOverrides.Text = 'Open/copy with URL overrides'
+$chkPlayerUrlOverrides.Location = New-Object System.Drawing.Point(15, 548)
+$chkPlayerUrlOverrides.Size = New-Object System.Drawing.Size(220, 24)
+$chkPlayerUrlOverrides.Checked = $script:DefaultPlayerUrlOverrides
+$settingsGroup.Controls.Add($chkPlayerUrlOverrides)
+$toolTip.SetToolTip($chkPlayerUrlOverrides, 'Debug escape hatch. Off = clean /live/ URL uses gstglass-config.js. On = append current Player tab values as query overrides.')
+
+$cmbPlayerAvRenderMode = New-Object System.Windows.Forms.ComboBox
+$cmbPlayerAvRenderMode.Location = New-Object System.Drawing.Point(15, 548)
+$cmbPlayerAvRenderMode.Size = New-Object System.Drawing.Size(260, 23)
+$cmbPlayerAvRenderMode.DropDownStyle = 'DropDownList'
+$null = $cmbPlayerAvRenderMode.Items.AddRange([string[]]@('Synced single media element','Decoupled video/audio elements'))
+$cmbPlayerAvRenderMode.SelectedItem = $script:DefaultPlayerAvRenderMode
+$settingsGroup.Controls.Add($cmbPlayerAvRenderMode)
+$toolTip.SetToolTip($cmbPlayerAvRenderMode, 'Browser/player render mode. Synced uses the original single media element. Decoupled puts video and audio tracks on separate media elements so audio NetEQ growth is less likely to drag video playback.')
+
+$cmbDirectWebRtcAvPipelineMode = New-Object System.Windows.Forms.ComboBox
+$cmbDirectWebRtcAvPipelineMode.Location = New-Object System.Drawing.Point(15, 548)
+$cmbDirectWebRtcAvPipelineMode.Size = New-Object System.Drawing.Size(310, 23)
+$cmbDirectWebRtcAvPipelineMode.DropDownStyle = 'DropDownList'
+$null = $cmbDirectWebRtcAvPipelineMode.Items.AddRange([string[]]@('Single pipeline','Split A/V pipelines - separate gst-launch'))
+$cmbDirectWebRtcAvPipelineMode.SelectedItem = $script:DefaultDirectWebRtcAvPipelineMode
+$settingsGroup.Controls.Add($cmbDirectWebRtcAvPipelineMode)
+$toolTip.SetToolTip($cmbDirectWebRtcAvPipelineMode, 'Direct GST WebRTC topology. Single pipeline keeps audio and video in one gst-launch pipeline. Split mode launches a second audio-only gst-launch/webrtcsink on signalling port +1 so audio/video clocks and latency negotiation are isolated for testing.')
+
+$cmbSplitPlayerSyncMode = New-Object System.Windows.Forms.ComboBox
+$cmbSplitPlayerSyncMode.Location = New-Object System.Drawing.Point(15, 548)
+$cmbSplitPlayerSyncMode.Size = New-Object System.Drawing.Size(220, 23)
+$cmbSplitPlayerSyncMode.DropDownStyle = 'DropDownList'
+$null = $cmbSplitPlayerSyncMode.Items.AddRange([string[]]@('Off / free-run','Audio watchdog only','Soft sync experimental'))
+$cmbSplitPlayerSyncMode.SelectedItem = $script:DefaultSplitPlayerSyncMode
+$settingsGroup.Controls.Add($cmbSplitPlayerSyncMode)
+$toolTip.SetToolTip($cmbSplitPlayerSyncMode, 'Split A/V browser/player behavior. Default Off leaves the proven split path free-running. Audio watchdog and soft sync are opt-in experiments that only recover/reconnect the split audio side; they do not delay video.')
+
+$numSplitAudioStallSeconds = New-Object System.Windows.Forms.NumericUpDown
+$numSplitAudioStallSeconds.Location = New-Object System.Drawing.Point(15, 548)
+$numSplitAudioStallSeconds.Size = New-Object System.Drawing.Size(70, 23)
+$numSplitAudioStallSeconds.Minimum = 1
+$numSplitAudioStallSeconds.Maximum = 30
+$numSplitAudioStallSeconds.Increment = 1
+$numSplitAudioStallSeconds.Value = $script:DefaultSplitAudioStallSeconds
+$settingsGroup.Controls.Add($numSplitAudioStallSeconds)
+$toolTip.SetToolTip($numSplitAudioStallSeconds, 'Opt-in split audio watchdog timeout. If enabled and audio stats/element look stalled this many seconds, the player recovers only the split audio path.')
+
+$numSplitAvOffsetWarnMs = New-Object System.Windows.Forms.NumericUpDown
+$numSplitAvOffsetWarnMs.Location = New-Object System.Drawing.Point(15, 548)
+$numSplitAvOffsetWarnMs.Size = New-Object System.Drawing.Size(80, 23)
+$numSplitAvOffsetWarnMs.Minimum = 20
+$numSplitAvOffsetWarnMs.Maximum = 1000
+$numSplitAvOffsetWarnMs.Increment = 10
+$numSplitAvOffsetWarnMs.Value = $script:DefaultSplitAvOffsetWarnMs
+$settingsGroup.Controls.Add($numSplitAvOffsetWarnMs)
+$toolTip.SetToolTip($numSplitAvOffsetWarnMs, 'Opt-in split A/V soft-sync warning threshold. Estimated from audio/video jitter-buffer stats; video is never delayed by this feature.')
+
+$btnResetAll = New-Object System.Windows.Forms.Button
+$btnResetAll.Text = 'Reset All App Defaults'
+$btnResetAll.Location = New-Object System.Drawing.Point(15, 548)
+$btnResetAll.Size = New-Object System.Drawing.Size(170, 30)
+$settingsGroup.Controls.Add($btnResetAll)
+
 
 $null = Add-Label $settingsGroup 'Width' 15 166 45
 $numWidth = New-Object System.Windows.Forms.NumericUpDown
@@ -1336,6 +2326,94 @@ $numGopSeconds.Maximum = 10
 $numGopSeconds.Value = 1
 $settingsGroup.Controls.Add($numGopSeconds)
 
+
+$null = Add-Label $settingsGroup 'Rate control' 15 520 90
+$cmbRateControl = New-Object System.Windows.Forms.ComboBox
+$cmbRateControl.Location = New-Object System.Drawing.Point(15, 548)
+$cmbRateControl.Size = New-Object System.Drawing.Size(95, 23)
+$cmbRateControl.DropDownStyle = 'DropDownList'
+$null = $cmbRateControl.Items.AddRange([string[]]$script:RateControlModes)
+$cmbRateControl.SelectedItem = 'cbr'
+$settingsGroup.Controls.Add($cmbRateControl)
+$toolTip.SetToolTip($cmbRateControl, 'Stream encoder rate control. CBR is safest for live transport; VBR/CQP are mostly for quality testing or recording-style workflows.')
+
+$null = Add-Label $settingsGroup 'Max kbps' 15 520 70
+$numMaxVideoBitrate = New-Object System.Windows.Forms.NumericUpDown
+$numMaxVideoBitrate.Location = New-Object System.Drawing.Point(15, 548)
+$numMaxVideoBitrate.Size = New-Object System.Drawing.Size(100, 23)
+$numMaxVideoBitrate.Minimum = 0
+$numMaxVideoBitrate.Maximum = 300000
+$numMaxVideoBitrate.Increment = 500
+$numMaxVideoBitrate.Value = 0
+$settingsGroup.Controls.Add($numMaxVideoBitrate)
+$toolTip.SetToolTip($numMaxVideoBitrate, 'Maximum bitrate for VBR where the selected encoder supports it. 0 uses the encoder default; CBR usually ignores this.')
+
+$null = Add-Label $settingsGroup 'CQ/QP' 15 520 60
+$numConstantQp = New-Object System.Windows.Forms.NumericUpDown
+$numConstantQp.Location = New-Object System.Drawing.Point(15, 548)
+$numConstantQp.Size = New-Object System.Drawing.Size(70, 23)
+$numConstantQp.Minimum = 0
+$numConstantQp.Maximum = 51
+$numConstantQp.Value = 20
+$settingsGroup.Controls.Add($numConstantQp)
+$toolTip.SetToolTip($numConstantQp, 'Constant QP for constqp/CQP, or constant-quality target for NVENC VBR. Lower means higher quality and bigger files/bitrate spikes.')
+
+$null = Add-Label $settingsGroup 'Tune' 15 520 60
+$cmbEncoderTune = New-Object System.Windows.Forms.ComboBox
+$cmbEncoderTune.Location = New-Object System.Drawing.Point(15, 548)
+$cmbEncoderTune.Size = New-Object System.Drawing.Size(165, 23)
+$cmbEncoderTune.DropDownStyle = 'DropDownList'
+$null = $cmbEncoderTune.Items.AddRange([string[]]$script:NvencTuneModes)
+$cmbEncoderTune.SelectedItem = 'ultra-low-latency'
+$settingsGroup.Controls.Add($cmbEncoderTune)
+$toolTip.SetToolTip($cmbEncoderTune, 'NVENC tune. Other encoder families keep their closest low-latency/quality mapping or use Custom encoder options.')
+
+$null = Add-Label $settingsGroup 'Multipass' 15 520 90
+$cmbMultipass = New-Object System.Windows.Forms.ComboBox
+$cmbMultipass.Location = New-Object System.Drawing.Point(15, 548)
+$cmbMultipass.Size = New-Object System.Drawing.Size(150, 23)
+$cmbMultipass.DropDownStyle = 'DropDownList'
+$null = $cmbMultipass.Items.AddRange([string[]]$script:NvencMultipassModes)
+$cmbMultipass.SelectedItem = 'disabled'
+$settingsGroup.Controls.Add($cmbMultipass)
+$toolTip.SetToolTip($cmbMultipass, 'NVENC multipass mode. Disabled is best for live ultra-low-latency; two-pass modes can improve quality but add work/latency.')
+
+$cmbVideoSyncMode = New-Object System.Windows.Forms.ComboBox
+$cmbVideoSyncMode.Location = New-Object System.Drawing.Point(15, 548)
+$cmbVideoSyncMode.Size = New-Object System.Drawing.Size(120, 23)
+$cmbVideoSyncMode.DropDownStyle = 'DropDownList'
+$null = $cmbVideoSyncMode.Items.AddRange([string[]]@('Default','sync=true','sync=false'))
+$cmbVideoSyncMode.SelectedItem = $script:DefaultVideoSyncMode
+$settingsGroup.Controls.Add($cmbVideoSyncMode)
+$toolTip.SetToolTip($cmbVideoSyncMode, 'Video branch sync lab. Default leaves transport branches unchanged and preserves existing local preview behavior. sync=true/sync=false inserts a clocksync element before compatible send/mux sinks, and applies the value to the local preview sink.')
+
+$null = Add-Label $settingsGroup 'VBV kbits' 15 520 80
+$numVbvBuffer = New-Object System.Windows.Forms.NumericUpDown
+$numVbvBuffer.Location = New-Object System.Drawing.Point(15, 548)
+$numVbvBuffer.Size = New-Object System.Drawing.Size(95, 23)
+$numVbvBuffer.Minimum = 0
+$numVbvBuffer.Maximum = 1000000
+$numVbvBuffer.Increment = 500
+$numVbvBuffer.Value = 0
+$settingsGroup.Controls.Add($numVbvBuffer)
+$toolTip.SetToolTip($numVbvBuffer, 'NVENC VBV/HRD buffer size in kbits. 0 uses the encoder default. Small buffers can reduce latency but may hurt quality.')
+
+$chkTemporalAq = New-Object System.Windows.Forms.CheckBox
+$chkTemporalAq.Text = 'Temporal AQ'
+$chkTemporalAq.Location = New-Object System.Drawing.Point(15, 548)
+$chkTemporalAq.Size = New-Object System.Drawing.Size(105, 23)
+$chkTemporalAq.Checked = $false
+$settingsGroup.Controls.Add($chkTemporalAq)
+$toolTip.SetToolTip($chkTemporalAq, 'NVENC temporal adaptive quantization. Can improve motion quality; may increase encoder work and is not always ideal for latency testing.')
+
+$null = Add-Label $settingsGroup 'Custom encoder options' 15 520 160
+$txtCustomEncoderOptions = New-Object System.Windows.Forms.TextBox
+$txtCustomEncoderOptions.Location = New-Object System.Drawing.Point(15, 548)
+$txtCustomEncoderOptions.Size = New-Object System.Drawing.Size(520, 23)
+$txtCustomEncoderOptions.Text = ''
+$settingsGroup.Controls.Add($txtCustomEncoderOptions)
+$toolTip.SetToolTip($txtCustomEncoderOptions, 'Raw options appended directly after the selected stream encoder element, e.g. weighted-pred=true strict-gop=true. Use for untested AMD/Intel/MF/software knobs.')
+
 $null = Add-Label $settingsGroup 'Encoder' 15 202 60
 $cmbEncoder = New-Object System.Windows.Forms.ComboBox
 $cmbEncoder.Location = New-Object System.Drawing.Point(75, 202)
@@ -1350,7 +2428,7 @@ $toolTip.SetToolTip(
 )
 
 $lblEncoderStatus = New-Object System.Windows.Forms.Label
-$lblEncoderStatus.Text = 'H.264 • Hardware • D3D11'
+$lblEncoderStatus.Text = 'H.264 * Hardware * D3D11'
 $lblEncoderStatus.Location = New-Object System.Drawing.Point(415, 202)
 $lblEncoderStatus.Size = New-Object System.Drawing.Size(303, 23)
 $lblEncoderStatus.TextAlign = 'MiddleLeft'
@@ -1425,7 +2503,7 @@ $numLookAheadFrames.Enabled = $false
 $settingsGroup.Controls.Add($numLookAheadFrames)
 
 $chkAdaptiveQuantization = New-Object System.Windows.Forms.CheckBox
-$chkAdaptiveQuantization.Text = 'Adaptive quantization'
+$chkAdaptiveQuantization.Text = 'Spatial AQ'
 $chkAdaptiveQuantization.Location = New-Object System.Drawing.Point(365, 278)
 $chkAdaptiveQuantization.Size = New-Object System.Drawing.Size(150, 23)
 $chkAdaptiveQuantization.Checked = $false
@@ -1473,6 +2551,121 @@ $numMicVolume.Maximum = 200
 $numMicVolume.Value = 100
 $settingsGroup.Controls.Add($numMicVolume)
 
+$null = Add-Label $settingsGroup 'Desktop device' 15 354 95
+$cmbDesktopAudioDevice = New-Object System.Windows.Forms.ComboBox
+$cmbDesktopAudioDevice.Location = New-Object System.Drawing.Point(115, 354)
+$cmbDesktopAudioDevice.Size = New-Object System.Drawing.Size(420, 23)
+$cmbDesktopAudioDevice.DropDownStyle = 'DropDownList'
+$null = $cmbDesktopAudioDevice.Items.Add($script:DefaultAudioOutputDeviceLabel)
+$cmbDesktopAudioDevice.SelectedIndex = 0
+$settingsGroup.Controls.Add($cmbDesktopAudioDevice)
+$toolTip.SetToolTip($cmbDesktopAudioDevice, 'WASAPI output endpoint used when Desktop audio is enabled. Loopback captures what that selected output device plays.')
+
+$btnRefreshAudioDevices = New-Object System.Windows.Forms.Button
+$btnRefreshAudioDevices.Text = 'Refresh audio devices'
+$btnRefreshAudioDevices.Location = New-Object System.Drawing.Point(550, 354)
+$btnRefreshAudioDevices.Size = New-Object System.Drawing.Size(150, 24)
+$settingsGroup.Controls.Add($btnRefreshAudioDevices)
+$toolTip.SetToolTip($btnRefreshAudioDevices, 'Runs gst-device-monitor and populates WASAPI input/output endpoints.')
+
+$null = Add-Label $settingsGroup 'Mic device' 15 392 95
+$cmbMicAudioDevice = New-Object System.Windows.Forms.ComboBox
+$cmbMicAudioDevice.Location = New-Object System.Drawing.Point(115, 392)
+$cmbMicAudioDevice.Size = New-Object System.Drawing.Size(420, 23)
+$cmbMicAudioDevice.DropDownStyle = 'DropDownList'
+$null = $cmbMicAudioDevice.Items.Add($script:DefaultAudioInputDeviceLabel)
+$cmbMicAudioDevice.SelectedIndex = 0
+$settingsGroup.Controls.Add($cmbMicAudioDevice)
+$toolTip.SetToolTip($cmbMicAudioDevice, 'WASAPI capture endpoint used when Default microphone/Mic audio is enabled.')
+
+$lblAudioDeviceStatus = New-Object System.Windows.Forms.Label
+$lblAudioDeviceStatus.Text = 'Audio devices: defaults until refreshed'
+$lblAudioDeviceStatus.Location = New-Object System.Drawing.Point(550, 392)
+$lblAudioDeviceStatus.Size = New-Object System.Drawing.Size(260, 23)
+$lblAudioDeviceStatus.TextAlign = 'MiddleLeft'
+$lblAudioDeviceStatus.ForeColor = [System.Drawing.Color]::DimGray
+$settingsGroup.Controls.Add($lblAudioDeviceStatus)
+
+$null = Add-Label $settingsGroup 'A/V test mode' 15 430 95
+$cmbAudioTransportMode = New-Object System.Windows.Forms.ComboBox
+$cmbAudioTransportMode.Location = New-Object System.Drawing.Point(115, 354)
+$cmbAudioTransportMode.Size = New-Object System.Drawing.Size(245, 23)
+$cmbAudioTransportMode.DropDownStyle = 'DropDownList'
+$null = $cmbAudioTransportMode.Items.AddRange([string[]]@(
+    'Normal audio',
+    'Video only - no audio track',
+    'Muted audio clock only'
+))
+$cmbAudioTransportMode.SelectedItem = $script:DefaultAudioTransportMode
+$settingsGroup.Controls.Add($cmbAudioTransportMode)
+$toolTip.SetToolTip($cmbAudioTransportMode, 'A/V sync diagnostic. Normal uses the checkboxes below. Video only removes the audio track. Muted audio clock keeps an audio clock but emits silence.')
+
+$lblAudioClockMode = Add-Label $settingsGroup 'Audio clock' 15 548 90
+
+$cmbAudioClockMode = New-Object System.Windows.Forms.ComboBox
+$cmbAudioClockMode.Location = New-Object System.Drawing.Point(15, 548)
+$cmbAudioClockMode.Size = New-Object System.Drawing.Size(230, 23)
+$cmbAudioClockMode.DropDownStyle = 'DropDownList'
+$null = $cmbAudioClockMode.Items.AddRange([string[]]@('WASAPI clock','System clock / no WASAPI clock'))
+$cmbAudioClockMode.SelectedItem = $script:DefaultAudioClockMode
+$settingsGroup.Controls.Add($cmbAudioClockMode)
+$toolTip.SetToolTip($cmbAudioClockMode, 'Controls whether wasapi2src is allowed to provide the pipeline clock. If WASAPI loopback actual-buffer-time is huge, try System clock / no WASAPI clock.')
+
+$lblAudioTimingMode = Add-Label $settingsGroup 'Audio timing' 15 602 95
+$cmbAudioTimingMode = New-Object System.Windows.Forms.ComboBox
+$cmbAudioTimingMode.Location = New-Object System.Drawing.Point(115, 602)
+$cmbAudioTimingMode.Size = New-Object System.Drawing.Size(260, 23)
+$cmbAudioTimingMode.DropDownStyle = 'DropDownList'
+$null = $cmbAudioTimingMode.Items.AddRange([string[]]@(
+    'WASAPI normal',
+    'WASAPI no pipeline clock',
+    'WASAPI retimestamp',
+    'WASAPI no clock + retimestamp',
+    'Synthetic silent audio'
+))
+$cmbAudioTimingMode.SelectedItem = $script:DefaultAudioTimingMode
+$settingsGroup.Controls.Add($cmbAudioTimingMode)
+$toolTip.SetToolTip($cmbAudioTimingMode, 'Audio timing lab. Synthetic silent audio bypasses WASAPI entirely; no-clock/retimestamp variants test whether WASAPI loopback timing is causing browser jbuf growth.')
+
+$lblAudioSlaveMethod = Add-Label $settingsGroup 'Slave method' 395 602 95
+$cmbAudioSlaveMethod = New-Object System.Windows.Forms.ComboBox
+$cmbAudioSlaveMethod.Location = New-Object System.Drawing.Point(495, 602)
+$cmbAudioSlaveMethod.Size = New-Object System.Drawing.Size(135, 23)
+$cmbAudioSlaveMethod.DropDownStyle = 'DropDownList'
+$null = $cmbAudioSlaveMethod.Items.AddRange([string[]]@('Auto','None','Skew','Resample','Retimestamp'))
+$cmbAudioSlaveMethod.SelectedItem = $script:DefaultAudioSlaveMethod
+$settingsGroup.Controls.Add($cmbAudioSlaveMethod)
+$toolTip.SetToolTip($cmbAudioSlaveMethod, 'Experimental wasapi2src/audiobasesrc slave-method. Leave Auto unless testing clock drift.')
+
+$cmbAudioSyncMode = New-Object System.Windows.Forms.ComboBox
+$cmbAudioSyncMode.Location = New-Object System.Drawing.Point(15, 548)
+$cmbAudioSyncMode.Size = New-Object System.Drawing.Size(120, 23)
+$cmbAudioSyncMode.DropDownStyle = 'DropDownList'
+$null = $cmbAudioSyncMode.Items.AddRange([string[]]@('Default','sync=true','sync=false'))
+$cmbAudioSyncMode.SelectedItem = $script:DefaultAudioSyncMode
+$settingsGroup.Controls.Add($cmbAudioSyncMode)
+$toolTip.SetToolTip($cmbAudioSyncMode, 'Audio branch sync lab. Default leaves audio send branches unchanged. sync=true/sync=false inserts a clocksync element before compatible send/mux sinks so we can test whether sender-side timestamp scheduling is coupling A/V latency.')
+
+$lblAudioBufferMs = Add-Label $settingsGroup 'Buffer ms' 15 648 80
+$numAudioBufferMs = New-Object System.Windows.Forms.NumericUpDown
+$numAudioBufferMs.Location = New-Object System.Drawing.Point(95, 648)
+$numAudioBufferMs.Size = New-Object System.Drawing.Size(75, 23)
+$numAudioBufferMs.Minimum = 1
+$numAudioBufferMs.Maximum = 1000
+$numAudioBufferMs.Value = $script:DefaultAudioBufferMs
+$settingsGroup.Controls.Add($numAudioBufferMs)
+$toolTip.SetToolTip($numAudioBufferMs, 'Requested WASAPI buffer-time in milliseconds. The log still reports actual-buffer-time; if it says 500 ms, the driver ignored the request.')
+
+$lblAudioLatencyMs = Add-Label $settingsGroup 'Latency ms' 195 648 80
+$numAudioLatencyMs = New-Object System.Windows.Forms.NumericUpDown
+$numAudioLatencyMs.Location = New-Object System.Drawing.Point(275, 648)
+$numAudioLatencyMs.Size = New-Object System.Drawing.Size(75, 23)
+$numAudioLatencyMs.Minimum = 1
+$numAudioLatencyMs.Maximum = 1000
+$numAudioLatencyMs.Value = $script:DefaultAudioLatencyMs
+$settingsGroup.Controls.Add($numAudioLatencyMs)
+$toolTip.SetToolTip($numAudioLatencyMs, 'Requested WASAPI latency-time in milliseconds.')
+
 $null = Add-Label $settingsGroup 'Audio codec' 15 354 80
 $cmbAudioCodec = New-Object System.Windows.Forms.ComboBox
 $cmbAudioCodec.Location = New-Object System.Drawing.Point(95, 354)
@@ -1499,8 +2692,51 @@ $numAudioBitrate.Increment = 16
 $numAudioBitrate.Value = 128
 $settingsGroup.Controls.Add($numAudioBitrate)
 
+$cmbDirectWebRtcOpusMode = New-Object System.Windows.Forms.ComboBox
+$cmbDirectWebRtcOpusMode.Location = New-Object System.Drawing.Point(15, 548)
+$cmbDirectWebRtcOpusMode.Size = New-Object System.Drawing.Size(190, 23)
+$cmbDirectWebRtcOpusMode.DropDownStyle = 'DropDownList'
+$null = $cmbDirectWebRtcOpusMode.Items.AddRange([string[]]@('Explicit Opus encoder','Raw audio to webrtcsink'))
+$cmbDirectWebRtcOpusMode.SelectedItem = $script:DefaultDirectWebRtcOpusMode
+$settingsGroup.Controls.Add($cmbDirectWebRtcOpusMode)
+$toolTip.SetToolTip($cmbDirectWebRtcOpusMode, 'Direct GST WebRTC audio path. Explicit Opus exposes frame-size/type/FEC/DTX. Raw audio hands S16LE to webrtcsink and lets it spawn its own internal encoder.')
+
+$cmbDirectWebRtcOpusFrameMs = New-Object System.Windows.Forms.ComboBox
+$cmbDirectWebRtcOpusFrameMs.Location = New-Object System.Drawing.Point(15, 548)
+$cmbDirectWebRtcOpusFrameMs.Size = New-Object System.Drawing.Size(85, 23)
+$cmbDirectWebRtcOpusFrameMs.DropDownStyle = 'DropDownList'
+$null = $cmbDirectWebRtcOpusFrameMs.Items.AddRange([string[]]@('2.5','5','10','20','40','60'))
+$cmbDirectWebRtcOpusFrameMs.SelectedItem = $script:DefaultDirectWebRtcOpusFrameMs
+$settingsGroup.Controls.Add($cmbDirectWebRtcOpusFrameMs)
+$toolTip.SetToolTip($cmbDirectWebRtcOpusFrameMs, 'opusenc frame-size for Direct GST WebRTC when Explicit Opus encoder is selected. Smaller frames reduce fixed audio encode delay but increase packet rate.')
+
+$cmbDirectWebRtcOpusAudioType = New-Object System.Windows.Forms.ComboBox
+$cmbDirectWebRtcOpusAudioType.Location = New-Object System.Drawing.Point(15, 548)
+$cmbDirectWebRtcOpusAudioType.Size = New-Object System.Drawing.Size(170, 23)
+$cmbDirectWebRtcOpusAudioType.DropDownStyle = 'DropDownList'
+$null = $cmbDirectWebRtcOpusAudioType.Items.AddRange([string[]]@('restricted-lowdelay','voice','generic'))
+$cmbDirectWebRtcOpusAudioType.SelectedItem = $script:DefaultDirectWebRtcOpusAudioType
+$settingsGroup.Controls.Add($cmbDirectWebRtcOpusAudioType)
+$toolTip.SetToolTip($cmbDirectWebRtcOpusAudioType, 'opusenc audio-type for Direct GST WebRTC explicit Opus encoding.')
+
+$chkDirectWebRtcOpusFec = New-Object System.Windows.Forms.CheckBox
+$chkDirectWebRtcOpusFec.Text = 'Opus FEC'
+$chkDirectWebRtcOpusFec.Location = New-Object System.Drawing.Point(15, 548)
+$chkDirectWebRtcOpusFec.Size = New-Object System.Drawing.Size(95, 23)
+$chkDirectWebRtcOpusFec.Checked = $script:DefaultDirectWebRtcOpusFec
+$settingsGroup.Controls.Add($chkDirectWebRtcOpusFec)
+$toolTip.SetToolTip($chkDirectWebRtcOpusFec, 'opusenc inband-fec for Direct GST WebRTC. Keep off for lowest LAN latency unless testing packet loss recovery.')
+
+$chkDirectWebRtcOpusDtx = New-Object System.Windows.Forms.CheckBox
+$chkDirectWebRtcOpusDtx.Text = 'Opus DTX'
+$chkDirectWebRtcOpusDtx.Location = New-Object System.Drawing.Point(15, 548)
+$chkDirectWebRtcOpusDtx.Size = New-Object System.Drawing.Size(95, 23)
+$chkDirectWebRtcOpusDtx.Checked = $script:DefaultDirectWebRtcOpusDtx
+$settingsGroup.Controls.Add($chkDirectWebRtcOpusDtx)
+$toolTip.SetToolTip($chkDirectWebRtcOpusDtx, 'opusenc dtx for Direct GST WebRTC. Usually off for desktop/game streaming so silence does not change receiver timing behavior.')
+
 $audioNote = New-Object System.Windows.Forms.Label
-$audioNote.Text = 'Desktop audio uses WASAPI loopback; microphone uses the default device. Video-only WHIP automatically adds a muted Opus/WASAPI clock track for timestamp stability.'
+$audioNote.Text = 'A/V test mode isolates desync: Video only removes audio; Muted audio clock keeps GstAudioSrcClock but sends silence. Normal uses WASAPI loopback/mic.'
 $audioNote.Location = New-Object System.Drawing.Point(15, 392)
 $audioNote.Size = New-Object System.Drawing.Size(700, 22)
 $audioNote.ForeColor = [System.Drawing.Color]::DimGray
@@ -1554,6 +2790,256 @@ $btnBrowseMediaMtx.Location = New-Object System.Drawing.Point(650, 544)
 $btnBrowseMediaMtx.Size = New-Object System.Drawing.Size(68, 27)
 $settingsGroup.Controls.Add($btnBrowseMediaMtx)
 
+
+$defaultRecordingRoot = [Environment]::GetFolderPath('MyVideos')
+if ([string]::IsNullOrWhiteSpace($defaultRecordingRoot)) {
+    $defaultRecordingRoot = [Environment]::GetFolderPath('Desktop')
+}
+if ([string]::IsNullOrWhiteSpace($defaultRecordingRoot)) {
+    $defaultRecordingRoot = $env:USERPROFILE
+}
+$defaultRecordingDirectory = Join-Path $defaultRecordingRoot 'GStreamer Glass'
+
+$chkRecordingEnabled = New-Object System.Windows.Forms.CheckBox
+$chkRecordingEnabled.Text = 'Enable recording'
+$chkRecordingEnabled.Location = New-Object System.Drawing.Point(15, 520)
+$chkRecordingEnabled.Size = New-Object System.Drawing.Size(160, 23)
+$chkRecordingEnabled.Checked = $false
+$settingsGroup.Controls.Add($chkRecordingEnabled)
+$toolTip.SetToolTip($chkRecordingEnabled, 'Records a local file from the same capture source while the selected transport keeps streaming.')
+
+$txtRecordingDirectory = New-Object System.Windows.Forms.TextBox
+$txtRecordingDirectory.Location = New-Object System.Drawing.Point(15, 548)
+$txtRecordingDirectory.Size = New-Object System.Drawing.Size(500, 23)
+$txtRecordingDirectory.Text = $defaultRecordingDirectory
+$settingsGroup.Controls.Add($txtRecordingDirectory)
+$toolTip.SetToolTip($txtRecordingDirectory, 'Folder where recording files are written. The folder is created on Start if needed.')
+
+$btnBrowseRecordingDirectory = New-Object System.Windows.Forms.Button
+$btnBrowseRecordingDirectory.Text = 'Browse...'
+$btnBrowseRecordingDirectory.Location = New-Object System.Drawing.Point(525, 546)
+$btnBrowseRecordingDirectory.Size = New-Object System.Drawing.Size(90, 27)
+$settingsGroup.Controls.Add($btnBrowseRecordingDirectory)
+
+$txtRecordingTemplate = New-Object System.Windows.Forms.TextBox
+$txtRecordingTemplate.Location = New-Object System.Drawing.Point(15, 548)
+$txtRecordingTemplate.Size = New-Object System.Drawing.Size(500, 23)
+$txtRecordingTemplate.Text = 'Glass-{yyyyMMdd-HHmmss}-{protocol}-{width}x{height}-{fps}fps.mkv'
+$settingsGroup.Controls.Add($txtRecordingTemplate)
+$toolTip.SetToolTip($txtRecordingTemplate, 'File name template. Supports {yyyyMMdd-HHmmss}, {date}, {time}, {protocol}, {encoder}, {width}, {height}, and {fps}.')
+
+$cmbRecordingEncoder = New-Object System.Windows.Forms.ComboBox
+$cmbRecordingEncoder.Location = New-Object System.Drawing.Point(15, 548)
+$cmbRecordingEncoder.Size = New-Object System.Drawing.Size(360, 23)
+$cmbRecordingEncoder.DropDownStyle = 'DropDownList'
+$null = $cmbRecordingEncoder.Items.AddRange([string[]]($script:EncoderCatalog.Keys))
+$cmbRecordingEncoder.SelectedItem = $script:DefaultEncoderName
+$settingsGroup.Controls.Add($cmbRecordingEncoder)
+$toolTip.SetToolTip($cmbRecordingEncoder, 'Recording uses its own encoder and bitrate so the stream can stay low-latency while the file gets a different quality target.')
+
+$lblRecordingStatus = New-Object System.Windows.Forms.Label
+$lblRecordingStatus.Text = 'Recording disabled'
+$lblRecordingStatus.Location = New-Object System.Drawing.Point(390, 548)
+$lblRecordingStatus.Size = New-Object System.Drawing.Size(325, 23)
+$lblRecordingStatus.TextAlign = 'MiddleLeft'
+$lblRecordingStatus.ForeColor = [System.Drawing.Color]::DimGray
+$settingsGroup.Controls.Add($lblRecordingStatus)
+
+$cmbRecordingPreset = New-Object System.Windows.Forms.ComboBox
+$cmbRecordingPreset.Location = New-Object System.Drawing.Point(15, 548)
+$cmbRecordingPreset.Size = New-Object System.Drawing.Size(100, 23)
+$cmbRecordingPreset.DropDownStyle = 'DropDownList'
+$null = $cmbRecordingPreset.Items.AddRange(@('p1', 'p2', 'p3', 'p4', 'p5', 'p6', 'p7'))
+$cmbRecordingPreset.SelectedItem = 'p5'
+$settingsGroup.Controls.Add($cmbRecordingPreset)
+
+$cmbRecordingProfile = New-Object System.Windows.Forms.ComboBox
+$cmbRecordingProfile.Location = New-Object System.Drawing.Point(15, 548)
+$cmbRecordingProfile.Size = New-Object System.Drawing.Size(150, 23)
+$cmbRecordingProfile.DropDownStyle = 'DropDownList'
+$null = $cmbRecordingProfile.Items.AddRange(@('constrained-baseline', 'baseline', 'main', 'high'))
+$cmbRecordingProfile.SelectedItem = 'high'
+$settingsGroup.Controls.Add($cmbRecordingProfile)
+
+$numRecordingWidth = New-Object System.Windows.Forms.NumericUpDown
+$numRecordingWidth.Location = New-Object System.Drawing.Point(15, 548)
+$numRecordingWidth.Size = New-Object System.Drawing.Size(90, 23)
+$numRecordingWidth.Minimum = 320
+$numRecordingWidth.Maximum = 7680
+$numRecordingWidth.Increment = 16
+$numRecordingWidth.Value = 1920
+$settingsGroup.Controls.Add($numRecordingWidth)
+
+$numRecordingHeight = New-Object System.Windows.Forms.NumericUpDown
+$numRecordingHeight.Location = New-Object System.Drawing.Point(15, 548)
+$numRecordingHeight.Size = New-Object System.Drawing.Size(90, 23)
+$numRecordingHeight.Minimum = 240
+$numRecordingHeight.Maximum = 4320
+$numRecordingHeight.Increment = 16
+$numRecordingHeight.Value = 1080
+$settingsGroup.Controls.Add($numRecordingHeight)
+
+$numRecordingFps = New-Object System.Windows.Forms.NumericUpDown
+$numRecordingFps.Location = New-Object System.Drawing.Point(15, 548)
+$numRecordingFps.Size = New-Object System.Drawing.Size(80, 23)
+$numRecordingFps.Minimum = 1
+$numRecordingFps.Maximum = 240
+$numRecordingFps.Value = 60
+$settingsGroup.Controls.Add($numRecordingFps)
+
+$numRecordingVideoBitrate = New-Object System.Windows.Forms.NumericUpDown
+$numRecordingVideoBitrate.Location = New-Object System.Drawing.Point(15, 548)
+$numRecordingVideoBitrate.Size = New-Object System.Drawing.Size(110, 23)
+$numRecordingVideoBitrate.Minimum = 250
+$numRecordingVideoBitrate.Maximum = 200000
+$numRecordingVideoBitrate.Increment = 500
+$numRecordingVideoBitrate.Value = 25000
+$settingsGroup.Controls.Add($numRecordingVideoBitrate)
+
+
+$cmbRecordingRateControl = New-Object System.Windows.Forms.ComboBox
+$cmbRecordingRateControl.Location = New-Object System.Drawing.Point(15, 548)
+$cmbRecordingRateControl.Size = New-Object System.Drawing.Size(95, 23)
+$cmbRecordingRateControl.DropDownStyle = 'DropDownList'
+$null = $cmbRecordingRateControl.Items.AddRange([string[]]$script:RateControlModes)
+$cmbRecordingRateControl.SelectedItem = 'constqp'
+$settingsGroup.Controls.Add($cmbRecordingRateControl)
+$toolTip.SetToolTip($cmbRecordingRateControl, 'Recording rate control. constqp is the OBS-style quality-first default; CBR/VBR remain available.')
+
+$numRecordingMaxVideoBitrate = New-Object System.Windows.Forms.NumericUpDown
+$numRecordingMaxVideoBitrate.Location = New-Object System.Drawing.Point(15, 548)
+$numRecordingMaxVideoBitrate.Size = New-Object System.Drawing.Size(100, 23)
+$numRecordingMaxVideoBitrate.Minimum = 0
+$numRecordingMaxVideoBitrate.Maximum = 500000
+$numRecordingMaxVideoBitrate.Increment = 500
+$numRecordingMaxVideoBitrate.Value = 0
+$settingsGroup.Controls.Add($numRecordingMaxVideoBitrate)
+$toolTip.SetToolTip($numRecordingMaxVideoBitrate, 'Recording maximum bitrate for VBR where supported. 0 uses encoder default.')
+
+$numRecordingConstantQp = New-Object System.Windows.Forms.NumericUpDown
+$numRecordingConstantQp.Location = New-Object System.Drawing.Point(15, 548)
+$numRecordingConstantQp.Size = New-Object System.Drawing.Size(70, 23)
+$numRecordingConstantQp.Minimum = 0
+$numRecordingConstantQp.Maximum = 51
+$numRecordingConstantQp.Value = 20
+$settingsGroup.Controls.Add($numRecordingConstantQp)
+$toolTip.SetToolTip($numRecordingConstantQp, 'Recording CQ/QP. Lower means higher quality and larger files. 18-23 is usually the useful range for H.264/H.265 testing.')
+
+$numRecordingGopSeconds = New-Object System.Windows.Forms.NumericUpDown
+$numRecordingGopSeconds.Location = New-Object System.Drawing.Point(15, 548)
+$numRecordingGopSeconds.Size = New-Object System.Drawing.Size(80, 23)
+$numRecordingGopSeconds.Minimum = 1
+$numRecordingGopSeconds.Maximum = 10
+$numRecordingGopSeconds.Value = 2
+$settingsGroup.Controls.Add($numRecordingGopSeconds)
+
+$numRecordingBFrames = New-Object System.Windows.Forms.NumericUpDown
+$numRecordingBFrames.Location = New-Object System.Drawing.Point(15, 548)
+$numRecordingBFrames.Size = New-Object System.Drawing.Size(80, 23)
+$numRecordingBFrames.Minimum = 0
+$numRecordingBFrames.Maximum = 4
+$numRecordingBFrames.Value = 2
+$settingsGroup.Controls.Add($numRecordingBFrames)
+$toolTip.SetToolTip($numRecordingBFrames, 'Recording can use B-frames for quality because this branch is not the live WebRTC path.')
+
+
+$cmbRecordingTune = New-Object System.Windows.Forms.ComboBox
+$cmbRecordingTune.Location = New-Object System.Drawing.Point(15, 548)
+$cmbRecordingTune.Size = New-Object System.Drawing.Size(165, 23)
+$cmbRecordingTune.DropDownStyle = 'DropDownList'
+$null = $cmbRecordingTune.Items.AddRange([string[]]$script:NvencTuneModes)
+$cmbRecordingTune.SelectedItem = 'high-quality'
+$settingsGroup.Controls.Add($cmbRecordingTune)
+$toolTip.SetToolTip($cmbRecordingTune, 'NVENC tune for recording. high-quality is the default; use low-latency/ultra-low-latency only when recording must stay realtime above quality.')
+
+$cmbRecordingMultipass = New-Object System.Windows.Forms.ComboBox
+$cmbRecordingMultipass.Location = New-Object System.Drawing.Point(15, 548)
+$cmbRecordingMultipass.Size = New-Object System.Drawing.Size(150, 23)
+$cmbRecordingMultipass.DropDownStyle = 'DropDownList'
+$null = $cmbRecordingMultipass.Items.AddRange([string[]]$script:NvencMultipassModes)
+$cmbRecordingMultipass.SelectedItem = 'two-pass-quarter'
+$settingsGroup.Controls.Add($cmbRecordingMultipass)
+$toolTip.SetToolTip($cmbRecordingMultipass, 'NVENC multipass for recording. two-pass-quarter mirrors OBS-style quality without full two-pass cost.')
+
+$chkRecordingLookAhead = New-Object System.Windows.Forms.CheckBox
+$chkRecordingLookAhead.Text = 'Look-ahead'
+$chkRecordingLookAhead.Location = New-Object System.Drawing.Point(15, 548)
+$chkRecordingLookAhead.Size = New-Object System.Drawing.Size(105, 23)
+$chkRecordingLookAhead.Checked = $false
+$settingsGroup.Controls.Add($chkRecordingLookAhead)
+$toolTip.SetToolTip($chkRecordingLookAhead, 'Recording look-ahead where supported. Adds frame buffering but can improve B-frame decisions/quality.')
+
+$numRecordingLookAheadFrames = New-Object System.Windows.Forms.NumericUpDown
+$numRecordingLookAheadFrames.Location = New-Object System.Drawing.Point(15, 548)
+$numRecordingLookAheadFrames.Size = New-Object System.Drawing.Size(70, 23)
+$numRecordingLookAheadFrames.Minimum = 1
+$numRecordingLookAheadFrames.Maximum = 64
+$numRecordingLookAheadFrames.Value = 20
+$numRecordingLookAheadFrames.Enabled = $false
+$settingsGroup.Controls.Add($numRecordingLookAheadFrames)
+
+$chkRecordingSpatialAq = New-Object System.Windows.Forms.CheckBox
+$chkRecordingSpatialAq.Text = 'Spatial AQ'
+$chkRecordingSpatialAq.Location = New-Object System.Drawing.Point(15, 548)
+$chkRecordingSpatialAq.Size = New-Object System.Drawing.Size(90, 23)
+$chkRecordingSpatialAq.Checked = $true
+$settingsGroup.Controls.Add($chkRecordingSpatialAq)
+
+$chkRecordingTemporalAq = New-Object System.Windows.Forms.CheckBox
+$chkRecordingTemporalAq.Text = 'Temporal AQ'
+$chkRecordingTemporalAq.Location = New-Object System.Drawing.Point(15, 548)
+$chkRecordingTemporalAq.Size = New-Object System.Drawing.Size(105, 23)
+$chkRecordingTemporalAq.Checked = $true
+$settingsGroup.Controls.Add($chkRecordingTemporalAq)
+
+$numRecordingAqStrength = New-Object System.Windows.Forms.NumericUpDown
+$numRecordingAqStrength.Location = New-Object System.Drawing.Point(15, 548)
+$numRecordingAqStrength.Size = New-Object System.Drawing.Size(70, 23)
+$numRecordingAqStrength.Minimum = 1
+$numRecordingAqStrength.Maximum = 15
+$numRecordingAqStrength.Value = 8
+$settingsGroup.Controls.Add($numRecordingAqStrength)
+
+$numRecordingVbvBuffer = New-Object System.Windows.Forms.NumericUpDown
+$numRecordingVbvBuffer.Location = New-Object System.Drawing.Point(15, 548)
+$numRecordingVbvBuffer.Size = New-Object System.Drawing.Size(100, 23)
+$numRecordingVbvBuffer.Minimum = 0
+$numRecordingVbvBuffer.Maximum = 1000000
+$numRecordingVbvBuffer.Increment = 500
+$numRecordingVbvBuffer.Value = 0
+$settingsGroup.Controls.Add($numRecordingVbvBuffer)
+$toolTip.SetToolTip($numRecordingVbvBuffer, 'NVENC VBV/HRD buffer size in kbits. 0 uses encoder default.')
+
+$txtRecordingCustomEncoderOptions = New-Object System.Windows.Forms.TextBox
+$txtRecordingCustomEncoderOptions.Location = New-Object System.Drawing.Point(15, 548)
+$txtRecordingCustomEncoderOptions.Size = New-Object System.Drawing.Size(520, 23)
+$txtRecordingCustomEncoderOptions.Text = ''
+$settingsGroup.Controls.Add($txtRecordingCustomEncoderOptions)
+$toolTip.SetToolTip($txtRecordingCustomEncoderOptions, 'Raw options appended directly after the selected recording encoder element. Useful for AMD/Intel/MF/software knobs while we validate mappings.')
+
+$chkRecordingDesktopAudio = New-Object System.Windows.Forms.CheckBox
+$chkRecordingDesktopAudio.Text = 'Record desktop audio'
+$chkRecordingDesktopAudio.Location = New-Object System.Drawing.Point(15, 548)
+$chkRecordingDesktopAudio.Size = New-Object System.Drawing.Size(170, 23)
+$chkRecordingDesktopAudio.Checked = $true
+$settingsGroup.Controls.Add($chkRecordingDesktopAudio)
+
+$chkRecordingMic = New-Object System.Windows.Forms.CheckBox
+$chkRecordingMic.Text = 'Record microphone'
+$chkRecordingMic.Location = New-Object System.Drawing.Point(15, 548)
+$chkRecordingMic.Size = New-Object System.Drawing.Size(170, 23)
+$chkRecordingMic.Checked = $false
+$settingsGroup.Controls.Add($chkRecordingMic)
+
+$numRecordingAudioBitrate = New-Object System.Windows.Forms.NumericUpDown
+$numRecordingAudioBitrate.Location = New-Object System.Drawing.Point(15, 548)
+$numRecordingAudioBitrate.Size = New-Object System.Drawing.Size(100, 23)
+$numRecordingAudioBitrate.Minimum = 32
+$numRecordingAudioBitrate.Maximum = 512
+$numRecordingAudioBitrate.Increment = 16
+$numRecordingAudioBitrate.Value = 192
+$settingsGroup.Controls.Add($numRecordingAudioBitrate)
+
 $previewGroup = New-Object System.Windows.Forms.GroupBox
 $previewGroup.Text = 'Local Preview (experimental)'
 $previewGroup.Location = New-Object System.Drawing.Point(755, 10)
@@ -1592,11 +3078,20 @@ $tabCommand.Text = 'Generated Command'
 $tabCommand.Padding = New-Object System.Windows.Forms.Padding(6)
 $null = $lowerTabs.TabPages.Add($tabCommand)
 
+# Appends no longer force a scroll while the log tab is hidden, so catch the
+# tail up whenever the log becomes visible again.
+$lowerTabs.Add_SelectedIndexChanged({
+    if ($lowerTabs.SelectedTab -eq $tabLog) {
+        Scroll-LogToBottom
+    }
+})
+
 $txtCommand = New-Object System.Windows.Forms.TextBox
 $txtCommand.Multiline = $true
 $txtCommand.ScrollBars = 'Vertical'
 $txtCommand.WordWrap = $true
 $txtCommand.ReadOnly = $true
+$txtCommand.HideSelection = $false
 $txtCommand.AcceptsReturn = $false
 $txtCommand.AcceptsTab = $false
 $txtCommand.Font = New-Object System.Drawing.Font('Consolas', 9)
@@ -1695,9 +3190,1410 @@ $txtLog.Multiline = $true
 $txtLog.ScrollBars = 'Both'
 $txtLog.WordWrap = $false
 $txtLog.ReadOnly = $true
+$txtLog.HideSelection = $false
 $txtLog.Font = New-Object System.Drawing.Font('Consolas', 9)
 $txtLog.Dock = 'Fill'
 $tabLog.Controls.Add($txtLog)
+
+# Experimental scene controls. Scenes remain off by default, preserving the
+# original single-source capture path byte-for-byte until explicitly enabled.
+$chkSceneEnabled = New-Object System.Windows.Forms.CheckBox
+$chkSceneEnabled.Text = 'Enable experimental scene composition'
+$chkSceneEnabled.AutoSize = $true
+
+$cmbScenePreset = New-Object System.Windows.Forms.ComboBox
+$cmbScenePreset.DropDownStyle = 'DropDownList'
+$null = $cmbScenePreset.Items.AddRange(@('Desktop + webcam', 'Desktop only', 'Webcam only'))
+$cmbScenePreset.SelectedItem = 'Desktop + webcam'
+
+$cmbSceneCompositor = New-Object System.Windows.Forms.ComboBox
+$cmbSceneCompositor.DropDownStyle = 'DropDownList'
+$null = $cmbSceneCompositor.Items.AddRange(@('D3D11 GPU (recommended)', 'CPU compatibility'))
+$cmbSceneCompositor.SelectedIndex = 0
+
+$cmbWebcamDevice = New-Object System.Windows.Forms.ComboBox
+$cmbWebcamDevice.DropDownStyle = 'DropDownList'
+$null = $cmbWebcamDevice.Items.Add('0: Default camera')
+$cmbWebcamDevice.SelectedIndex = 0
+
+$btnRefreshWebcams = New-Object System.Windows.Forms.Button
+$btnRefreshWebcams.Text = 'Refresh cameras'
+
+$cmbWebcamLayout = New-Object System.Windows.Forms.ComboBox
+$cmbWebcamLayout.DropDownStyle = 'DropDownList'
+$null = $cmbWebcamLayout.Items.AddRange(@('Bottom right', 'Bottom left', 'Top right', 'Top left', 'Custom'))
+$cmbWebcamLayout.SelectedItem = 'Bottom right'
+
+function New-SceneNumeric {
+    param([int]$Minimum, [int]$Maximum, [int]$Value, [int]$Increment = 1)
+    $control = New-Object System.Windows.Forms.NumericUpDown
+    $control.Minimum = $Minimum
+    $control.Maximum = $Maximum
+    $control.Value = $Value
+    $control.Increment = $Increment
+    return $control
+}
+
+$numWebcamWidth = New-SceneNumeric 64 3840 480 16
+$numWebcamHeight = New-SceneNumeric 64 2160 270 16
+$numWebcamX = New-SceneNumeric 0 7680 1420 10
+$numWebcamY = New-SceneNumeric 0 4320 790 10
+$numWebcamFps = New-SceneNumeric 1 240 30 1
+$numWebcamOpacity = New-SceneNumeric 0 100 100 5
+$numWebcamBorder = New-SceneNumeric 0 64 0 1
+
+$chkWebcamMirror = New-Object System.Windows.Forms.CheckBox
+$chkWebcamMirror.Text = 'Mirror webcam'
+$chkWebcamMirror.AutoSize = $true
+
+$lblSceneStatus = New-Object System.Windows.Forms.Label
+$lblSceneStatus.Text = 'Concept mode is disabled; the existing capture pipeline is unchanged.'
+$lblSceneStatus.AutoSize = $true
+
+$txtScenePipeline = New-Object System.Windows.Forms.TextBox
+$txtScenePipeline.Multiline = $true
+$txtScenePipeline.ReadOnly = $true
+$txtScenePipeline.ScrollBars = 'Both'
+$txtScenePipeline.WordWrap = $false
+$txtScenePipeline.Height = 110
+
+# Visual scene editor. The canvas is a scaled representation of the encoded
+# output; moving/resizing the webcam layer writes directly to the compositor
+# X/Y/width/height controls used by Build-SceneCaptureChain.
+$script:UpdatingSceneEditor = $false
+$script:ScenePointerActive = $false
+$script:ScenePointerMode = 'Move'
+$script:ScenePointerStart = [System.Drawing.Point]::Empty
+$script:SceneElementStartBounds = [System.Drawing.Rectangle]::Empty
+$script:SceneSourceDragActive = $false
+
+$sceneSourcePalette = New-Object System.Windows.Forms.FlowLayoutPanel
+$sceneSourcePalette.Name = 'SceneSourcePalette'
+$sceneSourcePalette.FlowDirection = 'LeftToRight'
+$sceneSourcePalette.WrapContents = $false
+$sceneSourcePalette.AutoSize = $false
+$sceneSourcePalette.Height = 42
+$sceneSourcePalette.BackColor = [System.Drawing.ColorTranslator]::FromHtml('#0F172A')
+$sceneSourcePalette.Padding = New-Object System.Windows.Forms.Padding(6)
+
+$lblDesktopSource = New-Object System.Windows.Forms.Label
+$lblDesktopSource.Text = '[box] Desktop (background)'
+$lblDesktopSource.AutoSize = $false
+$lblDesktopSource.Size = New-Object System.Drawing.Size(190, 28)
+$lblDesktopSource.TextAlign = 'MiddleCenter'
+$lblDesktopSource.BackColor = [System.Drawing.ColorTranslator]::FromHtml('#1E293B')
+$lblDesktopSource.ForeColor = [System.Drawing.ColorTranslator]::FromHtml('#94A3B8')
+$sceneSourcePalette.Controls.Add($lblDesktopSource)
+
+$lblWebcamSource = New-Object System.Windows.Forms.Label
+$lblWebcamSource.Text = '[box] Webcam - drag to canvas'
+$lblWebcamSource.AutoSize = $false
+$lblWebcamSource.Size = New-Object System.Drawing.Size(210, 28)
+$lblWebcamSource.TextAlign = 'MiddleCenter'
+$lblWebcamSource.BackColor = [System.Drawing.ColorTranslator]::FromHtml('#17345C')
+$lblWebcamSource.ForeColor = [System.Drawing.Color]::White
+$lblWebcamSource.Cursor = [System.Windows.Forms.Cursors]::Hand
+$sceneSourcePalette.Controls.Add($lblWebcamSource)
+
+$sceneEditorCanvas = New-Object System.Windows.Forms.Panel
+$sceneEditorCanvas.Name = 'SceneEditorCanvas'
+$sceneEditorCanvas.Size = New-Object System.Drawing.Size(550, 309)
+$sceneEditorCanvas.MinimumSize = New-Object System.Drawing.Size(420, 236)
+$sceneEditorCanvas.BackColor = [System.Drawing.Color]::Black
+$sceneEditorCanvas.BorderStyle = 'FixedSingle'
+# Do not use WinForms AllowDrop/DoDragDrop here. Those APIs invoke OLE and throw
+# when the PS2EXE/PowerShell host runs MTA. The editor uses control capture and
+# screen-coordinate hit testing below, which works in both STA and MTA hosts.
+
+$lblSceneDesktop = New-Object System.Windows.Forms.Label
+$lblSceneDesktop.Dock = 'Fill'
+$lblSceneDesktop.Text = "DESKTOP BACKGROUND`r`n1920 x 1080"
+$lblSceneDesktop.TextAlign = 'MiddleCenter'
+$lblSceneDesktop.ForeColor = [System.Drawing.ColorTranslator]::FromHtml('#64748B')
+$lblSceneDesktop.BackColor = [System.Drawing.ColorTranslator]::FromHtml('#050A12')
+$sceneEditorCanvas.Controls.Add($lblSceneDesktop)
+
+$sceneWebcamElement = New-Object System.Windows.Forms.Panel
+$sceneWebcamElement.Name = 'SceneWebcamElement'
+$sceneWebcamElement.BackColor = [System.Drawing.ColorTranslator]::FromHtml('#17345C')
+$sceneWebcamElement.BorderStyle = 'FixedSingle'
+$sceneWebcamElement.Cursor = [System.Windows.Forms.Cursors]::SizeAll
+$sceneEditorCanvas.Controls.Add($sceneWebcamElement)
+
+$lblSceneWebcam = New-Object System.Windows.Forms.Label
+$lblSceneWebcam.Dock = 'Fill'
+$lblSceneWebcam.Text = "WEBCAM`r`nDrag to move"
+$lblSceneWebcam.TextAlign = 'MiddleCenter'
+$lblSceneWebcam.ForeColor = [System.Drawing.Color]::White
+$lblSceneWebcam.BackColor = [System.Drawing.ColorTranslator]::FromHtml('#17345C')
+$lblSceneWebcam.Cursor = [System.Windows.Forms.Cursors]::SizeAll
+$sceneWebcamElement.Controls.Add($lblSceneWebcam)
+
+$sceneResizeHandle = New-Object System.Windows.Forms.Panel
+$sceneResizeHandle.Name = 'SceneResizeHandle'
+$sceneResizeHandle.Size = New-Object System.Drawing.Size(14, 14)
+$sceneResizeHandle.BackColor = [System.Drawing.ColorTranslator]::FromHtml('#60A5FA')
+$sceneResizeHandle.Cursor = [System.Windows.Forms.Cursors]::SizeNWSE
+$sceneWebcamElement.Controls.Add($sceneResizeHandle)
+
+$lblSceneEditorHint = New-Object System.Windows.Forms.Label
+$lblSceneEditorHint.Text = 'Drag Webcam from Sources onto the canvas. Drag the layer to move; drag its blue corner to resize.'
+$lblSceneEditorHint.AutoSize = $true
+
+function Update-SceneCanvasFromValues {
+    if (-not $sceneEditorCanvas -or $sceneEditorCanvas.ClientSize.Width -le 0 -or $sceneEditorCanvas.ClientSize.Height -le 0) { return }
+    $script:UpdatingSceneEditor = $true
+    try {
+        $outputWidth = [Math]::Max(1, [int]$numWidth.Value)
+        $outputHeight = [Math]::Max(1, [int]$numHeight.Value)
+        $scaleX = [double]$sceneEditorCanvas.ClientSize.Width / $outputWidth
+        $scaleY = [double]$sceneEditorCanvas.ClientSize.Height / $outputHeight
+        $left = [int]([Math]::Round([int]$numWebcamX.Value * $scaleX))
+        $top = [int]([Math]::Round([int]$numWebcamY.Value * $scaleY))
+        $width = [Math]::Max(24, [int]([Math]::Round([int]$numWebcamWidth.Value * $scaleX)))
+        $height = [Math]::Max(18, [int]([Math]::Round([int]$numWebcamHeight.Value * $scaleY)))
+        $left = [Math]::Max(0, [Math]::Min($sceneEditorCanvas.ClientSize.Width - $width, $left))
+        $top = [Math]::Max(0, [Math]::Min($sceneEditorCanvas.ClientSize.Height - $height, $top))
+        $sceneWebcamElement.Bounds = New-Object System.Drawing.Rectangle($left, $top, $width, $height)
+        $sceneResizeHandle.Location = New-Object System.Drawing.Point([Math]::Max(0, $width - $sceneResizeHandle.Width - 1), [Math]::Max(0, $height - $sceneResizeHandle.Height - 1))
+        $sceneResizeHandle.BringToFront()
+        $sceneWebcamElement.Visible = ([string]$cmbScenePreset.SelectedItem -ne 'Desktop only')
+        $sceneWebcamElement.Enabled = $chkSceneEnabled.Checked
+        $lblSceneDesktop.Text = "DESKTOP BACKGROUND`r`n$outputWidth x $outputHeight"
+        $lblSceneWebcam.Text = "WEBCAM`r`n$([int]$numWebcamWidth.Value) x $([int]$numWebcamHeight.Value)"
+        $sceneWebcamElement.BringToFront()
+    }
+    finally { $script:UpdatingSceneEditor = $false }
+}
+
+function Set-SceneValuesFromElement {
+    if ($script:UpdatingSceneEditor) { return }
+    $outputWidth = [Math]::Max(1, [int]$numWidth.Value)
+    $outputHeight = [Math]::Max(1, [int]$numHeight.Value)
+    $scaleX = [double]$outputWidth / [Math]::Max(1, $sceneEditorCanvas.ClientSize.Width)
+    $scaleY = [double]$outputHeight / [Math]::Max(1, $sceneEditorCanvas.ClientSize.Height)
+    $script:UpdatingSceneEditor = $true
+    try {
+        $cmbWebcamLayout.SelectedItem = 'Custom'
+        $numWebcamX.Value = [decimal]([Math]::Min([int]$numWebcamX.Maximum, [Math]::Max(0, [int]([Math]::Round($sceneWebcamElement.Left * $scaleX)))))
+        $numWebcamY.Value = [decimal]([Math]::Min([int]$numWebcamY.Maximum, [Math]::Max(0, [int]([Math]::Round($sceneWebcamElement.Top * $scaleY)))))
+        $numWebcamWidth.Value = [decimal]([Math]::Min([int]$numWebcamWidth.Maximum, [Math]::Max([int]$numWebcamWidth.Minimum, [int]([Math]::Round($sceneWebcamElement.Width * $scaleX)))))
+        $numWebcamHeight.Value = [decimal]([Math]::Min([int]$numWebcamHeight.Maximum, [Math]::Max([int]$numWebcamHeight.Minimum, [int]([Math]::Round($sceneWebcamElement.Height * $scaleY)))))
+    }
+    finally { $script:UpdatingSceneEditor = $false }
+    Update-SceneUi
+}
+
+$scenePointerDown = {
+    param($sender, $e)
+    if (-not $chkSceneEnabled.Checked -or $e.Button -ne [System.Windows.Forms.MouseButtons]::Left) { return }
+    $script:ScenePointerActive = $true
+    $script:ScenePointerStart = [System.Windows.Forms.Cursor]::Position
+    $script:SceneElementStartBounds = $sceneWebcamElement.Bounds
+    $local = $sceneWebcamElement.PointToClient([System.Windows.Forms.Cursor]::Position)
+    $script:ScenePointerMode = if ($local.X -ge ($sceneWebcamElement.Width - 18) -and $local.Y -ge ($sceneWebcamElement.Height - 18)) { 'Resize' } else { 'Move' }
+    $sceneWebcamElement.Capture = $true
+}
+
+$scenePointerMove = {
+    param($sender, $e)
+    if (-not $script:ScenePointerActive) { return }
+    $cursor = [System.Windows.Forms.Cursor]::Position
+    $dx = $cursor.X - $script:ScenePointerStart.X
+    $dy = $cursor.Y - $script:ScenePointerStart.Y
+    $start = $script:SceneElementStartBounds
+    if ($script:ScenePointerMode -eq 'Resize') {
+        $newWidth = [Math]::Max(24, [Math]::Min($sceneEditorCanvas.ClientSize.Width - $start.Left, $start.Width + $dx))
+        $newHeight = [Math]::Max(18, [Math]::Min($sceneEditorCanvas.ClientSize.Height - $start.Top, $start.Height + $dy))
+        $sceneWebcamElement.Size = New-Object System.Drawing.Size($newWidth, $newHeight)
+    }
+    else {
+        $newLeft = [Math]::Max(0, [Math]::Min($sceneEditorCanvas.ClientSize.Width - $start.Width, $start.Left + $dx))
+        $newTop = [Math]::Max(0, [Math]::Min($sceneEditorCanvas.ClientSize.Height - $start.Height, $start.Top + $dy))
+        $sceneWebcamElement.Location = New-Object System.Drawing.Point($newLeft, $newTop)
+    }
+    $sceneResizeHandle.Location = New-Object System.Drawing.Point([Math]::Max(0, $sceneWebcamElement.Width - $sceneResizeHandle.Width - 1), [Math]::Max(0, $sceneWebcamElement.Height - $sceneResizeHandle.Height - 1))
+}
+
+$scenePointerUp = {
+    param($sender, $e)
+    if (-not $script:ScenePointerActive) { return }
+    $script:ScenePointerActive = $false
+    $sceneWebcamElement.Capture = $false
+    Set-SceneValuesFromElement
+}
+
+foreach ($dragControl in @($sceneWebcamElement, $lblSceneWebcam, $sceneResizeHandle)) {
+    $dragControl.Add_MouseDown($scenePointerDown)
+    $dragControl.Add_MouseMove($scenePointerMove)
+    $dragControl.Add_MouseUp($scenePointerUp)
+}
+
+function Place-WebcamOnSceneCanvas {
+    param([System.Drawing.Point]$ScreenPoint)
+    $canvasBounds = $sceneEditorCanvas.RectangleToScreen($sceneEditorCanvas.ClientRectangle)
+    if (-not $canvasBounds.Contains($ScreenPoint)) { return }
+    $chkSceneEnabled.Checked = $true
+    $cmbScenePreset.SelectedItem = 'Desktop + webcam'
+    $point = $sceneEditorCanvas.PointToClient($ScreenPoint)
+    Update-SceneCanvasFromValues
+    $left = [Math]::Max(0, [Math]::Min($sceneEditorCanvas.ClientSize.Width - $sceneWebcamElement.Width, $point.X - [int]($sceneWebcamElement.Width / 2)))
+    $top = [Math]::Max(0, [Math]::Min($sceneEditorCanvas.ClientSize.Height - $sceneWebcamElement.Height, $point.Y - [int]($sceneWebcamElement.Height / 2)))
+    $sceneWebcamElement.Location = New-Object System.Drawing.Point($left, $top)
+    Set-SceneValuesFromElement
+}
+
+$lblWebcamSource.Add_MouseDown({
+    param($sender, $e)
+    if ($e.Button -ne [System.Windows.Forms.MouseButtons]::Left) { return }
+    $script:SceneSourceDragActive = $true
+    $lblWebcamSource.Capture = $true
+    $lblWebcamSource.Text = '[box] Webcam - release on canvas'
+})
+$lblWebcamSource.Add_MouseMove({
+    if (-not $script:SceneSourceDragActive) { return }
+    $bounds = $sceneEditorCanvas.RectangleToScreen($sceneEditorCanvas.ClientRectangle)
+    $lblWebcamSource.Cursor = if ($bounds.Contains([System.Windows.Forms.Cursor]::Position)) { [System.Windows.Forms.Cursors]::Cross } else { [System.Windows.Forms.Cursors]::Hand }
+})
+$lblWebcamSource.Add_MouseUp({
+    param($sender, $e)
+    if (-not $script:SceneSourceDragActive) { return }
+    $script:SceneSourceDragActive = $false
+    $lblWebcamSource.Capture = $false
+    $lblWebcamSource.Text = '[box] Webcam - drag to canvas'
+    $lblWebcamSource.Cursor = [System.Windows.Forms.Cursors]::Hand
+    Place-WebcamOnSceneCanvas -ScreenPoint ([System.Windows.Forms.Cursor]::Position)
+})
+$sceneEditorCanvas.Add_SizeChanged({ Update-SceneCanvasFromValues })
+
+function Get-SelectedWebcamIndex {
+    $selected = [string]$cmbWebcamDevice.SelectedItem
+    if ($selected -match '^\s*(\d+)\s*:') { return [int]$Matches[1] }
+    return 0
+}
+
+function Refresh-WebcamDevices {
+    $previous = [string]$cmbWebcamDevice.SelectedItem
+    $cmbWebcamDevice.Items.Clear()
+    try {
+        $cameras = @(Get-CimInstance Win32_PnPEntity -ErrorAction Stop | Where-Object {
+            $_.Status -eq 'OK' -and ($_.PNPClass -in @('Camera', 'Image'))
+        } | Sort-Object Name -Unique)
+        $index = 0
+        foreach ($camera in $cameras) {
+            $null = $cmbWebcamDevice.Items.Add(("{0}: {1}" -f $index, [string]$camera.Name))
+            $index++
+        }
+    }
+    catch {}
+    if ($cmbWebcamDevice.Items.Count -eq 0) { $null = $cmbWebcamDevice.Items.Add('0: Default camera') }
+    if ($previous -and $cmbWebcamDevice.Items.Contains($previous)) { $cmbWebcamDevice.SelectedItem = $previous }
+    else { $cmbWebcamDevice.SelectedIndex = 0 }
+}
+
+function Set-WebcamLayoutPreset {
+    if ([string]$cmbWebcamLayout.SelectedItem -eq 'Custom') { return }
+    $canvasWidth = [int]$numWidth.Value
+    $canvasHeight = [int]$numHeight.Value
+    $cameraWidth = [int]$numWebcamWidth.Value
+    $cameraHeight = [int]$numWebcamHeight.Value
+    $margin = 20
+    switch ([string]$cmbWebcamLayout.SelectedItem) {
+        'Bottom left' { $numWebcamX.Value = $margin; $numWebcamY.Value = [Math]::Max(0, $canvasHeight - $cameraHeight - $margin) }
+        'Top right'   { $numWebcamX.Value = [Math]::Max(0, $canvasWidth - $cameraWidth - $margin); $numWebcamY.Value = $margin }
+        'Top left'    { $numWebcamX.Value = $margin; $numWebcamY.Value = $margin }
+        default       { $numWebcamX.Value = [Math]::Max(0, $canvasWidth - $cameraWidth - $margin); $numWebcamY.Value = [Math]::Max(0, $canvasHeight - $cameraHeight - $margin) }
+    }
+}
+
+function Update-SceneUi {
+    if ($script:UpdatingSceneEditor) { return }
+    $enabled = $chkSceneEnabled.Checked
+    foreach ($control in @($cmbScenePreset,$cmbSceneCompositor,$cmbWebcamDevice,$btnRefreshWebcams,$cmbWebcamLayout,$numWebcamWidth,$numWebcamHeight,$numWebcamX,$numWebcamY,$numWebcamFps,$numWebcamOpacity,$numWebcamBorder,$chkWebcamMirror)) {
+        $control.Enabled = $enabled
+    }
+    $lblSceneStatus.Text = if ($enabled) { 'Experimental scene composition will replace the normal capture source when the next pipeline starts.' } else { 'Concept mode is disabled; the existing capture pipeline is unchanged.' }
+    Update-SceneCanvasFromValues
+    try { $txtScenePipeline.Text = Build-SceneCaptureChain -LocalOnly } catch { $txtScenePipeline.Text = $_.Exception.Message }
+    if (Get-Command Update-CommandPreview -ErrorAction SilentlyContinue) { Update-CommandPreview }
+}
+
+$btnRefreshWebcams.Add_Click({ Refresh-WebcamDevices; Update-SceneUi })
+$chkSceneEnabled.Add_CheckedChanged({ Update-SceneUi })
+$cmbScenePreset.Add_SelectedIndexChanged({ Update-SceneUi })
+$cmbSceneCompositor.Add_SelectedIndexChanged({ Update-SceneUi })
+$cmbWebcamDevice.Add_SelectedIndexChanged({ Update-SceneUi })
+$cmbWebcamLayout.Add_SelectedIndexChanged({ Set-WebcamLayoutPreset; Update-SceneUi })
+foreach ($control in @($numWebcamWidth,$numWebcamHeight,$numWebcamX,$numWebcamY,$numWebcamFps,$numWebcamOpacity,$numWebcamBorder)) { $control.Add_ValueChanged({ Update-SceneUi }) }
+$numWidth.Add_ValueChanged({ Update-SceneCanvasFromValues })
+$numHeight.Add_ValueChanged({ Update-SceneCanvasFromValues })
+$chkWebcamMirror.Add_CheckedChanged({ Update-SceneUi })
+
+function Apply-ModernDashboardUi {
+    $script:ColorBg       = [System.Drawing.ColorTranslator]::FromHtml('#0B1220')
+    $script:ColorSurface  = [System.Drawing.ColorTranslator]::FromHtml('#111827')
+    $script:ColorSurface2 = [System.Drawing.ColorTranslator]::FromHtml('#172033')
+    $script:ColorBorder   = [System.Drawing.ColorTranslator]::FromHtml('#334155')
+    $script:ColorText     = [System.Drawing.ColorTranslator]::FromHtml('#E5E7EB')
+    $script:ColorMuted    = [System.Drawing.ColorTranslator]::FromHtml('#94A3B8')
+    $script:ColorAccent   = [System.Drawing.ColorTranslator]::FromHtml('#2563EB')
+    $script:ColorGood     = [System.Drawing.ColorTranslator]::FromHtml('#22C55E')
+    $script:ColorWarn     = [System.Drawing.ColorTranslator]::FromHtml('#F59E0B')
+
+    $form.Size = New-Object System.Drawing.Size(1500, 930)
+    $form.MinimumSize = New-Object System.Drawing.Size(1280, 760)
+    $form.BackColor = $script:ColorBg
+    $form.ForeColor = $script:ColorText
+    $form.Font = New-Object System.Drawing.Font('Segoe UI', 9)
+
+    function Style-Tree {
+        param([System.Windows.Forms.Control]$Control)
+
+        try {
+            $Control.ForeColor = $script:ColorText
+
+            if ($Control -is [System.Windows.Forms.GroupBox]) {
+                $Control.BackColor = $script:ColorSurface
+                $Control.ForeColor = $script:ColorText
+                $Control.Padding = New-Object System.Windows.Forms.Padding(10)
+            }
+            elseif ($Control -is [System.Windows.Forms.Panel]) {
+                if ($Control.Name -notin @('previewPanel','SceneEditorCanvas','SceneWebcamElement','SceneResizeHandle','SceneSourcePalette')) {
+                    $Control.BackColor = $script:ColorSurface
+                }
+            }
+            elseif ($Control -is [System.Windows.Forms.TextBox]) {
+                $Control.BackColor = [System.Drawing.ColorTranslator]::FromHtml('#0F172A')
+                $Control.ForeColor = $script:ColorText
+                $Control.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
+            }
+            elseif ($Control -is [System.Windows.Forms.ComboBox]) {
+                $Control.BackColor = [System.Drawing.ColorTranslator]::FromHtml('#0F172A')
+                $Control.ForeColor = $script:ColorText
+                $Control.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+            }
+            elseif ($Control -is [System.Windows.Forms.NumericUpDown]) {
+                $Control.BackColor = [System.Drawing.ColorTranslator]::FromHtml('#0F172A')
+                $Control.ForeColor = $script:ColorText
+            }
+            elseif ($Control -is [System.Windows.Forms.Button]) {
+                $Control.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+                $Control.FlatAppearance.BorderColor = $script:ColorBorder
+                $Control.FlatAppearance.MouseOverBackColor = [System.Drawing.ColorTranslator]::FromHtml('#1D4ED8')
+                $Control.FlatAppearance.MouseDownBackColor = [System.Drawing.ColorTranslator]::FromHtml('#1E40AF')
+                $Control.BackColor = [System.Drawing.ColorTranslator]::FromHtml('#1F2937')
+                $Control.ForeColor = $script:ColorText
+                $Control.Cursor = [System.Windows.Forms.Cursors]::Hand
+            }
+            elseif ($Control -is [System.Windows.Forms.CheckBox]) {
+                $Control.BackColor = $script:ColorSurface
+                $Control.ForeColor = $script:ColorText
+                $Control.FlatStyle = [System.Windows.Forms.FlatStyle]::Standard
+                $Control.UseVisualStyleBackColor = $false
+            }
+            elseif ($Control -is [System.Windows.Forms.Label]) {
+                $Control.BackColor = [System.Drawing.Color]::Transparent
+                if ($Control.ForeColor -eq [System.Drawing.Color]::Black) {
+                    $Control.ForeColor = $script:ColorMuted
+                }
+            }
+            elseif ($Control -is [System.Windows.Forms.TabControl]) {
+                $Control.BackColor = $script:ColorSurface
+            }
+            elseif ($Control -is [System.Windows.Forms.TabPage]) {
+                $Control.BackColor = $script:ColorSurface
+                $Control.ForeColor = $script:ColorText
+            }
+        }
+        catch {}
+
+        foreach ($child in $Control.Controls) {
+            Style-Tree $child
+        }
+    }
+
+    function New-SidebarButton {
+        param(
+            [string]$Text,
+            [int]$Y,
+            [scriptblock]$OnClick = $null,
+            [bool]$Active = $false
+        )
+
+        # Y is accepted only for backward compatibility with older call sites.
+        # The sidebar is now a FlowLayoutPanel, so button placement is declarative.
+        $btn = New-Object System.Windows.Forms.Button
+        $btn.Text = $Text
+        $btn.TextAlign = [System.Drawing.ContentAlignment]::MiddleLeft
+        $btn.Width = 172
+        $btn.Height = 46
+        $btn.Margin = New-Object System.Windows.Forms.Padding(0, 0, 0, 8)
+        $btn.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+        $btn.FlatAppearance.BorderSize = 0
+        $btn.BackColor = if ($Active) {
+            [System.Drawing.ColorTranslator]::FromHtml('#17345C')
+        }
+        else {
+            [System.Drawing.ColorTranslator]::FromHtml('#0B1220')
+        }
+        $btn.ForeColor = $script:ColorText
+        $btn.Font = New-Object System.Drawing.Font('Segoe UI', 9.5)
+        $btn.Cursor = [System.Windows.Forms.Cursors]::Hand
+        if ($OnClick) { $btn.Add_Click($OnClick) }
+        return $btn
+    }
+
+    # Shell.
+    # The visible window chrome is now fully layout-panel driven:
+    # Form -> root table -> sidebar + main table -> header / dashboard / lower tabs.
+    # No shell card/action/log placement depends on fixed pixels anymore.
+    $form.SuspendLayout()
+    try {
+        $form.Controls.Clear()
+
+        $rootLayout = New-Object System.Windows.Forms.TableLayoutPanel
+        $rootLayout.Name = 'ModernRootLayout'
+        $rootLayout.Dock = 'Fill'
+        $rootLayout.BackColor = $script:ColorBg
+        $rootLayout.ColumnCount = 2
+        $rootLayout.RowCount = 1
+        $null = $rootLayout.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Absolute, 200)))
+        $null = $rootLayout.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 100)))
+        $null = $rootLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 100)))
+        $form.Controls.Add($rootLayout)
+
+        $sidebar = New-Object System.Windows.Forms.FlowLayoutPanel
+        $sidebar.Name = 'ModernSidebar'
+        $sidebar.Dock = 'Fill'
+        $sidebar.FlowDirection = 'TopDown'
+        $sidebar.WrapContents = $false
+        $sidebar.AutoScroll = $true
+        $sidebar.Padding = New-Object System.Windows.Forms.Padding(14, 18, 14, 14)
+        $sidebar.Margin = New-Object System.Windows.Forms.Padding(0)
+        $sidebar.BackColor = [System.Drawing.ColorTranslator]::FromHtml('#08111F')
+        $rootLayout.Controls.Add($sidebar, 0, 0)
+
+        $brandBox = New-Object System.Windows.Forms.TableLayoutPanel
+        $brandBox.Width = 172
+        $brandBox.Height = 74
+        $brandBox.Margin = New-Object System.Windows.Forms.Padding(0, 0, 0, 10)
+        $brandBox.BackColor = [System.Drawing.ColorTranslator]::FromHtml('#08111F')
+        $brandBox.ColumnCount = 2
+        $brandBox.RowCount = 2
+        $null = $brandBox.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Absolute, 44)))
+        $null = $brandBox.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 100)))
+        $null = $brandBox.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 100)))
+        $null = $brandBox.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 20)))
+        $sidebar.Controls.Add($brandBox)
+
+        $brandDot = New-Object System.Windows.Forms.Label
+        $brandDot.Text = 'G'
+        $brandDot.TextAlign = 'MiddleCenter'
+        $brandDot.Dock = 'Fill'
+        $brandDot.Margin = New-Object System.Windows.Forms.Padding(0, 4, 10, 8)
+        $brandDot.BackColor = $script:ColorAccent
+        $brandDot.ForeColor = [System.Drawing.Color]::White
+        $brandDot.Font = New-Object System.Drawing.Font('Segoe UI', 13, [System.Drawing.FontStyle]::Bold)
+        $brandBox.Controls.Add($brandDot, 0, 0)
+
+        $brand = New-Object System.Windows.Forms.Label
+        $brand.Text = "GStreamer`r`nGlass"
+        $brand.Dock = 'Fill'
+        $brand.Margin = New-Object System.Windows.Forms.Padding(0)
+        $brand.ForeColor = $script:ColorText
+        $brand.Font = New-Object System.Drawing.Font('Segoe UI', 11, [System.Drawing.FontStyle]::Bold)
+        $brandBox.Controls.Add($brand, 1, 0)
+
+        $ver = New-Object System.Windows.Forms.Label
+        $ver.Text = "v$script:AppVersion"
+        $ver.Dock = 'Fill'
+        $ver.Margin = New-Object System.Windows.Forms.Padding(0)
+        $ver.ForeColor = $script:ColorMuted
+        $ver.Font = New-Object System.Drawing.Font('Segoe UI', 8)
+        $brandBox.Controls.Add($ver, 0, 1)
+        $brandBox.SetColumnSpan($ver, 2)
+
+        $sidebar.Controls.Add((New-SidebarButton '  (o)  Stream' 0 { if ($script:SettingsTabs -and $script:SettingsTabTransport) { $script:SettingsTabs.SelectedTab = $script:SettingsTabTransport } } $true))
+        $sidebar.Controls.Add((New-SidebarButton '  [box]  Video' 0 { if ($script:SettingsTabs -and $script:SettingsTabVideo) { $script:SettingsTabs.SelectedTab = $script:SettingsTabVideo } }))
+        $sidebar.Controls.Add((New-SidebarButton '  [panel]  Scenes' 0 { if ($script:SettingsTabs -and $script:SettingsTabScenes) { $script:SettingsTabs.SelectedTab = $script:SettingsTabScenes } }))
+        $sidebar.Controls.Add((New-SidebarButton '  <>  Audio' 0 { if ($script:SettingsTabs -and $script:SettingsTabAudio) { $script:SettingsTabs.SelectedTab = $script:SettingsTabAudio } }))
+        $sidebar.Controls.Add((New-SidebarButton '  Play  Player' 0 { if ($script:SettingsTabs -and $script:SettingsTabPlayer) { $script:SettingsTabs.SelectedTab = $script:SettingsTabPlayer } }))
+        $sidebar.Controls.Add((New-SidebarButton '  *  Recording' 0 { if ($script:SettingsTabs -and $script:SettingsTabRecording) { $script:SettingsTabs.SelectedTab = $script:SettingsTabRecording } }))
+        $sidebar.Controls.Add((New-SidebarButton '  <->  Network' 0 { if ($script:SettingsTabs -and $script:SettingsTabNetwork) { $script:SettingsTabs.SelectedTab = $script:SettingsTabNetwork } }))
+        $sidebar.Controls.Add((New-SidebarButton '  (o)  Preview' 0 { $chkPreview.Focus() }))
+        $sidebar.Controls.Add((New-SidebarButton '  Menu  Logs' 0 { $lowerTabs.SelectedTab = $tabLog }))
+        $sidebar.Controls.Add((New-SidebarButton '  </> Command' 0 { $lowerTabs.SelectedTab = $tabCommand }))
+        $sidebar.Controls.Add((New-SidebarButton '  Gear  Options' 0 { if ($script:SettingsTabs -and $script:SettingsTabOptions) { $script:SettingsTabs.SelectedTab = $script:SettingsTabOptions } }))
+
+        $sidebarStatus = New-Object System.Windows.Forms.Label
+        $sidebarStatus.Text = '* Ready'
+        $sidebarStatus.AutoSize = $false
+        $sidebarStatus.Width = 172
+        $sidebarStatus.Height = 26
+        $sidebarStatus.Margin = New-Object System.Windows.Forms.Padding(0, 6, 0, 0)
+        $sidebarStatus.ForeColor = $script:ColorGood
+        $sidebar.Controls.Add($sidebarStatus)
+
+        $mainLayout = New-Object System.Windows.Forms.TableLayoutPanel
+        $mainLayout.Name = 'ModernMainLayout'
+        $mainLayout.Dock = 'Fill'
+        $mainLayout.BackColor = $script:ColorBg
+        $mainLayout.Margin = New-Object System.Windows.Forms.Padding(0)
+        $mainLayout.ColumnCount = 1
+        $mainLayout.RowCount = 3
+        $null = $mainLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 58)))
+        $null = $mainLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 100)))
+        $null = $mainLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 210)))
+        $rootLayout.Controls.Add($mainLayout, 1, 0)
+
+        $header = New-Object System.Windows.Forms.TableLayoutPanel
+        $header.Name = 'ModernHeader'
+        $header.Dock = 'Fill'
+        $header.Margin = New-Object System.Windows.Forms.Padding(0)
+        $header.BackColor = [System.Drawing.ColorTranslator]::FromHtml('#0B1220')
+        $header.ColumnCount = 2
+        $header.RowCount = 1
+        $null = $header.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Absolute, 420)))
+        $null = $header.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 100)))
+        $null = $header.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 100)))
+        $mainLayout.Controls.Add($header, 0, 0)
+
+        $headerTitle = New-Object System.Windows.Forms.Label
+        $headerTitle.Text = 'Low-latency desktop streaming control'
+        $headerTitle.Dock = 'Fill'
+        $headerTitle.TextAlign = 'MiddleLeft'
+        $headerTitle.Margin = New-Object System.Windows.Forms.Padding(20, 0, 0, 0)
+        $headerTitle.ForeColor = $script:ColorMuted
+        $headerTitle.Font = New-Object System.Drawing.Font('Segoe UI', 10)
+        $header.Controls.Add($headerTitle, 0, 0)
+
+        $statusLabel.Parent = $header
+        $statusLabel.Dock = 'Fill'
+        $statusLabel.Margin = New-Object System.Windows.Forms.Padding(0, 0, 20, 0)
+        $statusLabel.TextAlign = 'MiddleLeft'
+        $statusLabel.ForeColor = $script:ColorGood
+        $statusLabel.BackColor = [System.Drawing.Color]::Transparent
+        $header.Controls.Add($statusLabel, 1, 0)
+
+        $dashboardLayout = New-Object System.Windows.Forms.TableLayoutPanel
+        $dashboardLayout.Name = 'ModernDashboardLayout'
+        $dashboardLayout.Dock = 'Fill'
+        $dashboardLayout.BackColor = $script:ColorBg
+        $dashboardLayout.Margin = New-Object System.Windows.Forms.Padding(10, 8, 10, 8)
+        $dashboardLayout.ColumnCount = 2
+        $dashboardLayout.RowCount = 2
+        $null = $dashboardLayout.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 50)))
+        $null = $dashboardLayout.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 50)))
+        $null = $dashboardLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 100)))
+        $null = $dashboardLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 58)))
+        $mainLayout.Controls.Add($dashboardLayout, 0, 1)
+
+        $previewGroup.Text = '  LIVE PREVIEW'
+        $previewGroup.Dock = 'Fill'
+        $previewGroup.Margin = New-Object System.Windows.Forms.Padding(10)
+        $previewPanel.Dock = 'Fill'
+        $previewPanel.Margin = New-Object System.Windows.Forms.Padding(12, 24, 12, 12)
+        $previewPanel.BackColor = [System.Drawing.Color]::Black
+        $previewPanel.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
+        $previewPlaceholder.BackColor = [System.Drawing.Color]::Black
+        $previewPlaceholder.ForeColor = $script:ColorMuted
+        $previewPlaceholder.Font = New-Object System.Drawing.Font('Segoe UI', 12)
+        $dashboardLayout.Controls.Add($previewGroup, 0, 0)
+
+        $settingsGroup.Text = '  STREAM SETTINGS'
+        $settingsGroup.Dock = 'Fill'
+        $settingsGroup.Margin = New-Object System.Windows.Forms.Padding(10)
+        $dashboardLayout.Controls.Add($settingsGroup, 1, 0)
+
+        $script:ModernActionFlow = New-Object System.Windows.Forms.FlowLayoutPanel
+        $script:ModernActionFlow.Name = 'ModernActionFlow'
+        $script:ModernActionFlow.Dock = 'Fill'
+        $script:ModernActionFlow.FlowDirection = 'RightToLeft'
+        $script:ModernActionFlow.WrapContents = $true
+        $script:ModernActionFlow.Padding = New-Object System.Windows.Forms.Padding(10, 8, 10, 6)
+        $script:ModernActionFlow.Margin = New-Object System.Windows.Forms.Padding(10, 0, 10, 0)
+        $script:ModernActionFlow.BackColor = $script:ColorBg
+        $dashboardLayout.Controls.Add($script:ModernActionFlow, 0, 1)
+        $dashboardLayout.SetColumnSpan($script:ModernActionFlow, 2)
+
+        $lowerTabs.Dock = 'Fill'
+        $lowerTabs.Margin = New-Object System.Windows.Forms.Padding(20, 0, 20, 12)
+        $mainLayout.Controls.Add($lowerTabs, 0, 2)
+    }
+    finally {
+        $form.ResumeLayout($false)
+    }
+
+    # Tabbed settings panes to stop horizontal overflow/clutter.
+    $settingsTabs = New-Object System.Windows.Forms.TabControl
+    $settingsTabs.Name = 'SettingsTabs'
+    $settingsTabs.Dock = 'Fill'
+    $settingsTabs.Margin = New-Object System.Windows.Forms.Padding(12, 24, 12, 12)
+    $settingsGroup.Controls.Add($settingsTabs)
+
+    $tabTransport = New-Object System.Windows.Forms.TabPage
+    $tabTransport.Text = 'Transport'
+    $tabTransport.AutoScroll = $true
+    $tabVideo = New-Object System.Windows.Forms.TabPage
+    $tabVideo.Text = 'Video'
+    $tabVideo.AutoScroll = $true
+    $tabScenes = New-Object System.Windows.Forms.TabPage
+    $tabScenes.Text = 'Scenes (Concept)'
+    $tabScenes.AutoScroll = $true
+    $tabAudio = New-Object System.Windows.Forms.TabPage
+    $tabAudio.Text = 'Audio'
+    $tabAudio.AutoScroll = $true
+    # Scroll extent is computed by WinForms from the AutoSize layout panels built
+    # in the declarative layout section below. No AutoScrollMinSize needed.
+    $tabPlayer = New-Object System.Windows.Forms.TabPage
+    $tabPlayer.Text = 'Player'
+    $tabPlayer.AutoScroll = $true
+    $tabRecording = New-Object System.Windows.Forms.TabPage
+    $tabRecording.Text = 'Recording'
+    $tabRecording.AutoScroll = $true
+    $tabNetwork = New-Object System.Windows.Forms.TabPage
+    $tabNetwork.Text = 'Network'
+    $tabNetwork.AutoScroll = $true
+    $tabOptions = New-Object System.Windows.Forms.TabPage
+    $tabOptions.Text = 'Options'
+    $tabOptions.AutoScroll = $true
+
+    $settingsTabs.TabPages.AddRange(@($tabTransport, $tabVideo, $tabScenes, $tabAudio, $tabPlayer, $tabRecording, $tabNetwork, $tabOptions))
+    $script:SettingsTabs = $settingsTabs
+    $script:SettingsTabTransport = $tabTransport
+    $script:SettingsTabVideo = $tabVideo
+    $script:SettingsTabScenes = $tabScenes
+    $script:SettingsTabAudio = $tabAudio
+    $script:SettingsTabPlayer = $tabPlayer
+    $script:SettingsTabRecording = $tabRecording
+    $script:SettingsTabNetwork = $tabNetwork
+    $script:SettingsTabOptions = $tabOptions
+
+    # ------------------------------------------------------------------
+    # Declarative settings layout.
+    #
+    # Replaces the old two-pass scheme (build a whole GroupBox UI at absolute
+    # coordinates, then reparent every control into a tab and re-position it with
+    # ~180 more hardcoded coordinates, hiding the 52 original labels and creating
+    # 102 replacements). Controls are now placed by WinForms layout panels:
+    #
+    #   TabPage -> pane (FlowLayoutPanel, TopDown, AutoScroll)
+    #     section header label
+    #     rows (FlowLayoutPanel, LeftToRight)
+    #       field cell (TableLayoutPanel: label above control)
+    #
+    # Everything AutoSizes, so the scrollable extent is computed by WinForms from
+    # real control bounds. That is DPI-correct for free and removes the whole
+    # AutoScrollMinSize / clipping class of bug rather than patching it.
+    #
+    # Control WIDTHS are preserved from the old layout (they were tuned and are
+    # real design intent). Only X/Y positions are dropped.
+    # ------------------------------------------------------------------
+
+    function New-SettingsPane {
+        param([System.Windows.Forms.TabPage]$Tab)
+        $pane = New-Object System.Windows.Forms.FlowLayoutPanel
+        $pane.Dock = 'Fill'
+        $pane.FlowDirection = 'TopDown'
+        $pane.WrapContents = $false
+        $pane.AutoScroll = $true
+        $pane.Padding = New-Object System.Windows.Forms.Padding(12, 8, 12, 12)
+        $pane.BackColor = $script:ColorSurface
+        $Tab.Controls.Add($pane)
+        return $pane
+    }
+
+    function Add-Section {
+        param([System.Windows.Forms.FlowLayoutPanel]$Pane, [string]$Title)
+        if (-not [string]::IsNullOrWhiteSpace($Title)) {
+            $header = New-Object System.Windows.Forms.Label
+            $header.Text = $Title.ToUpperInvariant()
+            $header.AutoSize = $true
+            $header.Font = New-Object System.Drawing.Font('Segoe UI', 8, [System.Drawing.FontStyle]::Bold)
+            $header.ForeColor = $script:ColorAccent
+            $header.Margin = New-Object System.Windows.Forms.Padding(2, 12, 0, 4)
+            $Pane.Controls.Add($header)
+        }
+        $section = New-Object System.Windows.Forms.FlowLayoutPanel
+        $section.FlowDirection = 'TopDown'
+        $section.WrapContents = $false
+        $section.AutoSize = $true
+        $section.AutoSizeMode = 'GrowAndShrink'
+        $section.Margin = New-Object System.Windows.Forms.Padding(0)
+        $Pane.Controls.Add($section)
+        return $section
+    }
+
+    function Add-Row {
+        param([System.Windows.Forms.FlowLayoutPanel]$Section)
+        $row = New-Object System.Windows.Forms.FlowLayoutPanel
+        $row.FlowDirection = 'LeftToRight'
+        $row.WrapContents = $false
+        $row.AutoSize = $true
+        $row.AutoSizeMode = 'GrowAndShrink'
+        $row.Margin = New-Object System.Windows.Forms.Padding(0)
+        $Section.Controls.Add($row)
+        return $row
+    }
+
+    function Add-Field {
+        # -Label       static caption text
+        # -LabelControl an existing Label control whose .Text is updated at runtime
+        # -Control     the input control
+        # -Width       explicit control width (preserved from the old layout)
+        param(
+            [System.Windows.Forms.FlowLayoutPanel]$Row,
+            [string]$Label,
+            [System.Windows.Forms.Control]$LabelControl,
+            [Parameter(Mandatory)][System.Windows.Forms.Control]$Control,
+            [int]$Width = 0
+        )
+        if ($null -eq $Control) { return }
+
+        $cell = New-Object System.Windows.Forms.TableLayoutPanel
+        $cell.ColumnCount = 1
+        $cell.AutoSize = $true
+        $cell.AutoSizeMode = 'GrowAndShrink'
+        $cell.Margin = New-Object System.Windows.Forms.Padding(0, 0, 14, 8)
+
+        $cap = $null
+        if ($LabelControl) {
+            $cap = $LabelControl
+            $cap.AutoSize = $true
+        }
+        elseif (-not [string]::IsNullOrWhiteSpace($Label)) {
+            $cap = New-Object System.Windows.Forms.Label
+            $cap.Text = $Label
+            $cap.AutoSize = $true
+            $cap.ForeColor = $script:ColorMuted
+        }
+
+        if ($cap) {
+            $cap.Margin = New-Object System.Windows.Forms.Padding(2, 0, 0, 2)
+            $cell.RowCount = 2
+            $cell.Controls.Add($cap, 0, 0)
+            $cell.Controls.Add($Control, 0, 1)
+        }
+        else {
+            $cell.RowCount = 1
+            $cell.Controls.Add($Control, 0, 0)
+        }
+
+        if ($Width -gt 0) {
+            $Control.Width = $Width
+        }
+        $Control.Margin = New-Object System.Windows.Forms.Padding(0)
+        $Control.Anchor = 'Left'
+        $Control.Visible = $true
+        $Control.Enabled = $true
+
+        $Row.Controls.Add($cell)
+        return $cell
+    }
+
+    # Pull each control out of the legacy GroupBox before the panes claim it.
+    function Detach-FromLegacyGroup {
+        param([System.Windows.Forms.Control]$Control)
+        if ($null -eq $Control) { return }
+        try { $settingsGroup.Controls.Remove($Control) } catch {}
+    }
+
+    foreach ($legacy in @($settingsGroup.Controls)) {
+        if ($legacy -ne $settingsTabs) { $settingsGroup.Controls.Remove($legacy) }
+    }
+
+    # ---------------- Transport ----------------
+    $paneTransport = New-SettingsPane $tabTransport
+
+    $s = Add-Section $paneTransport 'Transport'
+    $r = Add-Row $s
+    Add-Field $r -Control $chkTransportEnabled -Width 180 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Label 'Protocol' -Control $cmbProtocol -Width 110 | Out-Null
+    Add-Field $r -LabelControl $lblDestination -Control $txtDestination -Width 410 | Out-Null
+
+    $s = Add-Section $paneTransport 'Capture target'
+    $r = Add-Row $s
+    Add-Field $r -Label 'Monitor' -Control $numMonitor -Width 70 | Out-Null
+    Add-Field $r -Control $chkCursor -Width 100 | Out-Null
+
+    $s = Add-Section $paneTransport 'Timestamps'
+    $r = Add-Row $s
+    Add-Field $r -LabelControl $lblTimingMode -Control $cmbTimingMode -Width 280 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Control $lblTimestampStatus -Width 245 | Out-Null
+
+    $s = Add-Section $paneTransport 'Direct GStreamer WebRTC'
+    $r = Add-Row $s
+    Add-Field $r -Control $lblDirectWebRtcStatus -Width 535 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Label 'Signaling host' -Control $txtDirectWebRtcSignalingHost -Width 155 | Out-Null
+    Add-Field $r -Label 'WS TCP port' -Control $numDirectWebRtcSignalingPort -Width 85 | Out-Null
+    Add-Field $r -Label 'STUN' -Control $txtDirectWebRtcStun -Width 270 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Label 'Congestion' -Control $cmbDirectWebRtcCongestion -Width 110 | Out-Null
+    Add-Field $r -Label 'Mitigation' -Control $cmbDirectWebRtcMitigation -Width 170 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -LabelControl $lblWebRtcRecoveryMode -Control $cmbWebRtcRecoveryMode -Width 135 | Out-Null
+    Add-Field $r -LabelControl $lblWebRtcSenderQueueMode -Control $cmbWebRtcSenderQueueMode -Width 170 | Out-Null
+    Add-Field $r -LabelControl $lblDirectWebRtcSmoothnessProfile -Control $cmbDirectWebRtcSmoothnessProfile -Width 155 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -LabelControl $lblDirectWebRtcPacingMs -Control $numDirectWebRtcPacingMs -Width 80 | Out-Null
+
+    $s = Add-Section $paneTransport 'MediaMTX'
+    $r = Add-Row $s
+    Add-Field $r -Control $chkStartMediaMtx -Width 260 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Label 'MediaMTX executable' -Control $txtMediaMtxPath -Width 430 | Out-Null
+    Add-Field $r -Control $btnBrowseMediaMtx -Width 95 | Out-Null
+
+    $s = Add-Section $paneTransport ''
+    $r = Add-Row $s
+    Add-Field $r -Control $btnResetTransport -Width 180 | Out-Null
+    Add-Field $r -Control $btnResetWebRtcSane -Width 210 | Out-Null
+
+    # Non-user-facing controls that must stay alive because other code reads them:
+    #   chkDirectWebRtcFec / chkDirectWebRtcRetransmission - read by Build-GstArguments;
+    #     webrtcsink owns the actual negotiation.
+    #   chkFullscreenApp - legacy compatibility flag, superseded by the Capture
+    #     method dropdown, kept in sync by Sync-LegacyFullscreenFlag.
+    #   chkSendAbsoluteTimestamps - legacy, read by Test-SendAbsoluteTimestampsEnabled.
+    # The old layout "hid" the first three by parking them at negative coordinates,
+    # which kept them in the layout and in the scrolled extent. Hidden is hidden.
+    foreach ($hidden in @(
+        $chkDirectWebRtcFec,
+        $chkDirectWebRtcRetransmission,
+        $chkFullscreenApp,
+        $chkSendAbsoluteTimestamps
+    )) {
+        if ($hidden) {
+            Detach-FromLegacyGroup $hidden
+            $tabTransport.Controls.Add($hidden)
+            $hidden.Visible = $false
+            $hidden.TabStop = $false
+        }
+    }
+
+    # ---------------- Video ----------------
+    $paneVideo = New-SettingsPane $tabVideo
+
+    $s = Add-Section $paneVideo 'Capture'
+    $r = Add-Row $s
+    Add-Field $r -Label 'Capture method' -Control $cmbCaptureMethod -Width 260 | Out-Null
+    Add-Field $r -Control $lblCaptureModeStatus -Width 260 | Out-Null
+
+    $s = Add-Section $paneVideo 'Encoder'
+    $r = Add-Row $s
+    Add-Field $r -Label 'Encoder' -Control $cmbEncoder -Width 370 | Out-Null
+    Add-Field $r -Control $lblEncoderStatus -Width 160 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Label 'Rate control' -Control $cmbRateControl -Width 105 | Out-Null
+    Add-Field $r -Label 'Tune' -Control $cmbEncoderTune -Width 170 | Out-Null
+    Add-Field $r -Label 'Multipass' -Control $cmbMultipass -Width 155 | Out-Null
+
+    $s = Add-Section $paneVideo 'Timing lab'
+    $r = Add-Row $s
+    Add-Field $r -Label 'Video sync mode' -Control $cmbVideoSyncMode -Width 130 | Out-Null
+
+    $s = Add-Section $paneVideo 'Format'
+    $r = Add-Row $s
+    Add-Field $r -Label 'Width' -Control $numWidth -Width 90 | Out-Null
+    Add-Field $r -Label 'Height' -Control $numHeight -Width 90 | Out-Null
+    Add-Field $r -Label 'FPS' -Control $numFps -Width 80 | Out-Null
+    Add-Field $r -Label 'Video kbps' -Control $numVideoBitrate -Width 110 | Out-Null
+    Add-Field $r -Label 'Max kbps' -Control $numMaxVideoBitrate -Width 100 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Label 'CQ/QP' -Control $numConstantQp -Width 70 | Out-Null
+    Add-Field $r -Label 'GOP sec' -Control $numGopSeconds -Width 80 | Out-Null
+    Add-Field $r -Label 'Preset' -Control $cmbPreset -Width 120 | Out-Null
+    Add-Field $r -Label 'Profile' -Control $cmbProfile -Width 170 | Out-Null
+
+    $s = Add-Section $paneVideo 'Quality tuning'
+    $r = Add-Row $s
+    Add-Field $r -Label 'B-frames' -Control $numBFrames -Width 80 | Out-Null
+    Add-Field $r -Control $chkLookAhead -Width 110 | Out-Null
+    Add-Field $r -Label 'Frames' -Control $numLookAheadFrames -Width 80 | Out-Null
+    Add-Field $r -Control $chkAdaptiveQuantization -Width 95 | Out-Null
+    Add-Field $r -Control $chkTemporalAq -Width 105 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Label 'AQ strength' -Control $numAqStrength -Width 80 | Out-Null
+    Add-Field $r -Label 'VBV kbits' -Control $numVbvBuffer -Width 100 | Out-Null
+    Add-Field $r -Label 'SRT latency ms' -Control $numSrtLatency -Width 90 | Out-Null
+    Add-Field $r -Label 'RTSP mode' -Control $cmbRtspTransport -Width 80 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Label 'Custom encoder options' -Control $txtCustomEncoderOptions -Width 535 | Out-Null
+
+    $s = Add-Section $paneVideo ''
+    $r = Add-Row $s
+    Add-Field $r -Control $btnResetVideo -Width 160 | Out-Null
+
+    # ---------------- Scenes (Concept) ----------------
+    $paneScenes = New-SettingsPane $tabScenes
+    $s = Add-Section $paneScenes 'Scene editor'
+    $r = Add-Row $s
+    Add-Field $r -Label 'Sources' -Control $sceneSourcePalette -Width 550 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Control $sceneEditorCanvas -Width 550 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Control $lblSceneEditorHint -Width 550 | Out-Null
+
+    $s = Add-Section $paneScenes 'Experimental scene engine'
+    $r = Add-Row $s
+    Add-Field $r -Control $chkSceneEnabled -Width 300 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Label 'Scene preset' -Control $cmbScenePreset -Width 190 | Out-Null
+    Add-Field $r -Label 'Compositor' -Control $cmbSceneCompositor -Width 190 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Control $lblSceneStatus -Width 540 | Out-Null
+
+    $s = Add-Section $paneScenes 'Webcam source'
+    $r = Add-Row $s
+    Add-Field $r -Label 'Camera' -Control $cmbWebcamDevice -Width 330 | Out-Null
+    Add-Field $r -Control $btnRefreshWebcams -Width 125 | Out-Null
+    Add-Field $r -Label 'Capture FPS' -Control $numWebcamFps -Width 75 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Label 'Layout' -Control $cmbWebcamLayout -Width 150 | Out-Null
+    Add-Field $r -Control $chkWebcamMirror -Width 125 | Out-Null
+    Add-Field $r -Label 'Opacity %' -Control $numWebcamOpacity -Width 75 | Out-Null
+    Add-Field $r -Label 'Border px (concept)' -Control $numWebcamBorder -Width 75 | Out-Null
+
+    $s = Add-Section $paneScenes 'Webcam geometry'
+    $r = Add-Row $s
+    Add-Field $r -Label 'Width' -Control $numWebcamWidth -Width 80 | Out-Null
+    Add-Field $r -Label 'Height' -Control $numWebcamHeight -Width 80 | Out-Null
+    Add-Field $r -Label 'X' -Control $numWebcamX -Width 80 | Out-Null
+    Add-Field $r -Label 'Y' -Control $numWebcamY -Width 80 | Out-Null
+
+    $s = Add-Section $paneScenes 'Generated scene capture chain'
+    $r = Add-Row $s
+    Add-Field $r -Control $txtScenePipeline -Width 550 | Out-Null
+
+    # ---------------- Audio ----------------
+    $paneAudio = New-SettingsPane $tabAudio
+
+    $s = Add-Section $paneAudio 'A/V sync diagnostic'
+    $r = Add-Row $s
+    Add-Field $r -Label 'A/V test mode' -Control $cmbAudioTransportMode -Width 270 | Out-Null
+    Add-Field $r -LabelControl $lblAudioClockMode -Control $cmbAudioClockMode -Width 230 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -LabelControl $lblAudioTimingMode -Control $cmbAudioTimingMode -Width 270 | Out-Null
+    Add-Field $r -LabelControl $lblAudioSlaveMethod -Control $cmbAudioSlaveMethod -Width 180 | Out-Null
+    Add-Field $r -Label 'Audio sync mode' -Control $cmbAudioSyncMode -Width 130 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -LabelControl $lblAudioBufferMs -Control $numAudioBufferMs -Width 80 | Out-Null
+    Add-Field $r -LabelControl $lblAudioLatencyMs -Control $numAudioLatencyMs -Width 80 | Out-Null
+
+    $s = Add-Section $paneAudio 'Sources'
+    $r = Add-Row $s
+    Add-Field $r -Control $chkDesktopAudio -Width 180 | Out-Null
+    Add-Field $r -Label 'Desktop volume' -Control $numDesktopVolume -Width 90 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Label 'Desktop device' -Control $cmbDesktopAudioDevice -Width 420 | Out-Null
+    Add-Field $r -Control $btnRefreshAudioDevices -Width 160 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Control $chkMic -Width 180 | Out-Null
+    Add-Field $r -Label 'Mic volume' -Control $numMicVolume -Width 90 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Label 'Mic device' -Control $cmbMicAudioDevice -Width 420 | Out-Null
+    Add-Field $r -Control $lblAudioDeviceStatus -Width 260 | Out-Null
+
+    $s = Add-Section $paneAudio 'Audio codec'
+    $r = Add-Row $s
+    Add-Field $r -Label 'Codec' -Control $cmbAudioCodec -Width 250 | Out-Null
+    Add-Field $r -Control $lblAudioCodecStatus -Width 260 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Label 'Audio kbps' -Control $numAudioBitrate -Width 110 | Out-Null
+
+    $s = Add-Section $paneAudio 'Direct GST WebRTC Opus'
+    $r = Add-Row $s
+    Add-Field $r -Label 'Opus mode' -Control $cmbDirectWebRtcOpusMode -Width 190 | Out-Null
+    Add-Field $r -Label 'Frame ms' -Control $cmbDirectWebRtcOpusFrameMs -Width 80 | Out-Null
+    Add-Field $r -Label 'Audio type' -Control $cmbDirectWebRtcOpusAudioType -Width 170 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Control $chkDirectWebRtcOpusFec -Width 110 | Out-Null
+    Add-Field $r -Control $chkDirectWebRtcOpusDtx -Width 110 | Out-Null
+
+    $s = Add-Section $paneAudio ''
+    $r = Add-Row $s
+    Add-Field $r -Control $btnResetAudio -Width 160 | Out-Null
+
+    # ---------------- Player ----------------
+    $panePlayer = New-SettingsPane $tabPlayer
+
+    $s = Add-Section $panePlayer 'Browser / player jitter buffer'
+    $r = Add-Row $s
+    Add-Field $r -LabelControl $lblDirectWebRtcPlayerJitterMs -Control $numDirectWebRtcPlayerJitterMs -Width 90 | Out-Null
+    Add-Field $r -LabelControl $lblDirectWebRtcVideoJitterMs -Control $numDirectWebRtcVideoJitterMs -Width 90 | Out-Null
+    Add-Field $r -LabelControl $lblJbufMaxMs -Control $numJbufMaxMs -Width 90 | Out-Null
+    Add-Field $r -LabelControl $lblJbufWatchdogMode -Control $cmbJbufWatchdogMode -Width 150 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Control $chkPlayerStatsOverlay -Width 150 | Out-Null
+    Add-Field $r -Control $chkPlayerJbufDebug -Width 180 | Out-Null
+
+    $s = Add-Section $panePlayer 'Player A/V render mode'
+    $r = Add-Row $s
+    Add-Field $r -Label 'A/V render mode' -Control $cmbPlayerAvRenderMode -Width 285 | Out-Null
+    Add-Field $r -Label 'A/V pipeline topology' -Control $cmbDirectWebRtcAvPipelineMode -Width 310 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Label 'Split sync mode' -Control $cmbSplitPlayerSyncMode -Width 235 | Out-Null
+    Add-Field $r -Label 'Audio stall sec' -Control $numSplitAudioStallSeconds -Width 95 | Out-Null
+    Add-Field $r -Label 'Offset warn ms' -Control $numSplitAvOffsetWarnMs -Width 105 | Out-Null
+
+    $s = Add-Section $panePlayer 'Web player hosting'
+    $r = Add-Row $s
+    Add-Field $r -Label 'URL path' -Control $txtDirectWebRtcWebPath -Width 135 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Label 'Bundled source' -Control $cmbDirectWebRtcBundledWebMode -Width 180 | Out-Null
+    Add-Field $r -Label 'Bundled directory' -Control $txtDirectWebRtcBundledWebDirectory -Width 245 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Control $btnBrowseDirectWebRtcBundledWebDirectory -Width 105 | Out-Null
+    Add-Field $r -Control $btnDetectDirectWebRtcBundledWebDirectory -Width 110 | Out-Null
+    Add-Field $r -Control $btnOpenDirectWebRtcBundledDir -Width 135 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Label 'Working / served mode' -Control $cmbDirectWebRtcWorkingWebMode -Width 160 | Out-Null
+    Add-Field $r -Label 'Working / served dir' -Control $txtDirectWebRtcWebDirectory -Width 265 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Control $btnBrowseDirectWebRtcWebDirectory -Width 105 | Out-Null
+    Add-Field $r -Control $btnDetectDirectWebRtcWebDirectory -Width 110 | Out-Null
+    Add-Field $r -Control $btnRefreshDirectWebRtcWebUi -Width 125 | Out-Null
+    Add-Field $r -Control $btnOpenDirectWebRtcServedDir -Width 130 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Control $lblDirectWebRtcWebUiStatus -Width 550 | Out-Null
+
+    $s = Add-Section $panePlayer 'Viewer launch'
+    $r = Add-Row $s
+    Add-Field $r -Control $chkPlayerUrlOverrides -Width 240 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Control $btnOpenDirectWebRtcViewer -Width 130 | Out-Null
+    Add-Field $r -Control $btnCopyDirectWebRtcViewer -Width 105 | Out-Null
+
+    # ---------------- Recording ----------------
+    $paneRecording = New-SettingsPane $tabRecording
+
+    $s = Add-Section $paneRecording 'Recording'
+    $r = Add-Row $s
+    Add-Field $r -Control $chkRecordingEnabled -Width 170 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Label 'Output folder' -Control $txtRecordingDirectory -Width 425 | Out-Null
+    Add-Field $r -Control $btnBrowseRecordingDirectory -Width 95 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Label 'File name template' -Control $txtRecordingTemplate -Width 535 | Out-Null
+
+    $s = Add-Section $paneRecording 'Recording encoder'
+    $r = Add-Row $s
+    Add-Field $r -Label 'Encoder' -Control $cmbRecordingEncoder -Width 360 | Out-Null
+    Add-Field $r -Control $lblRecordingStatus -Width 160 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Label 'Rate control' -Control $cmbRecordingRateControl -Width 100 | Out-Null
+    Add-Field $r -Label 'Video kbps' -Control $numRecordingVideoBitrate -Width 110 | Out-Null
+    Add-Field $r -Label 'Max kbps' -Control $numRecordingMaxVideoBitrate -Width 105 | Out-Null
+    Add-Field $r -Label 'CQ/QP' -Control $numRecordingConstantQp -Width 75 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Label 'Width' -Control $numRecordingWidth -Width 90 | Out-Null
+    Add-Field $r -Label 'Height' -Control $numRecordingHeight -Width 90 | Out-Null
+    Add-Field $r -Label 'FPS' -Control $numRecordingFps -Width 80 | Out-Null
+    Add-Field $r -Label 'GOP sec' -Control $numRecordingGopSeconds -Width 80 | Out-Null
+    Add-Field $r -Label 'B-frames' -Control $numRecordingBFrames -Width 80 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Label 'Preset' -Control $cmbRecordingPreset -Width 100 | Out-Null
+    Add-Field $r -Label 'Profile' -Control $cmbRecordingProfile -Width 150 | Out-Null
+    Add-Field $r -Label 'Tune' -Control $cmbRecordingTune -Width 170 | Out-Null
+    Add-Field $r -Label 'Multipass' -Control $cmbRecordingMultipass -Width 150 | Out-Null
+
+    $s = Add-Section $paneRecording 'Quality tuning'
+    $r = Add-Row $s
+    Add-Field $r -Control $chkRecordingLookAhead -Width 105 | Out-Null
+    Add-Field $r -Label 'Frames' -Control $numRecordingLookAheadFrames -Width 70 | Out-Null
+    Add-Field $r -Control $chkRecordingSpatialAq -Width 90 | Out-Null
+    Add-Field $r -Control $chkRecordingTemporalAq -Width 105 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Label 'AQ strength' -Control $numRecordingAqStrength -Width 80 | Out-Null
+    Add-Field $r -Label 'VBV kbits' -Control $numRecordingVbvBuffer -Width 100 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Label 'Custom encoder options' -Control $txtRecordingCustomEncoderOptions -Width 535 | Out-Null
+
+    $s = Add-Section $paneRecording 'Recording audio'
+    $r = Add-Row $s
+    Add-Field $r -Control $chkRecordingDesktopAudio -Width 170 | Out-Null
+    Add-Field $r -Control $chkRecordingMic -Width 160 | Out-Null
+    Add-Field $r -Label 'Audio kbps' -Control $numRecordingAudioBitrate -Width 100 | Out-Null
+
+    $s = Add-Section $paneRecording ''
+    $r = Add-Row $s
+    Add-Field $r -Control $btnResetRecording -Width 170 | Out-Null
+
+    # ---------------- Network ----------------
+    $paneNetwork = New-SettingsPane $tabNetwork
+
+    $s = Add-Section $paneNetwork 'Windows / network tuning'
+    $r = Add-Row $s
+    Add-Field $r -Control $chkNetworkTuningEnabled -Width 310 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Label 'Adapter' -Control $cmbNetworkAdapter -Width 405 | Out-Null
+    Add-Field $r -Control $btnRefreshNetworkAdapters -Width 90 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Label 'Profile' -Control $cmbNetworkProfile -Width 180 | Out-Null
+
+    $s = Add-Section $paneNetwork 'QoS / DSCP'
+    $r = Add-Row $s
+    Add-Field $r -Control $chkNetworkDscp -Width 195 | Out-Null
+    Add-Field $r -Label 'DSCP' -Control $numNetworkDscp -Width 65 | Out-Null
+    Add-Field $r -Label 'Protocol' -Control $cmbNetworkQosProtocol -Width 80 | Out-Null
+    Add-Field $r -Label 'Dst port/range' -Control $txtNetworkPorts -Width 120 | Out-Null
+
+    $s = Add-Section $paneNetwork 'UDP global offloads'
+    $r = Add-Row $s
+    Add-Field $r -Label 'USO' -Control $cmbNetworkUso -Width 125 | Out-Null
+    Add-Field $r -Label 'URO' -Control $cmbNetworkUro -Width 125 | Out-Null
+
+    $s = Add-Section $paneNetwork 'Adapter low-latency switches'
+    $r = Add-Row $s
+    Add-Field $r -Control $chkNetworkDisablePowerSaving -Width 220 | Out-Null
+    Add-Field $r -Label 'Interrupt moderation' -Control $cmbNetworkInterruptModeration -Width 150 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Control $chkNetworkDisableEee -Width 220 | Out-Null
+
+    $s = Add-Section $paneNetwork 'Recovery'
+    $r = Add-Row $s
+    Add-Field $r -Control $chkNetworkRestoreOnStop -Width 240 | Out-Null
+    Add-Field $r -Control $chkNetworkRestoreOnExit -Width 220 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Control $chkNetworkRecoveryTask -Width 300 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Control $lblNetworkStatus -Width 520 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Control $btnNetworkSnapshot -Width 90 | Out-Null
+    Add-Field $r -Control $btnNetworkApply -Width 90 | Out-Null
+    Add-Field $r -Control $btnNetworkRestore -Width 130 | Out-Null
+    Add-Field $r -Control $btnOpenNetworkRecovery -Width 170 | Out-Null
+
+    $s = Add-Section $paneNetwork ''
+    $r = Add-Row $s
+    Add-Field $r -Control $btnResetNetwork -Width 190 | Out-Null
+
+    # ---------------- Options ----------------
+    $paneOptions = New-SettingsPane $tabOptions
+
+    $s = Add-Section $paneOptions 'GStreamer executable'
+    $r = Add-Row $s
+    Add-Field $r -Label 'gst-launch-1.0.exe' -Control $txtGstPath -Width 360 | Out-Null
+    Add-Field $r -Control $btnBrowseGst -Width 75 | Out-Null
+    Add-Field $r -Control $btnDetectGst -Width 80 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Control $btnCheckGst -Width 110 | Out-Null
+
+    $s = Add-Section $paneOptions 'General'
+    $r = Add-Row $s
+    Add-Field $r -Control $chkPreview -Width 180 | Out-Null
+    Add-Field $r -Control $chkAutoRestart -Width 170 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Control $chkVerbose -Width 160 | Out-Null
+    Add-Field $r -Control $chkMinimizeToTray -Width 160 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Control $chkStartMinimized -Width 170 | Out-Null
+
+    $s = Add-Section $paneOptions 'Runtime / threading'
+    $r = Add-Row $s
+    Add-Field $r -LabelControl $lblThreadingProfile -Control $cmbThreadingProfile -Width 165 | Out-Null
+    Add-Field $r -LabelControl $lblGstProcessPriority -Control $cmbGstProcessPriority -Width 120 | Out-Null
+    Add-Field $r -LabelControl $lblQueueLeakMode -Control $cmbQueueLeakMode -Width 180 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -LabelControl $lblThreadBudget -Control $cmbThreadBudget -Width 130 | Out-Null
+    Add-Field $r -LabelControl $lblCpuWorkerLimit -Control $numCpuWorkerLimit -Width 80 | Out-Null
+    Add-Field $r -Control $lblLiveGstThreads -Width 230 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Control $chkBudgetCaptureQueue -Width 175 | Out-Null
+    Add-Field $r -Control $chkBudgetSenderQueue -Width 175 | Out-Null
+    Add-Field $r -Control $chkBudgetAudioInputQueue -Width 145 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Control $chkBudgetAudioFinalQueue -Width 155 | Out-Null
+    Add-Field $r -Control $chkBudgetSceneInputQueues -Width 155 | Out-Null
+    $chkBudgetSceneInputQueues.Checked = $true
+    $chkBudgetSceneInputQueues.Enabled = $false
+    $r = Add-Row $s
+    Add-Field $r -LabelControl $lblCaptureQueueBuffers -Control $numCaptureQueueBuffers -Width 70 | Out-Null
+    Add-Field $r -LabelControl $lblAudioQueueBuffers -Control $numAudioQueueBuffers -Width 70 | Out-Null
+    Add-Field $r -LabelControl $lblAudioQueueCapMs -Control $numAudioQueueCapMs -Width 80 | Out-Null
+    Add-Field $r -Control $chkBufferLatenessTracer -Width 190 | Out-Null
+
+    $s = Add-Section $paneOptions 'GStreamer diagnostics'
+    $r = Add-Row $s
+    Add-Field $r -LabelControl $lblGstDebugMode -Control $cmbGstDebugMode -Width 170 | Out-Null
+    Add-Field $r -LabelControl $lblGstDebugSpec -Control $txtGstDebugSpec -Width 185 | Out-Null
+    Add-Field $r -Control $chkGstDebugNoColor -Width 135 | Out-Null
+
+    $s = Add-Section $paneOptions ''
+    $r = Add-Row $s
+    Add-Field $r -Control $btnResetOptions -Width 160 | Out-Null
+    Add-Field $r -Control $btnResetAll -Width 160 | Out-Null
+
+    foreach ($tp in @($tabTransport, $tabVideo, $tabAudio, $tabPlayer, $tabRecording, $tabNetwork, $tabOptions)) {
+        $tp.BackColor = $script:ColorSurface
+        $tp.ForeColor = $script:ColorText
+    }
+
+    # Action row.
+    # Buttons live in ModernActionFlow. The flow panel owns placement and wraps
+    # if the window is narrowed, so this row no longer depends on hardcoded X/Y.
+    $btnStart.Text = 'Play  Start'
+    $btnStart.Width = 145
+    $btnStart.Height = 42
+    $btnStart.Margin = New-Object System.Windows.Forms.Padding(8, 0, 0, 0)
+    $btnStart.BackColor = $script:ColorAccent
+    $btnStart.ForeColor = [System.Drawing.Color]::White
+    $btnStart.FlatAppearance.BorderSize = 0
+
+    $btnStop.Text = '[stop]  Stop'
+    $btnStop.Width = 100
+    $btnStop.Height = 42
+    $btnStop.Margin = New-Object System.Windows.Forms.Padding(8, 0, 0, 0)
+
+    $btnRestart.Text = 'Refresh  Restart'
+    $btnRestart.Width = 120
+    $btnRestart.Height = 42
+    $btnRestart.Margin = New-Object System.Windows.Forms.Padding(8, 0, 0, 0)
+
+    $btnCopyCommand.Text = 'Copy'
+    $btnCopyCommand.Width = 85
+    $btnCopyCommand.Height = 42
+    $btnCopyCommand.Margin = New-Object System.Windows.Forms.Padding(8, 0, 0, 0)
+
+    $btnClearLog.Text = 'Clear'
+    $btnClearLog.Width = 80
+    $btnClearLog.Height = 42
+    $btnClearLog.Margin = New-Object System.Windows.Forms.Padding(8, 0, 0, 0)
+
+    $btnOpenLogs.Text = 'Logs'
+    $btnOpenLogs.Width = 70
+    $btnOpenLogs.Height = 42
+    $btnOpenLogs.Margin = New-Object System.Windows.Forms.Padding(8, 0, 0, 0)
+
+    if ($script:ModernActionFlow) {
+        foreach ($btn in @($btnOpenLogs, $btnClearLog, $btnCopyCommand, $btnRestart, $btnStop, $btnStart)) {
+            if ($btn -and $btn.Parent -ne $script:ModernActionFlow) {
+                $script:ModernActionFlow.Controls.Add($btn)
+            }
+        }
+    }
+
+    # Bottom output.
+    $lowerTabs.Dock = 'Fill'
+    $lowerTabs.SelectedTab = $tabLog
+
+    $tabLog.Text = 'Logs'
+    $tabCommand.Text = 'Command Preview'
+    $txtLog.BackColor = [System.Drawing.ColorTranslator]::FromHtml('#08111F')
+    $txtLog.ForeColor = [System.Drawing.ColorTranslator]::FromHtml('#D1D5DB')
+    $txtLog.BorderStyle = [System.Windows.Forms.BorderStyle]::None
+    $txtCommand.BackColor = [System.Drawing.ColorTranslator]::FromHtml('#08111F')
+    $txtCommand.ForeColor = [System.Drawing.ColorTranslator]::FromHtml('#D1D5DB')
+    $txtCommand.BorderStyle = [System.Windows.Forms.BorderStyle]::None
+
+    Style-Tree $form
+
+    foreach ($realControl in @(
+        $chkTransportEnabled, $cmbProtocol, $lblDestination, $txtDestination,
+        $cmbCaptureMethod, $lblCaptureModeStatus, $numMonitor, $chkCursor,
+        $chkStartMediaMtx, $txtMediaMtxPath, $btnBrowseMediaMtx,
+        $cmbDirectWebRtcBundledWebMode, $txtDirectWebRtcBundledWebDirectory, $btnBrowseDirectWebRtcBundledWebDirectory, $btnDetectDirectWebRtcBundledWebDirectory,
+        $cmbDirectWebRtcWorkingWebMode, $txtDirectWebRtcWebDirectory, $btnBrowseDirectWebRtcWebDirectory, $btnDetectDirectWebRtcWebDirectory,
+        $numWidth, $numHeight, $numFps, $numVideoBitrate, $numGopSeconds,
+        $cmbRateControl, $numMaxVideoBitrate, $numConstantQp,
+        $cmbEncoder, $lblEncoderStatus, $cmbPreset, $cmbProfile,
+        $cmbEncoderTune, $cmbMultipass, $cmbVideoSyncMode, $numVbvBuffer,
+        $numSrtLatency, $cmbRtspTransport,
+        $numBFrames, $chkLookAhead, $numLookAheadFrames,
+        $chkAdaptiveQuantization, $chkTemporalAq, $numAqStrength,
+        $txtCustomEncoderOptions,
+        $cmbAudioTransportMode, $cmbAudioClockMode, $cmbAudioTimingMode, $cmbAudioSlaveMethod, $cmbAudioSyncMode, $numAudioBufferMs, $numAudioLatencyMs, $chkDesktopAudio, $numDesktopVolume, $cmbDesktopAudioDevice, $btnRefreshAudioDevices, $chkMic, $numMicVolume, $cmbMicAudioDevice, $lblAudioDeviceStatus,
+        $cmbAudioCodec, $lblAudioCodecStatus, $numAudioBitrate,
+        $cmbDirectWebRtcOpusMode, $cmbDirectWebRtcOpusFrameMs, $cmbDirectWebRtcOpusAudioType, $chkDirectWebRtcOpusFec, $chkDirectWebRtcOpusDtx,
+        $chkRecordingEnabled, $txtRecordingDirectory, $btnBrowseRecordingDirectory,
+        $txtRecordingTemplate, $cmbRecordingEncoder, $lblRecordingStatus,
+        $cmbRecordingPreset, $cmbRecordingProfile, $cmbRecordingRateControl,
+        $numRecordingWidth, $numRecordingHeight, $numRecordingFps,
+        $numRecordingVideoBitrate, $numRecordingMaxVideoBitrate, $numRecordingConstantQp,
+        $numRecordingGopSeconds, $numRecordingBFrames,
+        $cmbRecordingTune, $cmbRecordingMultipass,
+        $chkRecordingLookAhead, $numRecordingLookAheadFrames,
+        $chkRecordingSpatialAq, $chkRecordingTemporalAq, $numRecordingAqStrength,
+        $numRecordingVbvBuffer, $txtRecordingCustomEncoderOptions,
+        $chkRecordingDesktopAudio, $chkRecordingMic, $numRecordingAudioBitrate,
+        $chkNetworkTuningEnabled, $cmbNetworkAdapter, $btnRefreshNetworkAdapters,
+        $cmbNetworkProfile, $chkNetworkDscp, $numNetworkDscp, $cmbNetworkQosProtocol,
+        $txtNetworkPorts, $cmbNetworkUso, $cmbNetworkUro, $chkNetworkDisablePowerSaving,
+        $cmbNetworkInterruptModeration, $chkNetworkDisableEee,
+        $chkNetworkRestoreOnStop, $chkNetworkRestoreOnExit, $chkNetworkRecoveryTask,
+        $btnNetworkSnapshot, $btnNetworkApply, $btnNetworkRestore, $btnOpenNetworkRecovery,
+        $lblNetworkStatus, $btnResetTransport, $btnResetWebRtcSane, $btnResetVideo, $btnResetAudio,
+        $btnResetRecording, $btnResetNetwork, $btnResetOptions, $btnResetAll,
+        $txtGstPath, $btnBrowseGst, $btnDetectGst, $btnCheckGst,
+        $chkPreview, $chkAutoRestart, $chkVerbose, $chkMinimizeToTray,
+        $chkStartMinimized
+    )) {
+        if ($realControl) {
+            $realControl.Visible = $true
+        }
+    }
+
+    # Static explanatory text is intentionally removed from the visible UI.
+    foreach ($staticInfo in @($audioNote, $protocolNote, $latencyNote, $changesNote)) {
+        if ($staticInfo) {
+            $staticInfo.Visible = $false
+        }
+    }
+
+    # Keep checkbox marks readable on the dark UI. Flat WinForms checkboxes can
+    # render a near-white check mark on a white box, which looks unchecked.
+    foreach ($checkBox in @(
+        $chkTransportEnabled, $chkCursor, $chkStartMediaMtx,
+        $chkPlayerStatsOverlay, $chkPlayerJbufDebug, $chkPlayerUrlOverrides,
+        $cmbSplitPlayerSyncMode, $numSplitAudioStallSeconds, $numSplitAvOffsetWarnMs,
+        $chkDirectWebRtcOpusFec, $chkDirectWebRtcOpusDtx,
+        $chkLookAhead, $chkAdaptiveQuantization, $chkTemporalAq,
+        $chkDesktopAudio, $chkMic,
+        $chkRecordingEnabled, $chkRecordingLookAhead, $chkRecordingSpatialAq,
+        $chkRecordingTemporalAq, $chkRecordingDesktopAudio, $chkRecordingMic,
+        $chkNetworkTuningEnabled, $chkNetworkDscp, $chkNetworkDisablePowerSaving,
+        $chkNetworkDisableEee, $chkNetworkRestoreOnStop, $chkNetworkRestoreOnExit,
+        $chkNetworkRecoveryTask,
+        $chkPreview, $chkAutoRestart, $chkVerbose,
+        $chkMinimizeToTray, $chkStartMinimized
+    )) {
+        if ($checkBox) {
+            $checkBox.FlatStyle = [System.Windows.Forms.FlatStyle]::Standard
+            $checkBox.UseVisualStyleBackColor = $false
+            $checkBox.BackColor = $script:ColorSurface
+            $checkBox.ForeColor = $script:ColorText
+        }
+    }
+
+    $chkFullscreenApp.Visible = $false
+    $chkFullscreenApp.TabStop = $false
+    $chkSendAbsoluteTimestamps.Visible = $false
+    $chkSendAbsoluteTimestamps.TabStop = $false
+
+    # Accent/color corrections after recursive styling.
+    $btnStart.BackColor = $script:ColorAccent
+    $btnStart.ForeColor = [System.Drawing.Color]::White
+    $statusLabel.ForeColor = $script:ColorGood
+    $lblEncoderStatus.ForeColor = $script:ColorMuted
+    $lblAudioCodecStatus.ForeColor = $script:ColorMuted
+    $lblCaptureModeStatus.ForeColor = $script:ColorMuted
+    $audioNote.ForeColor = $script:ColorMuted
+    $protocolNote.ForeColor = $script:ColorMuted
+    $latencyNote.ForeColor = $script:ColorMuted
+    $changesNote.ForeColor = $script:ColorWarn
+    $previewPanel.BackColor = [System.Drawing.Color]::Black
+    $previewPlaceholder.BackColor = [System.Drawing.Color]::Black
+    $previewPlaceholder.ForeColor = $script:ColorMuted
+    $txtLog.BackColor = [System.Drawing.ColorTranslator]::FromHtml('#08111F')
+    $txtCommand.BackColor = [System.Drawing.ColorTranslator]::FromHtml('#08111F')
+}
+
+Apply-ModernDashboardUi
+
+
 
 function Initialize-GstJob {
     if ($script:JobHandle -ne [IntPtr]::Zero) {
@@ -2026,6 +4922,81 @@ function Set-WaitingForFullscreenState {
     Update-TrayMenuState
 }
 
+function Scroll-LogToBottom {
+    try {
+        if (-not $txtLog -or $txtLog.IsDisposed) {
+            return
+        }
+
+        $txtLog.SelectionStart = $txtLog.TextLength
+        $txtLog.SelectionLength = 0
+        $txtLog.ScrollToCaret()
+
+        if ($txtLog.IsHandleCreated) {
+            # ScrollToCaret() can be lazy when the TextBox does not have focus or
+            # when the Logs tab is not active. Force the Win32 edit control to
+            # move to the bottom so live GStreamer output actually follows tail.
+            [GstUiNative]::SendMessage(
+                $txtLog.Handle,
+                [GstUiNative]::EM_SCROLLCARET,
+                [IntPtr]::Zero,
+                [IntPtr]::Zero
+            ) | Out-Null
+
+            [GstUiNative]::SendMessage(
+                $txtLog.Handle,
+                [GstUiNative]::WM_VSCROLL,
+                [IntPtr]([GstUiNative]::SB_BOTTOM),
+                [IntPtr]::Zero
+            ) | Out-Null
+        }
+    }
+    catch {}
+}
+
+function Drain-ManagedProcessLogs {
+    # Reads any new bytes from the GStreamer and MediaMTX stdout/stderr logs and
+    # returns them as one chunk so the caller can do a single UI append.
+    # Read-NewLogText already no-ops on null/blank paths, so this is cheap when
+    # nothing is running.
+    $parts = New-Object System.Collections.Generic.List[string]
+
+    $chunk = Read-NewLogText -Path $script:StdOutPath -Position ([ref]$script:StdOutPosition)
+    if ($chunk) { $parts.Add($chunk) }
+
+    $chunk = Read-NewLogText -Path $script:StdErrPath -Position ([ref]$script:StdErrPosition)
+    if ($chunk) { $parts.Add($chunk) }
+
+    $chunk = Read-NewLogText -Path $script:StdOutAudioPath -Position ([ref]$script:StdOutAudioPosition)
+    if ($chunk) { $parts.Add($chunk) }
+
+    $chunk = Read-NewLogText -Path $script:StdErrAudioPath -Position ([ref]$script:StdErrAudioPosition)
+    if ($chunk) { $parts.Add($chunk) }
+
+    $chunk = Read-NewLogText -Path $script:MediaMtxStdOutPath -Position ([ref]$script:MediaMtxStdOutPosition)
+    if ($chunk) { $parts.Add($chunk) }
+
+    $chunk = Read-NewLogText -Path $script:MediaMtxStdErrPath -Position ([ref]$script:MediaMtxStdErrPosition)
+    if ($chunk) { $parts.Add($chunk) }
+
+    if ($parts.Count -eq 0) { return '' }
+    return ($parts -join '')
+}
+
+function Test-LogViewLive {
+    # The log textbox only needs to scroll and repaint when the user can actually
+    # see it. Under heavy GST_DEBUG this is the difference between forcing a
+    # scroll+repaint 2.5x/second forever and doing no UI work at all.
+    try {
+        if (-not $txtLog -or $txtLog.IsDisposed) { return $false }
+        if (-not $form -or -not $form.Visible) { return $false }
+        if ($form.WindowState -eq [System.Windows.Forms.FormWindowState]::Minimized) { return $false }
+        if ($lowerTabs -and $tabLog -and $lowerTabs.SelectedTab -ne $tabLog) { return $false }
+        return $true
+    }
+    catch { return $false }
+}
+
 function Append-Log {
     param([string]$Text)
 
@@ -2033,17 +5004,46 @@ function Append-Log {
         return
     }
 
-    $txtLog.AppendText($Text)
-    if (-not $Text.EndsWith([Environment]::NewLine)) {
-        $txtLog.AppendText([Environment]::NewLine)
-    }
+    try {
+        if (-not $txtLog -or $txtLog.IsDisposed) {
+            return
+        }
 
-    if ($txtLog.TextLength -gt 250000) {
-        $txtLog.Text = $txtLog.Text.Substring($txtLog.TextLength - 180000)
-    }
+        if (-not $Text.EndsWith([Environment]::NewLine)) {
+            $Text += [Environment]::NewLine
+        }
 
-    $txtLog.SelectionStart = $txtLog.TextLength
-    $txtLog.ScrollToCaret()
+        $logIsLive = Test-LogViewLive
+        $needsTrim = ($txtLog.TextLength + $Text.Length) -gt 250000
+
+        # Suspend painting only when the control is actually on screen AND we are
+        # about to do the expensive full-text trim. WM_SETREDRAW on a hidden tab
+        # would be wasted work, and suspending for a plain append costs more than
+        # the append itself.
+        $suspendRedraw = $logIsLive -and $needsTrim -and $txtLog.IsHandleCreated
+        if ($suspendRedraw) {
+            [void][GstUiNative]::SendMessage($txtLog.Handle, [GstUiNative]::WM_SETREDRAW, [IntPtr]::Zero, [IntPtr]::Zero)
+        }
+
+        try {
+            $txtLog.AppendText($Text)
+
+            if ($txtLog.TextLength -gt 250000) {
+                $txtLog.Text = $txtLog.Text.Substring($txtLog.TextLength - 180000)
+            }
+
+            if ($logIsLive) {
+                Scroll-LogToBottom
+            }
+        }
+        finally {
+            if ($suspendRedraw) {
+                [void][GstUiNative]::SendMessage($txtLog.Handle, [GstUiNative]::WM_SETREDRAW, [IntPtr]1, [IntPtr]::Zero)
+                $txtLog.Invalidate()
+            }
+        }
+    }
+    catch {}
 }
 
 function Set-RunState {
@@ -2055,35 +5055,967 @@ function Set-RunState {
     Update-TrayMenuState
 }
 
+function Test-TransportEnabled {
+    return (-not $chkTransportEnabled) -or [bool]$chkTransportEnabled.Checked
+}
+
 function Update-MediaMtxUi {
-    $enabled = $chkStartMediaMtx.Checked
+    $transportEnabled = Test-TransportEnabled
+    $isDirectWebRtc = ([string]$cmbProtocol.SelectedItem -eq $script:DirectWebRtcProtocolName)
+    if ($chkStartMediaMtx) { $chkStartMediaMtx.Enabled = $transportEnabled -and -not $isDirectWebRtc }
+    $enabled = $transportEnabled -and -not $isDirectWebRtc -and $chkStartMediaMtx.Checked
     $txtMediaMtxPath.Enabled = $enabled
     $btnBrowseMediaMtx.Enabled = $enabled
 }
 
-function Update-CaptureModeUi {
-    $numMonitor.Enabled = -not $chkFullscreenApp.Checked
+function Test-IsAdministrator {
+    try {
+        $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+        $principal = New-Object System.Security.Principal.WindowsPrincipal($identity)
+        return $principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)
+    }
+    catch {
+        return $false
+    }
+}
+
+function Ensure-NetworkRecoveryDirectory {
+    if (-not (Test-Path -LiteralPath $script:NetworkRecoveryDirectory)) {
+        $null = New-Item -ItemType Directory -Path $script:NetworkRecoveryDirectory -Force
+    }
+}
+
+function Get-SelectedNetworkAdapterName {
+    $item = [string]$cmbNetworkAdapter.SelectedItem
+    if ([string]::IsNullOrWhiteSpace($item)) { return '' }
+    return ($item -split '\s+\|\s+', 2)[0].Trim()
+}
+
+function Refresh-NetworkAdapters {
+    try {
+        $previous = Get-SelectedNetworkAdapterName
+        $cmbNetworkAdapter.Items.Clear()
+        if (-not (Get-Command Get-NetAdapter -ErrorAction SilentlyContinue)) {
+            $lblNetworkStatus.Text = 'Get-NetAdapter unavailable on this system.'
+            $lblNetworkStatus.ForeColor = [System.Drawing.Color]::DarkRed
+            return
+        }
+
+        $adapters = @(Get-NetAdapter -ErrorAction SilentlyContinue | Sort-Object @{Expression={ if ($_.Status -eq 'Up') { 0 } else { 1 } }}, Name)
+        foreach ($adapter in $adapters) {
+            $display = "$($adapter.Name) | $($adapter.InterfaceDescription) [$($adapter.Status)]"
+            $null = $cmbNetworkAdapter.Items.Add($display)
+        }
+
+        if ($cmbNetworkAdapter.Items.Count -gt 0) {
+            $matchIndex = -1
+            if (-not [string]::IsNullOrWhiteSpace($previous)) {
+                for ($i = 0; $i -lt $cmbNetworkAdapter.Items.Count; $i++) {
+                    if ([string]$cmbNetworkAdapter.Items[$i] -like "$previous |*") { $matchIndex = $i; break }
+                }
+            }
+            if ($matchIndex -lt 0) { $matchIndex = 0 }
+            $cmbNetworkAdapter.SelectedIndex = $matchIndex
+            $lblNetworkStatus.Text = "Adapter ready: $(Get-SelectedNetworkAdapterName)"
+            $lblNetworkStatus.ForeColor = [System.Drawing.Color]::DimGray
+        }
+        else {
+            $lblNetworkStatus.Text = 'No network adapters detected.'
+            $lblNetworkStatus.ForeColor = [System.Drawing.Color]::DarkRed
+        }
+    }
+    catch {
+        $lblNetworkStatus.Text = "Adapter refresh failed: $($_.Exception.Message)"
+        $lblNetworkStatus.ForeColor = [System.Drawing.Color]::DarkRed
+    }
+}
+
+function Normalize-UdpOffloadState {
+    param([AllowNull()][object]$State)
+
+    $value = ([string]$State).Trim().ToLowerInvariant()
+    switch ($value) {
+        'enabled' { return 'enabled' }
+        'disabled' { return 'disabled' }
+        default { return '' }
+    }
+}
+
+function Get-UdpGlobalState {
+    $state = [ordered]@{ Uso = ''; Uro = ''; Raw = '' }
+    try {
+        $raw = (& netsh interface udp show global 2>&1 | Out-String).Trim()
+        $state.Raw = $raw
+        foreach ($line in ($raw -split "`r?`n")) {
+            if ($line -match '(?i)\buso\b.*:\s*(?<value>enabled|disabled)') { $state.Uso = $matches['value'].ToLowerInvariant(); continue }
+            if ($line -match '(?i)segmentation.*:\s*(?<value>enabled|disabled)') { $state.Uso = $matches['value'].ToLowerInvariant(); continue }
+            if ($line -match '(?i)\buro\b.*:\s*(?<value>enabled|disabled)') { $state.Uro = $matches['value'].ToLowerInvariant(); continue }
+            if ($line -match '(?i)receive.*(?:offload|coalescing).*:\s*(?<value>enabled|disabled)') { $state.Uro = $matches['value'].ToLowerInvariant(); continue }
+        }
+    }
+    catch {}
+    return $state
+}
+
+function Get-SnapshotUdpOffloadState {
+    param(
+        [AllowNull()][object]$UdpGlobal,
+        [ValidateSet('uso','uro')][string]$Name
+    )
+
+    if (-not $UdpGlobal) { return '' }
+
+    $direct = ''
+    try {
+        if ($Name -eq 'uso') { $direct = Normalize-UdpOffloadState $UdpGlobal.Uso }
+        else { $direct = Normalize-UdpOffloadState $UdpGlobal.Uro }
+    }
+    catch {}
+    if ($direct) { return $direct }
+
+    try {
+        $raw = [string]$UdpGlobal.Raw
+        foreach ($line in ($raw -split "`r?`n")) {
+            if ($Name -eq 'uso') {
+                if ($line -match '(?i)\buso\b.*:\s*(?<value>enabled|disabled)') { return $matches['value'].ToLowerInvariant() }
+                if ($line -match '(?i)segmentation.*:\s*(?<value>enabled|disabled)') { return $matches['value'].ToLowerInvariant() }
+            }
+            else {
+                if ($line -match '(?i)\buro\b.*:\s*(?<value>enabled|disabled)') { return $matches['value'].ToLowerInvariant() }
+                if ($line -match '(?i)receive.*(?:offload|coalescing).*:\s*(?<value>enabled|disabled)') { return $matches['value'].ToLowerInvariant() }
+            }
+        }
+    }
+    catch {}
+
+    return ''
+}
+
+function Set-UdpGlobalOffload {
+    param(
+        [ValidateSet('uso','uro')][string]$Name,
+        [ValidateSet('enabled','disabled')][string]$State
+    )
+
+    try {
+        $result = (& netsh interface udp set global ("$Name=$State") 2>&1 | Out-String).Trim()
+        Append-Log "Network tuning: netsh interface udp set global $Name=$State - $result"
+        return $true
+    }
+    catch {
+        Append-Log "Network tuning warning: could not set UDP $Name to $State - $($_.Exception.Message)"
+        return $false
+    }
+}
+
+function Get-NetworkSnapshotObject {
+    param([Parameter(Mandatory)][string]$AdapterName)
+
+    $advanced = @()
+    if (Get-Command Get-NetAdapterAdvancedProperty -ErrorAction SilentlyContinue) {
+        try {
+            $advanced = @(Get-NetAdapterAdvancedProperty -Name $AdapterName -ErrorAction SilentlyContinue | ForEach-Object {
+                [ordered]@{
+                    DisplayName = [string]$_.DisplayName
+                    DisplayValue = [string]$_.DisplayValue
+                    RegistryKeyword = [string]$_.RegistryKeyword
+                    RegistryValue = @($_.RegistryValue)
+                }
+            })
+        }
+        catch {}
+    }
+
+    $power = [ordered]@{}
+    if (Get-Command Get-NetAdapterPowerManagement -ErrorAction SilentlyContinue) {
+        try {
+            $pm = Get-NetAdapterPowerManagement -Name $AdapterName -ErrorAction SilentlyContinue
+            foreach ($propName in @('AllowComputerToTurnOffDevice','WakeOnMagicPacket','WakeOnPattern','DeviceSleepOnDisconnect','ArpOffload','NSOffload','RsnRekeyOffload','D0PacketCoalescing')) {
+                if ($pm.PSObject.Properties.Name -contains $propName) {
+                    $power[$propName] = [string]$pm.$propName
+                }
+            }
+        }
+        catch {}
+    }
+
+    return [ordered]@{
+        Version = $script:AppVersion
+        Timestamp = (Get-Date).ToString('o')
+        ComputerName = $env:COMPUTERNAME
+        AdapterName = $AdapterName
+        UdpGlobal = Get-UdpGlobalState
+        AdvancedProperties = $advanced
+        PowerManagement = $power
+        QosPolicyName = 'GStreamerGlass-Transport'
+    }
+}
+
+function Write-NetworkRecoveryScript {
+    Ensure-NetworkRecoveryDirectory
+    $template = @'
+param([string]$SnapshotPath = '__SNAPSHOT_PATH__')
+
+function Normalize-UdpOffloadState {
+    param([string]$State)
+    $value = ([string]$State).Trim().ToLowerInvariant()
+    if ($value -eq 'enabled' -or $value -eq 'disabled') { return $value }
+    return ''
+}
+
+function Get-SnapshotUdpOffloadState {
+    param($UdpGlobal, [string]$Name)
+    if (-not $UdpGlobal) { return '' }
+    $direct = ''
+    try {
+        if ($Name -eq 'uso') { $direct = Normalize-UdpOffloadState ([string]$UdpGlobal.Uso) }
+        else { $direct = Normalize-UdpOffloadState ([string]$UdpGlobal.Uro) }
+    } catch {}
+    if ($direct) { return $direct }
+
+    try {
+        $raw = [string]$UdpGlobal.Raw
+        foreach ($line in ($raw -split "`r?`n")) {
+            if ($Name -eq 'uso') {
+                if ($line -match '(?i)\buso\b.*:\s*(?<value>enabled|disabled)') { return $matches['value'].ToLowerInvariant() }
+                if ($line -match '(?i)segmentation.*:\s*(?<value>enabled|disabled)') { return $matches['value'].ToLowerInvariant() }
+            }
+            else {
+                if ($line -match '(?i)\buro\b.*:\s*(?<value>enabled|disabled)') { return $matches['value'].ToLowerInvariant() }
+                if ($line -match '(?i)receive.*(?:offload|coalescing).*:\s*(?<value>enabled|disabled)') { return $matches['value'].ToLowerInvariant() }
+            }
+        }
+    } catch {}
+    return ''
+}
+
+function Set-UdpGlobalSafe {
+    param([string]$Name, [string]$State)
+    $safeState = Normalize-UdpOffloadState $State
+    if ([string]::IsNullOrWhiteSpace($safeState)) { return }
+    try { & netsh interface udp set global "$Name=$safeState" | Out-Null } catch { Write-Warning $_.Exception.Message }
+}
+
+if (-not (Test-Path -LiteralPath $SnapshotPath)) {
+    Write-Error "Snapshot not found: $SnapshotPath"
+    exit 1
+}
+
+$snapshot = Get-Content -LiteralPath $SnapshotPath -Raw | ConvertFrom-Json
+$adapterName = [string]$snapshot.AdapterName
+
+try {
+    if (Get-Command Remove-NetQosPolicy -ErrorAction SilentlyContinue) {
+        Remove-NetQosPolicy -Name ([string]$snapshot.QosPolicyName) -Confirm:$false -ErrorAction SilentlyContinue | Out-Null
+    }
+} catch { Write-Warning $_.Exception.Message }
+
+try {
+    if ($snapshot.UdpGlobal) {
+        Set-UdpGlobalSafe -Name 'uso' -State (Get-SnapshotUdpOffloadState -UdpGlobal $snapshot.UdpGlobal -Name 'uso')
+        Set-UdpGlobalSafe -Name 'uro' -State (Get-SnapshotUdpOffloadState -UdpGlobal $snapshot.UdpGlobal -Name 'uro')
+    }
+} catch { Write-Warning $_.Exception.Message }
+
+try {
+    if ((Get-Command Set-NetAdapterAdvancedProperty -ErrorAction SilentlyContinue) -and $snapshot.AdvancedProperties) {
+        foreach ($prop in $snapshot.AdvancedProperties) {
+            if (-not [string]::IsNullOrWhiteSpace([string]$prop.DisplayName)) {
+                Set-NetAdapterAdvancedProperty -Name $adapterName -DisplayName ([string]$prop.DisplayName) -DisplayValue ([string]$prop.DisplayValue) -NoRestart -ErrorAction SilentlyContinue | Out-Null
+            }
+        }
+    }
+} catch { Write-Warning $_.Exception.Message }
+
+try {
+    if ((Get-Command Set-NetAdapterPowerManagement -ErrorAction SilentlyContinue) -and $snapshot.PowerManagement) {
+        $params = @{ Name = $adapterName; ErrorAction = 'SilentlyContinue' }
+        foreach ($p in $snapshot.PowerManagement.PSObject.Properties) {
+            if (-not [string]::IsNullOrWhiteSpace([string]$p.Value)) { $params[$p.Name] = [string]$p.Value }
+        }
+        if ($params.Count -gt 2) { Set-NetAdapterPowerManagement @params | Out-Null }
+    }
+} catch { Write-Warning $_.Exception.Message }
+
+Write-Host "GStreamer Glass network settings restored from $SnapshotPath"
+'@
+    $scriptText = $template.Replace('__SNAPSHOT_PATH__', $script:NetworkSnapshotPath.Replace("'", "''"))
+    Set-Content -LiteralPath $script:NetworkRecoveryScriptPath -Value $scriptText -Encoding UTF8
+}
+
+function Save-NetworkSnapshot {
+    param([switch]$Quiet)
+
+    Ensure-NetworkRecoveryDirectory
+    $adapterName = Get-SelectedNetworkAdapterName
+    if ([string]::IsNullOrWhiteSpace($adapterName)) {
+        throw 'Select a network adapter first.'
+    }
+
+    $snapshot = Get-NetworkSnapshotObject -AdapterName $adapterName
+    $json = $snapshot | ConvertTo-Json -Depth 12
+    $json | Set-Content -LiteralPath $script:NetworkSnapshotPath -Encoding UTF8
+    $timestampPath = Join-Path $script:NetworkRecoveryDirectory ("network-snapshot-{0}.json" -f (Get-Date -Format 'yyyyMMdd-HHmmss'))
+    $json | Set-Content -LiteralPath $timestampPath -Encoding UTF8
+    Write-NetworkRecoveryScript
+
+    if (-not $Quiet) {
+        Append-Log "Network tuning snapshot saved: $script:NetworkSnapshotPath"
+        $lblNetworkStatus.Text = "Snapshot saved for $adapterName"
+        $lblNetworkStatus.ForeColor = [System.Drawing.Color]::DarkGreen
+    }
+
+    return $snapshot
+}
+
+function Set-NetworkAppliedState {
+    param([bool]$Active)
+    Ensure-NetworkRecoveryDirectory
+    $script:NetworkTuningApplied = $Active
+    [ordered]@{
+        Active = $Active
+        Timestamp = (Get-Date).ToString('o')
+        SnapshotPath = $script:NetworkSnapshotPath
+        AdapterName = Get-SelectedNetworkAdapterName
+    } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $script:NetworkAppliedStatePath -Encoding UTF8
+}
+
+function Get-NetworkAppliedState {
+    try {
+        if (Test-Path -LiteralPath $script:NetworkAppliedStatePath) {
+            return Get-Content -LiteralPath $script:NetworkAppliedStatePath -Raw | ConvertFrom-Json
+        }
+    }
+    catch {}
+    return $null
+}
+
+function Register-NetworkRecoveryTask {
+    if (-not $chkNetworkRecoveryTask.Checked) { return }
+    try {
+        Write-NetworkRecoveryScript
+        $tr = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$script:NetworkRecoveryScriptPath`""
+        & schtasks.exe /Create /TN $script:NetworkRecoveryTaskName /SC ONLOGON /TR $tr /F 2>&1 | Out-Null
+        Append-Log "Network recovery task registered: $script:NetworkRecoveryTaskName"
+    }
+    catch {
+        Append-Log "Network tuning warning: recovery task registration failed - $($_.Exception.Message)"
+    }
+}
+
+function Unregister-NetworkRecoveryTask {
+    try {
+        & schtasks.exe /Delete /TN $script:NetworkRecoveryTaskName /F 2>&1 | Out-Null
+    }
+    catch {}
+}
+
+function Set-AdapterAdvancedPropertyByCandidates {
+    param(
+        [Parameter(Mandatory)][string]$AdapterName,
+        [Parameter(Mandatory)][string[]]$DisplayNames,
+        [Parameter(Mandatory)][string[]]$DesiredValues
+    )
+
+    if (-not (Get-Command Get-NetAdapterAdvancedProperty -ErrorAction SilentlyContinue) -or -not (Get-Command Set-NetAdapterAdvancedProperty -ErrorAction SilentlyContinue)) {
+        return $false
+    }
+
+    foreach ($displayName in $DisplayNames) {
+        $prop = $null
+        try { $prop = Get-NetAdapterAdvancedProperty -Name $AdapterName -DisplayName $displayName -ErrorAction SilentlyContinue | Select-Object -First 1 } catch {}
+        if (-not $prop) {
+            try { $prop = Get-NetAdapterAdvancedProperty -Name $AdapterName -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -like "*$displayName*" } | Select-Object -First 1 } catch {}
+        }
+        if (-not $prop) { continue }
+
+        foreach ($desired in $DesiredValues) {
+            try {
+                Set-NetAdapterAdvancedProperty -Name $AdapterName -DisplayName $prop.DisplayName -DisplayValue $desired -NoRestart -ErrorAction Stop | Out-Null
+                Append-Log "Network tuning: $($prop.DisplayName) -> $desired"
+                return $true
+            }
+            catch {}
+        }
+    }
+
+    return $false
+}
+
+function Set-NetworkPowerSavingDisabled {
+    param([Parameter(Mandatory)][string]$AdapterName)
+    if (-not (Get-Command Set-NetAdapterPowerManagement -ErrorAction SilentlyContinue)) { return $false }
+    try {
+        Set-NetAdapterPowerManagement -Name $AdapterName -AllowComputerToTurnOffDevice Disabled -ErrorAction Stop | Out-Null
+        Append-Log 'Network tuning: adapter power saving disabled.'
+        return $true
+    }
+    catch {
+        Append-Log "Network tuning warning: adapter power saving was not changed - $($_.Exception.Message)"
+        return $false
+    }
+}
+
+function Apply-NetworkProfileToUi {
+    $profile = [string]$cmbNetworkProfile.SelectedItem
+    switch ($profile) {
+        'No changes' {
+            $chkNetworkTuningEnabled.Checked = $false
+            $chkNetworkDscp.Checked = $false
+            $cmbNetworkUso.SelectedItem = 'Leave unchanged'
+            $cmbNetworkUro.SelectedItem = 'Leave unchanged'
+            $chkNetworkDisablePowerSaving.Checked = $false
+            $cmbNetworkInterruptModeration.SelectedItem = 'Leave unchanged'
+            $chkNetworkDisableEee.Checked = $false
+        }
+        'Low latency LAN' {
+            $chkNetworkTuningEnabled.Checked = $true
+            $chkNetworkDscp.Checked = $true
+            $numNetworkDscp.Value = 34
+            $cmbNetworkQosProtocol.SelectedItem = 'UDP'
+            $cmbNetworkUso.SelectedItem = 'Leave unchanged'
+            $cmbNetworkUro.SelectedItem = 'Disable'
+            $chkNetworkDisablePowerSaving.Checked = $true
+            $cmbNetworkInterruptModeration.SelectedItem = 'Disable'
+            $chkNetworkDisableEee.Checked = $true
+            $chkNetworkRestoreOnStop.Checked = $true
+            $chkNetworkRestoreOnExit.Checked = $true
+            $chkNetworkRecoveryTask.Checked = $true
+        }
+        'Stable WAN' {
+            $chkNetworkTuningEnabled.Checked = $true
+            $chkNetworkDscp.Checked = $true
+            $numNetworkDscp.Value = 34
+            $cmbNetworkQosProtocol.SelectedItem = 'UDP'
+            $cmbNetworkUso.SelectedItem = 'Enable'
+            $cmbNetworkUro.SelectedItem = 'Enable'
+            $chkNetworkDisablePowerSaving.Checked = $true
+            $cmbNetworkInterruptModeration.SelectedItem = 'Enable / Adaptive'
+            $chkNetworkDisableEee.Checked = $true
+            $chkNetworkRestoreOnStop.Checked = $true
+            $chkNetworkRestoreOnExit.Checked = $true
+            $chkNetworkRecoveryTask.Checked = $true
+        }
+    }
+    Update-NetworkUi
+}
+
+function Update-NetworkUi {
+    $enabled = [bool]$chkNetworkTuningEnabled.Checked
+    foreach ($control in @($cmbNetworkAdapter,$btnRefreshNetworkAdapters,$cmbNetworkProfile,$chkNetworkRestoreOnStop,$chkNetworkRestoreOnExit,$chkNetworkRecoveryTask,$btnNetworkSnapshot,$btnNetworkRestore,$btnOpenNetworkRecovery,$btnResetNetwork)) {
+        if ($control) { $control.Enabled = $true }
+    }
+    foreach ($control in @($chkNetworkDscp,$numNetworkDscp,$cmbNetworkQosProtocol,$txtNetworkPorts,$cmbNetworkUso,$cmbNetworkUro,$chkNetworkDisablePowerSaving,$cmbNetworkInterruptModeration,$chkNetworkDisableEee,$btnNetworkApply)) {
+        if ($control) { $control.Enabled = $enabled }
+    }
+    $numNetworkDscp.Enabled = $enabled -and $chkNetworkDscp.Checked
+    $cmbNetworkQosProtocol.Enabled = $enabled -and $chkNetworkDscp.Checked
+    $txtNetworkPorts.Enabled = $enabled -and $chkNetworkDscp.Checked
+
+    if ($enabled) {
+        $lblNetworkStatus.Text = 'Network tuning armed - snapshot required before apply.'
+        $lblNetworkStatus.ForeColor = [System.Drawing.Color]::DarkOrange
+    }
+    else {
+        $lblNetworkStatus.Text = 'Network tuning disabled'
+        $lblNetworkStatus.ForeColor = [System.Drawing.Color]::DimGray
+    }
+}
+
+function New-QosPolicyForGStreamer {
+    param([Parameter(Mandatory)][int]$DscpValue)
+
+    if (-not (Get-Command New-NetQosPolicy -ErrorAction SilentlyContinue)) {
+        Append-Log 'Network tuning warning: New-NetQosPolicy is unavailable.'
+        return
+    }
+
+    $policyName = 'GStreamerGlass-Transport'
+    try { Remove-NetQosPolicy -Name $policyName -Confirm:$false -ErrorAction SilentlyContinue | Out-Null } catch {}
+
+    $params = @{
+        Name = $policyName
+        AppPathNameMatchCondition = 'gst-launch-1.0.exe'
+        DSCPAction = $DscpValue
+        ErrorAction = 'Stop'
+    }
+
+    $proto = [string]$cmbNetworkQosProtocol.SelectedItem
+    if ($proto -in @('UDP','TCP')) { $params.IPProtocolMatchCondition = $proto }
+
+    $ports = $txtNetworkPorts.Text.Trim()
+    if (-not [string]::IsNullOrWhiteSpace($ports)) {
+        $params.IPDstPortMatchCondition = $ports
+    }
+
+    try {
+        New-NetQosPolicy @params | Out-Null
+        Append-Log "Network tuning: QoS DSCP policy created for gst-launch-1.0.exe DSCP=$DscpValue protocol=$proto ports=$(if ($ports) { $ports } else { 'any' })."
+    }
+    catch {
+        Append-Log "Network tuning warning: QoS policy failed - $($_.Exception.Message)"
+    }
+}
+
+function Apply-NetworkTuningForSession {
+    if (-not $chkNetworkTuningEnabled.Checked) { return $true }
+
+    if (-not (Test-IsAdministrator)) {
+        [System.Windows.Forms.MessageBox]::Show(
+            'Windows network tuning requires running GStreamer Glass as Administrator. No OS tuning was applied.',
+            $script:AppName,
+            'OK',
+            'Warning'
+        ) | Out-Null
+        return $false
+    }
+
+    try {
+        $snapshot = Save-NetworkSnapshot -Quiet
+        Register-NetworkRecoveryTask
+        $adapterName = [string]$snapshot.AdapterName
+
+        Append-Log "Network tuning: applying profile '$([string]$cmbNetworkProfile.SelectedItem)' to adapter '$adapterName'."
+
+        if ($chkNetworkDscp.Checked) {
+            New-QosPolicyForGStreamer -DscpValue ([int]$numNetworkDscp.Value)
+        }
+
+        switch ([string]$cmbNetworkUso.SelectedItem) {
+            'Enable' { Set-UdpGlobalOffload -Name uso -State enabled | Out-Null }
+            'Disable' { Set-UdpGlobalOffload -Name uso -State disabled | Out-Null }
+        }
+        switch ([string]$cmbNetworkUro.SelectedItem) {
+            'Enable' { Set-UdpGlobalOffload -Name uro -State enabled | Out-Null }
+            'Disable' { Set-UdpGlobalOffload -Name uro -State disabled | Out-Null }
+        }
+
+        if ($chkNetworkDisablePowerSaving.Checked) {
+            Set-NetworkPowerSavingDisabled -AdapterName $adapterName | Out-Null
+        }
+
+        switch ([string]$cmbNetworkInterruptModeration.SelectedItem) {
+            'Disable' {
+                Set-AdapterAdvancedPropertyByCandidates -AdapterName $adapterName -DisplayNames @('Interrupt Moderation','Interrupt Moderation Rate') -DesiredValues @('Disabled','Off') | Out-Null
+            }
+            'Enable / Adaptive' {
+                Set-AdapterAdvancedPropertyByCandidates -AdapterName $adapterName -DisplayNames @('Interrupt Moderation','Interrupt Moderation Rate') -DesiredValues @('Adaptive','Enabled','On') | Out-Null
+            }
+        }
+
+        if ($chkNetworkDisableEee.Checked) {
+            Set-AdapterAdvancedPropertyByCandidates -AdapterName $adapterName -DisplayNames @('Energy Efficient Ethernet','EEE','Green Ethernet','Advanced EEE') -DesiredValues @('Disabled','Off') | Out-Null
+        }
+
+        Set-NetworkAppliedState -Active $true
+        $lblNetworkStatus.Text = 'Network tuning applied. Recovery snapshot saved.'
+        $lblNetworkStatus.ForeColor = [System.Drawing.Color]::DarkGreen
+        return $true
+    }
+    catch {
+        Append-Log "Network tuning failed before stream start: $($_.Exception.Message)"
+        [System.Windows.Forms.MessageBox]::Show(
+            "Network tuning failed before stream start.`r`n`r`n$($_.Exception.Message)",
+            $script:AppName,
+            'OK',
+            'Warning'
+        ) | Out-Null
+        return $false
+    }
+}
+
+function Restore-NetworkTuning {
+    param([switch]$Quiet)
+
+    if (-not (Test-Path -LiteralPath $script:NetworkSnapshotPath)) {
+        if (-not $Quiet) { Append-Log 'Network restore: no snapshot found.' }
+        return $false
+    }
+
+    if (-not (Test-IsAdministrator)) {
+        if (-not $Quiet) {
+            [System.Windows.Forms.MessageBox]::Show(
+                'Restoring Windows network tuning requires running as Administrator.',
+                $script:AppName,
+                'OK',
+                'Warning'
+            ) | Out-Null
+        }
+        return $false
+    }
+
+    try {
+        $snapshot = Get-Content -LiteralPath $script:NetworkSnapshotPath -Raw | ConvertFrom-Json
+        $adapterName = [string]$snapshot.AdapterName
+        Append-Log "Network restore: restoring adapter '$adapterName' from $script:NetworkSnapshotPath"
+
+        try {
+            if (Get-Command Remove-NetQosPolicy -ErrorAction SilentlyContinue) {
+                Remove-NetQosPolicy -Name ([string]$snapshot.QosPolicyName) -Confirm:$false -ErrorAction SilentlyContinue | Out-Null
+                Append-Log 'Network restore: removed GStreamer Glass QoS policy.'
+            }
+        }
+        catch {}
+
+        if ($snapshot.UdpGlobal) {
+            $usoRestoreState = Get-SnapshotUdpOffloadState -UdpGlobal $snapshot.UdpGlobal -Name uso
+            $uroRestoreState = Get-SnapshotUdpOffloadState -UdpGlobal $snapshot.UdpGlobal -Name uro
+            if ($usoRestoreState) {
+                Set-UdpGlobalOffload -Name uso -State $usoRestoreState | Out-Null
+            }
+            elseif ($snapshot.UdpGlobal.Uso) {
+                Append-Log "Network restore: skipped invalid saved UDP USO state '$($snapshot.UdpGlobal.Uso)'."
+            }
+            if ($uroRestoreState) {
+                Set-UdpGlobalOffload -Name uro -State $uroRestoreState | Out-Null
+            }
+            elseif ($snapshot.UdpGlobal.Uro) {
+                Append-Log "Network restore: skipped invalid saved UDP URO state '$($snapshot.UdpGlobal.Uro)'."
+            }
+        }
+
+        if ((Get-Command Set-NetAdapterAdvancedProperty -ErrorAction SilentlyContinue) -and $snapshot.AdvancedProperties) {
+            foreach ($prop in $snapshot.AdvancedProperties) {
+                if (-not [string]::IsNullOrWhiteSpace([string]$prop.DisplayName)) {
+                    try {
+                        Set-NetAdapterAdvancedProperty -Name $adapterName -DisplayName ([string]$prop.DisplayName) -DisplayValue ([string]$prop.DisplayValue) -NoRestart -ErrorAction SilentlyContinue | Out-Null
+                    }
+                    catch {}
+                }
+            }
+            Append-Log 'Network restore: adapter advanced properties restored where supported.'
+        }
+
+        if ((Get-Command Set-NetAdapterPowerManagement -ErrorAction SilentlyContinue) -and $snapshot.PowerManagement) {
+            try {
+                $params = @{ Name = $adapterName; ErrorAction = 'SilentlyContinue' }
+                foreach ($p in $snapshot.PowerManagement.PSObject.Properties) {
+                    if (-not [string]::IsNullOrWhiteSpace([string]$p.Value)) { $params[$p.Name] = [string]$p.Value }
+                }
+                if ($params.Count -gt 2) { Set-NetAdapterPowerManagement @params | Out-Null }
+                Append-Log 'Network restore: adapter power management restored where supported.'
+            }
+            catch {}
+        }
+
+        Unregister-NetworkRecoveryTask
+        Set-NetworkAppliedState -Active $false
+        $lblNetworkStatus.Text = 'Network settings restored from snapshot.'
+        $lblNetworkStatus.ForeColor = [System.Drawing.Color]::DarkGreen
+        return $true
+    }
+    catch {
+        Append-Log "Network restore failed: $($_.Exception.Message)"
+        if (-not $Quiet) {
+            [System.Windows.Forms.MessageBox]::Show(
+                "Network restore failed.`r`n`r`n$($_.Exception.Message)",
+                $script:AppName,
+                'OK',
+                'Warning'
+            ) | Out-Null
+        }
+        return $false
+    }
+}
+
+function Check-PendingNetworkRecovery {
+    $state = Get-NetworkAppliedState
+    if ($state -and $state.Active -eq $true) {
+        $result = [System.Windows.Forms.MessageBox]::Show(
+            "GStreamer Glass detected Windows network tuning from a previous session.`r`n`r`nRestore the saved network snapshot now?",
+            $script:AppName,
+            [System.Windows.Forms.MessageBoxButtons]::YesNo,
+            [System.Windows.Forms.MessageBoxIcon]::Question
+        )
+        if ($result -eq [System.Windows.Forms.DialogResult]::Yes) {
+            Restore-NetworkTuning | Out-Null
+        }
+        else {
+            $lblNetworkStatus.Text = 'Previous network tuning is still marked active.'
+            $lblNetworkStatus.ForeColor = [System.Drawing.Color]::DarkOrange
+        }
+    }
+}
+
+function Reset-WebRtcSaneDefaults {
+    $cmbDirectWebRtcCongestion.SelectedItem = 'disabled'
+    $cmbDirectWebRtcMitigation.SelectedItem = 'none'
+    if ($cmbWebRtcRecoveryMode.Items.Contains($script:DefaultWebRtcRecoveryMode)) { $cmbWebRtcRecoveryMode.SelectedItem = $script:DefaultWebRtcRecoveryMode }
+    if ($cmbWebRtcSenderQueueMode.Items.Contains($script:DefaultWebRtcSenderQueueMode)) { $cmbWebRtcSenderQueueMode.SelectedItem = $script:DefaultWebRtcSenderQueueMode }
+    $chkDirectWebRtcFec.Checked = $false
+    $chkDirectWebRtcRetransmission.Checked = $false
+    if ($cmbWebRtcRecoveryMode.Items.Contains($script:DefaultWebRtcRecoveryMode)) { Set-WebRtcRecoveryMode $script:DefaultWebRtcRecoveryMode }
+    if ($cmbDirectWebRtcSmoothnessProfile.Items.Contains($script:DefaultDirectWebRtcSmoothnessProfile)) { $cmbDirectWebRtcSmoothnessProfile.SelectedItem = $script:DefaultDirectWebRtcSmoothnessProfile }
+    $numDirectWebRtcPacingMs.Value = $script:DefaultDirectWebRtcPacingMs
+    $numDirectWebRtcPlayerJitterMs.Value = $script:DefaultDirectWebRtcPlayerJitterMs
+    $numDirectWebRtcVideoJitterMs.Value = $script:DefaultDirectWebRtcVideoJitterMs
+    $numJbufMaxMs.Value = $script:DefaultJbufMaxMs
+    if ($cmbJbufWatchdogMode.Items.Contains($script:DefaultJbufWatchdogMode)) { $cmbJbufWatchdogMode.SelectedItem = $script:DefaultJbufWatchdogMode }
+    $chkPlayerStatsOverlay.Checked = $script:DefaultPlayerStatsOverlay
+    $chkPlayerJbufDebug.Checked = $script:DefaultPlayerJbufDebug
+    $chkPlayerUrlOverrides.Checked = $script:DefaultPlayerUrlOverrides
+    if ($cmbPlayerAvRenderMode.Items.Contains($script:DefaultPlayerAvRenderMode)) { $cmbPlayerAvRenderMode.SelectedItem = $script:DefaultPlayerAvRenderMode }
+    if ($cmbDirectWebRtcAvPipelineMode.Items.Contains($script:DefaultDirectWebRtcAvPipelineMode)) { $cmbDirectWebRtcAvPipelineMode.SelectedItem = $script:DefaultDirectWebRtcAvPipelineMode }
+    if ($cmbSplitPlayerSyncMode.Items.Contains($script:DefaultSplitPlayerSyncMode)) { $cmbSplitPlayerSyncMode.SelectedItem = $script:DefaultSplitPlayerSyncMode }
+    $numSplitAudioStallSeconds.Value = $script:DefaultSplitAudioStallSeconds
+    $numSplitAvOffsetWarnMs.Value = $script:DefaultSplitAvOffsetWarnMs
+    Update-DirectWebRtcUi
+    Update-CommandPreview
+}
+
+function Reset-TransportDefaults {
+    $chkTransportEnabled.Checked = $true
+    $cmbProtocol.SelectedItem = 'WHIP'
+    $script:ProtocolDestinations.WHIP = 'http://10.0.0.25:8889/live/whip'
+    $script:ProtocolDestinations.SRT = 'srt://10.0.0.25:8890?mode=caller&streamid=publish:live'
+    $script:ProtocolDestinations.RTMP = 'rtmp://10.0.0.25/live'
+    $script:ProtocolDestinations.RTSP = 'rtsp://10.0.0.25:8554/live'
+    $script:ProtocolDestinations[$script:DirectWebRtcProtocolName] = $script:DefaultDirectWebRtcWebAddress
+    $txtDestination.Text = $script:ProtocolDestinations.WHIP
+    $txtDirectWebRtcSignalingHost.Text = $script:DefaultDirectWebRtcSignalingHost
+    $numDirectWebRtcSignalingPort.Value = $script:DefaultDirectWebRtcSignalingPort
+    $txtDirectWebRtcStun.Text = $script:DefaultDirectWebRtcStunServer
+    $txtDirectWebRtcWebPath.Text = $script:DefaultDirectWebRtcWebPath
+    if ($cmbDirectWebRtcBundledWebMode.Items.Contains($script:DefaultDirectWebRtcBundledWebMode)) { $cmbDirectWebRtcBundledWebMode.SelectedItem = $script:DefaultDirectWebRtcBundledWebMode }
+    $txtDirectWebRtcBundledWebDirectory.Text = $script:DefaultDirectWebRtcBundledWebDirectory
+    if ($cmbDirectWebRtcWorkingWebMode.Items.Contains($script:DefaultDirectWebRtcWorkingWebMode)) { $cmbDirectWebRtcWorkingWebMode.SelectedItem = $script:DefaultDirectWebRtcWorkingWebMode }
+    $txtDirectWebRtcWebDirectory.Text = $script:DefaultDirectWebRtcWorkingWebDirectory
+    Reset-WebRtcSaneDefaults
+    $numMonitor.Value = -1
+    $chkCursor.Checked = $true
+    $chkSendAbsoluteTimestamps.Checked = $false
+    $chkStartMediaMtx.Checked = $false
+    $txtMediaMtxPath.Text = Find-MediaMtx
+    $numSrtLatency.Value = 50
+    $cmbRtspTransport.SelectedItem = 'TCP'
+    Update-TransportUi
+    Update-DirectWebRtcUi
+    Update-CaptureModeUi
+}
+
+function Reset-VideoDefaults {
+    $cmbCaptureMethod.SelectedItem = $script:DefaultCaptureMethodName
+    $numWidth.Value = 1920
+    $numHeight.Value = 1080
+    $numFps.Value = 60
+    $numVideoBitrate.Value = 12000
+    $numMaxVideoBitrate.Value = 0
+    $numConstantQp.Value = 20
+    $numGopSeconds.Value = 1
+    $cmbEncoder.SelectedItem = $script:DefaultEncoderName
+    $cmbRateControl.SelectedItem = 'cbr'
+    $cmbPreset.SelectedItem = 'p1'
+    $cmbProfile.SelectedItem = 'constrained-baseline'
+    $cmbEncoderTune.SelectedItem = 'ultra-low-latency'
+    $cmbMultipass.SelectedItem = 'disabled'
+    if ($cmbVideoSyncMode.Items.Contains($script:DefaultVideoSyncMode)) { $cmbVideoSyncMode.SelectedItem = $script:DefaultVideoSyncMode }
+    $numVbvBuffer.Value = 0
+    $numBFrames.Value = 0
+    $chkLookAhead.Checked = $false
+    $numLookAheadFrames.Value = 20
+    $chkAdaptiveQuantization.Checked = $false
+    $chkTemporalAq.Checked = $false
+    $numAqStrength.Value = 8
+    $txtCustomEncoderOptions.Text = ''
+    Update-CaptureModeUi
+    Update-EncoderUi
+}
+
+function Reset-AudioDefaults {
+    if ($cmbAudioTransportMode.Items.Contains($script:DefaultAudioTransportMode)) { $cmbAudioTransportMode.SelectedItem = $script:DefaultAudioTransportMode }
+    if ($cmbAudioClockMode.Items.Contains($script:DefaultAudioClockMode)) { $cmbAudioClockMode.SelectedItem = $script:DefaultAudioClockMode }
+    if ($cmbAudioTimingMode.Items.Contains($script:DefaultAudioTimingMode)) { $cmbAudioTimingMode.SelectedItem = $script:DefaultAudioTimingMode }
+    if ($cmbAudioSlaveMethod.Items.Contains($script:DefaultAudioSlaveMethod)) { $cmbAudioSlaveMethod.SelectedItem = $script:DefaultAudioSlaveMethod }
+    if ($cmbAudioSyncMode.Items.Contains($script:DefaultAudioSyncMode)) { $cmbAudioSyncMode.SelectedItem = $script:DefaultAudioSyncMode }
+    $numAudioBufferMs.Value = $script:DefaultAudioBufferMs
+    $numAudioLatencyMs.Value = $script:DefaultAudioLatencyMs
+    $chkDesktopAudio.Checked = $true
+    $numDesktopVolume.Value = 100
+    if ($cmbDesktopAudioDevice -and $cmbDesktopAudioDevice.Items.Contains($script:DefaultAudioOutputDeviceLabel)) { $cmbDesktopAudioDevice.SelectedItem = $script:DefaultAudioOutputDeviceLabel }
+    $chkMic.Checked = $false
+    $numMicVolume.Value = 100
+    if ($cmbMicAudioDevice -and $cmbMicAudioDevice.Items.Contains($script:DefaultAudioInputDeviceLabel)) { $cmbMicAudioDevice.SelectedItem = $script:DefaultAudioInputDeviceLabel }
+    $script:ProtocolAudioCodecs.WHIP = 'Opus'
+    $script:ProtocolAudioCodecs.SRT = 'Opus'
+    $script:ProtocolAudioCodecs.RTMP = 'AAC'
+    $script:ProtocolAudioCodecs.RTSP = 'Opus'
+    $cmbAudioCodec.SelectedItem = $script:ProtocolAudioCodecs[([string]$cmbProtocol.SelectedItem)]
+    $numAudioBitrate.Value = 160
+    if ($cmbDirectWebRtcOpusMode.Items.Contains($script:DefaultDirectWebRtcOpusMode)) { $cmbDirectWebRtcOpusMode.SelectedItem = $script:DefaultDirectWebRtcOpusMode }
+    if ($cmbDirectWebRtcOpusFrameMs.Items.Contains($script:DefaultDirectWebRtcOpusFrameMs)) { $cmbDirectWebRtcOpusFrameMs.SelectedItem = $script:DefaultDirectWebRtcOpusFrameMs }
+    if ($cmbDirectWebRtcOpusAudioType.Items.Contains($script:DefaultDirectWebRtcOpusAudioType)) { $cmbDirectWebRtcOpusAudioType.SelectedItem = $script:DefaultDirectWebRtcOpusAudioType }
+    $chkDirectWebRtcOpusFec.Checked = $script:DefaultDirectWebRtcOpusFec
+    $chkDirectWebRtcOpusDtx.Checked = $script:DefaultDirectWebRtcOpusDtx
+    Update-AudioCodecChoices
+}
+
+function Reset-RecordingDefaults {
+    $chkRecordingEnabled.Checked = $false
+    $txtRecordingDirectory.Text = Join-Path ([Environment]::GetFolderPath('MyVideos')) 'GStreamer Glass'
+    $txtRecordingTemplate.Text = 'Glass-{yyyyMMdd-HHmmss}-{protocol}-{width}x{height}-{fps}fps.mkv'
+    $cmbRecordingEncoder.SelectedItem = $script:DefaultEncoderName
+    $cmbRecordingRateControl.SelectedItem = 'constqp'
+    $numRecordingVideoBitrate.Value = 24000
+    $numRecordingMaxVideoBitrate.Value = 0
+    $numRecordingConstantQp.Value = 20
+    $numRecordingWidth.Value = 1920
+    $numRecordingHeight.Value = 1080
+    $numRecordingFps.Value = 60
+    $numRecordingGopSeconds.Value = 2
+    $numRecordingBFrames.Value = 2
+    $cmbRecordingPreset.SelectedItem = 'p5'
+    $cmbRecordingProfile.SelectedItem = 'high'
+    $cmbRecordingTune.SelectedItem = 'high-quality'
+    $cmbRecordingMultipass.SelectedItem = 'two-pass-quarter'
+    $chkRecordingLookAhead.Checked = $false
+    $numRecordingLookAheadFrames.Value = 20
+    $chkRecordingSpatialAq.Checked = $true
+    $chkRecordingTemporalAq.Checked = $true
+    $numRecordingAqStrength.Value = 8
+    $numRecordingVbvBuffer.Value = 0
+    $txtRecordingCustomEncoderOptions.Text = ''
+    $chkRecordingDesktopAudio.Checked = $true
+    $chkRecordingMic.Checked = $false
+    $numRecordingAudioBitrate.Value = 192
+    Update-RecordingUi
+}
+
+function Reset-NetworkDefaults {
+    $chkNetworkTuningEnabled.Checked = $false
+    $cmbNetworkProfile.SelectedItem = 'No changes'
+    $chkNetworkDscp.Checked = $false
+    $numNetworkDscp.Value = 34
+    $cmbNetworkQosProtocol.SelectedItem = 'UDP'
+    $txtNetworkPorts.Text = ''
+    $cmbNetworkUso.SelectedItem = 'Leave unchanged'
+    $cmbNetworkUro.SelectedItem = 'Leave unchanged'
+    $chkNetworkDisablePowerSaving.Checked = $false
+    $cmbNetworkInterruptModeration.SelectedItem = 'Leave unchanged'
+    $chkNetworkDisableEee.Checked = $false
+    $chkNetworkRestoreOnStop.Checked = $true
+    $chkNetworkRestoreOnExit.Checked = $true
+    $chkNetworkRecoveryTask.Checked = $true
+    Update-NetworkUi
+}
+
+function Reset-OptionsDefaults {
+    $txtGstPath.Text = Find-GstLaunch
+    $chkPreview.Checked = $false
+    $chkAutoRestart.Checked = $true
+    $chkVerbose.Checked = $false
+    $chkMinimizeToTray.Checked = $true
+    $chkStartMinimized.Checked = $false
+    if ($cmbThreadingProfile.Items.Contains($script:DefaultThreadingProfile)) { $cmbThreadingProfile.SelectedItem = $script:DefaultThreadingProfile }
+    if ($cmbThreadBudget.Items.Contains($script:DefaultThreadBudget)) { $cmbThreadBudget.SelectedItem = $script:DefaultThreadBudget }
+    if ($cmbGstDebugMode.Items.Contains($script:DefaultGstDebugMode)) { $cmbGstDebugMode.SelectedItem = $script:DefaultGstDebugMode }
+    $txtGstDebugSpec.Text = $script:DefaultGstDebugSpec
+    $chkGstDebugNoColor.Checked = $script:DefaultGstDebugNoColor
+    if ($cmbJbufWatchdogMode.Items.Contains($script:DefaultJbufWatchdogMode)) { $cmbJbufWatchdogMode.SelectedItem = $script:DefaultJbufWatchdogMode }
+    $numJbufMaxMs.Value = $script:DefaultJbufMaxMs
+    Apply-ThreadingProfile -Force
+    Apply-ThreadBudget -Force
+    Update-CommandPreview
+}
+
+function Reset-AllAppDefaults {
+    Reset-TransportDefaults
+    Reset-VideoDefaults
+    Reset-AudioDefaults
+    Reset-RecordingDefaults
+    Reset-NetworkDefaults
+    Reset-OptionsDefaults
+    Save-Settings
+    Append-Log 'All GStreamer Glass app settings reset to defaults. Windows network snapshots were not touched.'
+    Update-DirectWebRtcWebUiStatus
+}
+
+function Update-TransportUi {
+    $enabled = Test-TransportEnabled
+    foreach ($control in @($cmbProtocol, $txtDestination, $lblDestination, $cmbTimingMode, $chkStartMediaMtx)) {
+        if ($control) { $control.Enabled = $enabled }
+    }
+
+    Update-MediaMtxUi
+    Update-DirectWebRtcUi
+    Update-ProtocolUi
+    Update-CommandPreview
+}
+
+function Get-SelectedCaptureMethodName {
+    $name = [string]$cmbCaptureMethod.SelectedItem
+    if (-not [string]::IsNullOrWhiteSpace($name) -and $script:CaptureMethodCatalog.Contains($name)) {
+        return $name
+    }
 
     if ($chkFullscreenApp.Checked) {
+        return 'Fullscreen App - D3D11 / WGC'
+    }
+
+    return $script:DefaultCaptureMethodName
+}
+
+function Get-SelectedCaptureMethod {
+    $name = Get-SelectedCaptureMethodName
+    return $script:CaptureMethodCatalog[$name]
+}
+
+function Test-FullscreenCaptureMode {
+    $method = Get-SelectedCaptureMethod
+    return [bool]$method.RequiresFullscreenWindow
+}
+
+function Sync-LegacyFullscreenFlag {
+    $isFullscreenMode = Test-FullscreenCaptureMode
+    if ($chkFullscreenApp.Checked -ne $isFullscreenMode) {
+        $chkFullscreenApp.Checked = $isFullscreenMode
+    }
+}
+
+function Update-CaptureModeUi {
+    $methodName = Get-SelectedCaptureMethodName
+    $method = Get-SelectedCaptureMethod
+    $isFullscreenMode = [bool]$method.RequiresFullscreenWindow
+
+    if ($cmbCaptureMethod.SelectedItem -ne $methodName -and $cmbCaptureMethod.Items.Contains($methodName)) {
+        $cmbCaptureMethod.SelectedItem = $methodName
+    }
+
+    if ($chkFullscreenApp.Checked -ne $isFullscreenMode) {
+        $chkFullscreenApp.Checked = $isFullscreenMode
+    }
+
+    $numMonitor.Enabled = -not $isFullscreenMode
+
+    if ($isFullscreenMode) {
         if ($script:CaptureWindowHwnd -ne [IntPtr]::Zero -and $script:CaptureWindowTitle) {
             $lblCaptureModeStatus.Text = "Fullscreen target: $($script:CaptureWindowTitle)"
             $lblCaptureModeStatus.ForeColor = [System.Drawing.Color]::DarkGreen
         }
         else {
-            $lblCaptureModeStatus.Text = 'Fullscreen-only capture enabled — waiting starts automatically'
+            $lblCaptureModeStatus.Text = 'Fullscreen WGC - waiting starts automatically'
             $lblCaptureModeStatus.ForeColor = [System.Drawing.Color]::DarkOrange
         }
     }
     else {
-        $lblCaptureModeStatus.Text = "Monitor capture active (index $([int]$numMonitor.Value))"
+        $hint = switch ([string]$method.Method) {
+            'MonitorD3D11Dxgi' { 'DXGI monitor capture' }
+            'MonitorD3D11Wgc'  { 'WGC monitor capture' }
+            'MonitorGdi'       { 'GDI fallback capture' }
+            default            { 'Monitor capture' }
+        }
+        $lblCaptureModeStatus.Text = "$hint (index $([int]$numMonitor.Value))"
         $lblCaptureModeStatus.ForeColor = [System.Drawing.Color]::DimGray
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace([string]$method.Description)) {
+        $toolTip.SetToolTip($cmbCaptureMethod, [string]$method.Description)
     }
 }
 
 function Resolve-FullscreenCaptureTarget {
     param([switch]$Quiet)
 
-    if (-not $chkFullscreenApp.Checked) {
+    if (-not (Test-FullscreenCaptureMode)) {
         $script:CaptureWindowHwnd = [IntPtr]::Zero
         $script:CaptureWindowTitle = ''
         Update-CaptureModeUi
@@ -2110,6 +6042,705 @@ function Resolve-FullscreenCaptureTarget {
     return $true
 }
 
+
+function Get-QueueLeakValue {
+    $mode = Get-ComboSelectedOrDefault $cmbQueueLeakMode $script:DefaultQueueLeakMode
+    switch ($mode) {
+        'Upstream - drop new' { return 'upstream' }
+        'No leak - block' { return 'no' }
+        default { return 'downstream' }
+    }
+}
+
+function Get-EffectiveLiveQueueLeakValue {
+    # Live streaming should not silently preserve old frames. Blocking queues are
+    # allowed only in the explicit Blocking diagnostic profile; otherwise a stale
+    # saved setting of 'No leak - block' is coerced to downstream/drop-old.
+    $leak = Get-QueueLeakValue
+    $profile = Get-ComboSelectedOrDefault $cmbThreadingProfile $script:DefaultThreadingProfile
+    if ($leak -eq 'no' -and $profile -ne 'Blocking diagnostic') { return 'downstream' }
+    return $leak
+}
+
+function Get-AudioTimingMode {
+    return (Get-ComboSelectedOrDefault $cmbAudioTimingMode $script:DefaultAudioTimingMode)
+}
+
+function Get-WasapiClockOption {
+    $clockMode = Get-ComboSelectedOrDefault $cmbAudioClockMode $script:DefaultAudioClockMode
+    $timingMode = Get-AudioTimingMode
+    if ($clockMode -eq 'System clock / no WASAPI clock' -or $timingMode -in @('WASAPI no pipeline clock','WASAPI no clock + retimestamp')) {
+        return 'provide-clock=false'
+    }
+    return ''
+}
+
+function Get-WasapiTimestampOption {
+    $timingMode = Get-AudioTimingMode
+    if ($timingMode -in @('WASAPI retimestamp','WASAPI no clock + retimestamp')) { return 'do-timestamp=true' }
+    return ''
+}
+
+function Get-WasapiSlaveMethodOption {
+    $mode = Get-ComboSelectedOrDefault $cmbAudioSlaveMethod $script:DefaultAudioSlaveMethod
+    switch ($mode) {
+        'None' { return 'slave-method=none' }
+        'Skew' { return 'slave-method=skew' }
+        'Resample' { return 'slave-method=resample' }
+        'Retimestamp' { return 'slave-method=re-timestamp' }
+        default { return '' }
+    }
+}
+
+function Get-WasapiBufferTimeOption {
+    $ms = [Math]::Max(1, [int]$numAudioBufferMs.Value)
+    return ('buffer-time=' + ([int64]$ms * 1000))
+}
+
+function Get-WasapiLatencyTimeOption {
+    $ms = [Math]::Max(1, [int]$numAudioLatencyMs.Value)
+    return ('latency-time=' + ([int64]$ms * 1000))
+}
+
+function Clean-GstDevicePropertyValue {
+    param([string]$Value)
+
+    if ([string]::IsNullOrWhiteSpace($Value)) { return '' }
+    $v = $Value.Trim()
+    $v = $v -replace '^\([^)]+\)\s*', ''
+    $v = $v.Trim()
+    if ($v.Length -ge 2 -and $v.StartsWith('"') -and $v.EndsWith('"')) {
+        $v = $v.Substring(1, $v.Length - 2)
+    }
+    return $v.Trim()
+}
+
+function Get-GstDeviceMonitorPath {
+    $gstPath = $txtGstPath.Text.Trim()
+    if (-not [string]::IsNullOrWhiteSpace($gstPath) -and (Test-Path -LiteralPath $gstPath)) {
+        # Windows PowerShell can throw a ParameterBindingException for Split-Path -LiteralPath ... -Parent.
+        # Use .NET path handling here so the Refresh audio devices button is ps2exe/WinPS safe.
+        $dir = [System.IO.Path]::GetDirectoryName($gstPath)
+        if (-not [string]::IsNullOrWhiteSpace($dir)) {
+            $candidate = Join-Path -Path $dir -ChildPath 'gst-device-monitor-1.0.exe'
+            if (Test-Path -LiteralPath $candidate) { return $candidate }
+        }
+    }
+    return 'gst-device-monitor-1.0.exe'
+}
+
+function Set-AudioDeviceComboDefaults {
+    if ($cmbDesktopAudioDevice) {
+        $cmbDesktopAudioDevice.BeginUpdate()
+        try {
+            $cmbDesktopAudioDevice.Items.Clear()
+            [void]$cmbDesktopAudioDevice.Items.Add($script:DefaultAudioOutputDeviceLabel)
+            $cmbDesktopAudioDevice.SelectedIndex = 0
+        }
+        finally { $cmbDesktopAudioDevice.EndUpdate() }
+    }
+    if ($cmbMicAudioDevice) {
+        $cmbMicAudioDevice.BeginUpdate()
+        try {
+            $cmbMicAudioDevice.Items.Clear()
+            [void]$cmbMicAudioDevice.Items.Add($script:DefaultAudioInputDeviceLabel)
+            $cmbMicAudioDevice.SelectedIndex = 0
+        }
+        finally { $cmbMicAudioDevice.EndUpdate() }
+    }
+    $script:AudioOutputDeviceMap = @{}
+    $script:AudioInputDeviceMap = @{}
+}
+
+function Add-AudioDeviceComboItem {
+    param(
+        [ValidateSet('Output','Input')][string]$Kind,
+        [string]$Name,
+        [string]$DeviceId
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Name)) { return }
+    $cleanName = $Name.Trim()
+    $cleanId = (Clean-GstDevicePropertyValue $DeviceId)
+    if ([string]::IsNullOrWhiteSpace($cleanId)) { $cleanId = $cleanName }
+
+    $shortId = $cleanId
+    if ($shortId.Length -gt 28) { $shortId = $shortId.Substring($shortId.Length - 28) }
+    $label = "$cleanName  [$shortId]"
+
+    if ($Kind -eq 'Output') {
+        if (-not $cmbDesktopAudioDevice.Items.Contains($label)) { [void]$cmbDesktopAudioDevice.Items.Add($label) }
+        $script:AudioOutputDeviceMap[$label] = $cleanId
+    }
+    else {
+        if (-not $cmbMicAudioDevice.Items.Contains($label)) { [void]$cmbMicAudioDevice.Items.Add($label) }
+        $script:AudioInputDeviceMap[$label] = $cleanId
+    }
+}
+
+function Restore-AudioDeviceSelection {
+    param(
+        [ValidateSet('Output','Input')][string]$Kind,
+        [string]$Label,
+        [string]$DeviceId
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Label)) { return }
+    $combo = if ($Kind -eq 'Output') { $cmbDesktopAudioDevice } else { $cmbMicAudioDevice }
+    $mapName = if ($Kind -eq 'Output') { 'AudioOutputDeviceMap' } else { 'AudioInputDeviceMap' }
+    if (-not $combo) { return }
+
+    if (-not $combo.Items.Contains($Label)) {
+        [void]$combo.Items.Add($Label)
+        if (-not [string]::IsNullOrWhiteSpace($DeviceId)) {
+            (Get-Variable -Name $mapName -Scope Script).Value[$Label] = [string]$DeviceId
+        }
+    }
+    if ($combo.Items.Contains($Label)) { $combo.SelectedItem = $Label }
+}
+
+function Refresh-AudioDevices {
+    param([switch]$Quiet)
+
+    $previousOutput = if ($cmbDesktopAudioDevice -and $cmbDesktopAudioDevice.SelectedItem) { [string]$cmbDesktopAudioDevice.SelectedItem } else { $script:DefaultAudioOutputDeviceLabel }
+    $previousInput = if ($cmbMicAudioDevice -and $cmbMicAudioDevice.SelectedItem) { [string]$cmbMicAudioDevice.SelectedItem } else { $script:DefaultAudioInputDeviceLabel }
+
+    Set-AudioDeviceComboDefaults
+
+    $monitor = Get-GstDeviceMonitorPath
+    try {
+        $raw = & $monitor Audio/Source Audio/Sink 2>&1 | Out-String
+        $lines = $raw -split "`r?`n"
+        $device = $null
+        $outputCount = 0
+        $inputCount = 0
+
+        function Flush-ParsedAudioDevice {
+            param($Parsed)
+            if ($null -eq $Parsed) { return }
+            $name = [string]$Parsed.Name
+            $class = [string]$Parsed.Class
+            $devId = [string]$Parsed.DeviceId
+            if ([string]::IsNullOrWhiteSpace($name)) { return }
+            if ($class -match 'Audio/Sink') {
+                Add-AudioDeviceComboItem -Kind Output -Name $name -DeviceId $devId
+                $script:__AudioDeviceOutputCount++
+            }
+            elseif ($class -match 'Audio/Source') {
+                Add-AudioDeviceComboItem -Kind Input -Name $name -DeviceId $devId
+                $script:__AudioDeviceInputCount++
+            }
+        }
+
+        $script:__AudioDeviceOutputCount = 0
+        $script:__AudioDeviceInputCount = 0
+        foreach ($line in $lines) {
+            if ($line -match '^\s*Device found:') {
+                Flush-ParsedAudioDevice $device
+                $device = [ordered]@{ Name = ''; Class = ''; DeviceId = '' }
+                continue
+            }
+            if ($null -eq $device) { continue }
+            if ($line -match '^\s*name\s*:\s*(.+)$') {
+                $device.Name = (Clean-GstDevicePropertyValue $Matches[1])
+                continue
+            }
+            if ($line -match '^\s*class\s*:\s*(.+)$') {
+                $device.Class = (Clean-GstDevicePropertyValue $Matches[1])
+                continue
+            }
+            if ($line -match '^\s*(device\.strid|device\.id|device\.path|wasapi\.[^=]*strid|wasapi\.[^=]*id)\s*=\s*(.+)$') {
+                if ([string]::IsNullOrWhiteSpace([string]$device.DeviceId)) {
+                    $device.DeviceId = (Clean-GstDevicePropertyValue $Matches[2])
+                }
+                continue
+            }
+            if ($line -match '^\s*(device\.name|wasapi\.device\.description)\s*=\s*(.+)$') {
+                if ([string]::IsNullOrWhiteSpace([string]$device.Name)) {
+                    $device.Name = (Clean-GstDevicePropertyValue $Matches[2])
+                }
+                continue
+            }
+        }
+        Flush-ParsedAudioDevice $device
+        $outputCount = [int]$script:__AudioDeviceOutputCount
+        $inputCount = [int]$script:__AudioDeviceInputCount
+        Remove-Variable -Name __AudioDeviceOutputCount -Scope Script -ErrorAction SilentlyContinue
+        Remove-Variable -Name __AudioDeviceInputCount -Scope Script -ErrorAction SilentlyContinue
+
+        if ($cmbDesktopAudioDevice.Items.Contains($previousOutput)) { $cmbDesktopAudioDevice.SelectedItem = $previousOutput }
+        if ($cmbMicAudioDevice.Items.Contains($previousInput)) { $cmbMicAudioDevice.SelectedItem = $previousInput }
+        if ($lblAudioDeviceStatus) {
+            $lblAudioDeviceStatus.Text = "Audio devices: $outputCount output / $inputCount input"
+            $lblAudioDeviceStatus.ForeColor = if ($outputCount -gt 0 -or $inputCount -gt 0) { [System.Drawing.Color]::DarkGreen } else { [System.Drawing.Color]::DarkOrange }
+        }
+        if (-not $Quiet) { Append-Log "Audio device refresh: $outputCount output loopback device(s), $inputCount input capture device(s)." }
+    }
+    catch {
+        if ($lblAudioDeviceStatus) {
+            $lblAudioDeviceStatus.Text = 'Audio device refresh failed; using defaults'
+            $lblAudioDeviceStatus.ForeColor = [System.Drawing.Color]::DarkOrange
+        }
+        if (-not $Quiet) { Append-Log "Audio device refresh failed: $($_.Exception.Message)" }
+    }
+
+    try {
+        Update-CommandPreview
+    }
+    catch {
+        if (-not $Quiet) { Append-Log "Audio device refresh preview update failed: $($_.Exception.Message)" }
+    }
+}
+
+function Get-SelectedWasapiDeviceOption {
+    param([ValidateSet('Output','Input')][string]$Kind)
+
+    if ($Kind -eq 'Output') {
+        if (-not $cmbDesktopAudioDevice -or -not $cmbDesktopAudioDevice.SelectedItem) { return '' }
+        $label = [string]$cmbDesktopAudioDevice.SelectedItem
+        if ($label -eq $script:DefaultAudioOutputDeviceLabel) { return '' }
+        $id = [string]$script:AudioOutputDeviceMap[$label]
+    }
+    else {
+        if (-not $cmbMicAudioDevice -or -not $cmbMicAudioDevice.SelectedItem) { return '' }
+        $label = [string]$cmbMicAudioDevice.SelectedItem
+        if ($label -eq $script:DefaultAudioInputDeviceLabel) { return '' }
+        $id = [string]$script:AudioInputDeviceMap[$label]
+    }
+
+    if ([string]::IsNullOrWhiteSpace($id)) { return '' }
+    return ('device=' + (Quote-GstValue $id))
+}
+
+function Get-SelectedAudioDeviceId {
+    param([ValidateSet('Output','Input')][string]$Kind)
+    if ($Kind -eq 'Output') {
+        $label = if ($cmbDesktopAudioDevice -and $cmbDesktopAudioDevice.SelectedItem) { [string]$cmbDesktopAudioDevice.SelectedItem } else { '' }
+        return [string]$script:AudioOutputDeviceMap[$label]
+    }
+    $label = if ($cmbMicAudioDevice -and $cmbMicAudioDevice.SelectedItem) { [string]$cmbMicAudioDevice.SelectedItem } else { '' }
+    return [string]$script:AudioInputDeviceMap[$label]
+}
+
+function Get-AudioSourceSelectionSummary {
+    $parts = New-Object System.Collections.Generic.List[string]
+    if ($chkDesktopAudio.Checked) {
+        $label = if ($cmbDesktopAudioDevice -and $cmbDesktopAudioDevice.SelectedItem) { [string]$cmbDesktopAudioDevice.SelectedItem } else { $script:DefaultAudioOutputDeviceLabel }
+        $parts.Add("desktop loopback=$label")
+    }
+    if ($chkMic.Checked) {
+        $label = if ($cmbMicAudioDevice -and $cmbMicAudioDevice.SelectedItem) { [string]$cmbMicAudioDevice.SelectedItem } else { $script:DefaultAudioInputDeviceLabel }
+        $parts.Add("mic/input=$label")
+    }
+    if ($parts.Count -eq 0) { return 'none' }
+    return ($parts -join '; ')
+}
+
+function Get-WasapiSourceString {
+    param([switch]$Loopback)
+
+    $parts = New-Object System.Collections.Generic.List[string]
+    $parts.Add('wasapi2src')
+    $deviceOpt = if ($Loopback) { Get-SelectedWasapiDeviceOption -Kind Output } else { Get-SelectedWasapiDeviceOption -Kind Input }
+    if (-not [string]::IsNullOrWhiteSpace($deviceOpt)) { $parts.Add($deviceOpt) }
+    foreach ($opt in @(
+        (Get-WasapiClockOption),
+        (Get-WasapiTimestampOption),
+        (Get-WasapiSlaveMethodOption)
+    )) {
+        if (-not [string]::IsNullOrWhiteSpace($opt)) { $parts.Add($opt) }
+    }
+
+    if ($Loopback) { $parts.Add('loopback=true') }
+    $parts.Add('low-latency=true')
+    $parts.Add((Get-WasapiBufferTimeOption))
+    $parts.Add((Get-WasapiLatencyTimeOption))
+    return ($parts -join ' ')
+}
+
+
+
+function Get-VideoSyncMode {
+    return (Get-ComboSelectedOrDefault $cmbVideoSyncMode $script:DefaultVideoSyncMode)
+}
+
+function Get-AudioSyncMode {
+    return (Get-ComboSelectedOrDefault $cmbAudioSyncMode $script:DefaultAudioSyncMode)
+}
+
+
+function Get-DirectWebRtcAvPipelineMode {
+    if ($null -eq $cmbDirectWebRtcAvPipelineMode) { return $script:DefaultDirectWebRtcAvPipelineMode }
+    return (Get-ComboSelectedOrDefault $cmbDirectWebRtcAvPipelineMode $script:DefaultDirectWebRtcAvPipelineMode)
+}
+
+function Test-DirectWebRtcSplitAvPipelines {
+    return ((Get-DirectWebRtcAvPipelineMode) -like 'Split A/V pipelines*')
+}
+
+function Get-DirectWebRtcSplitAudioSignalingPort {
+    return ([int]$numDirectWebRtcSignalingPort.Value + [int]$script:DefaultDirectWebRtcSplitAudioPortOffset)
+}
+
+function Get-DirectWebRtcSplitAudioWebAddress {
+    $base = Normalize-DirectWebRtcWebAddress $txtDestination.Text.Trim()
+    if ([string]::IsNullOrWhiteSpace($base)) { $base = $script:DefaultDirectWebRtcWebAddress }
+    try {
+        $u = [Uri]$base
+        $b = New-Object System.UriBuilder($u)
+        if ($b.Port -le 0) { $b.Port = 8889 }
+        $b.Port = $b.Port + 1
+        return $b.Uri.AbsoluteUri
+    }
+    catch {
+        return 'http://0.0.0.0:8890/'
+    }
+}
+
+function Get-DirectWebRtcSplitAudioWsUrlForPlayer {
+    # Proxy-aware default: do NOT hardcode 127.0.0.1 into gstglass-config.js.
+    # player.js will derive ws/wss + host from the actual page URL and use
+    # splitAudioSignalingPort. Local page => ws://127.0.0.1:8190.
+    # Proxied HTTPS page => wss://<page-host>:8190.
+    return ''
+}
+
+function Get-DirectWebRtcSplitAudioWsUrlDescriptionForLog {
+    return "auto/proxy-aware from viewer page host on port $(Get-DirectWebRtcSplitAudioSignalingPort)"
+}
+
+function Get-BranchClockSyncElement {
+    param([Parameter(Mandatory)][string]$Mode)
+
+    switch ($Mode) {
+        'sync=true'  { return 'clocksync sync=true' }
+        'sync=false' { return 'clocksync sync=false' }
+        default      { return '' }
+    }
+}
+
+function Get-VideoBranchSyncSuffix {
+    $sync = Get-BranchClockSyncElement -Mode (Get-VideoSyncMode)
+    if ([string]::IsNullOrWhiteSpace($sync)) { return '' }
+    return " ! $sync"
+}
+
+function Get-AudioBranchSyncSuffix {
+    $sync = Get-BranchClockSyncElement -Mode (Get-AudioSyncMode)
+    if ([string]::IsNullOrWhiteSpace($sync)) { return '' }
+    return " ! $sync"
+}
+
+function Get-VideoPreviewSinkSyncOption {
+    # Preserve historical GStreamer Glass behavior: local preview used d3d11videosink sync=false.
+    # The explicit Video sync mode overrides that only when the user selects sync=true/sync=false.
+    $mode = Get-VideoSyncMode
+    switch ($mode) {
+        'sync=true'  { return 'sync=true' }
+        'sync=false' { return 'sync=false' }
+        default      { return 'sync=false' }
+    }
+}
+
+function Get-EffectiveAudioTimingSummary {
+    $timing = Get-AudioTimingMode
+    $clockMode = Get-ComboSelectedOrDefault $cmbAudioClockMode $script:DefaultAudioClockMode
+    $clockOpt = Get-WasapiClockOption
+    $timestampOpt = Get-WasapiTimestampOption
+    $slaveOpt = Get-WasapiSlaveMethodOption
+
+    $items = New-Object System.Collections.Generic.List[string]
+    if ([string]::IsNullOrWhiteSpace($clockOpt)) {
+        $items.Add('provide-clock=true/default')
+    }
+    else {
+        $items.Add($clockOpt)
+    }
+    if (-not [string]::IsNullOrWhiteSpace($timestampOpt)) { $items.Add($timestampOpt) }
+    if (-not [string]::IsNullOrWhiteSpace($slaveOpt)) { $items.Add($slaveOpt) } else { $items.Add('slave-method=auto/default') }
+    $items.Add((Get-WasapiBufferTimeOption))
+    $items.Add((Get-WasapiLatencyTimeOption))
+
+    $contradiction = ''
+    if ($clockMode -eq 'WASAPI clock' -and $clockOpt -eq 'provide-clock=false') {
+        $contradiction = ' UI note: timing mode overrides Audio clock and disables WASAPI clock.'
+    }
+    if ($timing -eq 'Synthetic silent audio') {
+        $contradiction = ' UI note: synthetic mode bypasses WASAPI source options.'
+    }
+
+    return (($items -join ' ') + $contradiction)
+}
+
+function New-LiveQueueString {
+    param(
+        [int]$Buffers = 2,
+        [int]$MaxTimeMs = 0,
+        [string]$Leak = ''
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Leak)) { $Leak = Get-EffectiveLiveQueueLeakValue }
+    $Buffers = [Math]::Max(1, $Buffers)
+    $ns = [int64]([Math]::Max(0, $MaxTimeMs)) * 1000000
+    return "queue max-size-buffers=$Buffers max-size-bytes=0 max-size-time=$ns leaky=$Leak"
+}
+
+function Get-CpuWorkerLimit {
+    if (-not $numCpuWorkerLimit) { return 0 }
+    return [Math]::Max(0, [int]$numCpuWorkerLimit.Value)
+}
+
+function Get-CpuWorkerProperty {
+    param([Parameter(Mandatory)][string]$Name)
+    $workers = Get-CpuWorkerLimit
+    if ($workers -le 0) { return '' }
+    return "$Name=$workers"
+}
+
+function Apply-ThreadBudget {
+    param([switch]$Force)
+    if ($script:ApplyingThreadBudget) { return }
+    $script:ApplyingThreadBudget = $true
+    try {
+        $budget = Get-ComboSelectedOrDefault $cmbThreadBudget $script:DefaultThreadBudget
+        if ($budget -eq 'Custom' -and -not $Force) { return }
+        switch ($budget) {
+            'Lean' {
+                $numCpuWorkerLimit.Value = 1
+                $chkBudgetCaptureQueue.Checked = $false
+                $chkBudgetSenderQueue.Checked = $false
+                $chkBudgetAudioInputQueue.Checked = $false
+                $chkBudgetAudioFinalQueue.Checked = $true
+                $chkBudgetSceneInputQueues.Checked = $true
+            }
+            'Balanced' {
+                $numCpuWorkerLimit.Value = 2
+                $chkBudgetCaptureQueue.Checked = $true
+                $chkBudgetSenderQueue.Checked = $true
+                $chkBudgetAudioInputQueue.Checked = $true
+                $chkBudgetAudioFinalQueue.Checked = $true
+                $chkBudgetSceneInputQueues.Checked = $true
+            }
+            'Isolated' {
+                $numCpuWorkerLimit.Value = 0
+                $chkBudgetCaptureQueue.Checked = $true
+                $chkBudgetSenderQueue.Checked = $true
+                $chkBudgetAudioInputQueue.Checked = $true
+                $chkBudgetAudioFinalQueue.Checked = $true
+                $chkBudgetSceneInputQueues.Checked = $true
+            }
+            default {
+                $numCpuWorkerLimit.Value = 0
+                $chkBudgetCaptureQueue.Checked = $true
+                $chkBudgetSenderQueue.Checked = $true
+                $chkBudgetAudioInputQueue.Checked = $true
+                $chkBudgetAudioFinalQueue.Checked = $true
+                $chkBudgetSceneInputQueues.Checked = $true
+            }
+        }
+    }
+    finally { $script:ApplyingThreadBudget = $false }
+    Update-CommandPreview
+}
+
+function Update-GstThreadCountStatus {
+    if (-not $lblLiveGstThreads) { return }
+    if (-not $script:GstProcess -or $script:GstProcess.HasExited) {
+        $lblLiveGstThreads.Text = 'Live GST threads: stopped'
+        return
+    }
+    try {
+        $script:GstProcess.Refresh()
+        $lblLiveGstThreads.Text = "Live GST threads: $($script:GstProcess.Threads.Count)  (PID $($script:GstProcess.Id))"
+    }
+    catch { $lblLiveGstThreads.Text = 'Live GST threads: unavailable' }
+}
+
+function Get-CaptureEncoderQueue {
+    if ($chkBudgetCaptureQueue -and -not $chkBudgetCaptureQueue.Checked) { return 'identity' }
+    $buffers = [int]$numCaptureQueueBuffers.Value
+    return (New-LiveQueueString -Buffers $buffers -MaxTimeMs 0)
+}
+
+function Get-EffectiveAudioQueueCapMs {
+    # GStreamer basesink latency negotiation fails if a nonzero queue time cap is
+    # lower than the live audio source's reported minimum latency plus the sink
+    # processing deadline. The old 20 ms cap could produce:
+    #   Impossible to configure latency: max 20ms < min ~21ms
+    # Keep 0 as uncapped, but clamp small nonzero caps to a safe low-latency floor.
+    $requestedMs = [int]$numAudioQueueCapMs.Value
+    if ($requestedMs -le 0) { return 0 }
+
+    $requestedBufferMs = [Math]::Max(1, [int]$numAudioBufferMs.Value)
+    $requestedLatencyMs = [Math]::Max(1, [int]$numAudioLatencyMs.Value)
+    $safeFloorMs = [Math]::Max(30, ($requestedBufferMs + $requestedLatencyMs + 10))
+    return [Math]::Max($requestedMs, [int]$safeFloorMs)
+}
+
+function Get-AudioInputQueue {
+    param([int]$Multiplier = 1)
+    if ($chkBudgetAudioInputQueue -and -not $chkBudgetAudioInputQueue.Checked) { return 'identity' }
+    $buffers = [Math]::Max(1, [int]$numAudioQueueBuffers.Value * [Math]::Max(1, $Multiplier))
+    $ms = Get-EffectiveAudioQueueCapMs
+    return (New-LiveQueueString -Buffers $buffers -MaxTimeMs $ms)
+}
+
+function Get-AudioFinalQueue {
+    if ($chkBudgetAudioFinalQueue -and -not $chkBudgetAudioFinalQueue.Checked) { return 'identity' }
+    $buffers = [Math]::Max(1, [int]$numAudioQueueBuffers.Value * 2)
+    $ms = Get-EffectiveAudioQueueCapMs
+    return (New-LiveQueueString -Buffers $buffers -MaxTimeMs $ms)
+}
+
+function Apply-ThreadingProfile {
+    param([switch]$Force)
+
+    if ($script:ApplyingThreadingProfile) { return }
+    $script:ApplyingThreadingProfile = $true
+    try {
+        $profile = Get-ComboSelectedOrDefault $cmbThreadingProfile $script:DefaultThreadingProfile
+        if ($profile -eq 'Custom' -and -not $Force) { return }
+
+        switch ($profile) {
+            'Live strict' {
+                $cmbGstProcessPriority.SelectedItem = 'High'
+                $cmbQueueLeakMode.SelectedItem = 'Downstream - drop old'
+                $numCaptureQueueBuffers.Value = 2
+                $numAudioQueueBuffers.Value = 4
+                $numAudioQueueCapMs.Value = 0
+                $chkBufferLatenessTracer.Checked = $false
+            }
+            'Balanced' {
+                $cmbGstProcessPriority.SelectedItem = 'Above normal'
+                $cmbQueueLeakMode.SelectedItem = 'Downstream - drop old'
+                $numCaptureQueueBuffers.Value = 4
+                $numAudioQueueBuffers.Value = 6
+                $numAudioQueueCapMs.Value = 40
+                $chkBufferLatenessTracer.Checked = $false
+            }
+            'Non-blocking brutal' {
+                $cmbGstProcessPriority.SelectedItem = 'High'
+                $cmbQueueLeakMode.SelectedItem = 'Downstream - drop old'
+                $numCaptureQueueBuffers.Value = 1
+                $numAudioQueueBuffers.Value = 2
+                $numAudioQueueCapMs.Value = 0
+                $chkBufferLatenessTracer.Checked = $false
+            }
+            'Blocking diagnostic' {
+                $cmbGstProcessPriority.SelectedItem = 'Normal'
+                $cmbQueueLeakMode.SelectedItem = 'No leak - block'
+                $numCaptureQueueBuffers.Value = 2
+                $numAudioQueueBuffers.Value = 4
+                $numAudioQueueCapMs.Value = 80
+                $chkBufferLatenessTracer.Checked = $true
+            }
+        }
+    }
+    finally {
+        $script:ApplyingThreadingProfile = $false
+    }
+
+    Update-CommandPreview
+}
+
+function Set-GstProcessPriority {
+    param([System.Diagnostics.Process]$Process)
+
+    if (-not $Process) { return }
+    $priorityText = Get-ComboSelectedOrDefault $cmbGstProcessPriority $script:DefaultGstProcessPriority
+    $priority = switch ($priorityText) {
+        'Above normal' { 'AboveNormal' }
+        'High' { 'High' }
+        default { 'Normal' }
+    }
+
+    try {
+        $Process.PriorityClass = [System.Diagnostics.ProcessPriorityClass]::$priority
+        Append-Log "GStreamer process priority: $priorityText"
+    }
+    catch {
+        Append-Log "WARNING: could not set GStreamer process priority to ${priorityText}: $($_.Exception.Message)"
+    }
+}
+
+function Get-GstDebugSpec {
+    $mode = Get-ComboSelectedOrDefault $cmbGstDebugMode $script:DefaultGstDebugMode
+
+    switch ($mode) {
+        'ERROR (*:1)' { return '*:1' }
+        'WARNING (*:2)' { return '*:2' }
+        'INFO (*:3)' { return '*:3' }
+        'DEBUG (*:4)' { return '*:4' }
+        'LOG (*:5)' { return '*:5' }
+        'TRACE (*:6)' { return '*:6' }
+        'FULL/MEMDUMP (*:9)' { return '*:9' }
+        'Custom' {
+            $custom = $txtGstDebugSpec.Text.Trim()
+            if ([string]::IsNullOrWhiteSpace($custom)) { return $script:DefaultGstDebugSpec }
+            return $custom
+        }
+        default { return '' }
+    }
+}
+
+function Update-GstDebugUi {
+    $mode = Get-ComboSelectedOrDefault $cmbGstDebugMode $script:DefaultGstDebugMode
+    $custom = ($mode -eq 'Custom')
+    $txtGstDebugSpec.Enabled = $custom
+
+    if (-not $custom) {
+        $spec = Get-GstDebugSpec
+        if ([string]::IsNullOrWhiteSpace($spec)) {
+            $txtGstDebugSpec.Text = $script:DefaultGstDebugSpec
+        }
+        else {
+            $txtGstDebugSpec.Text = $spec
+        }
+    }
+}
+
+function Set-GstTracerEnvironment {
+    param(
+        [switch]$Enable,
+        [string]$DebugSpec = '',
+        [switch]$NoColor
+    )
+
+    $state = [ordered]@{
+        GST_TRACERS = $env:GST_TRACERS
+        GST_DEBUG = $env:GST_DEBUG
+        GST_DEBUG_NO_COLOR = $env:GST_DEBUG_NO_COLOR
+    }
+
+    $debugParts = @()
+
+    if ($Enable) {
+        $env:GST_TRACERS = 'buffer-lateness'
+        $debugParts += 'GST_TRACER:7'
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($DebugSpec)) {
+        $debugParts += $DebugSpec.Trim()
+    }
+
+    if ($debugParts.Count -gt 0) {
+        $env:GST_DEBUG = ($debugParts -join ',')
+        if ($NoColor) {
+            $env:GST_DEBUG_NO_COLOR = '1'
+        }
+    }
+
+    return $state
+}
+
+function Restore-GstTracerEnvironment {
+    param($State)
+    if ($null -eq $State) { return }
+    if ($null -eq $State.GST_TRACERS) { Remove-Item Env:\GST_TRACERS -ErrorAction SilentlyContinue } else { $env:GST_TRACERS = $State.GST_TRACERS }
+    if ($null -eq $State.GST_DEBUG) { Remove-Item Env:\GST_DEBUG -ErrorAction SilentlyContinue } else { $env:GST_DEBUG = $State.GST_DEBUG }
+    if ($null -eq $State.GST_DEBUG_NO_COLOR) { Remove-Item Env:\GST_DEBUG_NO_COLOR -ErrorAction SilentlyContinue } else { $env:GST_DEBUG_NO_COLOR = $State.GST_DEBUG_NO_COLOR }
+}
+
 function Build-RawAudioChain {
     $desktopEnabled = $chkDesktopAudio.Checked
     $micEnabled = $chkMic.Checked
@@ -2120,20 +6751,13 @@ function Build-RawAudioChain {
 
     $desktopVolume = Format-InvariantNumber ([double]$numDesktopVolume.Value / 100.0)
     $micVolume = Format-InvariantNumber ([double]$numMicVolume.Value / 100.0)
+    $clockOpt = Get-WasapiClockOption
 
     if ($desktopEnabled -and -not $micEnabled) {
         return @(
-            'wasapi2src'
-            'loopback=true'
-            'low-latency=true'
-            'buffer-time=20000'
-            'latency-time=10000'
+            (Get-WasapiSourceString -Loopback)
             '!'
-            'queue'
-            'max-size-buffers=4'
-            'max-size-bytes=0'
-            'max-size-time=0'
-            'leaky=downstream'
+            (Get-AudioInputQueue)
             '!'
             'audioconvert'
             '!'
@@ -2148,16 +6772,9 @@ function Build-RawAudioChain {
 
     if (-not $desktopEnabled -and $micEnabled) {
         return @(
-            'wasapi2src'
-            'low-latency=true'
-            'buffer-time=20000'
-            'latency-time=10000'
+            (Get-WasapiSourceString)
             '!'
-            'queue'
-            'max-size-buffers=4'
-            'max-size-bytes=0'
-            'max-size-time=0'
-            'leaky=downstream'
+            (Get-AudioInputQueue)
             '!'
             'audioconvert'
             '!'
@@ -2171,17 +6788,9 @@ function Build-RawAudioChain {
     }
 
     $desktopMixBranch = @(
-        'wasapi2src'
-        'loopback=true'
-        'low-latency=true'
-        'buffer-time=20000'
-        'latency-time=10000'
+        (Get-WasapiSourceString -Loopback)
         '!'
-        'queue'
-        'max-size-buffers=8'
-        'max-size-bytes=0'
-        'max-size-time=0'
-        'leaky=downstream'
+        (Get-AudioInputQueue -Multiplier 2)
         '!'
         'audioconvert'
         '!'
@@ -2196,16 +6805,9 @@ function Build-RawAudioChain {
     ) -join ' '
 
     $micMixBranch = @(
-        'wasapi2src'
-        'low-latency=true'
-        'buffer-time=20000'
-        'latency-time=10000'
+        (Get-WasapiSourceString)
         '!'
-        'queue'
-        'max-size-buffers=8'
-        'max-size-bytes=0'
-        'max-size-time=0'
-        'leaky=downstream'
+        (Get-AudioInputQueue -Multiplier 2)
         '!'
         'audioconvert'
         '!'
@@ -2222,11 +6824,7 @@ function Build-RawAudioChain {
     $mixOutput = @(
         'mix.'
         '!'
-        'queue'
-        'max-size-buffers=8'
-        'max-size-bytes=0'
-        'max-size-time=0'
-        'leaky=downstream'
+        (Get-AudioInputQueue -Multiplier 2)
         '!'
         'audioconvert'
         '!'
@@ -2243,17 +6841,9 @@ function Build-WhipSilentClockAudioChain {
     # WASAPI loopback source makes the pipeline use GstAudioSrcClock, matching
     # the stable desktop-audio path while emitting no audible sound.
     return @(
-        'wasapi2src'
-        'loopback=true'
-        'low-latency=true'
-        'buffer-time=20000'
-        'latency-time=10000'
+        (Get-WasapiSourceString -Loopback)
         '!'
-        'queue'
-        'max-size-buffers=4'
-        'max-size-bytes=0'
-        'max-size-time=0'
-        'leaky=downstream'
+        (Get-AudioInputQueue)
         '!'
         'audioconvert'
         '!'
@@ -2264,6 +6854,1020 @@ function Build-WhipSilentClockAudioChain {
         'volume'
         'volume=0.0'
     ) -join ' '
+}
+
+
+function Build-SyntheticSilentAudioChain {
+    # Completely bypasses WASAPI. Use this to prove whether the browser/WebRTC
+    # audio track is fine when Windows audio driver timing is removed.
+    return @(
+        'audiotestsrc'
+        'is-live=true'
+        'do-timestamp=true'
+        'wave=silence'
+        'samplesperbuffer=480'
+        '!'
+        (Get-AudioInputQueue)
+        '!'
+        'audioconvert'
+        '!'
+        'audioresample'
+        '!'
+        '"audio/x-raw,format=S16LE,rate=48000,channels=2"'
+        '!'
+        'volume'
+        'volume=0.0'
+    ) -join ' '
+}
+
+function Get-TimingMode {
+    if ($null -ne $cmbTimingMode -and $cmbTimingMode.SelectedItem) {
+        return [string]$cmbTimingMode.SelectedItem
+    }
+    if ($chkSendAbsoluteTimestamps.Checked) {
+        return 'Send absolute timestamps / clock signalling'
+    }
+    return $script:DefaultTimingMode
+}
+
+function Test-SendAbsoluteTimestampsEnabled {
+    return ((Get-TimingMode) -eq 'Send absolute timestamps / clock signalling')
+}
+
+function Get-AbsoluteTimestampTransportOption {
+    param([Parameter(Mandatory)][string]$Protocol)
+
+    if (-not (Test-SendAbsoluteTimestampsEnabled)) {
+        return ''
+    }
+
+    switch ($Protocol) {
+        'WHIP' {
+            # WHIP must honor Timing mode. When MediaMTX useAbsoluteTimestamp=true,
+            # frames without absolute time are skipped; when it is false, receiver
+            # timestamps are expected. Do not silently guard this off.
+            return 'do-clock-signalling=true'
+        }
+        'GST WebRTC' {
+            return 'do-clock-signalling=true'
+        }
+        'RTSP' {
+            # RTSP absolute frame time is carried through RTCP Sender Reports.
+            return 'ntp-time-source=ntp'
+        }
+        default {
+            return ''
+        }
+    }
+}
+
+function Get-AbsoluteTimestampStatusText {
+    $protocol = [string]$cmbProtocol.SelectedItem
+
+    if (-not (Test-TransportEnabled)) {
+        return 'Transport disabled'
+    }
+
+    if (-not (Test-SendAbsoluteTimestampsEnabled)) {
+        return 'Timing: receiver/server timestamps'
+    }
+
+    switch ($protocol) {
+        'WHIP' { return 'WHIP: do-clock-signalling=true; pair with MediaMTX useAbsoluteTimestamp' }
+        'GST WebRTC' { return 'GST WebRTC: do-clock-signalling=true' }
+        'RTSP' { return 'RTSP: NTP sender reports' }
+        default { return ($protocol + ': timing mode not used') }
+    }
+}
+
+function Update-TimestampUi {
+    $protocol = [string]$cmbProtocol.SelectedItem
+    $transportEnabled = Test-TransportEnabled
+    $supported = $transportEnabled -and ($protocol -in @('WHIP', 'GST WebRTC', 'RTSP'))
+
+    if ($null -ne $cmbTimingMode) { $cmbTimingMode.Enabled = $supported }
+    $chkSendAbsoluteTimestamps.Checked = Test-SendAbsoluteTimestampsEnabled
+
+    $lblTimestampStatus.Text = Get-AbsoluteTimestampStatusText
+    $lblTimestampStatus.ForeColor = if ((Test-SendAbsoluteTimestampsEnabled) -and $supported) {
+        [System.Drawing.Color]::DarkSlateBlue
+    }
+    else {
+        [System.Drawing.Color]::DimGray
+    }
+}
+
+function Test-DirectWebRtcProtocol {
+    return (Test-TransportEnabled) -and ([string]$cmbProtocol.SelectedItem -eq $script:DirectWebRtcProtocolName)
+}
+
+function Test-WebRtcTransportProtocol {
+    return (Test-TransportEnabled) -and ([string]$cmbProtocol.SelectedItem -in @('WHIP', $script:DirectWebRtcProtocolName))
+}
+
+function Normalize-DirectWebRtcWebAddress {
+    param([string]$Value)
+
+    $address = $Value
+    if ([string]::IsNullOrWhiteSpace($address)) {
+        $address = $script:DefaultDirectWebRtcWebAddress
+    }
+
+    $address = $address.Trim()
+    if ($address -notmatch '^https?://') {
+        $address = 'http://' + $address.TrimStart('/')
+    }
+
+    # web-server-host-addr is the bind/listen address. Keep the route path in
+    # web-server-path so http://host:8889/live can be changed cleanly.
+    try {
+        $uri = [System.Uri]$address
+        $scheme = $uri.Scheme
+        $hostPart = $uri.Host
+        $portPart = if ($uri.IsDefaultPort) { '' } else { ":$($uri.Port)" }
+        $address = "${scheme}://$hostPart$portPart/"
+    }
+    catch {
+        if ($address -notmatch '/$') { $address += '/' }
+    }
+
+    return $address
+}
+
+function Normalize-DirectWebRtcWebPath {
+    param([string]$Value)
+
+    $path = $Value
+    if ([string]::IsNullOrWhiteSpace($path)) {
+        $path = $script:DefaultDirectWebRtcWebPath
+    }
+
+    $path = $path.Trim()
+    if ($path -eq '/') { return '/' }
+    if ($path -notmatch '^/') { $path = '/' + $path }
+    return $path.TrimEnd('/')
+}
+
+function Test-DirectWebRtcWebDirectory {
+    param([string]$Path)
+
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
+    try {
+        $resolved = [System.IO.Path]::GetFullPath([Environment]::ExpandEnvironmentVariables($Path.Trim().Trim('"')))
+        return ((Test-Path -LiteralPath (Join-Path $resolved 'index.html') -PathType Leaf) -and (Test-Path -LiteralPath (Join-Path $resolved 'player.js') -PathType Leaf))
+    }
+    catch {
+        return $false
+    }
+}
+
+function Find-DirectWebRtcWebDirectory {
+    param([string]$GstLaunchPath)
+
+    $candidates = New-Object System.Collections.Generic.List[string]
+
+    if (-not [string]::IsNullOrWhiteSpace($script:ApplicationDirectory)) {
+        $candidates.Add((Join-Path $script:ApplicationDirectory 'gstwebrtc-api\dist'))
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($GstLaunchPath)) {
+        try {
+            $binDir = Split-Path -Parent $GstLaunchPath
+            $rootDir = Split-Path -Parent $binDir
+            foreach ($base in @($binDir, $rootDir, (Split-Path -Parent $rootDir))) {
+                if ([string]::IsNullOrWhiteSpace($base)) { continue }
+                $candidates.Add((Join-Path $base 'gstwebrtc-api\dist'))
+                $candidates.Add((Join-Path $base 'share\gstwebrtc-api\dist'))
+                $candidates.Add((Join-Path $base 'share\gstreamer-1.0\gstwebrtc-api\dist'))
+                $candidates.Add((Join-Path $base 'share\gstreamer-1.0\webrtc\gstwebrtc-api\dist'))
+                $candidates.Add((Join-Path $base 'lib\gstreamer-1.0\gstwebrtc-api\dist'))
+            }
+        }
+        catch {}
+    }
+
+    foreach ($base in @(
+        ${env:ProgramFiles},
+        ${env:ProgramFiles(x86)},
+        'C:\Program Files (x86)\Strom\gstreamer',
+        'C:\Program Files\gstreamer\1.0\msvc_x86_64'
+    )) {
+        if ([string]::IsNullOrWhiteSpace($base)) { continue }
+        $candidates.Add((Join-Path $base 'gstwebrtc-api\dist'))
+        $candidates.Add((Join-Path $base 'share\gstwebrtc-api\dist'))
+        $candidates.Add((Join-Path $base 'share\gstreamer-1.0\gstwebrtc-api\dist'))
+        $candidates.Add((Join-Path $base 'share\gstreamer-1.0\webrtc\gstwebrtc-api\dist'))
+        $candidates.Add((Join-Path $base 'lib\gstreamer-1.0\gstwebrtc-api\dist'))
+    }
+
+    foreach ($candidate in ($candidates | Select-Object -Unique)) {
+        if (Test-DirectWebRtcWebDirectory $candidate) {
+            return ([System.IO.Path]::GetFullPath($candidate))
+        }
+    }
+
+    return ''
+}
+
+
+function Get-DefaultDirectWebRtcWorkingWebDirectory {
+    return ([System.IO.Path]::GetFullPath((Join-Path $env:LOCALAPPDATA 'GStreamerGlass\WebRoot\gstwebrtc-api\dist')))
+}
+
+function Test-DirectWebRtcWebDirectoryWritable {
+    param([string]$Path)
+
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
+    try {
+        $resolved = [System.IO.Path]::GetFullPath([Environment]::ExpandEnvironmentVariables($Path.Trim().Trim('"')))
+        if (-not (Test-Path -LiteralPath $resolved)) {
+            $null = New-Item -ItemType Directory -Path $resolved -Force
+        }
+        $probe = Join-Path $resolved ('.gstglass-write-test-' + [guid]::NewGuid().ToString('N') + '.tmp')
+        Set-Content -LiteralPath $probe -Value 'ok' -Encoding ASCII -ErrorAction Stop
+        Remove-Item -LiteralPath $probe -Force -ErrorAction SilentlyContinue
+        return $true
+    }
+    catch {
+        return $false
+    }
+}
+
+function Select-DirectWebRtcFolderPath {
+    param(
+        [string]$Title,
+        [string]$InitialPath,
+        [bool]$AllowNewFolder = $true
+    )
+
+    $dlg = New-Object System.Windows.Forms.FolderBrowserDialog
+    $dlg.Description = $Title
+    $dlg.ShowNewFolderButton = $AllowNewFolder
+
+    try {
+        $expanded = [Environment]::ExpandEnvironmentVariables([string]$InitialPath)
+        if (-not [string]::IsNullOrWhiteSpace($expanded) -and (Test-Path -LiteralPath $expanded)) {
+            $dlg.SelectedPath = ([System.IO.Path]::GetFullPath($expanded))
+        }
+    }
+    catch {}
+
+    if ($dlg.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+        return $dlg.SelectedPath
+    }
+
+    return $null
+}
+
+function Get-DirectWebRtcWebUiVersion {
+    param([string]$Path)
+
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $null }
+    try {
+        $resolved = [System.IO.Path]::GetFullPath([Environment]::ExpandEnvironmentVariables($Path.Trim().Trim('"')))
+        $manifest = Join-Path $resolved 'gstglass-webui-manifest.json'
+        if (Test-Path -LiteralPath $manifest -PathType Leaf) {
+            $json = Get-Content -LiteralPath $manifest -Raw -ErrorAction Stop | ConvertFrom-Json
+            if ($json.webUiVersion) { return [string]$json.webUiVersion }
+            if ($json.version) { return [string]$json.version }
+        }
+    }
+    catch {}
+    return $null
+}
+
+function Compare-DirectWebRtcVersionString {
+    param([string]$Left, [string]$Right)
+
+    if ([string]::IsNullOrWhiteSpace($Left) -and [string]::IsNullOrWhiteSpace($Right)) { return 0 }
+    if ([string]::IsNullOrWhiteSpace($Left)) { return -1 }
+    if ([string]::IsNullOrWhiteSpace($Right)) { return 1 }
+
+    try {
+        $lv = [version](([regex]::Match($Left, '\d+(\.\d+){1,3}')).Value)
+        $rv = [version](([regex]::Match($Right, '\d+(\.\d+){1,3}')).Value)
+        return $lv.CompareTo($rv)
+    }
+    catch {
+        return [string]::Compare($Left, $Right, $true)
+    }
+}
+
+function Get-BundledDirectWebRtcWebDirectory {
+    $mode = $script:DefaultDirectWebRtcBundledWebMode
+    if ($cmbDirectWebRtcBundledWebMode -and $cmbDirectWebRtcBundledWebMode.SelectedItem) { $mode = [string]$cmbDirectWebRtcBundledWebMode.SelectedItem }
+
+    if ($mode -eq 'Manual path' -and $txtDirectWebRtcBundledWebDirectory) {
+        $manual = [string]$txtDirectWebRtcBundledWebDirectory.Text
+        if (Test-DirectWebRtcWebDirectory $manual) {
+            return ([System.IO.Path]::GetFullPath([Environment]::ExpandEnvironmentVariables($manual.Trim().Trim('"'))))
+        }
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($script:ApplicationDirectory)) {
+        $bundled = Join-Path $script:ApplicationDirectory 'gstwebrtc-api\dist'
+        if (Test-DirectWebRtcWebDirectory $bundled) {
+            return ([System.IO.Path]::GetFullPath($bundled))
+        }
+    }
+
+    return (Find-DirectWebRtcWebDirectory $txtGstPath.Text)
+}
+
+function Get-DirectWebRtcWorkingWebDirectory {
+    $mode = $script:DefaultDirectWebRtcWorkingWebMode
+    if ($cmbDirectWebRtcWorkingWebMode -and $cmbDirectWebRtcWorkingWebMode.SelectedItem) { $mode = [string]$cmbDirectWebRtcWorkingWebMode.SelectedItem }
+
+    if ($mode -eq 'Manual path' -and $txtDirectWebRtcWebDirectory) {
+        $manual = [string]$txtDirectWebRtcWebDirectory.Text
+        if (-not [string]::IsNullOrWhiteSpace($manual)) {
+            return ([System.IO.Path]::GetFullPath([Environment]::ExpandEnvironmentVariables($manual.Trim().Trim('"'))))
+        }
+    }
+
+    return (Get-DefaultDirectWebRtcWorkingWebDirectory)
+}
+
+function Test-DirectWebRtcWebUiHasJbufStats {
+    param([string]$Path)
+
+    if (-not (Test-DirectWebRtcWebDirectory $Path)) { return $false }
+
+    try {
+        $playerPath = Join-Path ([System.IO.Path]::GetFullPath($Path)) 'player.js'
+        if (-not (Test-Path -LiteralPath $playerPath -PathType Leaf)) { return $false }
+        $playerText = Get-Content -LiteralPath $playerPath -Raw -ErrorAction Stop
+        return ($playerText -match 'audio jbuf' -and $playerText -match 'video jbuf' -and $playerText -match 'GstGlassJbuf')
+    }
+    catch {
+        return $false
+    }
+}
+
+function Get-DirectWebRtcSourceWebDirectory {
+    return (Get-BundledDirectWebRtcWebDirectory)
+}
+
+function Copy-DirectWebRtcStaticWebAssets {
+    param(
+        [Parameter(Mandatory)][string]$SourceDirectory,
+        [Parameter(Mandatory)][string]$DestinationDirectory,
+        [switch]$ForceRefresh
+    )
+
+    $sourceFull = [System.IO.Path]::GetFullPath([Environment]::ExpandEnvironmentVariables($SourceDirectory.Trim().Trim('"')))
+    $destFull = [System.IO.Path]::GetFullPath([Environment]::ExpandEnvironmentVariables($DestinationDirectory.Trim().Trim('"')))
+
+    if (-not (Test-DirectWebRtcWebDirectory $sourceFull)) {
+        throw "Bundled Web UI source is missing index.html/player.js: $sourceFull"
+    }
+
+    if (-not (Test-Path -LiteralPath $destFull)) {
+        $null = New-Item -ItemType Directory -Path $destFull -Force
+    }
+
+    if (-not (Test-DirectWebRtcWebDirectoryWritable $destFull)) {
+        throw "Working Web UI directory is not writable: $destFull"
+    }
+
+    $sourceVersion = Get-DirectWebRtcWebUiVersion $sourceFull
+    $destVersion = Get-DirectWebRtcWebUiVersion $destFull
+    $destHasUi = Test-DirectWebRtcWebDirectory $destFull
+    $needsCopy = $ForceRefresh -or (-not $destHasUi)
+    if (-not $needsCopy) {
+        $needsCopy = ((Compare-DirectWebRtcVersionString $sourceVersion $destVersion) -gt 0)
+    }
+
+    if (-not $needsCopy) {
+        return [pscustomobject]@{ Copied = $false; Source = $sourceFull; Destination = $destFull; SourceVersion = $sourceVersion; DestinationVersion = $destVersion }
+    }
+
+    Get-ChildItem -LiteralPath $sourceFull -Force | Where-Object {
+        $_.Name -notin @('gstglass-config.js') -and $_.Name -notlike '*.runtime.js' -and $_.Name -notlike '*.local.js'
+    } | ForEach-Object {
+        $target = Join-Path $destFull $_.Name
+        if ($_.PSIsContainer) {
+            Copy-Item -LiteralPath $_.FullName -Destination $target -Recurse -Force -ErrorAction Stop
+        }
+        else {
+            Copy-Item -LiteralPath $_.FullName -Destination $target -Force -ErrorAction Stop
+        }
+    }
+
+    return [pscustomobject]@{ Copied = $true; Source = $sourceFull; Destination = $destFull; SourceVersion = $sourceVersion; DestinationVersion = $destVersion }
+}
+
+function Ensure-DirectWebRtcRuntimeWebDirectory {
+    param([string]$SourceDirectory, [switch]$ForceRefresh)
+
+    if ([string]::IsNullOrWhiteSpace($SourceDirectory) -or -not (Test-DirectWebRtcWebDirectory $SourceDirectory)) {
+        return ''
+    }
+
+    try {
+        $runtime = Get-DirectWebRtcWorkingWebDirectory
+        $script:DirectWebRtcRuntimeWebDirectory = $runtime
+        $result = Copy-DirectWebRtcStaticWebAssets -SourceDirectory $SourceDirectory -DestinationDirectory $runtime -ForceRefresh:$ForceRefresh
+        if ($result.Copied) {
+            Append-Log "Direct WebRTC web UI updated: $($result.Source) -> $($result.Destination) [$($result.DestinationVersion) -> $($result.SourceVersion)]"
+        }
+        return ([System.IO.Path]::GetFullPath($runtime))
+    }
+    catch {
+        Append-Log "Direct WebRTC runtime web UI sync failed: $($_.Exception.Message)"
+        return $SourceDirectory
+    }
+}
+
+function Get-DirectWebRtcWebDirectory {
+    $source = Get-DirectWebRtcSourceWebDirectory
+    return (Ensure-DirectWebRtcRuntimeWebDirectory $source)
+}
+
+
+function Get-PlayerSettingsFromUi {
+    $watchdog = $script:DefaultJbufWatchdogMode
+    if ($cmbJbufWatchdogMode -and $cmbJbufWatchdogMode.SelectedItem) { $watchdog = [string]$cmbJbufWatchdogMode.SelectedItem }
+
+    return [ordered]@{
+        AudioJbufMs = [int]$numDirectWebRtcPlayerJitterMs.Value
+        VideoJbufMs = [int]$numDirectWebRtcVideoJitterMs.Value
+        JbufMaxMs = [int]$numJbufMaxMs.Value
+        JbufWatchdogMode = $watchdog
+        JbufDebug = [bool]($chkPlayerJbufDebug -and $chkPlayerJbufDebug.Checked)
+        StatsOverlay = [bool]($chkPlayerStatsOverlay -and $chkPlayerStatsOverlay.Checked)
+        UrlOverrides = [bool]($chkPlayerUrlOverrides -and $chkPlayerUrlOverrides.Checked)
+        AvRenderMode = [string]$cmbPlayerAvRenderMode.SelectedItem
+        AvPipelineMode = [string](Get-DirectWebRtcAvPipelineMode)
+        SplitPlayerSyncMode = [string](Get-ComboSelectedOrDefault $cmbSplitPlayerSyncMode $script:DefaultSplitPlayerSyncMode)
+        SplitAudioStallSeconds = [int]$numSplitAudioStallSeconds.Value
+        SplitAvOffsetWarnMs = [int]$numSplitAvOffsetWarnMs.Value
+        WebPath = [string]$txtDirectWebRtcWebPath.Text
+        BundledWebMode = [string]$cmbDirectWebRtcBundledWebMode.SelectedItem
+        BundledWebDirectory = [string]$txtDirectWebRtcBundledWebDirectory.Text
+        WorkingWebMode = [string]$cmbDirectWebRtcWorkingWebMode.SelectedItem
+        WebDirectory = [string]$txtDirectWebRtcWebDirectory.Text
+    }
+}
+
+
+function Update-DirectWebRtcWebUiStatus {
+    if (-not $lblDirectWebRtcWebUiStatus) { return }
+    try {
+        $bundled = Get-BundledDirectWebRtcWebDirectory
+        $working = Get-DirectWebRtcWorkingWebDirectory
+        $script:DirectWebRtcRuntimeWebDirectory = $working
+        $bundledOk = Test-DirectWebRtcWebDirectory $bundled
+        $workingOk = Test-DirectWebRtcWebDirectory $working
+        $workingStats = Test-DirectWebRtcWebUiHasJbufStats $working
+        $bundledVersion = Get-DirectWebRtcWebUiVersion $bundled
+        $workingVersion = Get-DirectWebRtcWebUiVersion $working
+        $runtimeConfig = Join-Path $working 'gstglass-config.js'
+        $configState = if (Test-Path -LiteralPath $runtimeConfig -PathType Leaf) { 'config OK' } else { 'config missing' }
+
+        $text = "Bundled: $bundled"
+        if ($bundledOk) { $text += "  [v$bundledVersion]" } else { $text += '  [missing]' }
+        $text += "`r`nWorking: $working"
+        if ($workingOk -and $workingStats) { $text += "  [v$workingVersion, stats OK, $configState]" }
+        elseif ($workingOk) { $text += "  [v$workingVersion, missing stats markers, $configState]" }
+        else { $text += "  [missing/static sync needed, $configState]" }
+        $lblDirectWebRtcWebUiStatus.Text = $text
+    }
+    catch {
+        $lblDirectWebRtcWebUiStatus.Text = "Web UI status check failed: $($_.Exception.Message)"
+    }
+}
+
+
+function Add-DirectWebRtcViewerQuery {
+    param([string]$Url)
+
+    if ([string]::IsNullOrWhiteSpace($Url)) { return $Url }
+
+    # Normal operation is config-driven: /live/ loads gstglass-config.js with cache busting.
+    # Only append the long query string when explicitly requested for debug/share testing.
+    $playerSettings = Get-PlayerSettingsFromUi
+    if (-not $playerSettings.UrlOverrides) { return $Url }
+
+    $audioJitterMs = [int]$playerSettings.AudioJbufMs
+    $videoJitterMs = [int]$playerSettings.VideoJbufMs
+    $fallbackJitterMs = $audioJitterMs
+    $maxMs = [int]$playerSettings.JbufMaxMs
+    $watchdog = [System.Uri]::EscapeDataString([string]$playerSettings.JbufWatchdogMode)
+    $debug = if ($playerSettings.JbufDebug) { '1' } else { '0' }
+    $avRenderMode = [System.Uri]::EscapeDataString([string]$playerSettings.AvRenderMode)
+    $avPipelineMode = [System.Uri]::EscapeDataString([string](Get-DirectWebRtcAvPipelineMode))
+    $splitAudioPort = if (Test-DirectWebRtcSplitAvPipelines) { [int](Get-DirectWebRtcSplitAudioSignalingPort) } else { 0 }
+    $splitAudioPart = if ($splitAudioPort -gt 0) { "&splitAudioPort=$splitAudioPort&splitAudioSignalingPort=$splitAudioPort" } else { '' }
+    $stamp = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+    $joiner = if ($Url -match '\?') { '&' } else { '?' }
+
+    return ($Url + $joiner + "audioJbufMs=$audioJitterMs&videoJbufMs=$videoJitterMs&jitterMs=$fallbackJitterMs&browserJitterTargetMs=$fallbackJitterMs&jbufMaxMs=$maxMs&jbufWatchdog=$watchdog&jbufDebug=$debug&avRenderMode=$avRenderMode&playerAvRenderMode=$avRenderMode&avPipelineMode=$avPipelineMode$splitAudioPart&cb=$stamp")
+}
+
+function Get-DirectWebRtcViewerUrl {
+    $address = Normalize-DirectWebRtcWebAddress $txtDestination.Text
+
+    # 0.0.0.0 is a listen/bind address, not a URL most browsers can open.
+    # Use localhost for the local Open Viewer button while preserving the
+    # configured bind address in the actual GStreamer property.
+    $address = $address -replace '://0\.0\.0\.0(?=[:/])', '://127.0.0.1'
+    $address = $address -replace '://\*(?=[:/])', '://127.0.0.1'
+    $path = Normalize-DirectWebRtcWebPath $txtDirectWebRtcWebPath.Text
+    if ($path -eq '/') { return (Add-DirectWebRtcViewerQuery $address) }
+
+    # warp's static directory handler is happier with the mounted directory URL
+    # ending in a slash. Without this, /live can 404 while /live/ serves index.html.
+    return (Add-DirectWebRtcViewerQuery ($address.TrimEnd('/') + $path + '/'))
+}
+
+function Update-DirectWebRtcUi {
+    $directEnabled = Test-DirectWebRtcProtocol
+    $webRtcTransportEnabled = Test-WebRtcTransportProtocol
+
+    foreach ($control in @(
+        $lblDirectWebRtcStatus,
+        $txtDirectWebRtcSignalingHost,
+        $numDirectWebRtcSignalingPort,
+        $txtDirectWebRtcWebPath,
+        $cmbDirectWebRtcBundledWebMode,
+        $txtDirectWebRtcBundledWebDirectory,
+        $btnBrowseDirectWebRtcBundledWebDirectory,
+        $btnDetectDirectWebRtcBundledWebDirectory,
+        $cmbDirectWebRtcWorkingWebMode,
+        $txtDirectWebRtcWebDirectory,
+        $btnBrowseDirectWebRtcWebDirectory,
+        $btnDetectDirectWebRtcWebDirectory,
+        $btnRefreshDirectWebRtcWebUi,
+        $btnOpenDirectWebRtcServedDir,
+        $btnOpenDirectWebRtcBundledDir,
+        $lblDirectWebRtcWebUiStatus,
+        $lblDirectWebRtcPlayerJitterMs,
+        $numDirectWebRtcPlayerJitterMs,
+        $lblDirectWebRtcVideoJitterMs,
+        $numDirectWebRtcVideoJitterMs,
+        $lblJbufMaxMs,
+        $numJbufMaxMs,
+        $lblJbufWatchdogMode,
+        $cmbJbufWatchdogMode,
+        $chkPlayerStatsOverlay,
+        $chkPlayerJbufDebug,
+        $chkPlayerUrlOverrides,
+        $cmbPlayerAvRenderMode,
+        $cmbSplitPlayerSyncMode,
+        $numSplitAudioStallSeconds,
+        $numSplitAvOffsetWarnMs,
+        $btnOpenDirectWebRtcViewer,
+        $btnCopyDirectWebRtcViewer
+    )) {
+        if ($control) { $control.Enabled = $directEnabled }
+    }
+
+    if ($lblDirectWebRtcStatus) { $lblDirectWebRtcStatus.Enabled = ($directEnabled -or $webRtcTransportEnabled) }
+
+    foreach ($control in @(
+        $txtDirectWebRtcStun,
+        $cmbDirectWebRtcCongestion,
+        $cmbDirectWebRtcMitigation,
+        $lblWebRtcRecoveryMode,
+        $cmbWebRtcRecoveryMode,
+        $lblWebRtcSenderQueueMode,
+        $cmbWebRtcSenderQueueMode,
+        $lblDirectWebRtcSmoothnessProfile,
+        $cmbDirectWebRtcSmoothnessProfile,
+        $lblDirectWebRtcPacingMs,
+        $numDirectWebRtcPacingMs
+    )) {
+        if ($control) { $control.Enabled = $webRtcTransportEnabled }
+    }
+
+    if ($directEnabled) {
+        $webDir = Get-DirectWebRtcWebDirectory
+        if ([string]::IsNullOrWhiteSpace($webDir)) {
+            $lblDirectWebRtcStatus.Text = "Direct WebRTC viewer: $(Get-DirectWebRtcViewerUrl) - web UI dir not found; 404 likely"
+            $lblDirectWebRtcStatus.ForeColor = [System.Drawing.Color]::DarkOrange
+        }
+        else {
+            $lblDirectWebRtcStatus.Text = "Direct WebRTC viewer: $(Get-DirectWebRtcViewerUrl) - $([string]$cmbDirectWebRtcSmoothnessProfile.SelectedItem)"
+            $lblDirectWebRtcStatus.ForeColor = [System.Drawing.Color]::DarkSlateBlue
+        }
+    }
+    elseif ($webRtcTransportEnabled) {
+        $lblDirectWebRtcStatus.Text = 'WebRTC transport knobs active for WHIP/MediaMTX publish.'
+        $lblDirectWebRtcStatus.ForeColor = [System.Drawing.Color]::DarkSlateBlue
+    }
+    else {
+        $lblDirectWebRtcStatus.Text = 'WebRTC transport knobs disabled for this protocol'
+        $lblDirectWebRtcStatus.ForeColor = [System.Drawing.Color]::DimGray
+    }
+
+    Update-DirectWebRtcWebUiStatus
+}
+
+
+function Test-RecordingEnabled {
+    return ($chkRecordingEnabled -and $chkRecordingEnabled.Checked)
+}
+
+function Get-SelectedRecordingEncoderDefinition {
+    $name = [string]$cmbRecordingEncoder.SelectedItem
+    if (
+        [string]::IsNullOrWhiteSpace($name) -or
+        -not $script:EncoderCatalog.Contains($name)
+    ) {
+        $name = $script:DefaultEncoderName
+    }
+
+    return $script:EncoderCatalog[$name]
+}
+
+function Get-RecordingEncoderControlSupport {
+    $definition = Get-SelectedRecordingEncoderDefinition
+    $family = [string]$definition.Family
+    $codec = [string]$definition.Codec
+
+    $supportsBFrames = $false
+    switch ($family) {
+        'NVENC' { $supportsBFrames = ($codec -in @('H264', 'H265')) }
+        'AMF'   { $supportsBFrames = ($codec -eq 'H264') }
+        'QSV'   { $supportsBFrames = ($codec -in @('H264', 'H265')) }
+        'MF'    { $supportsBFrames = ($codec -in @('H264', 'H265')) }
+        'X264'  { $supportsBFrames = $true }
+        'X265'  { $supportsBFrames = $true }
+    }
+
+    return [pscustomobject]@{ BFrames = $supportsBFrames }
+}
+
+function Get-SafeRecordingToken {
+    param([AllowNull()][string]$Value)
+
+    if ([string]::IsNullOrWhiteSpace($Value)) { return 'unknown' }
+
+    $safe = $Value -replace '[^A-Za-z0-9._-]+', '-'
+    $safe = $safe.Trim('-')
+    if ([string]::IsNullOrWhiteSpace($safe)) { return 'unknown' }
+    return $safe
+}
+
+function Resolve-RecordingFilePath {
+    param([switch]$EnsureDirectory, [switch]$AvoidExisting)
+
+    $folder = [Environment]::ExpandEnvironmentVariables($txtRecordingDirectory.Text.Trim())
+    if ([string]::IsNullOrWhiteSpace($folder)) { throw 'Select a recording output folder.' }
+
+    if ($EnsureDirectory -and -not (Test-Path -LiteralPath $folder)) {
+        $null = New-Item -ItemType Directory -Path $folder -Force
+    }
+
+    if (-not (Test-Path -LiteralPath $folder)) { throw "Recording folder does not exist: $folder" }
+
+    $now = Get-Date
+    $template = $txtRecordingTemplate.Text.Trim()
+    if ([string]::IsNullOrWhiteSpace($template)) {
+        $template = 'Glass-{yyyyMMdd-HHmmss}-{protocol}-{width}x{height}-{fps}fps.mkv'
+    }
+
+    $tokenMap = [ordered]@{
+        '{date}'     = $now.ToString('yyyyMMdd')
+        '{time}'     = $now.ToString('HHmmss')
+        '{datetime}' = $now.ToString('yyyyMMdd-HHmmss')
+        '{protocol}' = Get-SafeRecordingToken ([string]$cmbProtocol.SelectedItem)
+        '{encoder}'  = Get-SafeRecordingToken ([string]$cmbRecordingEncoder.SelectedItem)
+        '{width}'    = [string][int]$numRecordingWidth.Value
+        '{height}'   = [string][int]$numRecordingHeight.Value
+        '{fps}'      = [string][int]$numRecordingFps.Value
+    }
+
+    $fileName = $template
+    foreach ($key in $tokenMap.Keys) { $fileName = $fileName.Replace($key, [string]$tokenMap[$key]) }
+
+    $fileName = [regex]::Replace(
+        $fileName,
+        '\{([yMdHhmsfF_. -]+)\}',
+        { param($match) $now.ToString($match.Groups[1].Value) }
+    )
+
+    foreach ($invalid in [System.IO.Path]::GetInvalidFileNameChars()) {
+        $fileName = $fileName.Replace([string]$invalid, '_')
+    }
+
+    if ([string]::IsNullOrWhiteSpace([System.IO.Path]::GetExtension($fileName))) { $fileName += '.mkv' }
+
+    $path = Join-Path $folder $fileName
+    if ($AvoidExisting) {
+        $base = [System.IO.Path]::GetFileNameWithoutExtension($path)
+        $ext = [System.IO.Path]::GetExtension($path)
+        $dir = [System.IO.Path]::GetDirectoryName($path)
+        $index = 1
+        while (Test-Path -LiteralPath $path) {
+            $path = Join-Path $dir ("{0}-{1:000}{2}" -f $base, $index, $ext)
+            $index++
+        }
+    }
+    return $path
+}
+
+function Get-RecordingEncodedVideoCaps {
+    param([Parameter(Mandatory)][string]$Codec)
+    $profile = [string]$cmbRecordingProfile.SelectedItem
+
+    # Matroska does not accept Annex-B/byte-stream H.264 or H.265 on its video pad.
+    # Force the parser to negotiate muxer-friendly length-prefixed caps instead.
+    switch ($Codec) {
+        'H264' { return "video/x-h264,profile=$profile,stream-format=avc,alignment=au" }
+        'H265' { return 'video/x-h265,profile=main,stream-format=hvc1,alignment=au' }
+        'AV1'  { return 'video/x-av1,stream-format=obu-stream,alignment=tu' }
+        'VP8'  { return 'video/x-vp8' }
+        'VP9'  { return 'video/x-vp9' }
+        default { throw "Unsupported recording codec: $Codec" }
+    }
+}
+
+
+function Add-CustomEncoderOptions {
+    param(
+        [Parameter(Mandatory)]$Parts,
+        [AllowNull()][string]$Options
+    )
+
+    $text = ([string]$Options).Trim()
+    if ([string]::IsNullOrWhiteSpace($text)) { return }
+
+    foreach ($chunk in ($text -split '\s+')) {
+        if (-not [string]::IsNullOrWhiteSpace($chunk)) {
+            $Parts.Add($chunk)
+        }
+    }
+}
+
+function Get-ComboSelectedOrDefault {
+    param(
+        [Parameter(Mandatory)]$ComboBox,
+        [Parameter(Mandatory)][string]$Default
+    )
+
+    $value = [string]$ComboBox.SelectedItem
+    if ([string]::IsNullOrWhiteSpace($value)) { return $Default }
+    return $value
+}
+
+function Add-NvencRateControlOptions {
+    param(
+        [Parameter(Mandatory)]$Parts,
+        [Parameter(Mandatory)][string]$RateControl,
+        [Parameter(Mandatory)][int]$BitrateKbps,
+        [Parameter(Mandatory)][int]$MaxBitrateKbps,
+        [Parameter(Mandatory)][int]$ConstantQp
+    )
+
+    switch ($RateControl) {
+        'constqp' {
+            $Parts.Add('rc-mode=constqp')
+            $Parts.Add("qp-const=$ConstantQp")
+            $Parts.Add("qp-const-i=$ConstantQp")
+            $Parts.Add("qp-const-p=$ConstantQp")
+            $Parts.Add("qp-const-b=$ConstantQp")
+        }
+        'vbr' {
+            $Parts.Add("bitrate=$BitrateKbps")
+            $Parts.Add('rc-mode=vbr')
+            if ($MaxBitrateKbps -gt 0) { $Parts.Add("max-bitrate=$MaxBitrateKbps") }
+            if ($ConstantQp -gt 0) { $Parts.Add("const-quality=$ConstantQp") }
+        }
+        default {
+            $Parts.Add("bitrate=$BitrateKbps")
+            $Parts.Add('rc-mode=cbr')
+        }
+    }
+}
+
+function Add-QsvRateControlOptions {
+    param(
+        [Parameter(Mandatory)]$Parts,
+        [Parameter(Mandatory)][string]$RateControl,
+        [Parameter(Mandatory)][int]$BitrateKbps,
+        [Parameter(Mandatory)][int]$MaxBitrateKbps,
+        [Parameter(Mandatory)][int]$ConstantQp,
+        [Parameter(Mandatory)][int]$LookAheadFrames,
+        [Parameter(Mandatory)][string]$Codec
+    )
+
+    switch ($RateControl) {
+        'constqp' {
+            $Parts.Add('rate-control=cqp')
+            if ($Codec -in @('H264','H265')) {
+                $Parts.Add("qp-i=$ConstantQp")
+                $Parts.Add("qp-p=$ConstantQp")
+                $Parts.Add("qp-b=$ConstantQp")
+            }
+        }
+        'vbr' {
+            if ($LookAheadFrames -gt 0 -and $Codec -in @('H264','H265')) {
+                $Parts.Add('rate-control=la-vbr')
+                $Parts.Add("rc-lookahead=$LookAheadFrames")
+            }
+            else {
+                $Parts.Add('rate-control=vbr')
+            }
+            $Parts.Add("bitrate=$BitrateKbps")
+            if ($MaxBitrateKbps -gt 0) { $Parts.Add("max-bitrate=$MaxBitrateKbps") }
+        }
+        default {
+            if ($LookAheadFrames -gt 0 -and $Codec -in @('H264','H265')) {
+                $Parts.Add('rate-control=la-hrd')
+                $Parts.Add("rc-lookahead=$LookAheadFrames")
+            }
+            else {
+                $Parts.Add('rate-control=cbr')
+                if ($Codec -in @('H264','H265')) { $Parts.Add('rc-lookahead=0') }
+            }
+            $Parts.Add("bitrate=$BitrateKbps")
+        }
+    }
+}
+
+function Get-RecordingEncoderElementChain {
+    $definition = Get-SelectedRecordingEncoderDefinition
+    $element = [string]$definition.Element
+    $codec = [string]$definition.Codec
+    $family = [string]$definition.Family
+    $inputType = [string]$definition.Input
+    $parser = [string]$definition.Parser
+    $width = [int]$numRecordingWidth.Value
+    $height = [int]$numRecordingHeight.Value
+    $fps = [int]$numRecordingFps.Value
+    $videoBitrateKbps = [int]$numRecordingVideoBitrate.Value
+    $videoBitrateBps = $videoBitrateKbps * 1000
+    $maxVideoBitrateKbps = [int]$numRecordingMaxVideoBitrate.Value
+    $constantQp = [int]$numRecordingConstantQp.Value
+    $gopSize = [Math]::Max(1, $fps * [int]$numRecordingGopSeconds.Value)
+    $preset = [string]$cmbRecordingPreset.SelectedItem
+    $rateControl = Get-ComboSelectedOrDefault $cmbRecordingRateControl 'constqp'
+    $tune = Get-ComboSelectedOrDefault $cmbRecordingTune 'high-quality'
+    $multipass = Get-ComboSelectedOrDefault $cmbRecordingMultipass 'two-pass-quarter'
+    $support = Get-RecordingEncoderControlSupport
+    $bFrames = if ($support.BFrames) { [int]$numRecordingBFrames.Value } else { 0 }
+    $lookAheadFrames = if ($support.LookAhead -and $chkRecordingLookAhead.Checked) { [int]$numRecordingLookAheadFrames.Value } else { 0 }
+    $spatialAq = $support.AdaptiveQuantization -and $chkRecordingSpatialAq.Checked
+    $temporalAq = $support.AdaptiveQuantization -and $chkRecordingTemporalAq.Checked
+    $aqStrength = [int]$numRecordingAqStrength.Value
+    $aqStrengthFloat = ($aqStrength / 8.0).ToString('0.###', [System.Globalization.CultureInfo]::InvariantCulture)
+    $vbvBuffer = [int]$numRecordingVbvBuffer.Value
+    $parts = New-Object System.Collections.Generic.List[string]
+    foreach ($x in @('queue','max-size-buffers=12','max-size-bytes=0','max-size-time=0','leaky=downstream','!','d3d11convert','!')) { $parts.Add($x) }
+    $parts.Add("`"video/x-raw(memory:D3D11Memory),format=NV12,width=$width,height=$height,framerate=$fps/1`"")
+    $parts.Add('!')
+    if ($inputType -eq 'I420') {
+        foreach ($x in @('d3d11download','!','videoconvert','!')) { $parts.Add($x) }
+        $parts.Add("`"video/x-raw,format=I420,width=$width,height=$height,framerate=$fps/1`"")
+        $parts.Add('!')
+    }
+    $parts.Add($element)
+    switch ($family) {
+        'NVENC' {
+            $zeroLatency = ($bFrames -eq 0 -and $lookAheadFrames -eq 0 -and $tune -in @('low-latency','ultra-low-latency'))
+            Add-NvencRateControlOptions $parts $rateControl $videoBitrateKbps $maxVideoBitrateKbps $constantQp
+            foreach ($x in @("preset=$preset","tune=$tune","multi-pass=$multipass","zerolatency=$($zeroLatency.ToString().ToLowerInvariant())","bframes=$bFrames","b-adapt=$((($bFrames -gt 0) -and ($lookAheadFrames -gt 0)).ToString().ToLowerInvariant())","gop-size=$gopSize","rc-lookahead=$lookAheadFrames","spatial-aq=$($spatialAq.ToString().ToLowerInvariant())","temporal-aq=$($temporalAq.ToString().ToLowerInvariant())")) { $parts.Add($x) }
+            if ($spatialAq -or $temporalAq) { $parts.Add("aq-strength=$aqStrength") }
+            if ($vbvBuffer -gt 0) { $parts.Add("vbv-buffer-size=$vbvBuffer") }
+            if ($codec -in @('H264','H265')) { $parts.Add('repeat-sequence-header=true') }
+        }
+        'AMF' {
+            foreach ($x in @("bitrate=$videoBitrateKbps",'rate-control=cbr','preset=quality','usage=transcoding',"gop-size=$gopSize",'pre-encode=false')) { $parts.Add($x) }
+            if ($codec -eq 'H264') { $parts.Add("b-frames=$bFrames"); $parts.Add("max-b-frames=$bFrames") }
+        }
+        'QSV' {
+            Add-QsvRateControlOptions $parts $rateControl $videoBitrateKbps $maxVideoBitrateKbps $constantQp $lookAheadFrames $codec
+            $parts.Add("gop-size=$gopSize")
+            if ($codec -in @('H264','H265')) { $parts.Add("b-frames=$bFrames") }
+        }
+        'MF' {
+            foreach ($x in @("bitrate=$videoBitrateKbps",'rc-mode=cbr',"gop-size=$gopSize",'low-latency=false')) { $parts.Add($x) }
+            if ($support.BFrames) { $parts.Add("bframes=$bFrames") }
+        }
+        'X264' {
+            if ($rateControl -eq 'constqp') { $parts.Add('pass=quant'); $parts.Add("quantizer=$constantQp") } else { $parts.Add("bitrate=$videoBitrateKbps") }
+            $parts.Add('speed-preset=veryfast')
+            if ($tune -in @('low-latency','ultra-low-latency')) { $parts.Add('tune=zerolatency') }
+            foreach ($x in @("key-int-max=$gopSize","bframes=$bFrames","rc-lookahead=$lookAheadFrames",'byte-stream=true','aud=true')) { $parts.Add($x) }
+        }
+        'X265' {
+            if ($rateControl -ne 'constqp') { $parts.Add("bitrate=$videoBitrateKbps") }
+            $parts.Add('speed-preset=veryfast')
+            if ($tune -in @('low-latency','ultra-low-latency')) { $parts.Add('tune=zerolatency') }
+            $parts.Add("key-int-max=$gopSize")
+            $x265Options = New-Object System.Collections.Generic.List[string]
+            $x265Options.Add("bframes=$bFrames")
+            $x265Options.Add("rc-lookahead=$lookAheadFrames")
+            if ($rateControl -eq 'constqp') { $x265Options.Add("qp=$constantQp") }
+            if ($spatialAq -or $temporalAq) { $x265Options.Add('aq-mode=2'); $x265Options.Add("aq-strength=$aqStrengthFloat") } else { $x265Options.Add('aq-mode=0') }
+            $parts.Add("option-string=$($x265Options -join ':')")
+        }
+        'OPENH264' { foreach ($x in @("bitrate=$videoBitrateBps",'rate-control=bitrate','complexity=medium','usage-type=screen',"gop-size=$gopSize")) { $parts.Add($x) } }
+        'AOM' { foreach ($x in @("target-bitrate=$videoBitrateKbps",'end-usage=cbr','cpu-used=6','lag-in-frames=0',"keyframe-max-dist=$gopSize",'row-mt=true')) { $parts.Add($x) } }
+        'SVTAV1' { foreach ($x in @("target-bitrate=$videoBitrateKbps",'preset=8',"intra-period-length=$gopSize",'intra-refresh-type=IDR')) { $parts.Add($x) } }
+        'RAV1E' { foreach ($x in @("bitrate=$videoBitrateBps",'low-latency=true','speed-preset=8',"max-key-frame-interval=$gopSize",'min-key-frame-interval=1','rdo-lookahead-frames=0')) { $parts.Add($x) } }
+        'VPX' { foreach ($x in @("target-bitrate=$videoBitrateBps",'deadline=1','end-usage=cbr',"keyframe-max-dist=$gopSize",'lag-in-frames=0')) { $parts.Add($x) } }
+        default { throw "Unsupported recording encoder family: $family" }
+    }
+    Add-CustomEncoderOptions $parts $txtRecordingCustomEncoderOptions.Text
+    if (-not [string]::IsNullOrWhiteSpace($parser)) {
+        $parts.Add('!'); $parts.Add($parser)
+        if ($codec -in @('H264','H265')) { $parts.Add('config-interval=-1') }
+    }
+    $parts.Add('!')
+    $parts.Add("`"$(Get-RecordingEncodedVideoCaps -Codec $codec)`"")
+    return ($parts -join ' ')
+}
+
+function Build-RecordingRawAudioChain {
+    $desktopEnabled = $chkRecordingDesktopAudio.Checked
+    $micEnabled = $chkRecordingMic.Checked
+    if (-not $desktopEnabled -and -not $micEnabled) { return '' }
+    if ($desktopEnabled -and -not $micEnabled) {
+        return @('wasapi2src','loopback=true','low-latency=true','buffer-time=20000','latency-time=10000','!','queue','max-size-buffers=16','max-size-bytes=0','max-size-time=0','leaky=downstream','!','audioconvert','!','audioresample','!','"audio/x-raw,format=S16LE,rate=48000,channels=2"') -join ' '
+    }
+    if (-not $desktopEnabled -and $micEnabled) {
+        return @('wasapi2src','low-latency=true','buffer-time=20000','latency-time=10000','!','queue','max-size-buffers=16','max-size-bytes=0','max-size-time=0','leaky=downstream','!','audioconvert','!','audioresample','!','"audio/x-raw,format=S16LE,rate=48000,channels=2"') -join ' '
+    }
+    $desktopMixBranch = @('wasapi2src','loopback=true','low-latency=true','buffer-time=20000','latency-time=10000','!','queue','max-size-buffers=16','max-size-bytes=0','max-size-time=0','leaky=downstream','!','audioconvert','!','audioresample','!','"audio/x-raw,format=F32LE,rate=48000,channels=2"','!','recordaudiomix.') -join ' '
+    $micMixBranch = @('wasapi2src','low-latency=true','buffer-time=20000','latency-time=10000','!','queue','max-size-buffers=16','max-size-bytes=0','max-size-time=0','leaky=downstream','!','audioconvert','!','audioresample','!','"audio/x-raw,format=F32LE,rate=48000,channels=2"','!','recordaudiomix.') -join ' '
+    $mixOutput = @('recordaudiomix.','!','queue','max-size-buffers=16','max-size-bytes=0','max-size-time=0','leaky=downstream','!','audioconvert','!','"audio/x-raw,format=S16LE,rate=48000,channels=2"') -join ' '
+    return "audiomixer name=recordaudiomix $desktopMixBranch $micMixBranch $mixOutput"
+}
+
+function Build-RecordingAudioBranch {
+    if (-not (Test-RecordingEnabled)) { return '' }
+    $raw = Build-RecordingRawAudioChain
+    if ([string]::IsNullOrWhiteSpace($raw)) { return '' }
+    $bitrate = [int]$numRecordingAudioBitrate.Value * 1000
+    return "$raw ! opusenc bitrate=$bitrate bitrate-type=cbr frame-size=10 audio-type=restricted-lowdelay ! `"audio/x-opus`" ! recordmux."
+}
+
+function Get-RecordingBranchQueue {
+    # A tee branch without a queue is pushed synchronously on the tee's streaming
+    # thread - which here is the capture thread. Without this, the recording
+    # encoder + matroskamux + filesink write all run inline on capture, and
+    # because tee pushes to its src pads in link order (recording is linked
+    # first), the live/transport branch does not even receive a buffer until the
+    # recording write returns. Any disk hitch therefore lands directly on the
+    # live encode path.
+    #
+    # Kept shallow deliberately: these are D3D11Memory buffers from a fixed-size
+    # capture pool. A deep queue here would hold GPU textures, starve the pool,
+    # and stall d3d11screencapturesrc - worse than the problem being fixed.
+    #
+    # leaky=no preserves recording integrity: sustained disk overrun will still
+    # backpressure rather than silently punch frame gaps into the file. To favour
+    # the live stream over the recording instead, change this to leaky=downstream
+    # and accept dropped frames in the recorded file.
+    return 'queue name=recordq max-size-buffers=4 max-size-bytes=0 max-size-time=0 leaky=no'
+}
+
+function Build-RecordingMuxPrefixAndVideoBranch {
+    if (-not (Test-RecordingEnabled)) { return '' }
+    $recordingPath = if (-not [string]::IsNullOrWhiteSpace($script:ResolvedRecordingPath)) { $script:ResolvedRecordingPath } else { Resolve-RecordingFilePath }
+    $quotedRecordingPath = Quote-GstValue $recordingPath
+    $encoder = Get-RecordingEncoderElementChain
+    $recordQueue = Get-RecordingBranchQueue
+    return "matroskamux name=recordmux writing-app=`"GStreamer Glass`" ! filesink location=$quotedRecordingPath async=false rawtee. ! $recordQueue ! $encoder ! recordmux."
+}
+
+function Update-RecordingUi {
+    if (-not $chkRecordingEnabled) { return }
+    $enabled = [bool]$chkRecordingEnabled.Checked
+    $definition = Get-SelectedRecordingEncoderDefinition
+    $codec = [string]$definition.Codec
+    $family = [string]$definition.Family
+    $kind = [string]$definition.Kind
+    foreach ($control in @($txtRecordingDirectory,$btnBrowseRecordingDirectory,$txtRecordingTemplate,$cmbRecordingEncoder,$cmbRecordingRateControl,$numRecordingWidth,$numRecordingHeight,$numRecordingFps,$numRecordingVideoBitrate,$numRecordingMaxVideoBitrate,$numRecordingConstantQp,$numRecordingGopSeconds,$chkRecordingDesktopAudio,$chkRecordingMic,$numRecordingAudioBitrate,$txtRecordingCustomEncoderOptions)) {
+        if ($control) { $control.Enabled = $enabled }
+    }
+    $isNvenc = ($family -eq 'NVENC')
+    $cmbRecordingPreset.Enabled = $enabled -and $isNvenc
+    $cmbRecordingTune.Enabled = $enabled -and $isNvenc
+    $cmbRecordingMultipass.Enabled = $enabled -and $isNvenc
+    $numRecordingVbvBuffer.Enabled = $enabled -and $isNvenc
+    $cmbRecordingProfile.Enabled = $enabled -and ($codec -eq 'H264')
+    $support = Get-RecordingEncoderControlSupport
+    $numRecordingBFrames.Enabled = $enabled -and $support.BFrames
+    $chkRecordingLookAhead.Enabled = $enabled -and $support.LookAhead
+    $numRecordingLookAheadFrames.Enabled = $enabled -and $support.LookAhead -and $chkRecordingLookAhead.Checked
+    $chkRecordingSpatialAq.Enabled = $enabled -and $support.AdaptiveQuantization
+    $chkRecordingTemporalAq.Enabled = $enabled -and $support.AdaptiveQuantization
+    $numRecordingAqStrength.Enabled = $enabled -and $support.AdaptiveQuantization -and ($chkRecordingSpatialAq.Checked -or $chkRecordingTemporalAq.Checked)
+    if ($enabled) {
+        $audioSummary = if ($chkRecordingDesktopAudio.Checked -or $chkRecordingMic.Checked) { 'Opus audio' } else { 'video only' }
+        $rcSummary = Get-ComboSelectedOrDefault $cmbRecordingRateControl 'constqp'
+        $lblRecordingStatus.Text = "$codec * $kind * $rcSummary * MKV * $audioSummary"
+        $lblRecordingStatus.ForeColor = [System.Drawing.Color]::DarkSlateBlue
+    }
+    else {
+        $lblRecordingStatus.Text = 'Recording disabled'
+        $lblRecordingStatus.ForeColor = [System.Drawing.Color]::DimGray
+    }
+    Update-CommandPreview
 }
 
 function Get-SelectedEncoderDefinition {
@@ -2364,20 +7968,37 @@ function Update-AudioCodecChoices {
     $selected = [string]$cmbAudioCodec.SelectedItem
     if ($selected) {
         $script:ProtocolAudioCodecs[$protocol] = $selected
-        if (
-            $protocol -eq 'WHIP' -and
+        $audioMode = Get-ComboSelectedOrDefault $cmbAudioTransportMode $script:DefaultAudioTransportMode
+        $audioTimingMode = Get-AudioTimingMode
+        if ($audioMode -eq 'Video only - no audio track') {
+            $lblAudioCodecStatus.Text = "$protocol * video-only diagnostic"
+            $lblAudioCodecStatus.ForeColor = [System.Drawing.Color]::DarkOrange
+        }
+        elseif ($audioTimingMode -eq 'Synthetic silent audio') {
+            $lblAudioCodecStatus.Text = "$protocol * synthetic silent Opus timing diagnostic"
+            $lblAudioCodecStatus.ForeColor = [System.Drawing.Color]::DarkSlateBlue
+        }
+        elseif ($audioMode -eq 'Muted audio clock only') {
+            $lblAudioCodecStatus.Text = "$protocol * muted Opus clock diagnostic"
+            $lblAudioCodecStatus.ForeColor = [System.Drawing.Color]::DarkSlateBlue
+        }
+        elseif (
+            $protocol -in @('WHIP', 'GST WebRTC') -and
             -not $chkDesktopAudio.Checked -and
             -not $chkMic.Checked
         ) {
-            $lblAudioCodecStatus.Text = 'WHIP • muted Opus clock track (automatic)'
+            $lblAudioCodecStatus.Text = "$protocol * muted Opus clock track (automatic)"
             $lblAudioCodecStatus.ForeColor = [System.Drawing.Color]::DarkSlateBlue
         }
         else {
             $lblAudioCodecStatus.Text =
-                "$protocol compatible • $([string]$script:AudioCodecCatalog[$selected].Codec)"
+                "$protocol compatible * $([string]$script:AudioCodecCatalog[$selected].Codec)"
             $lblAudioCodecStatus.ForeColor = [System.Drawing.Color]::DimGray
         }
     }
+
+    if ($cmbDesktopAudioDevice) { $cmbDesktopAudioDevice.Enabled = $chkDesktopAudio.Checked }
+    if ($cmbMicAudioDevice) { $cmbMicAudioDevice.Enabled = $chkMic.Checked }
 
     Update-CommandPreview
 }
@@ -2485,6 +8106,7 @@ function Test-CodecProtocolCompatibility {
 
     switch ($Protocol) {
         'WHIP' { return $Codec -in @('H264', 'H265', 'AV1', 'VP8', 'VP9') }
+        'GST WebRTC' { return $Codec -in @('H264', 'H265', 'AV1', 'VP8', 'VP9') }
         'SRT'  { return $Codec -in @('H264', 'H265', 'AV1', 'VP9') }
         'RTMP' { return $Codec -in @('H264', 'H265', 'AV1') }
         'RTSP' { return $Codec -in @('H264', 'H265', 'AV1', 'VP8', 'VP9') }
@@ -2516,6 +8138,16 @@ function Get-EncodedVideoCaps {
     switch ($Codec) {
         'H264' {
             $streamFormat = if ($Protocol -eq 'RTMP') { 'avc' } else { 'byte-stream' }
+            if ($Protocol -eq 'WHIP') {
+                # WHIP/WHEP/browser compatibility guard. A saved High profile
+                # setting can make MediaMTX/WHIP sessions look like they never
+                # publish or never become readable, especially after switching
+                # between Direct GST WebRTC experiments and MediaMTX ingest.
+                # Keep the UI profile for other protocols, but publish WHIP as
+                # constrained-baseline unless/until we add a dedicated advanced
+                # WHIP override.
+                $profile = 'constrained-baseline'
+            }
             return "video/x-h264,profile=$profile,stream-format=$streamFormat,alignment=au"
         }
         'H265' {
@@ -2547,8 +8179,13 @@ function Get-EncoderElementChain {
     $fps = [int]$numFps.Value
     $videoBitrateKbps = [int]$numVideoBitrate.Value
     $videoBitrateBps = $videoBitrateKbps * 1000
+    $maxVideoBitrateKbps = [int]$numMaxVideoBitrate.Value
+    $constantQp = [int]$numConstantQp.Value
     $gopSize = [Math]::Max(1, $fps * [int]$numGopSeconds.Value)
     $preset = [string]$cmbPreset.SelectedItem
+    $rateControl = Get-ComboSelectedOrDefault $cmbRateControl 'cbr'
+    $tune = Get-ComboSelectedOrDefault $cmbEncoderTune 'ultra-low-latency'
+    $multipass = Get-ComboSelectedOrDefault $cmbMultipass 'disabled'
     $controlSupport = Get-EncoderControlSupport
     $bFrames = if ($controlSupport.BFrames) { [int]$numBFrames.Value } else { 0 }
     $lookAheadFrames = if (
@@ -2560,28 +8197,47 @@ function Get-EncoderElementChain {
     else {
         0
     }
-    $aqEnabled =
-        $controlSupport.AdaptiveQuantization -and
-        $chkAdaptiveQuantization.Checked
+    $spatialAq = $controlSupport.AdaptiveQuantization -and $chkAdaptiveQuantization.Checked
+    $temporalAq = $controlSupport.AdaptiveQuantization -and $chkTemporalAq.Checked
+    $aqEnabled = $spatialAq -or $temporalAq
     $aqStrength = [int]$numAqStrength.Value
+    $vbvBuffer = [int]$numVbvBuffer.Value
     $aqStrengthFloat = ($aqStrength / 8.0).ToString(
         '0.###',
         [System.Globalization.CultureInfo]::InvariantCulture
     )
+    $cpuWorkers = Get-CpuWorkerLimit
+
+    if ($Protocol -eq 'WHIP') {
+        # WHIP publish guard:
+        # - WebRTC readers expect frequent keyframes; saved 10s GOP / 120 fps
+        #   settings can make publishing appear broken or make readers wait too
+        #   long for a usable IDR.
+        # - B-frames/lookahead add reordering delay and have previously caused
+        #   MediaMTX/WebRTC problems in this project.
+        # - NVENC default/high-quality tune was observed as choppier than
+        #   ultra-low-latency here, so WHIP stays on the proven ULL path.
+        $gopSize = [Math]::Min($gopSize, [Math]::Max(1, $fps))
+        $bFrames = 0
+        $lookAheadFrames = 0
+        $spatialAq = $false
+        $temporalAq = $false
+        $aqEnabled = $false
+        if ($family -eq 'NVENC') {
+            $tune = 'ultra-low-latency'
+            $multipass = 'disabled'
+        }
+    }
 
     $parts = New-Object System.Collections.Generic.List[string]
 
-    $parts.Add('queue')
-    $parts.Add('max-size-buffers=2')
-    $parts.Add('max-size-bytes=0')
-    $parts.Add('max-size-time=0')
-    $parts.Add('leaky=downstream')
+    $parts.Add((Get-CaptureEncoderQueue))
     $parts.Add('!')
 
     if ($inputType -eq 'I420') {
         $parts.Add('d3d11download')
         $parts.Add('!')
-        $parts.Add('videoconvert')
+        $parts.Add($(if ($cpuWorkers -gt 0) { "videoconvert n-threads=$cpuWorkers" } else { 'videoconvert' }))
         $parts.Add('!')
         $parts.Add(
             "`"video/x-raw,format=I420,width=$width,height=$height,framerate=$fps/1`""
@@ -2593,11 +8249,11 @@ function Get-EncoderElementChain {
 
     switch ($family) {
         'NVENC' {
-            $zeroLatency = ($bFrames -eq 0 -and $lookAheadFrames -eq 0)
-            $parts.Add("bitrate=$videoBitrateKbps")
-            $parts.Add('rc-mode=cbr')
+            $zeroLatency = ($bFrames -eq 0 -and $lookAheadFrames -eq 0 -and $tune -in @('low-latency','ultra-low-latency'))
+            Add-NvencRateControlOptions $parts $rateControl $videoBitrateKbps $maxVideoBitrateKbps $constantQp
             $parts.Add("preset=$preset")
-            $parts.Add('tune=ultra-low-latency')
+            $parts.Add("tune=$tune")
+            $parts.Add("multi-pass=$multipass")
             $parts.Add("zerolatency=$($zeroLatency.ToString().ToLowerInvariant())")
             $parts.Add("bframes=$bFrames")
             $parts.Add(
@@ -2605,11 +8261,10 @@ function Get-EncoderElementChain {
             )
             $parts.Add("gop-size=$gopSize")
             $parts.Add("rc-lookahead=$lookAheadFrames")
-            $parts.Add("spatial-aq=$($aqEnabled.ToString().ToLowerInvariant())")
-            $parts.Add("temporal-aq=$($aqEnabled.ToString().ToLowerInvariant())")
-            if ($aqEnabled) {
-                $parts.Add("aq-strength=$aqStrength")
-            }
+            $parts.Add("spatial-aq=$($spatialAq.ToString().ToLowerInvariant())")
+            $parts.Add("temporal-aq=$($temporalAq.ToString().ToLowerInvariant())")
+            if ($aqEnabled) { $parts.Add("aq-strength=$aqStrength") }
+            if ($vbvBuffer -gt 0) { $parts.Add("vbv-buffer-size=$vbvBuffer") }
             if ($codec -in @('H264', 'H265')) {
                 $parts.Add('repeat-sequence-header=true')
             }
@@ -2643,17 +8298,7 @@ function Get-EncoderElementChain {
             }
         }
         'QSV' {
-            $parts.Add("bitrate=$videoBitrateKbps")
-            if ($lookAheadFrames -gt 0 -and $codec -in @('H264', 'H265')) {
-                $parts.Add('rate-control=la-hrd')
-                $parts.Add("rc-lookahead=$lookAheadFrames")
-            }
-            else {
-                $parts.Add('rate-control=cbr')
-                if ($codec -in @('H264', 'H265')) {
-                    $parts.Add('rc-lookahead=0')
-                }
-            }
+            Add-QsvRateControlOptions $parts $rateControl $videoBitrateKbps $maxVideoBitrateKbps $constantQp $lookAheadFrames $codec
             $parts.Add("gop-size=$gopSize")
             if ($codec -in @('H264', 'H265')) {
                 $parts.Add("b-frames=$bFrames")
@@ -2669,9 +8314,9 @@ function Get-EncoderElementChain {
             }
         }
         'X264' {
-            $parts.Add("bitrate=$videoBitrateKbps")
+            if ($rateControl -eq 'constqp') { $parts.Add('pass=quant'); $parts.Add("quantizer=$constantQp") } else { $parts.Add("bitrate=$videoBitrateKbps") }
             $parts.Add('speed-preset=ultrafast')
-            $parts.Add('tune=zerolatency')
+            if ($tune -in @('low-latency','ultra-low-latency')) { $parts.Add('tune=zerolatency') }
             $parts.Add("key-int-max=$gopSize")
             $parts.Add("bframes=$bFrames")
             $parts.Add(
@@ -2680,25 +8325,23 @@ function Get-EncoderElementChain {
             $parts.Add("rc-lookahead=$lookAheadFrames")
             $parts.Add('sync-lookahead=0')
             $parts.Add("mb-tree=$($aqEnabled.ToString().ToLowerInvariant())")
-            $x264AqOptions = if ($aqEnabled) {
-                "aq-mode=2:aq-strength=$aqStrengthFloat"
-            }
-            else {
-                'aq-mode=0'
-            }
+            $x264AqOptions = if ($aqEnabled) { "aq-mode=2:aq-strength=$aqStrengthFloat" } else { 'aq-mode=0' }
             $parts.Add("option-string=$x264AqOptions")
             $parts.Add('sliced-threads=true')
+            if ($cpuWorkers -gt 0) { $parts.Add("threads=$cpuWorkers") }
             $parts.Add('byte-stream=true')
             $parts.Add('aud=true')
         }
         'X265' {
-            $parts.Add("bitrate=$videoBitrateKbps")
+            if ($rateControl -ne 'constqp') { $parts.Add("bitrate=$videoBitrateKbps") }
             $parts.Add('speed-preset=ultrafast')
-            $parts.Add('tune=zerolatency')
+            if ($tune -in @('low-latency','ultra-low-latency')) { $parts.Add('tune=zerolatency') }
             $parts.Add("key-int-max=$gopSize")
             $x265Options = New-Object System.Collections.Generic.List[string]
             $x265Options.Add("bframes=$bFrames")
             $x265Options.Add("rc-lookahead=$lookAheadFrames")
+            if ($cpuWorkers -gt 0) { $x265Options.Add("pools=$cpuWorkers") }
+            if ($rateControl -eq 'constqp') { $x265Options.Add("qp=$constantQp") }
             if ($aqEnabled) {
                 $x265Options.Add('aq-mode=2')
                 $x265Options.Add("aq-strength=$aqStrengthFloat")
@@ -2751,6 +8394,7 @@ function Get-EncoderElementChain {
         }
     }
 
+    Add-CustomEncoderOptions $parts $txtCustomEncoderOptions.Text
     if (-not [string]::IsNullOrWhiteSpace($parser)) {
         $parts.Add('!')
         $parts.Add($parser)
@@ -2774,7 +8418,11 @@ function Update-EncoderUi {
     $inputType = [string]$definition.Input
     $protocol = [string]$cmbProtocol.SelectedItem
 
-    $cmbPreset.Enabled = ($family -eq 'NVENC')
+    $isNvenc = ($family -eq 'NVENC')
+    $cmbPreset.Enabled = $isNvenc
+    $cmbEncoderTune.Enabled = $isNvenc
+    $cmbMultipass.Enabled = $isNvenc
+    $numVbvBuffer.Enabled = $isNvenc
     $cmbProfile.Enabled = ($codec -eq 'H264')
 
     $controlSupport = Get-EncoderControlSupport
@@ -2784,29 +8432,32 @@ function Update-EncoderUi {
         $controlSupport.LookAhead -and $chkLookAhead.Checked
     $chkAdaptiveQuantization.Enabled =
         $controlSupport.AdaptiveQuantization
+    $chkTemporalAq.Enabled = $controlSupport.AdaptiveQuantization
     $numAqStrength.Enabled =
         $controlSupport.AdaptiveQuantization -and
-        $chkAdaptiveQuantization.Checked
+        ($chkAdaptiveQuantization.Checked -or $chkTemporalAq.Checked)
 
     $memoryLabel = if ($inputType -eq 'D3D11') { 'D3D11 zero-copy path' } else { 'CPU/system-memory path' }
     $latencyFlags = New-Object System.Collections.Generic.List[string]
+    $latencyFlags.Add((Get-ComboSelectedOrDefault $cmbRateControl 'cbr'))
     if ($numBFrames.Enabled -and [int]$numBFrames.Value -gt 0) {
         $latencyFlags.Add("B=$([int]$numBFrames.Value)")
     }
     if ($chkLookAhead.Enabled -and $chkLookAhead.Checked) {
         $latencyFlags.Add("LA=$([int]$numLookAheadFrames.Value)")
     }
-    if ($chkAdaptiveQuantization.Enabled -and $chkAdaptiveQuantization.Checked) {
-        $latencyFlags.Add('AQ')
+    if ($chkAdaptiveQuantization.Enabled -and ($chkAdaptiveQuantization.Checked -or $chkTemporalAq.Checked)) {
+        $aqModeText = if ($chkAdaptiveQuantization.Checked -and $chkTemporalAq.Checked) { 'AQ=S/T' } elseif ($chkAdaptiveQuantization.Checked) { 'AQ=S' } else { 'AQ=T' }
+        $latencyFlags.Add($aqModeText)
     }
 
     $flagText = if ($latencyFlags.Count -gt 0) {
-        ' • ' + ($latencyFlags -join ', ')
+        ' * ' + ($latencyFlags -join ', ')
     }
     else {
         ''
     }
-    $lblEncoderStatus.Text = "$codec • $kind • $memoryLabel$flagText"
+    $lblEncoderStatus.Text = "$codec * $kind * $memoryLabel$flagText"
 
     if ($protocol) {
         $compatible = Test-CodecProtocolCompatibility -Codec $codec -Protocol $protocol
@@ -2821,106 +8472,571 @@ function Update-EncoderUi {
     Update-CommandPreview
 }
 
-function Build-VideoBranch {
-    param([Parameter(Mandatory)][string]$Protocol)
+function Get-EffectiveCaptureSettings {
+    param([switch]$LocalOnly)
 
-    $monitor = [int]$numMonitor.Value
-    $cursor = if ($chkCursor.Checked) { 'true' } else { 'false' }
     $width = [int]$numWidth.Value
     $height = [int]$numHeight.Value
     $fps = [int]$numFps.Value
 
-    if ($chkFullscreenApp.Checked) {
-        $windowHandle = if ($script:CaptureWindowHwnd -ne [IntPtr]::Zero) {
-            [uint64]$script:CaptureWindowHwnd.ToInt64()
-        }
-        else {
-            [uint64]0
-        }
-
-        $capture = @(
-            'd3d11screencapturesrc'
-            'capture-api=wgc'
-            "window-handle=$windowHandle"
-            'window-capture-mode=default'
-            'show-border=false'
-            "show-cursor=$cursor"
-            '!'
-            "`"video/x-raw(memory:D3D11Memory),framerate=$fps/1`""
-            '!'
-            'd3d11convert'
-            '!'
-            "`"video/x-raw(memory:D3D11Memory),format=NV12,width=$width,height=$height,framerate=$fps/1`""
-        ) -join ' '
-    }
-    else {
-        $capture = @(
-            'd3d11screencapturesrc'
-            "monitor-index=$monitor"
-            "show-cursor=$cursor"
-            '!'
-            "`"video/x-raw(memory:D3D11Memory),framerate=$fps/1`""
-            '!'
-            'd3d11convert'
-            '!'
-            "`"video/x-raw(memory:D3D11Memory),format=NV12,width=$width,height=$height,framerate=$fps/1`""
-        ) -join ' '
+    # The source capture FPS is the only FPS d3d11convert can preserve. It can scale/format,
+    # but it does not manufacture a new frame cadence. For recording-only local pipelines,
+    # make the recording settings the capture settings so 120 FPS recording does not try to
+    # link a 60 FPS raw tee into a 120 FPS encoder caps filter.
+    if ($LocalOnly -and (Test-RecordingEnabled)) {
+        $width = [int]$numRecordingWidth.Value
+        $height = [int]$numRecordingHeight.Value
+        $fps = [int]$numRecordingFps.Value
     }
 
+    return [pscustomobject]@{
+        Width  = [Math]::Max(1, $width)
+        Height = [Math]::Max(1, $height)
+        Fps    = [Math]::Max(1, $fps)
+    }
+}
+
+function Test-RecordingFrameRateCompatible {
+    if (-not (Test-RecordingEnabled)) { return $true }
+    if (-not (Test-TransportEnabled)) { return $true }
+
+    # With transport enabled, capture is driven by the Video tab FPS. The recording branch
+    # currently stays on the zero-copy D3D11 path, where d3d11convert cannot change FPS.
+    # Allow independent recording bitrate/size/encoder, but require matching FPS unless
+    # we later add a dedicated videorate download/upload path.
+    return ([int]$numRecordingFps.Value -eq [int]$numFps.Value)
+}
+
+function Assert-RecordingFrameRateCompatible {
+    if (Test-RecordingFrameRateCompatible) { return }
+
+    throw ("Recording FPS must match Video FPS while transport is enabled. " +
+        "Set Video FPS to $([int]$numRecordingFps.Value), set Recording FPS to $([int]$numFps.Value), " +
+        "or disable transport for recording-only capture. The D3D11 branch cannot convert frame rate with d3d11convert.")
+}
+
+function Build-DesktopCaptureChain {
+    param([switch]$LocalOnly)
+
+    $captureSettings = Get-EffectiveCaptureSettings -LocalOnly:$LocalOnly
+    $monitor = [int]$numMonitor.Value
+    $cursor = if ($chkCursor.Checked) { 'true' } else { 'false' }
+    $gdiCursor = if ($chkCursor.Checked) { 'true' } else { 'false' }
+    $width = [int]$captureSettings.Width
+    $height = [int]$captureSettings.Height
+    $fps = [int]$captureSettings.Fps
+    $method = Get-SelectedCaptureMethod
+    $gdiMonitor = if ($monitor -lt 0) { 0 } else { $monitor }
+
+    switch ([string]$method.Method) {
+        'FullscreenAppD3D11Wgc' {
+            $windowHandle = if ($script:CaptureWindowHwnd -ne [IntPtr]::Zero) { [uint64]$script:CaptureWindowHwnd.ToInt64() } else { [uint64]0 }
+            return @('d3d11screencapturesrc','capture-api=wgc',"window-handle=$windowHandle",'window-capture-mode=default','show-border=false',"show-cursor=$cursor",'!',"`"video/x-raw(memory:D3D11Memory),framerate=$fps/1`"",'!','d3d11convert','!',"`"video/x-raw(memory:D3D11Memory),format=NV12,width=$width,height=$height,framerate=$fps/1`"") -join ' '
+        }
+        'MonitorD3D11Wgc' {
+            return @('d3d11screencapturesrc','capture-api=wgc',"monitor-index=$monitor", "show-cursor=$cursor",'!',"`"video/x-raw(memory:D3D11Memory),framerate=$fps/1`"",'!','d3d11convert','!',"`"video/x-raw(memory:D3D11Memory),format=NV12,width=$width,height=$height,framerate=$fps/1`"") -join ' '
+        }
+        'MonitorGdi' {
+            return @('gdiscreencapsrc',"monitor=$gdiMonitor", "cursor=$gdiCursor",'!',"`"video/x-raw,framerate=$fps/1`"",'!','videoconvert','!','videoscale','!',"`"video/x-raw,format=BGRA,width=$width,height=$height,framerate=$fps/1`"",'!','d3d11upload','!','d3d11convert','!',"`"video/x-raw(memory:D3D11Memory),format=NV12,width=$width,height=$height,framerate=$fps/1`"") -join ' '
+        }
+        default {
+            return @('d3d11screencapturesrc','capture-api=dxgi',"monitor-index=$monitor", "show-cursor=$cursor",'!',"`"video/x-raw(memory:D3D11Memory),framerate=$fps/1`"",'!','d3d11convert','!',"`"video/x-raw(memory:D3D11Memory),format=NV12,width=$width,height=$height,framerate=$fps/1`"") -join ' '
+        }
+    }
+}
+
+function Build-SceneCaptureChain {
+    param([switch]$LocalOnly)
+
+    $captureSettings = Get-EffectiveCaptureSettings -LocalOnly:$LocalOnly
+    $canvasWidth = [int]$captureSettings.Width
+    $canvasHeight = [int]$captureSettings.Height
+    $canvasFps = [int]$captureSettings.Fps
+    $cameraWidth = [int]$numWebcamWidth.Value
+    $cameraHeight = [int]$numWebcamHeight.Value
+    $cameraX = [int]$numWebcamX.Value
+    $cameraY = [int]$numWebcamY.Value
+    $cameraFps = [int]$numWebcamFps.Value
+    $cameraIndex = Get-SelectedWebcamIndex
+    $alpha = ([double]$numWebcamOpacity.Value / 100.0).ToString('0.00', [Globalization.CultureInfo]::InvariantCulture)
+    $mirror = if ($chkWebcamMirror.Checked) { ' ! videoflip method=horizontal-flip' } else { '' }
+    $preset = [string]$cmbScenePreset.SelectedItem
+    $cpuWorkers = Get-CpuWorkerLimit
+    $cpuConvert = if ($cpuWorkers -gt 0) { "videoconvert n-threads=$cpuWorkers" } else { 'videoconvert' }
+    $cpuCompositorWorkers = if ($cpuWorkers -gt 0) { " max-threads=$cpuWorkers" } else { '' }
+    # A compositor combines independent live clocks. Each input therefore needs
+    # its own shallow latency-reporting queue; making these optional produced
+    # GstAggregator "max latency < min latency" clock failures. The 50 ms cap is
+    # enough for a 30 fps camera frame while remaining shallow and drop-old.
+    $sceneInputBoundary = ' ! queue max-size-buffers=3 max-size-bytes=0 max-size-time=50000000 leaky=downstream'
+
+    if ($preset -eq 'Desktop only') { return (Build-DesktopCaptureChain -LocalOnly:$LocalOnly) }
+
+    if ($preset -eq 'Webcam only') {
+        return "mfvideosrc device-index=$cameraIndex ! video/x-raw,framerate=$cameraFps/1 ! $cpuConvert$mirror ! videoscale ! video/x-raw,format=BGRA,width=$canvasWidth,height=$canvasHeight,framerate=$canvasFps/1 ! d3d11upload ! d3d11convert ! `"video/x-raw(memory:D3D11Memory),format=NV12,width=$canvasWidth,height=$canvasHeight,framerate=$canvasFps/1`""
+    }
+
+    $desktop = Build-DesktopCaptureChain -LocalOnly:$LocalOnly
+    if ([string]$cmbSceneCompositor.SelectedItem -eq 'CPU compatibility') {
+        return "$desktop ! d3d11download ! $cpuConvert$sceneInputBoundary ! scene.sink_0 mfvideosrc device-index=$cameraIndex ! video/x-raw,framerate=$cameraFps/1 ! $cpuConvert$mirror ! videoscale ! video/x-raw,format=BGRA,width=$cameraWidth,height=$cameraHeight$sceneInputBoundary ! scene.sink_1 compositor name=scene background=black$cpuCompositorWorkers sink_0::xpos=0 sink_0::ypos=0 sink_1::xpos=$cameraX sink_1::ypos=$cameraY sink_1::alpha=$alpha ! $cpuConvert ! video/x-raw,format=BGRA,width=$canvasWidth,height=$canvasHeight,framerate=$canvasFps/1 ! d3d11upload ! d3d11convert ! `"video/x-raw(memory:D3D11Memory),format=NV12,width=$canvasWidth,height=$canvasHeight,framerate=$canvasFps/1`""
+    }
+
+    return "$desktop$sceneInputBoundary ! scene.sink_0 mfvideosrc device-index=$cameraIndex ! video/x-raw,framerate=$cameraFps/1 ! $cpuConvert$mirror ! videoscale ! video/x-raw,format=BGRA,width=$cameraWidth,height=$cameraHeight ! d3d11upload ! d3d11convert ! `"video/x-raw(memory:D3D11Memory),format=BGRA,width=$cameraWidth,height=$cameraHeight`"$sceneInputBoundary ! scene.sink_1 d3d11compositor name=scene background=black sink_0::xpos=0 sink_0::ypos=0 sink_1::xpos=$cameraX sink_1::ypos=$cameraY sink_1::alpha=$alpha ! d3d11convert ! `"video/x-raw(memory:D3D11Memory),format=NV12,width=$canvasWidth,height=$canvasHeight,framerate=$canvasFps/1`""
+}
+
+function Build-CaptureChain {
+    param([switch]$LocalOnly)
+    if ($chkSceneEnabled -and $chkSceneEnabled.Checked) {
+        return (Build-SceneCaptureChain -LocalOnly:$LocalOnly)
+    }
+    return (Build-DesktopCaptureChain -LocalOnly:$LocalOnly)
+}
+
+function Build-VideoBranch {
+    param([Parameter(Mandatory)][string]$Protocol)
+
+    Assert-RecordingFrameRateCompatible
+    $capture = Build-CaptureChain
     $encoder = Get-EncoderElementChain -Protocol $Protocol
+    $hasPreview = [bool]$chkPreview.Checked
+    $hasRecording = Test-RecordingEnabled
 
-    if ($chkPreview.Checked) {
-        # Preview is a real pipeline branch again. If unchecked when the stream
-        # starts, no d3d11videosink branch is created at all. Changing the
-        # checkbox while streaming restarts the pipeline to add/remove this
-        # branch cleanly.
-        $previewBranch = @(
-            'tee'
-            'name=rawtee'
-            'rawtee.'
-            '!'
-            'queue'
-            'max-size-buffers=1'
-            'max-size-bytes=0'
-            'max-size-time=0'
-            'leaky=downstream'
-            '!'
-            'd3d11videosink'
-            'name=localpreview'
-            'sync=false'
-            'force-aspect-ratio=true'
-            'rawtee.'
-            '!'
-            $encoder
-        ) -join ' '
+    if ($hasPreview -or $hasRecording) {
+        $parts = New-Object System.Collections.Generic.List[string]
+        $parts.Add($capture)
+        $parts.Add('!')
+        $parts.Add('tee')
+        $parts.Add('name=rawtee')
 
-        return "$capture ! $previewBranch"
+        if ($hasRecording) {
+            $recordingBranch = Build-RecordingMuxPrefixAndVideoBranch
+            if (-not [string]::IsNullOrWhiteSpace($recordingBranch)) { $parts.Add($recordingBranch) }
+        }
+
+        if ($hasPreview) {
+            $parts.Add((@('rawtee.','!','queue','max-size-buffers=1','max-size-bytes=0','max-size-time=0','leaky=downstream','!','d3d11videosink','name=localpreview',(Get-VideoPreviewSinkSyncOption),'force-aspect-ratio=true') -join ' '))
+        }
+
+        $parts.Add("rawtee. ! $encoder")
+        return ($parts -join ' ')
     }
 
     return "$capture ! $encoder"
+}
 
+function Build-LocalOnlyVideoPipeline {
+    $capture = Build-CaptureChain -LocalOnly
+    $hasPreview = [bool]$chkPreview.Checked
+    $hasRecording = Test-RecordingEnabled
+
+    if (-not $hasPreview -and -not $hasRecording) {
+        throw 'Enable transport, recording, or preview before starting.'
+    }
+
+    $parts = New-Object System.Collections.Generic.List[string]
+    $parts.Add($capture)
+    $parts.Add('!')
+    $parts.Add('tee')
+    $parts.Add('name=rawtee')
+
+    if ($hasRecording) {
+        $recordingBranch = Build-RecordingMuxPrefixAndVideoBranch
+        if (-not [string]::IsNullOrWhiteSpace($recordingBranch)) { $parts.Add($recordingBranch) }
+    }
+
+    if ($hasPreview) {
+        $parts.Add((@('rawtee.','!','queue','max-size-buffers=1','max-size-bytes=0','max-size-time=0','leaky=downstream','!','d3d11videosink','name=localpreview',(Get-VideoPreviewSinkSyncOption),'force-aspect-ratio=true') -join ' '))
+    }
+
+    return ($parts -join ' ')
+}
+
+function Build-DirectWebRtcRawVideoBranch {
+    # NOTE: currently unreachable. Build-DirectWebRtcEncodedVideoBranch is the only
+    # path Build-GstArguments uses for Direct GST WebRTC (see its comment: the raw
+    # D3D11 feed experiment could not find a usable encoder on this Windows
+    # package). Kept for that experiment. The rawtee line below was single-quoted
+    # and would have emitted a literal $(Get-CaptureEncoderQueue) into the
+    # pipeline, so this function could never have parsed if it were called; fixed
+    # so reviving the experiment does not start from a broken pipeline.
+    # webrtcsink is a high-level WebRTC sender and works best when it owns the
+    # per-consumer encoder/payloader. Feed raw D3D11 frames and use video-caps
+    # to tell it which WebRTC codec to negotiate.
+    Assert-RecordingFrameRateCompatible
+    $capture = Build-CaptureChain
+    $hasPreview = [bool]$chkPreview.Checked
+    $hasRecording = Test-RecordingEnabled
+
+    if ($hasPreview -or $hasRecording) {
+        $parts = New-Object System.Collections.Generic.List[string]
+        $parts.Add($capture)
+        $parts.Add('!')
+        $parts.Add('tee')
+        $parts.Add('name=rawtee')
+
+        if ($hasRecording) {
+            $recordingBranch = Build-RecordingMuxPrefixAndVideoBranch
+            if (-not [string]::IsNullOrWhiteSpace($recordingBranch)) { $parts.Add($recordingBranch) }
+        }
+
+        if ($hasPreview) {
+            $parts.Add((@('rawtee.','!','queue','max-size-buffers=1','max-size-bytes=0','max-size-time=0','leaky=downstream','!','d3d11videosink','name=localpreview',(Get-VideoPreviewSinkSyncOption),'force-aspect-ratio=true') -join ' '))
+        }
+
+        $parts.Add("rawtee. ! $(Get-CaptureEncoderQueue) ! out.video_0")
+        return ($parts -join ' ')
+    }
+
+    return "$capture ! $(Get-CaptureEncoderQueue) ! out.video_0"
+}
+
+
+
+function Set-WebRtcRecoveryMode {
+    param([string]$Mode)
+    if ([string]::IsNullOrWhiteSpace($Mode) -or -not $cmbWebRtcRecoveryMode.Items.Contains($Mode)) {
+        $Mode = $script:DefaultWebRtcRecoveryMode
+    }
+    $cmbWebRtcRecoveryMode.SelectedItem = $Mode
+    switch ($Mode) {
+        'None' {
+            $chkDirectWebRtcFec.Checked = $false
+            $chkDirectWebRtcRetransmission.Checked = $false
+        }
+        'FEC + RTX' {
+            $chkDirectWebRtcFec.Checked = $true
+            $chkDirectWebRtcRetransmission.Checked = $true
+        }
+        default {
+            $chkDirectWebRtcFec.Checked = $false
+            $chkDirectWebRtcRetransmission.Checked = $true
+        }
+    }
+}
+
+function Get-WebRtcRecoveryFlags {
+    $mode = Get-ComboSelectedOrDefault $cmbWebRtcRecoveryMode $script:DefaultWebRtcRecoveryMode
+    switch ($mode) {
+        'None' { return [ordered]@{ Fec = 'false'; Retransmission = 'false'; Mode = 'None' } }
+        'FEC + RTX' { return [ordered]@{ Fec = 'true'; Retransmission = 'true'; Mode = 'FEC + RTX' } }
+        default { return [ordered]@{ Fec = 'false'; Retransmission = 'true'; Mode = 'RTX only' } }
+    }
+}
+
+function Apply-DirectWebRtcSmoothnessProfile {
+    param([switch]$Force)
+
+    if ($script:ApplyingDirectWebRtcSmoothnessProfile) { return }
+    $script:ApplyingDirectWebRtcSmoothnessProfile = $true
+    try {
+        $profile = Get-ComboSelectedOrDefault $cmbDirectWebRtcSmoothnessProfile $script:DefaultDirectWebRtcSmoothnessProfile
+        if ($profile -eq 'Custom' -and -not $Force) { return }
+
+        switch ($profile) {
+            'Sane defaults' {
+                $cmbWebRtcSenderQueueMode.SelectedItem = 'Leaky live'
+                $numDirectWebRtcPacingMs.Value = 0
+                $numDirectWebRtcPlayerJitterMs.Value = $script:DefaultDirectWebRtcPlayerJitterMs
+                $numDirectWebRtcVideoJitterMs.Value = $script:DefaultDirectWebRtcVideoJitterMs
+                $cmbDirectWebRtcCongestion.SelectedItem = 'disabled'
+                $cmbDirectWebRtcMitigation.SelectedItem = 'none'
+                Set-WebRtcRecoveryMode 'None'
+            }
+            'Lowest latency' {
+                $cmbWebRtcSenderQueueMode.SelectedItem = 'Leaky live'
+                $numDirectWebRtcPacingMs.Value = 0
+                $numDirectWebRtcPlayerJitterMs.Value = 0
+                $numDirectWebRtcVideoJitterMs.Value = 0
+                $cmbDirectWebRtcCongestion.SelectedItem = 'disabled'
+                $cmbDirectWebRtcMitigation.SelectedItem = 'none'
+                Set-WebRtcRecoveryMode 'None'
+            }
+            'Balanced smooth' {
+                $cmbWebRtcSenderQueueMode.SelectedItem = 'Small cushion'
+                $numDirectWebRtcPacingMs.Value = 40
+                $numDirectWebRtcPlayerJitterMs.Value = 60
+                $numDirectWebRtcVideoJitterMs.Value = 40
+                $cmbDirectWebRtcCongestion.SelectedItem = 'gcc'
+                $cmbDirectWebRtcMitigation.SelectedItem = 'none'
+                Set-WebRtcRecoveryMode 'RTX only'
+            }
+            'WAN smooth' {
+                $cmbWebRtcSenderQueueMode.SelectedItem = 'Small cushion'
+                $numDirectWebRtcPacingMs.Value = 80
+                $numDirectWebRtcPlayerJitterMs.Value = 100
+                $numDirectWebRtcVideoJitterMs.Value = 80
+                $cmbDirectWebRtcCongestion.SelectedItem = 'gcc'
+                $cmbDirectWebRtcMitigation.SelectedItem = 'none'
+                Set-WebRtcRecoveryMode 'RTX only'
+            }
+            'Adaptive viewer' {
+                $cmbWebRtcSenderQueueMode.SelectedItem = 'Small cushion'
+                $numDirectWebRtcPacingMs.Value = 60
+                $numDirectWebRtcPlayerJitterMs.Value = 80
+                $numDirectWebRtcVideoJitterMs.Value = 60
+                $cmbDirectWebRtcCongestion.SelectedItem = 'gcc'
+                $cmbDirectWebRtcMitigation.SelectedItem = 'none'
+                Set-WebRtcRecoveryMode 'RTX only'
+            }
+        }
+    }
+    finally {
+        $script:ApplyingDirectWebRtcSmoothnessProfile = $false
+    }
+}
+
+function Get-DirectWebRtcPacingQueue {
+    if ($chkBudgetSenderQueue -and -not $chkBudgetSenderQueue.Checked) { return 'identity' }
+    $mode = Get-ComboSelectedOrDefault $cmbWebRtcSenderQueueMode $script:DefaultWebRtcSenderQueueMode
+    $ms = [int]$numDirectWebRtcPacingMs.Value
+    $leak = Get-EffectiveLiveQueueLeakValue
+
+    if ($mode -eq 'Leaky live') {
+        # Leaky live means newest-frame-wins. Do not let a global stale 'No leak'
+        # setting override this and create rubber-band latency.
+        if ($leak -eq 'no') { $leak = 'downstream' }
+        if ($ms -le 0) { return (New-LiveQueueString -Buffers 2 -MaxTimeMs 0 -Leak $leak) }
+        return (New-LiveQueueString -Buffers 2 -MaxTimeMs $ms -Leak $leak)
+    }
+
+    if ($mode -eq 'Small cushion') {
+        if ($ms -le 0) { $ms = 40 }
+        return (New-LiveQueueString -Buffers 4 -MaxTimeMs $ms -Leak $leak)
+    }
+
+    if ($ms -le 0) { $ms = 80 }
+    return (New-LiveQueueString -Buffers 4 -MaxTimeMs $ms -Leak 'no')
+}
+
+function Write-DirectWebRtcWebClientConfig {
+    param([switch]$Quiet)
+
+    # Always resolve through the Player tab working-dir logic. Quiet callers still
+    # need manual working-dir selections and versioned AppData sync to apply.
+    $webDir = Get-DirectWebRtcWebDirectory
+    if ([string]::IsNullOrWhiteSpace($webDir)) { return }
+
+    try {
+        $configPath = Join-Path $webDir 'gstglass-config.js'
+        $smoothnessProfile = [string]$cmbDirectWebRtcSmoothnessProfile.SelectedItem
+        $playerSettings = Get-PlayerSettingsFromUi
+        $audioTarget = [int]$playerSettings.AudioJbufMs
+        $videoTarget = [int]$playerSettings.VideoJbufMs
+        $jbufMax = [int]$playerSettings.JbufMaxMs
+        $watchdog = [string]$playerSettings.JbufWatchdogMode
+        $statsOverlayEnabled = [bool]$playerSettings.StatsOverlay
+        $jbufDebugEnabled = [bool]$playerSettings.JbufDebug
+
+        $data = [ordered]@{
+            version = $script:AppVersion
+            source = 'gstglass-config.js'
+            writtenUtc = [DateTime]::UtcNow.ToString('o')
+            smoothnessProfile = $smoothnessProfile
+            recoveryMode = [string]$cmbWebRtcRecoveryMode.SelectedItem
+            senderQueueMode = [string]$cmbWebRtcSenderQueueMode.SelectedItem
+            senderQueueCapMs = [int]$numDirectWebRtcPacingMs.Value
+            pacingMs = [int]$numDirectWebRtcPacingMs.Value
+            playerJitterMs = $audioTarget
+            browserJitterTargetMs = $audioTarget
+            browserJitterHintMs = $audioTarget
+            jitterBufferTargetMs = $audioTarget
+            jbufTargetMs = $audioTarget
+            audioJbufMs = $audioTarget
+            videoJbufMs = $videoTarget
+            directWebRtcOpusMode = [string]$cmbDirectWebRtcOpusMode.SelectedItem
+            directWebRtcOpusFrameMs = [string]$cmbDirectWebRtcOpusFrameMs.SelectedItem
+            directWebRtcOpusAudioType = [string]$cmbDirectWebRtcOpusAudioType.SelectedItem
+            directWebRtcOpusInbandFec = [bool]$chkDirectWebRtcOpusFec.Checked
+            directWebRtcOpusDtx = [bool]$chkDirectWebRtcOpusDtx.Checked
+            jbufWatchdogMode = $watchdog
+            jbufWatchdog = $watchdog
+            jbufMaxMs = $jbufMax
+            jbufTrendWindowSec = 3
+            jbufDebug = $jbufDebugEnabled
+            adaptiveJitter = ($smoothnessProfile -eq 'Adaptive viewer')
+            adaptiveJitterMinMs = [int]([Math]::Min($audioTarget, $videoTarget))
+            adaptiveJitterMaxMs = [int]([Math]::Max([Math]::Max($audioTarget, $videoTarget), 500))
+            keepAliveSeconds = 15
+            statsOverlay = $statsOverlayEnabled
+            playerAvRenderMode = [string]$playerSettings.AvRenderMode
+            avRenderMode = [string]$playerSettings.AvRenderMode
+            avPipelineMode = [string](Get-DirectWebRtcAvPipelineMode)
+            directWebRtcAvPipelineMode = [string](Get-DirectWebRtcAvPipelineMode)
+            splitPlayerSyncMode = [string]$playerSettings.SplitPlayerSyncMode
+            splitAudioWatchdogMode = [string]$playerSettings.SplitPlayerSyncMode
+            splitAudioStallSeconds = [int]$playerSettings.SplitAudioStallSeconds
+            splitAvOffsetWarnMs = [int]$playerSettings.SplitAvOffsetWarnMs
+            splitAudioWsUrl = if (Test-DirectWebRtcSplitAvPipelines) { [string](Get-DirectWebRtcSplitAudioWsUrlForPlayer) } else { '' }
+            splitAudioSignalingPort = if (Test-DirectWebRtcSplitAvPipelines) { [int](Get-DirectWebRtcSplitAudioSignalingPort) } else { 0 }
+            webPath = [string]$playerSettings.WebPath
+            bundledWebMode = [string]$playerSettings.BundledWebMode
+            bundledWebDirectory = [string]$playerSettings.BundledWebDirectory
+            workingWebMode = [string]$playerSettings.WorkingWebMode
+            webDirectory = [string]$playerSettings.WebDirectory
+            servedWebDirectory = [string]$webDir
+            runtimeConfigPath = [string](Join-Path $webDir 'gstglass-config.js')
+            timingMode = [string]$cmbTimingMode.SelectedItem
+            audioTransportMode = [string]$cmbAudioTransportMode.SelectedItem
+            audioClockMode = [string]$cmbAudioClockMode.SelectedItem
+            congestionControl = [string]$cmbDirectWebRtcCongestion.SelectedItem
+            threadingProfile = [string]$cmbThreadingProfile.SelectedItem
+            queueLeakMode = [string]$cmbQueueLeakMode.SelectedItem
+        }
+        $json = $data | ConvertTo-Json -Compress
+        Set-Content -LiteralPath $configPath -Value "window.GST_GLASS_CONFIG = $json;" -Encoding UTF8
+        Update-DirectWebRtcWebUiStatus
+        if (-not $Quiet) {
+            Append-Log "Direct WebRTC client config written from Player tab: audio/video target $audioTarget/$videoTarget ms, max $jbufMax ms, watchdog $watchdog, AV render=$($playerSettings.AvRenderMode), statsOverlay=$statsOverlayEnabled, jbufDebug=$jbufDebugEnabled, served=$webDir."
+        }
+    }
+    catch {
+        Append-Log "Direct WebRTC client config could not be written: $($_.Exception.Message)"
+    }
+}
+
+function Build-DirectWebRtcEncodedVideoBranch {
+    # webrtcsink accepts encoded video/x-h264/h265/av1 on its video pad. The
+    # raw-feed experiment could not discover a usable encoder for D3D11 frames
+    # on this Windows package, so use our known-good explicit encoder branch and
+    # let webrtcsink own signalling, SDP, RTP/WebRTC transport, and browser fanout.
+    $encoded = Build-VideoBranch -Protocol $script:DirectWebRtcProtocolName
+    $pacingQueue = Get-DirectWebRtcPacingQueue
+    $videoSync = Get-VideoBranchSyncSuffix
+    return "$encoded$videoSync ! $pacingQueue ! out.video_0"
+}
+
+function Get-DirectWebRtcWebServerPathSegment {
+    # gst-plugin-webrtc's warp route expects an exact path segment without a
+    # leading slash. The UI/viewer URL stays browser-friendly as /live, but the
+    # GStreamer property must be live or warp panics: exact path segments should
+    # not contain a slash.
+    $path = Normalize-DirectWebRtcWebPath $txtDirectWebRtcWebPath.Text
+    if ($path -eq '/') { return '' }
+    return $path.Trim('/').Trim()
+}
+
+
+function Build-DirectWebRtcAudioOnlyArguments {
+    $audioTransportMode = Get-ComboSelectedOrDefault $cmbAudioTransportMode $script:DefaultAudioTransportMode
+    if ($audioTransportMode -ne 'Normal audio' -or (-not ($chkDesktopAudio.Checked -or $chkMic.Checked))) {
+        return ''
+    }
+
+    $audioRaw = Build-RawAudioChain
+    if ([string]::IsNullOrWhiteSpace($audioRaw)) { return '' }
+
+    $signalHostText = $txtDirectWebRtcSignalingHost.Text.Trim()
+    if ([string]::IsNullOrWhiteSpace($signalHostText)) { $signalHostText = $script:DefaultDirectWebRtcSignalingHost }
+    $signalHost = Quote-GstValue $signalHostText
+    $signalPort = Get-DirectWebRtcSplitAudioSignalingPort
+    $stunServer = $txtDirectWebRtcStun.Text.Trim()
+    $stunOption = if ([string]::IsNullOrWhiteSpace($stunServer)) { '' } else { ' stun-server=' + (Quote-GstValue $stunServer) }
+    $congestion = Get-ComboSelectedOrDefault $cmbDirectWebRtcCongestion 'gcc'
+    $mitigation = Get-ComboSelectedOrDefault $cmbDirectWebRtcMitigation 'none'
+    $recoveryFlags = Get-WebRtcRecoveryFlags
+    $fec = [string]$recoveryFlags.Fec
+    $retx = [string]$recoveryFlags.Retransmission
+    $startBitrate = [Math]::Max(1000, ([int]$numAudioBitrate.Value * 1000))
+    $maxBitrate = $startBitrate
+    $minBitrate = [Math]::Max(1000, [int]($startBitrate / 2))
+
+    $sinkProps = @(
+        'webrtcsink',
+        'name=aout',
+        'audio-caps="audio/x-opus"',
+        'run-signalling-server=true',
+        'run-web-server=false',
+        "signalling-server-host=$signalHost",
+        "signalling-server-port=$signalPort",
+        "congestion-control=$congestion",
+        "do-fec=$fec",
+        "do-retransmission=$retx",
+        "enable-mitigation-modes=$mitigation",
+        "min-bitrate=$minBitrate",
+        "start-bitrate=$startBitrate",
+        "max-bitrate=$maxBitrate"
+    )
+
+    $directOpusMode = Get-ComboSelectedOrDefault $cmbDirectWebRtcOpusMode $script:DefaultDirectWebRtcOpusMode
+    $audioSyncSuffix = Get-AudioBranchSyncSuffix
+    if ($directOpusMode -eq 'Raw audio to webrtcsink') {
+        $audioBranch = "$audioRaw ! $(Get-AudioFinalQueue)$audioSyncSuffix ! aout.audio_0"
+    }
+    else {
+        $directOpusBitrate = [int]$numAudioBitrate.Value * 1000
+        $directOpusFrameMs = Get-ComboSelectedOrDefault $cmbDirectWebRtcOpusFrameMs $script:DefaultDirectWebRtcOpusFrameMs
+        $directOpusAudioType = Get-ComboSelectedOrDefault $cmbDirectWebRtcOpusAudioType $script:DefaultDirectWebRtcOpusAudioType
+        $directOpusFec = if ($chkDirectWebRtcOpusFec.Checked) { 'true' } else { 'false' }
+        $directOpusDtx = if ($chkDirectWebRtcOpusDtx.Checked) { 'true' } else { 'false' }
+        $directOpus = "opusenc bitrate=$directOpusBitrate bitrate-type=cbr frame-size=$directOpusFrameMs audio-type=$directOpusAudioType inband-fec=$directOpusFec dtx=$directOpusDtx ! opusparse ! `"audio/x-opus`""
+        $audioBranch = "$audioRaw ! $directOpus ! $(Get-AudioFinalQueue)$audioSyncSuffix ! aout.audio_0"
+    }
+
+    $flags = '-e'
+    if ($chkVerbose.Checked) { $flags += ' -v' }
+    return "$flags $(($sinkProps -join ' '))$stunOption $audioBranch"
 }
 
 function Build-GstArguments {
     $protocol = [string]$cmbProtocol.SelectedItem
     $destination = $txtDestination.Text.Trim()
     $quotedDestination = Quote-GstValue $destination
+
+    if (-not (Test-TransportEnabled)) {
+        $pipeline = Build-LocalOnlyVideoPipeline
+
+        if (Test-RecordingEnabled) {
+            $recordingAudioBranch = Build-RecordingAudioBranch
+            if (-not [string]::IsNullOrWhiteSpace($recordingAudioBranch)) {
+                $pipeline += " $recordingAudioBranch"
+            }
+        }
+
+        $flags = '-e'
+        if ($chkVerbose.Checked) {
+            $flags += ' -v'
+        }
+
+        return "$flags $pipeline"
+    }
+
     $definition = Get-SelectedEncoderDefinition
     $codec = [string]$definition.Codec
     $mediaType = Get-CodecMediaType -Codec $codec
+    $audioTransportMode = Get-ComboSelectedOrDefault $cmbAudioTransportMode $script:DefaultAudioTransportMode
     $userAudioEnabled =
-        $chkDesktopAudio.Checked -or
-        $chkMic.Checked
+        $audioTransportMode -eq 'Normal audio' -and
+        ($chkDesktopAudio.Checked -or $chkMic.Checked)
 
-    $audioRaw = Build-RawAudioChain
+    $audioRaw = $null
     $usingWhipSilentClockAudio = $false
 
-    if (
-        $protocol -eq 'WHIP' -and
-        [string]::IsNullOrWhiteSpace($audioRaw)
-    ) {
-        $audioRaw = Build-WhipSilentClockAudioChain
-        $usingWhipSilentClockAudio = $true
+    $audioTimingMode = Get-AudioTimingMode
+
+    switch ($audioTransportMode) {
+        'Video only - no audio track' {
+            $audioRaw = $null
+        }
+        'Muted audio clock only' {
+            $audioRaw = Build-WhipSilentClockAudioChain
+            $usingWhipSilentClockAudio = $true
+        }
+        default {
+            if ($audioTimingMode -eq 'Synthetic silent audio') {
+                $audioRaw = Build-SyntheticSilentAudioChain
+                $usingWhipSilentClockAudio = $true
+            }
+            else {
+                $audioRaw = Build-RawAudioChain
+                if (
+                    $protocol -in @('WHIP', 'GST WebRTC') -and
+                    [string]::IsNullOrWhiteSpace($audioRaw)
+                ) {
+                    $audioRaw = Build-WhipSilentClockAudioChain
+                    $usingWhipSilentClockAudio = $true
+                }
+            }
+        }
     }
 
     $hasAudio = -not [string]::IsNullOrWhiteSpace($audioRaw)
@@ -2959,7 +9075,9 @@ function Build-GstArguments {
     else {
         ''
     }
-    $video = Build-VideoBranch -Protocol $protocol
+    $video = if ($protocol -eq $script:DirectWebRtcProtocolName) { '' } else { Build-VideoBranch -Protocol $protocol }
+    $videoSyncSuffix = if ($protocol -eq $script:DirectWebRtcProtocolName) { '' } else { Get-VideoBranchSyncSuffix }
+    $audioSyncSuffix = Get-AudioBranchSyncSuffix
 
     if (-not (Test-CodecProtocolCompatibility -Codec $codec -Protocol $protocol)) {
         throw "$codec is not supported by the $protocol pipeline template."
@@ -2976,11 +9094,110 @@ function Build-GstArguments {
 
     switch ($protocol) {
         'WHIP' {
+            $timestampOption = Get-AbsoluteTimestampTransportOption -Protocol $protocol
+            $timestampOption = if ([string]::IsNullOrWhiteSpace($timestampOption)) { '' } else { " $timestampOption" }
+            $recoveryFlags = Get-WebRtcRecoveryFlags
+            $congestion = Get-ComboSelectedOrDefault $cmbDirectWebRtcCongestion 'gcc'
+            $mitigation = Get-ComboSelectedOrDefault $cmbDirectWebRtcMitigation 'none'
+            $stunServer = $txtDirectWebRtcStun.Text.Trim()
+            $stunOption = if ([string]::IsNullOrWhiteSpace($stunServer)) { '' } else { ' stun-server=' + (Quote-GstValue $stunServer) }
+            $startBitrate = [Math]::Max(1000, ([int]$numVideoBitrate.Value * 1000))
+            $maxKbps = [int]$numMaxVideoBitrate.Value
+            $maxBitrate = if ($maxKbps -gt 0) { [Math]::Max($startBitrate, $maxKbps * 1000) } else { $startBitrate }
+            $webRtcSinkOptions = " do-fec=$([string]$recoveryFlags.Fec) do-retransmission=$([string]$recoveryFlags.Retransmission) congestion-control=$congestion enable-mitigation-modes=$mitigation start-bitrate=$startBitrate max-bitrate=$maxBitrate"
+            $webRtcVideoQueue = Get-DirectWebRtcPacingQueue
+
             if ($hasAudio) {
-                $pipeline = "whipclientsink name=out video-caps=`"$mediaType`" audio-caps=`"$audioMediaType`" signaller::whip-endpoint=$quotedDestination $video ! out.video_0 $audioRaw ! $audioEncoded ! out.audio_0"
+                $pipeline = "whipclientsink name=out video-caps=`"$mediaType`" audio-caps=`"$audioMediaType`"$timestampOption$webRtcSinkOptions$stunOption signaller::whip-endpoint=$quotedDestination $video$videoSyncSuffix ! $webRtcVideoQueue ! out.video_0 $audioRaw ! $audioEncoded ! $(Get-AudioFinalQueue)$audioSyncSuffix ! out.audio_0"
             }
             else {
-                $pipeline = "$video ! whipclientsink video-caps=`"$mediaType`" signaller::whip-endpoint=$quotedDestination"
+                $pipeline = "$video$videoSyncSuffix ! $webRtcVideoQueue ! whipclientsink video-caps=`"$mediaType`"$timestampOption$webRtcSinkOptions$stunOption signaller::whip-endpoint=$quotedDestination"
+            }
+        }
+
+        'GST WebRTC' {
+            $timestampOption = Get-AbsoluteTimestampTransportOption -Protocol $protocol
+            $timestampOption = if ([string]::IsNullOrWhiteSpace($timestampOption)) { '' } else { " $timestampOption" }
+
+            $webAddress = Quote-GstValue (Normalize-DirectWebRtcWebAddress $destination)
+            $webPathSegment = Get-DirectWebRtcWebServerPathSegment
+            $webPathOption = if ([string]::IsNullOrWhiteSpace($webPathSegment)) { '' } else { ' web-server-path=' + (Quote-GstValue $webPathSegment) }
+            $webDirectory = Get-DirectWebRtcWebDirectory
+            $webDirectoryOption = if ([string]::IsNullOrWhiteSpace($webDirectory)) { '' } else { ' web-server-directory=' + (Quote-GstValue $webDirectory) }
+            $signalHost = $txtDirectWebRtcSignalingHost.Text.Trim()
+            if ([string]::IsNullOrWhiteSpace($signalHost)) {
+                $signalHost = $script:DefaultDirectWebRtcSignalingHost
+            }
+            $signalHost = Quote-GstValue $signalHost
+            $signalPort = [int]$numDirectWebRtcSignalingPort.Value
+            $stunServer = $txtDirectWebRtcStun.Text.Trim()
+            $stunOption = if ([string]::IsNullOrWhiteSpace($stunServer)) { '' } else { ' stun-server=' + (Quote-GstValue $stunServer) }
+            $congestion = Get-ComboSelectedOrDefault $cmbDirectWebRtcCongestion 'gcc'
+            $mitigation = Get-ComboSelectedOrDefault $cmbDirectWebRtcMitigation 'none'
+            $recoveryFlags = Get-WebRtcRecoveryFlags
+            $fec = [string]$recoveryFlags.Fec
+            $retx = [string]$recoveryFlags.Retransmission
+            $startBitrate = [Math]::Max(1000, ([int]$numVideoBitrate.Value * 1000))
+            $maxKbps = [int]$numMaxVideoBitrate.Value
+            $maxBitrate = if ($maxKbps -gt 0) { [Math]::Max($startBitrate, $maxKbps * 1000) } else { $startBitrate }
+            $smoothProfile = Get-ComboSelectedOrDefault $cmbDirectWebRtcSmoothnessProfile $script:DefaultDirectWebRtcSmoothnessProfile
+            $minBitrate = switch ($smoothProfile) {
+                'Lowest latency' { [Math]::Max(1000, [int]($startBitrate / 2)) }
+                'Balanced smooth' { [Math]::Max(1000, [int]($startBitrate * 0.75)) }
+                'WAN smooth' { [Math]::Max(1000, [int]($startBitrate * 0.60)) }
+                default { [Math]::Min(1000000, [Math]::Max(1000, [int]($startBitrate / 4))) }
+            }
+
+            # Feed our explicit encoded branch into webrtcsink. The raw D3D11
+            # experiment could start the web/signalling server, but this package
+            # failed stream discovery with "No codec present" for video_0. The
+            # encoded path keeps our tested NVENC/QSV/software encoder controls
+            # while still bypassing MediaMTX for WebRTC signalling/delivery.
+            $directVideo = Build-DirectWebRtcEncodedVideoBranch
+
+            $sinkProps = @(
+                'webrtcsink',
+                'name=out',
+                "video-caps=`"$mediaType`"",
+                "audio-caps=`"audio/x-opus`"",
+                'run-signalling-server=true',
+                'run-web-server=true',
+                "signalling-server-host=$signalHost",
+                "signalling-server-port=$signalPort",
+                "web-server-host-addr=$webAddress",
+                "congestion-control=$congestion",
+                "do-fec=$fec",
+                "do-retransmission=$retx",
+                "enable-mitigation-modes=$mitigation",
+                "min-bitrate=$minBitrate",
+                "start-bitrate=$startBitrate",
+                "max-bitrate=$maxBitrate"
+            )
+
+            $pipeline = (($sinkProps -join ' ') + $timestampOption + $stunOption + $webPathOption + $webDirectoryOption + " $directVideo")
+            if ($hasAudio -and (Test-DirectWebRtcSplitAvPipelines)) {
+                # Split A/V diagnostic: keep this gst-launch instance video-only.
+                # Start-GstStream launches a second audio-only webrtcsink on signalling port +1.
+            }
+            elseif ($hasAudio) {
+                $directOpusMode = Get-ComboSelectedOrDefault $cmbDirectWebRtcOpusMode $script:DefaultDirectWebRtcOpusMode
+                if ($directOpusMode -eq 'Raw audio to webrtcsink') {
+                    # Diagnostic escape hatch: hand raw S16LE to webrtcsink and let
+                    # its internal child encoder do whatever this GStreamer build defaults to.
+                    $pipeline += " $audioRaw ! $(Get-AudioFinalQueue)$audioSyncSuffix ! out.audio_0"
+                }
+                else {
+                    # Explicit Direct GST WebRTC Opus branch. This keeps opusenc
+                    # frame-size/audio-type/FEC/DTX visible in the command preview
+                    # instead of hiding defaults inside webrtcsink.
+                    $directOpusBitrate = [int]$numAudioBitrate.Value * 1000
+                    $directOpusFrameMs = Get-ComboSelectedOrDefault $cmbDirectWebRtcOpusFrameMs $script:DefaultDirectWebRtcOpusFrameMs
+                    $directOpusAudioType = Get-ComboSelectedOrDefault $cmbDirectWebRtcOpusAudioType $script:DefaultDirectWebRtcOpusAudioType
+                    $directOpusFec = if ($chkDirectWebRtcOpusFec.Checked) { 'true' } else { 'false' }
+                    $directOpusDtx = if ($chkDirectWebRtcOpusDtx.Checked) { 'true' } else { 'false' }
+                    $directOpus = "opusenc bitrate=$directOpusBitrate bitrate-type=cbr frame-size=$directOpusFrameMs audio-type=$directOpusAudioType inband-fec=$directOpusFec dtx=$directOpusDtx ! opusparse ! `"audio/x-opus`""
+                    $pipeline += " $audioRaw ! $directOpus ! $(Get-AudioFinalQueue)$audioSyncSuffix ! out.audio_0"
+                }
             }
         }
 
@@ -3016,25 +9233,25 @@ function Build-GstArguments {
                 "$programMap " +
                 "! srtsink uri=$destination " +
                 "wait-for-connection=true auto-reconnect=true " +
-                "$video ! mux.sink_256"
+                "$video$videoSyncSuffix ! mux.sink_256"
 
             if ($hasAudio) {
                 $pipeline +=
-                    " $audioRaw ! $audioEncoded ! mux.sink_257"
+                    " $audioRaw ! $audioEncoded$audioSyncSuffix ! mux.sink_257"
             }
         }
 
         'RTMP' {
             if ($codec -eq 'H264') {
-                $pipeline = "flvmux name=mux streamable=true ! rtmp2sink location=$quotedDestination async-connect=true $video ! mux."
+                $pipeline = "flvmux name=mux streamable=true ! rtmp2sink location=$quotedDestination async-connect=true $video$videoSyncSuffix ! mux."
                 if ($hasAudio) {
-                    $pipeline += " $audioRaw ! $audioEncoded ! mux."
+                    $pipeline += " $audioRaw ! $audioEncoded$audioSyncSuffix ! mux."
                 }
             }
             else {
-                $pipeline = "eflvmux name=mux streamable=true ! rtmp2sink location=$quotedDestination async-connect=true $video ! mux.video"
+                $pipeline = "eflvmux name=mux streamable=true ! rtmp2sink location=$quotedDestination async-connect=true $video$videoSyncSuffix ! mux.video"
                 if ($hasAudio) {
-                    $pipeline += " $audioRaw ! $audioEncoded ! mux.audio"
+                    $pipeline += " $audioRaw ! $audioEncoded$audioSyncSuffix ! mux.audio"
                 }
             }
         }
@@ -3046,14 +9263,23 @@ function Build-GstArguments {
             else {
                 'tcp'
             }
-            $pipeline = "rtspclientsink name=out location=$quotedDestination protocols=$transport latency=0 rtx-time=0 $video ! out.sink_0"
+            $timestampOption = Get-AbsoluteTimestampTransportOption -Protocol $protocol
+            $timestampOption = if ([string]::IsNullOrWhiteSpace($timestampOption)) { '' } else { " $timestampOption" }
+            $pipeline = "rtspclientsink name=out location=$quotedDestination protocols=$transport latency=0 rtx-time=0$timestampOption $video$videoSyncSuffix ! out.sink_0"
             if ($hasAudio) {
-                $pipeline += " $audioRaw ! $audioEncoded ! out.sink_1"
+                $pipeline += " $audioRaw ! $audioEncoded$audioSyncSuffix ! out.sink_1"
             }
         }
 
         default {
             throw "Unsupported protocol: $protocol"
+        }
+    }
+
+    if (Test-RecordingEnabled) {
+        $recordingAudioBranch = Build-RecordingAudioBranch
+        if (-not [string]::IsNullOrWhiteSpace($recordingAudioBranch)) {
+            $pipeline += " $recordingAudioBranch"
         }
     }
 
@@ -3072,7 +9298,21 @@ function Update-CommandPreview {
             $gstPath = 'gst-launch-1.0.exe'
         }
 
-        $txtCommand.Text = '& ' + (Quote-GstValue $gstPath) + ' ' + (Build-GstArguments)
+        $mainArguments = Build-GstArguments
+        $previewText = '& ' + (Quote-GstValue $gstPath) + ' ' + $mainArguments
+
+        if ((Test-TransportEnabled) -and [string]$cmbProtocol.SelectedItem -eq $script:DirectWebRtcProtocolName -and (Test-DirectWebRtcSplitAvPipelines)) {
+            $audioArguments = Build-DirectWebRtcAudioOnlyArguments
+            $previewText += "`r`n`r`n# Split audio pipeline - separate gst-launch / signalling port $(Get-DirectWebRtcSplitAudioSignalingPort)"
+            if ([string]::IsNullOrWhiteSpace($audioArguments)) {
+                $previewText += "`r`n# Split audio command unavailable: enable Normal audio and Desktop/Mic audio."
+            }
+            else {
+                $previewText += "`r`n" + '& ' + (Quote-GstValue $gstPath) + ' ' + $audioArguments
+            }
+        }
+
+        $txtCommand.Text = $previewText
     }
     catch {
         $txtCommand.Text = "Unable to build command: $($_.Exception.Message)"
@@ -3105,18 +9345,27 @@ function Update-ProtocolUi {
     }
 
     $script:LastProtocol = $protocol
-    $lblDestination.Text = "$protocol destination"
-    $numSrtLatency.Enabled = ($protocol -eq 'SRT')
-    $cmbRtspTransport.Enabled = ($protocol -eq 'RTSP')
+    $transportEnabled = Test-TransportEnabled
+    $cmbProtocol.Enabled = $transportEnabled
+    $txtDestination.Enabled = $transportEnabled
+    $lblDestination.Enabled = $transportEnabled
+    $lblDestination.Text = if ($protocol -eq $script:DirectWebRtcProtocolName) { 'Web viewer bind URL' } else { "$protocol destination" }
+    $numSrtLatency.Enabled = $transportEnabled -and ($protocol -eq 'SRT')
+    $cmbRtspTransport.Enabled = $transportEnabled -and ($protocol -eq 'RTSP')
+    Update-TimestampUi
+    Update-MediaMtxUi
+    Update-DirectWebRtcUi
 
     switch ($protocol) {
         'WHIP' { $toolTip.SetToolTip($txtDestination, 'Example: http://server:8889/live/whip') }
+        'GST WebRTC' { $toolTip.SetToolTip($txtDestination, 'GStreamer webrtcsink web server bind address. Default mirrors MediaMTX WebRTC HTTP: http://0.0.0.0:8889/') }
         'SRT'  { $toolTip.SetToolTip($txtDestination, 'Example: srt://server:8890?mode=caller&streamid=publish:live') }
         'RTMP' { $toolTip.SetToolTip($txtDestination, 'Example: rtmp://server/live') }
         'RTSP' { $toolTip.SetToolTip($txtDestination, 'Example: rtsp://server:8554/live') }
     }
 
     Update-AudioCodecChoices
+    Update-AudioTimingOptionUi
     Update-EncoderUi
 }
 
@@ -3135,42 +9384,177 @@ function Save-Settings {
             GstPath           = $txtGstPath.Text
             StartMediaMtx     = $chkStartMediaMtx.Checked
             MediaMtxPath      = $txtMediaMtxPath.Text
+            TransportEnabled  = $chkTransportEnabled.Checked
             Protocol          = $protocol
             WhipUrl           = $script:ProtocolDestinations.WHIP
             SrtUrl            = $script:ProtocolDestinations.SRT
             RtmpUrl           = $script:ProtocolDestinations.RTMP
             RtspUrl           = $script:ProtocolDestinations.RTSP
+            GstWebRtcUrl      = $script:ProtocolDestinations[$script:DirectWebRtcProtocolName]
+            DirectWebRtcSignalingHost = $txtDirectWebRtcSignalingHost.Text
+            DirectWebRtcSignalingPort = [int]$numDirectWebRtcSignalingPort.Value
+            DirectWebRtcStunServer = $txtDirectWebRtcStun.Text
+            DirectWebRtcWebPath = $txtDirectWebRtcWebPath.Text
+            DirectWebRtcBundledWebMode = [string]$cmbDirectWebRtcBundledWebMode.SelectedItem
+            DirectWebRtcBundledWebDirectory = $txtDirectWebRtcBundledWebDirectory.Text
+            DirectWebRtcWorkingWebMode = [string]$cmbDirectWebRtcWorkingWebMode.SelectedItem
+            DirectWebRtcWorkingWebDirectory = $txtDirectWebRtcWebDirectory.Text
+            DirectWebRtcWebDirectory = $txtDirectWebRtcWebDirectory.Text
+            DirectWebRtcCongestion = [string]$cmbDirectWebRtcCongestion.SelectedItem
+            DirectWebRtcMitigation = [string]$cmbDirectWebRtcMitigation.SelectedItem
+            WebRtcRecoveryMode = [string]$cmbWebRtcRecoveryMode.SelectedItem
+            WebRtcSenderQueueMode = [string]$cmbWebRtcSenderQueueMode.SelectedItem
+            DirectWebRtcFec = $chkDirectWebRtcFec.Checked
+            DirectWebRtcRetransmission = $chkDirectWebRtcRetransmission.Checked
+            DirectWebRtcSmoothnessProfile = [string]$cmbDirectWebRtcSmoothnessProfile.SelectedItem
+            DirectWebRtcPacingMs = [int]$numDirectWebRtcPacingMs.Value
+            WebRtcSenderQueueCapMs = [int]$numDirectWebRtcPacingMs.Value
+            DirectWebRtcPlayerJitterMs = [int]$numDirectWebRtcPlayerJitterMs.Value
+            DirectWebRtcAudioJitterMs = [int]$numDirectWebRtcPlayerJitterMs.Value
+            DirectWebRtcVideoJitterMs = [int]$numDirectWebRtcVideoJitterMs.Value
+            DirectWebRtcOpusMode = [string]$cmbDirectWebRtcOpusMode.SelectedItem
+            DirectWebRtcOpusFrameMs = [string]$cmbDirectWebRtcOpusFrameMs.SelectedItem
+            DirectWebRtcOpusAudioType = [string]$cmbDirectWebRtcOpusAudioType.SelectedItem
+            DirectWebRtcOpusFec = [bool]$chkDirectWebRtcOpusFec.Checked
+            DirectWebRtcOpusDtx = [bool]$chkDirectWebRtcOpusDtx.Checked
+            JbufWatchdogMode = [string]$cmbJbufWatchdogMode.SelectedItem
+            JbufMaxMs = [int]$numJbufMaxMs.Value
+            PlayerStatsOverlay = [bool]$chkPlayerStatsOverlay.Checked
+            PlayerJbufDebug = [bool]$chkPlayerJbufDebug.Checked
+            PlayerUrlOverrides = [bool]$chkPlayerUrlOverrides.Checked
+            PlayerAvRenderMode = [string]$cmbPlayerAvRenderMode.SelectedItem
+            DirectWebRtcAvPipelineMode = [string](Get-DirectWebRtcAvPipelineMode)
+            SplitPlayerSyncMode = [string](Get-ComboSelectedOrDefault $cmbSplitPlayerSyncMode $script:DefaultSplitPlayerSyncMode)
+            SplitAudioStallSeconds = [int]$numSplitAudioStallSeconds.Value
+            SplitAvOffsetWarnMs = [int]$numSplitAvOffsetWarnMs.Value
+            VideoSyncMode = [string]$cmbVideoSyncMode.SelectedItem
+            AudioSyncMode = [string]$cmbAudioSyncMode.SelectedItem
+            ThreadingProfile = [string]$cmbThreadingProfile.SelectedItem
+            GstProcessPriority = [string]$cmbGstProcessPriority.SelectedItem
+            ThreadBudget = [string]$cmbThreadBudget.SelectedItem
+            CpuWorkerLimit = [int]$numCpuWorkerLimit.Value
+            BudgetCaptureQueue = $chkBudgetCaptureQueue.Checked
+            BudgetSenderQueue = $chkBudgetSenderQueue.Checked
+            BudgetAudioInputQueue = $chkBudgetAudioInputQueue.Checked
+            BudgetAudioFinalQueue = $chkBudgetAudioFinalQueue.Checked
+            BudgetSceneInputQueues = $chkBudgetSceneInputQueues.Checked
+            QueueLeakMode = [string]$cmbQueueLeakMode.SelectedItem
+            CaptureQueueBuffers = [int]$numCaptureQueueBuffers.Value
+            AudioQueueBuffers = [int]$numAudioQueueBuffers.Value
+            AudioQueueCapMs = [int]$numAudioQueueCapMs.Value
+            BufferLatenessTracer = $chkBufferLatenessTracer.Checked
+            GstDebugMode     = [string]$cmbGstDebugMode.SelectedItem
+            GstDebugSpec     = $txtGstDebugSpec.Text
+            GstDebugNoColor  = $chkGstDebugNoColor.Checked
             SrtLatency        = [int]$numSrtLatency.Value
             RtspTransport     = [string]$cmbRtspTransport.SelectedItem
             MonitorIndex      = [int]$numMonitor.Value
             ShowCursor        = $chkCursor.Checked
-            FullscreenApp     = $chkFullscreenApp.Checked
+            CaptureMethod     = Get-SelectedCaptureMethodName
+            SceneEnabled      = $chkSceneEnabled.Checked
+            ScenePreset       = [string]$cmbScenePreset.SelectedItem
+            SceneCompositor   = [string]$cmbSceneCompositor.SelectedItem
+            WebcamDevice      = [string]$cmbWebcamDevice.SelectedItem
+            WebcamLayout      = [string]$cmbWebcamLayout.SelectedItem
+            WebcamWidth       = [int]$numWebcamWidth.Value
+            WebcamHeight      = [int]$numWebcamHeight.Value
+            WebcamX           = [int]$numWebcamX.Value
+            WebcamY           = [int]$numWebcamY.Value
+            WebcamFps         = [int]$numWebcamFps.Value
+            WebcamOpacity     = [int]$numWebcamOpacity.Value
+            WebcamBorder      = [int]$numWebcamBorder.Value
+            WebcamMirror      = $chkWebcamMirror.Checked
+            FullscreenApp     = Test-FullscreenCaptureMode
+            SendAbsoluteTimestamps = (Test-SendAbsoluteTimestampsEnabled)
+            TimingMode             = [string]$cmbTimingMode.SelectedItem
+            RecordingEnabled  = $chkRecordingEnabled.Checked
+            RecordingDirectory = $txtRecordingDirectory.Text
+            RecordingTemplate = $txtRecordingTemplate.Text
+            RecordingEncoder  = [string]$cmbRecordingEncoder.SelectedItem
+            RecordingPreset   = [string]$cmbRecordingPreset.SelectedItem
+            RecordingProfile  = [string]$cmbRecordingProfile.SelectedItem
+            RecordingWidth    = [int]$numRecordingWidth.Value
+            RecordingHeight   = [int]$numRecordingHeight.Value
+            RecordingFps      = [int]$numRecordingFps.Value
+            RecordingVideoBitrateKbps = [int]$numRecordingVideoBitrate.Value
+            RecordingRateControl = [string]$cmbRecordingRateControl.SelectedItem
+            RecordingMaxVideoBitrateKbps = [int]$numRecordingMaxVideoBitrate.Value
+            RecordingConstantQp = [int]$numRecordingConstantQp.Value
+            RecordingGopSeconds = [int]$numRecordingGopSeconds.Value
+            RecordingBFrames  = [int]$numRecordingBFrames.Value
+            RecordingTune     = [string]$cmbRecordingTune.SelectedItem
+            RecordingMultipass = [string]$cmbRecordingMultipass.SelectedItem
+            RecordingLookAhead = $chkRecordingLookAhead.Checked
+            RecordingLookAheadFrames = [int]$numRecordingLookAheadFrames.Value
+            RecordingSpatialAq = $chkRecordingSpatialAq.Checked
+            RecordingTemporalAq = $chkRecordingTemporalAq.Checked
+            RecordingAqStrength = [int]$numRecordingAqStrength.Value
+            RecordingVbvBufferKbits = [int]$numRecordingVbvBuffer.Value
+            RecordingCustomEncoderOptions = $txtRecordingCustomEncoderOptions.Text
+            RecordingDesktopAudio = $chkRecordingDesktopAudio.Checked
+            RecordingMicrophone = $chkRecordingMic.Checked
+            RecordingAudioBitrateKbps = [int]$numRecordingAudioBitrate.Value
             Preview           = $chkPreview.Checked
             AutoRestart       = $chkAutoRestart.Checked
             Verbose           = $chkVerbose.Checked
             MinimizeToTray    = $chkMinimizeToTray.Checked
             StartMinimized    = $chkStartMinimized.Checked
+            NetworkTuningEnabled = $chkNetworkTuningEnabled.Checked
+            NetworkAdapter    = Get-SelectedNetworkAdapterName
+            NetworkProfile    = [string]$cmbNetworkProfile.SelectedItem
+            NetworkDscpEnabled = $chkNetworkDscp.Checked
+            NetworkDscpValue  = [int]$numNetworkDscp.Value
+            NetworkQosProtocol = [string]$cmbNetworkQosProtocol.SelectedItem
+            NetworkQosPorts   = $txtNetworkPorts.Text
+            NetworkUso        = [string]$cmbNetworkUso.SelectedItem
+            NetworkUro        = [string]$cmbNetworkUro.SelectedItem
+            NetworkDisablePowerSaving = $chkNetworkDisablePowerSaving.Checked
+            NetworkInterruptModeration = [string]$cmbNetworkInterruptModeration.SelectedItem
+            NetworkDisableEee = $chkNetworkDisableEee.Checked
+            NetworkRestoreOnStop = $chkNetworkRestoreOnStop.Checked
+            NetworkRestoreOnExit = $chkNetworkRestoreOnExit.Checked
+            NetworkRecoveryTask = $chkNetworkRecoveryTask.Checked
             Width             = [int]$numWidth.Value
             Height            = [int]$numHeight.Value
             Fps               = [int]$numFps.Value
             VideoBitrateKbps  = [int]$numVideoBitrate.Value
+            RateControl       = [string]$cmbRateControl.SelectedItem
+            MaxVideoBitrateKbps = [int]$numMaxVideoBitrate.Value
+            ConstantQp        = [int]$numConstantQp.Value
             GopSeconds        = [int]$numGopSeconds.Value
             Encoder           = [string]$cmbEncoder.SelectedItem
             Preset            = [string]$cmbPreset.SelectedItem
             Profile           = [string]$cmbProfile.SelectedItem
+            EncoderTune       = [string]$cmbEncoderTune.SelectedItem
+            Multipass         = [string]$cmbMultipass.SelectedItem
+            VbvBufferKbits    = [int]$numVbvBuffer.Value
             BFrames           = [int]$numBFrames.Value
             LookAhead         = $chkLookAhead.Checked
             LookAheadFrames   = [int]$numLookAheadFrames.Value
             AdaptiveQuantization = $chkAdaptiveQuantization.Checked
+            SpatialAq         = $chkAdaptiveQuantization.Checked
+            TemporalAq        = $chkTemporalAq.Checked
             AqStrength        = [int]$numAqStrength.Value
+            CustomEncoderOptions = $txtCustomEncoderOptions.Text
             WhipAudioCodec    = [string]$script:ProtocolAudioCodecs.WHIP
+            GstWebRtcAudioCodec = [string]$script:ProtocolAudioCodecs[$script:DirectWebRtcProtocolName]
             SrtAudioCodec     = [string]$script:ProtocolAudioCodecs.SRT
             RtmpAudioCodec    = [string]$script:ProtocolAudioCodecs.RTMP
             RtspAudioCodec    = [string]$script:ProtocolAudioCodecs.RTSP
+            AudioTransportMode = [string]$cmbAudioTransportMode.SelectedItem
+            AudioClockMode = [string]$cmbAudioClockMode.SelectedItem
+            AudioTimingMode = [string]$cmbAudioTimingMode.SelectedItem
+            AudioSlaveMethod = [string]$cmbAudioSlaveMethod.SelectedItem
+            AudioBufferMs = [int]$numAudioBufferMs.Value
+            AudioLatencyMs = [int]$numAudioLatencyMs.Value
             DesktopAudio      = $chkDesktopAudio.Checked
             DesktopVolume     = [int]$numDesktopVolume.Value
+            DesktopAudioDevice = if ($cmbDesktopAudioDevice.SelectedItem) { [string]$cmbDesktopAudioDevice.SelectedItem } else { $script:DefaultAudioOutputDeviceLabel }
+            DesktopAudioDeviceId = Get-SelectedAudioDeviceId -Kind Output
             Microphone        = $chkMic.Checked
             MicrophoneVolume  = [int]$numMicVolume.Value
+            MicrophoneDevice  = if ($cmbMicAudioDevice.SelectedItem) { [string]$cmbMicAudioDevice.SelectedItem } else { $script:DefaultAudioInputDeviceLabel }
+            MicrophoneDeviceId = Get-SelectedAudioDeviceId -Kind Input
             AudioBitrateKbps  = [int]$numAudioBitrate.Value
         }
 
@@ -3197,40 +9581,211 @@ function Load-Settings {
         if ($null -ne $settings.StartMediaMtx) {
             $chkStartMediaMtx.Checked = [bool]$settings.StartMediaMtx
         }
+        if ($null -ne $settings.TransportEnabled) {
+            $chkTransportEnabled.Checked = [bool]$settings.TransportEnabled
+        }
         if ($settings.WhipUrl) { $script:ProtocolDestinations.WHIP = [string]$settings.WhipUrl }
         if ($settings.SrtUrl) { $script:ProtocolDestinations.SRT = [string]$settings.SrtUrl }
         if ($settings.RtmpUrl) { $script:ProtocolDestinations.RTMP = [string]$settings.RtmpUrl }
         if ($settings.RtspUrl) { $script:ProtocolDestinations.RTSP = [string]$settings.RtspUrl }
+        if ($settings.GstWebRtcUrl) { $script:ProtocolDestinations[$script:DirectWebRtcProtocolName] = [string]$settings.GstWebRtcUrl }
+        if ($settings.DirectWebRtcSignalingHost) { $txtDirectWebRtcSignalingHost.Text = [string]$settings.DirectWebRtcSignalingHost }
+        if ($null -ne $settings.DirectWebRtcSignalingPort) {
+            $loadedDirectWebRtcSignalPort = [int]$settings.DirectWebRtcSignalingPort
+            if ($loadedDirectWebRtcSignalPort -eq 8443) {
+                # v3.7.21 used 8443. The user's proxy layout expects the WebSocket
+                # signalling listener on 8189, so migrate the stale saved value.
+                $loadedDirectWebRtcSignalPort = $script:DefaultDirectWebRtcSignalingPort
+                Append-Log 'Migrated legacy Direct WebRTC signalling port 8443 to 8189.'
+            }
+            $numDirectWebRtcSignalingPort.Value = [decimal]$loadedDirectWebRtcSignalPort
+        }
+        if ($null -ne $settings.DirectWebRtcStunServer) { $txtDirectWebRtcStun.Text = [string]$settings.DirectWebRtcStunServer }
+        if ($null -ne $settings.DirectWebRtcWebPath) { $txtDirectWebRtcWebPath.Text = [string]$settings.DirectWebRtcWebPath }
+        if ($settings.DirectWebRtcBundledWebMode -and $cmbDirectWebRtcBundledWebMode.Items.Contains([string]$settings.DirectWebRtcBundledWebMode)) { $cmbDirectWebRtcBundledWebMode.SelectedItem = [string]$settings.DirectWebRtcBundledWebMode }
+        if ($null -ne $settings.DirectWebRtcBundledWebDirectory) { $txtDirectWebRtcBundledWebDirectory.Text = [string]$settings.DirectWebRtcBundledWebDirectory }
+        if ($settings.DirectWebRtcWorkingWebMode -and $cmbDirectWebRtcWorkingWebMode.Items.Contains([string]$settings.DirectWebRtcWorkingWebMode)) { $cmbDirectWebRtcWorkingWebMode.SelectedItem = [string]$settings.DirectWebRtcWorkingWebMode }
+        if ($null -ne $settings.DirectWebRtcWorkingWebDirectory) { $txtDirectWebRtcWebDirectory.Text = [string]$settings.DirectWebRtcWorkingWebDirectory }
+        elseif ($null -ne $settings.DirectWebRtcWebDirectory) { $txtDirectWebRtcWebDirectory.Text = [string]$settings.DirectWebRtcWebDirectory }
+        if ($settings.DirectWebRtcCongestion -and $cmbDirectWebRtcCongestion.Items.Contains([string]$settings.DirectWebRtcCongestion)) { $cmbDirectWebRtcCongestion.SelectedItem = [string]$settings.DirectWebRtcCongestion }
+        if ($settings.DirectWebRtcMitigation -and $cmbDirectWebRtcMitigation.Items.Contains([string]$settings.DirectWebRtcMitigation)) { $cmbDirectWebRtcMitigation.SelectedItem = [string]$settings.DirectWebRtcMitigation }
+        if ($settings.WebRtcRecoveryMode -and $cmbWebRtcRecoveryMode.Items.Contains([string]$settings.WebRtcRecoveryMode)) {
+            Set-WebRtcRecoveryMode ([string]$settings.WebRtcRecoveryMode)
+        }
+        elseif ($null -ne $settings.DirectWebRtcFec -or $null -ne $settings.DirectWebRtcRetransmission) {
+            $legacyFec = if ($null -ne $settings.DirectWebRtcFec) { [bool]$settings.DirectWebRtcFec } else { $false }
+            $legacyRtx = if ($null -ne $settings.DirectWebRtcRetransmission) { [bool]$settings.DirectWebRtcRetransmission } else { $true }
+            if ($legacyFec -and $legacyRtx) { Set-WebRtcRecoveryMode 'FEC + RTX' }
+            elseif ($legacyRtx) { Set-WebRtcRecoveryMode 'RTX only' }
+            else { Set-WebRtcRecoveryMode 'None' }
+        }
+        if ($settings.WebRtcSenderQueueMode -and $cmbWebRtcSenderQueueMode.Items.Contains([string]$settings.WebRtcSenderQueueMode)) { $cmbWebRtcSenderQueueMode.SelectedItem = [string]$settings.WebRtcSenderQueueMode }
+        if ($settings.DirectWebRtcSmoothnessProfile -and $cmbDirectWebRtcSmoothnessProfile.Items.Contains([string]$settings.DirectWebRtcSmoothnessProfile)) { $cmbDirectWebRtcSmoothnessProfile.SelectedItem = [string]$settings.DirectWebRtcSmoothnessProfile }
+        if ($null -ne $settings.DirectWebRtcPacingMs) { $numDirectWebRtcPacingMs.Value = [decimal]([Math]::Min([int]$numDirectWebRtcPacingMs.Maximum, [Math]::Max([int]$numDirectWebRtcPacingMs.Minimum, [int]$settings.DirectWebRtcPacingMs))) }
+        if ($null -ne $settings.DirectWebRtcAudioJitterMs) { $numDirectWebRtcPlayerJitterMs.Value = [decimal]([Math]::Min([int]$numDirectWebRtcPlayerJitterMs.Maximum, [Math]::Max([int]$numDirectWebRtcPlayerJitterMs.Minimum, [int]$settings.DirectWebRtcAudioJitterMs))) }
+        elseif ($null -ne $settings.DirectWebRtcPlayerJitterMs) { $numDirectWebRtcPlayerJitterMs.Value = [decimal]([Math]::Min([int]$numDirectWebRtcPlayerJitterMs.Maximum, [Math]::Max([int]$numDirectWebRtcPlayerJitterMs.Minimum, [int]$settings.DirectWebRtcPlayerJitterMs))) }
+        if ($null -ne $settings.DirectWebRtcVideoJitterMs) { $numDirectWebRtcVideoJitterMs.Value = [decimal]([Math]::Min([int]$numDirectWebRtcVideoJitterMs.Maximum, [Math]::Max([int]$numDirectWebRtcVideoJitterMs.Minimum, [int]$settings.DirectWebRtcVideoJitterMs))) }
+        if ($settings.DirectWebRtcOpusMode -and $cmbDirectWebRtcOpusMode.Items.Contains([string]$settings.DirectWebRtcOpusMode)) { $cmbDirectWebRtcOpusMode.SelectedItem = [string]$settings.DirectWebRtcOpusMode }
+        if ($settings.DirectWebRtcOpusFrameMs -and $cmbDirectWebRtcOpusFrameMs.Items.Contains([string]$settings.DirectWebRtcOpusFrameMs)) { $cmbDirectWebRtcOpusFrameMs.SelectedItem = [string]$settings.DirectWebRtcOpusFrameMs }
+        if ($settings.DirectWebRtcOpusAudioType -and $cmbDirectWebRtcOpusAudioType.Items.Contains([string]$settings.DirectWebRtcOpusAudioType)) { $cmbDirectWebRtcOpusAudioType.SelectedItem = [string]$settings.DirectWebRtcOpusAudioType }
+        if ($null -ne $settings.DirectWebRtcOpusFec) { $chkDirectWebRtcOpusFec.Checked = [bool]$settings.DirectWebRtcOpusFec }
+        if ($null -ne $settings.DirectWebRtcOpusDtx) { $chkDirectWebRtcOpusDtx.Checked = [bool]$settings.DirectWebRtcOpusDtx }
+        if ($settings.JbufWatchdogMode -and $cmbJbufWatchdogMode.Items.Contains([string]$settings.JbufWatchdogMode)) { $cmbJbufWatchdogMode.SelectedItem = [string]$settings.JbufWatchdogMode }
+        if ($null -ne $settings.JbufMaxMs) { $numJbufMaxMs.Value = [decimal]([Math]::Min([int]$numJbufMaxMs.Maximum, [Math]::Max([int]$numJbufMaxMs.Minimum, [int]$settings.JbufMaxMs))) }
+        if ($null -ne $settings.PlayerStatsOverlay) { $chkPlayerStatsOverlay.Checked = [bool]$settings.PlayerStatsOverlay }
+        if ($null -ne $settings.PlayerJbufDebug) { $chkPlayerJbufDebug.Checked = [bool]$settings.PlayerJbufDebug }
+        if ($null -ne $settings.PlayerUrlOverrides) { $chkPlayerUrlOverrides.Checked = [bool]$settings.PlayerUrlOverrides }
+        if ($settings.PlayerAvRenderMode -and $cmbPlayerAvRenderMode.Items.Contains([string]$settings.PlayerAvRenderMode)) { $cmbPlayerAvRenderMode.SelectedItem = [string]$settings.PlayerAvRenderMode }
+        if ($settings.DirectWebRtcAvPipelineMode -and $cmbDirectWebRtcAvPipelineMode.Items.Contains([string]$settings.DirectWebRtcAvPipelineMode)) { $cmbDirectWebRtcAvPipelineMode.SelectedItem = [string]$settings.DirectWebRtcAvPipelineMode }
+        if ($settings.SplitPlayerSyncMode -and $cmbSplitPlayerSyncMode.Items.Contains([string]$settings.SplitPlayerSyncMode)) { $cmbSplitPlayerSyncMode.SelectedItem = [string]$settings.SplitPlayerSyncMode }
+        if ($null -ne $settings.SplitAudioStallSeconds) { $numSplitAudioStallSeconds.Value = [decimal]([Math]::Min([int]$numSplitAudioStallSeconds.Maximum, [Math]::Max([int]$numSplitAudioStallSeconds.Minimum, [int]$settings.SplitAudioStallSeconds))) }
+        if ($null -ne $settings.SplitAvOffsetWarnMs) { $numSplitAvOffsetWarnMs.Value = [decimal]([Math]::Min([int]$numSplitAvOffsetWarnMs.Maximum, [Math]::Max([int]$numSplitAvOffsetWarnMs.Minimum, [int]$settings.SplitAvOffsetWarnMs))) }
+        if ($settings.ThreadingProfile -and $cmbThreadingProfile.Items.Contains([string]$settings.ThreadingProfile)) { $cmbThreadingProfile.SelectedItem = [string]$settings.ThreadingProfile }
+        if ($settings.GstProcessPriority -and $cmbGstProcessPriority.Items.Contains([string]$settings.GstProcessPriority)) { $cmbGstProcessPriority.SelectedItem = [string]$settings.GstProcessPriority }
+        if ($settings.ThreadBudget -and $cmbThreadBudget.Items.Contains([string]$settings.ThreadBudget)) { $cmbThreadBudget.SelectedItem = [string]$settings.ThreadBudget }
+        if ($null -ne $settings.CpuWorkerLimit) { $numCpuWorkerLimit.Value = [decimal]([Math]::Min([int]$numCpuWorkerLimit.Maximum, [Math]::Max(0, [int]$settings.CpuWorkerLimit))) }
+        if ($null -ne $settings.BudgetCaptureQueue) { $chkBudgetCaptureQueue.Checked = [bool]$settings.BudgetCaptureQueue }
+        if ($null -ne $settings.BudgetSenderQueue) { $chkBudgetSenderQueue.Checked = [bool]$settings.BudgetSenderQueue }
+        if ($null -ne $settings.BudgetAudioInputQueue) { $chkBudgetAudioInputQueue.Checked = [bool]$settings.BudgetAudioInputQueue }
+        if ($null -ne $settings.BudgetAudioFinalQueue) { $chkBudgetAudioFinalQueue.Checked = [bool]$settings.BudgetAudioFinalQueue }
+        $chkBudgetSceneInputQueues.Checked = $true
+        $chkBudgetSceneInputQueues.Enabled = $false
+        if ($settings.QueueLeakMode -and $cmbQueueLeakMode.Items.Contains([string]$settings.QueueLeakMode)) { $cmbQueueLeakMode.SelectedItem = [string]$settings.QueueLeakMode }
+        if ($null -ne $settings.CaptureQueueBuffers) { $numCaptureQueueBuffers.Value = [decimal]([Math]::Min([int]$numCaptureQueueBuffers.Maximum, [Math]::Max([int]$numCaptureQueueBuffers.Minimum, [int]$settings.CaptureQueueBuffers))) }
+        if ($null -ne $settings.AudioQueueBuffers) { $numAudioQueueBuffers.Value = [decimal]([Math]::Min([int]$numAudioQueueBuffers.Maximum, [Math]::Max([int]$numAudioQueueBuffers.Minimum, [int]$settings.AudioQueueBuffers))) }
+        if ($null -ne $settings.AudioQueueCapMs) { $numAudioQueueCapMs.Value = [decimal]([Math]::Min([int]$numAudioQueueCapMs.Maximum, [Math]::Max([int]$numAudioQueueCapMs.Minimum, [int]$settings.AudioQueueCapMs))) }
+        if ($null -ne $settings.BufferLatenessTracer) { $chkBufferLatenessTracer.Checked = [bool]$settings.BufferLatenessTracer }
+        if ($settings.GstDebugMode -and $cmbGstDebugMode.Items.Contains([string]$settings.GstDebugMode)) { $cmbGstDebugMode.SelectedItem = [string]$settings.GstDebugMode }
+        if ($null -ne $settings.GstDebugSpec) { $txtGstDebugSpec.Text = [string]$settings.GstDebugSpec }
+        if ($null -ne $settings.GstDebugNoColor) { $chkGstDebugNoColor.Checked = [bool]$settings.GstDebugNoColor }
+        Update-GstDebugUi
         if ($null -ne $settings.SrtLatency) { $numSrtLatency.Value = [decimal]$settings.SrtLatency }
         if ($settings.RtspTransport -and $cmbRtspTransport.Items.Contains([string]$settings.RtspTransport)) { $cmbRtspTransport.SelectedItem = [string]$settings.RtspTransport }
         if ($null -ne $settings.MonitorIndex) { $numMonitor.Value = [decimal]$settings.MonitorIndex }
         if ($null -ne $settings.ShowCursor) { $chkCursor.Checked = [bool]$settings.ShowCursor }
-        if ($null -ne $settings.FullscreenApp) { $chkFullscreenApp.Checked = [bool]$settings.FullscreenApp }
+        if ($settings.CaptureMethod -and $cmbCaptureMethod.Items.Contains([string]$settings.CaptureMethod)) {
+            $cmbCaptureMethod.SelectedItem = [string]$settings.CaptureMethod
+        }
+        elseif ($null -ne $settings.FullscreenApp -and [bool]$settings.FullscreenApp) {
+            $cmbCaptureMethod.SelectedItem = 'Fullscreen App - D3D11 / WGC'
+        }
+        Sync-LegacyFullscreenFlag
+        Refresh-WebcamDevices
+        if ($settings.ScenePreset -and $cmbScenePreset.Items.Contains([string]$settings.ScenePreset)) { $cmbScenePreset.SelectedItem = [string]$settings.ScenePreset }
+        if ($settings.SceneCompositor -and $cmbSceneCompositor.Items.Contains([string]$settings.SceneCompositor)) { $cmbSceneCompositor.SelectedItem = [string]$settings.SceneCompositor }
+        if ($settings.WebcamDevice -and $cmbWebcamDevice.Items.Contains([string]$settings.WebcamDevice)) { $cmbWebcamDevice.SelectedItem = [string]$settings.WebcamDevice }
+        if ($settings.WebcamLayout -and $cmbWebcamLayout.Items.Contains([string]$settings.WebcamLayout)) { $cmbWebcamLayout.SelectedItem = [string]$settings.WebcamLayout }
+        foreach ($sceneValue in @(
+            @($settings.WebcamWidth,$numWebcamWidth), @($settings.WebcamHeight,$numWebcamHeight),
+            @($settings.WebcamX,$numWebcamX), @($settings.WebcamY,$numWebcamY),
+            @($settings.WebcamFps,$numWebcamFps), @($settings.WebcamOpacity,$numWebcamOpacity),
+            @($settings.WebcamBorder,$numWebcamBorder)
+        )) {
+            if ($null -ne $sceneValue[0]) {
+                $value = [int]$sceneValue[0]
+                $sceneValue[1].Value = [decimal]([Math]::Min([int]$sceneValue[1].Maximum, [Math]::Max([int]$sceneValue[1].Minimum, $value)))
+            }
+        }
+        if ($null -ne $settings.WebcamMirror) { $chkWebcamMirror.Checked = [bool]$settings.WebcamMirror }
+        if ($null -ne $settings.SceneEnabled) { $chkSceneEnabled.Checked = [bool]$settings.SceneEnabled }
+        Update-SceneUi
+        if ($settings.TimingMode -and $cmbTimingMode.Items.Contains([string]$settings.TimingMode)) {
+            $cmbTimingMode.SelectedItem = [string]$settings.TimingMode
+        }
+        elseif ($null -ne $settings.SendAbsoluteTimestamps) {
+            if ([bool]$settings.SendAbsoluteTimestamps) {
+                $cmbTimingMode.SelectedItem = 'Send absolute timestamps / clock signalling'
+            }
+            else {
+                $cmbTimingMode.SelectedItem = $script:DefaultTimingMode
+            }
+        }
+        if ($null -ne $settings.RecordingEnabled) { $chkRecordingEnabled.Checked = [bool]$settings.RecordingEnabled }
+        if ($settings.RecordingDirectory) { $txtRecordingDirectory.Text = [string]$settings.RecordingDirectory }
+        if ($settings.RecordingTemplate) { $txtRecordingTemplate.Text = [string]$settings.RecordingTemplate }
+        if ($settings.RecordingEncoder -and $cmbRecordingEncoder.Items.Contains([string]$settings.RecordingEncoder)) {
+            $cmbRecordingEncoder.SelectedItem = [string]$settings.RecordingEncoder
+        }
+        if ($settings.RecordingPreset -and $cmbRecordingPreset.Items.Contains([string]$settings.RecordingPreset)) { $cmbRecordingPreset.SelectedItem = [string]$settings.RecordingPreset }
+        if ($settings.RecordingProfile -and $cmbRecordingProfile.Items.Contains([string]$settings.RecordingProfile)) { $cmbRecordingProfile.SelectedItem = [string]$settings.RecordingProfile }
+        if ($settings.RecordingWidth) { $numRecordingWidth.Value = [decimal]$settings.RecordingWidth }
+        if ($settings.RecordingHeight) { $numRecordingHeight.Value = [decimal]$settings.RecordingHeight }
+        if ($settings.RecordingFps) { $numRecordingFps.Value = [decimal]$settings.RecordingFps }
+        if ($settings.RecordingVideoBitrateKbps) { $numRecordingVideoBitrate.Value = [decimal]$settings.RecordingVideoBitrateKbps }
+        if ($settings.RecordingRateControl -and $cmbRecordingRateControl.Items.Contains([string]$settings.RecordingRateControl)) { $cmbRecordingRateControl.SelectedItem = [string]$settings.RecordingRateControl }
+        if ($null -ne $settings.RecordingMaxVideoBitrateKbps) { $numRecordingMaxVideoBitrate.Value = [decimal]$settings.RecordingMaxVideoBitrateKbps }
+        if ($null -ne $settings.RecordingConstantQp) { $numRecordingConstantQp.Value = [decimal]$settings.RecordingConstantQp }
+        if ($settings.RecordingGopSeconds) { $numRecordingGopSeconds.Value = [decimal]$settings.RecordingGopSeconds }
+        if ($null -ne $settings.RecordingBFrames) { $numRecordingBFrames.Value = [decimal]$settings.RecordingBFrames }
+        if ($settings.RecordingTune -and $cmbRecordingTune.Items.Contains([string]$settings.RecordingTune)) { $cmbRecordingTune.SelectedItem = [string]$settings.RecordingTune }
+        if ($settings.RecordingMultipass -and $cmbRecordingMultipass.Items.Contains([string]$settings.RecordingMultipass)) { $cmbRecordingMultipass.SelectedItem = [string]$settings.RecordingMultipass }
+        if ($null -ne $settings.RecordingLookAhead) { $chkRecordingLookAhead.Checked = [bool]$settings.RecordingLookAhead }
+        if ($settings.RecordingLookAheadFrames) { $numRecordingLookAheadFrames.Value = [decimal]$settings.RecordingLookAheadFrames }
+        if ($null -ne $settings.RecordingSpatialAq) { $chkRecordingSpatialAq.Checked = [bool]$settings.RecordingSpatialAq }
+        if ($null -ne $settings.RecordingTemporalAq) { $chkRecordingTemporalAq.Checked = [bool]$settings.RecordingTemporalAq }
+        if ($settings.RecordingAqStrength) { $numRecordingAqStrength.Value = [decimal]$settings.RecordingAqStrength }
+        if ($null -ne $settings.RecordingVbvBufferKbits) { $numRecordingVbvBuffer.Value = [decimal]$settings.RecordingVbvBufferKbits }
+        if ($null -ne $settings.RecordingCustomEncoderOptions) { $txtRecordingCustomEncoderOptions.Text = [string]$settings.RecordingCustomEncoderOptions }
+        if ($null -ne $settings.RecordingDesktopAudio) { $chkRecordingDesktopAudio.Checked = [bool]$settings.RecordingDesktopAudio }
+        if ($null -ne $settings.RecordingMicrophone) { $chkRecordingMic.Checked = [bool]$settings.RecordingMicrophone }
+        if ($settings.RecordingAudioBitrateKbps) { $numRecordingAudioBitrate.Value = [decimal]$settings.RecordingAudioBitrateKbps }
         if ($null -ne $settings.Preview) { $chkPreview.Checked = [bool]$settings.Preview }
         if ($null -ne $settings.AutoRestart) { $chkAutoRestart.Checked = [bool]$settings.AutoRestart }
         if ($null -ne $settings.Verbose) { $chkVerbose.Checked = [bool]$settings.Verbose }
         if ($null -ne $settings.MinimizeToTray) { $chkMinimizeToTray.Checked = [bool]$settings.MinimizeToTray }
         if ($null -ne $settings.StartMinimized) { $chkStartMinimized.Checked = [bool]$settings.StartMinimized }
+        if ($null -ne $settings.NetworkTuningEnabled) { $chkNetworkTuningEnabled.Checked = [bool]$settings.NetworkTuningEnabled }
+        if ($settings.NetworkProfile -and $cmbNetworkProfile.Items.Contains([string]$settings.NetworkProfile)) { $cmbNetworkProfile.SelectedItem = [string]$settings.NetworkProfile }
+        if ($null -ne $settings.NetworkDscpEnabled) { $chkNetworkDscp.Checked = [bool]$settings.NetworkDscpEnabled }
+        if ($null -ne $settings.NetworkDscpValue) { $numNetworkDscp.Value = [decimal]$settings.NetworkDscpValue }
+        if ($settings.NetworkQosProtocol -and $cmbNetworkQosProtocol.Items.Contains([string]$settings.NetworkQosProtocol)) { $cmbNetworkQosProtocol.SelectedItem = [string]$settings.NetworkQosProtocol }
+        if ($null -ne $settings.NetworkQosPorts) { $txtNetworkPorts.Text = [string]$settings.NetworkQosPorts }
+        if ($settings.NetworkUso -and $cmbNetworkUso.Items.Contains([string]$settings.NetworkUso)) { $cmbNetworkUso.SelectedItem = [string]$settings.NetworkUso }
+        if ($settings.NetworkUro -and $cmbNetworkUro.Items.Contains([string]$settings.NetworkUro)) { $cmbNetworkUro.SelectedItem = [string]$settings.NetworkUro }
+        if ($null -ne $settings.NetworkDisablePowerSaving) { $chkNetworkDisablePowerSaving.Checked = [bool]$settings.NetworkDisablePowerSaving }
+        if ($settings.NetworkInterruptModeration -and $cmbNetworkInterruptModeration.Items.Contains([string]$settings.NetworkInterruptModeration)) { $cmbNetworkInterruptModeration.SelectedItem = [string]$settings.NetworkInterruptModeration }
+        if ($null -ne $settings.NetworkDisableEee) { $chkNetworkDisableEee.Checked = [bool]$settings.NetworkDisableEee }
+        if ($null -ne $settings.NetworkRestoreOnStop) { $chkNetworkRestoreOnStop.Checked = [bool]$settings.NetworkRestoreOnStop }
+        if ($null -ne $settings.NetworkRestoreOnExit) { $chkNetworkRestoreOnExit.Checked = [bool]$settings.NetworkRestoreOnExit }
+        if ($null -ne $settings.NetworkRecoveryTask) { $chkNetworkRecoveryTask.Checked = [bool]$settings.NetworkRecoveryTask }
+        if ($settings.NetworkAdapter) {
+            for ($i = 0; $i -lt $cmbNetworkAdapter.Items.Count; $i++) {
+                if ([string]$cmbNetworkAdapter.Items[$i] -like "$([string]$settings.NetworkAdapter) |*") { $cmbNetworkAdapter.SelectedIndex = $i; break }
+            }
+        }
         if ($settings.Width) { $numWidth.Value = [decimal]$settings.Width }
         if ($settings.Height) { $numHeight.Value = [decimal]$settings.Height }
         if ($settings.Fps) { $numFps.Value = [decimal]$settings.Fps }
         if ($settings.VideoBitrateKbps) { $numVideoBitrate.Value = [decimal]$settings.VideoBitrateKbps }
+        if ($settings.RateControl -and $cmbRateControl.Items.Contains([string]$settings.RateControl)) { $cmbRateControl.SelectedItem = [string]$settings.RateControl }
+        if ($null -ne $settings.MaxVideoBitrateKbps) { $numMaxVideoBitrate.Value = [decimal]$settings.MaxVideoBitrateKbps }
+        if ($null -ne $settings.ConstantQp) { $numConstantQp.Value = [decimal]$settings.ConstantQp }
         if ($settings.GopSeconds) { $numGopSeconds.Value = [decimal]$settings.GopSeconds }
         if ($settings.Encoder -and $cmbEncoder.Items.Contains([string]$settings.Encoder)) {
             $cmbEncoder.SelectedItem = [string]$settings.Encoder
         }
         if ($settings.Preset -and $cmbPreset.Items.Contains([string]$settings.Preset)) { $cmbPreset.SelectedItem = [string]$settings.Preset }
         if ($settings.Profile -and $cmbProfile.Items.Contains([string]$settings.Profile)) { $cmbProfile.SelectedItem = [string]$settings.Profile }
+        if ($settings.EncoderTune -and $cmbEncoderTune.Items.Contains([string]$settings.EncoderTune)) { $cmbEncoderTune.SelectedItem = [string]$settings.EncoderTune }
+        if ($settings.Multipass -and $cmbMultipass.Items.Contains([string]$settings.Multipass)) { $cmbMultipass.SelectedItem = [string]$settings.Multipass }
+        if ($settings.VideoSyncMode -and $cmbVideoSyncMode.Items.Contains([string]$settings.VideoSyncMode)) { $cmbVideoSyncMode.SelectedItem = [string]$settings.VideoSyncMode }
+        if ($null -ne $settings.VbvBufferKbits) { $numVbvBuffer.Value = [decimal]$settings.VbvBufferKbits }
         if ($null -ne $settings.BFrames) { $numBFrames.Value = [decimal]$settings.BFrames }
         if ($null -ne $settings.LookAhead) { $chkLookAhead.Checked = [bool]$settings.LookAhead }
         if ($settings.LookAheadFrames) { $numLookAheadFrames.Value = [decimal]$settings.LookAheadFrames }
-        if ($null -ne $settings.AdaptiveQuantization) {
+        if ($null -ne $settings.SpatialAq) {
+            $chkAdaptiveQuantization.Checked = [bool]$settings.SpatialAq
+        }
+        elseif ($null -ne $settings.AdaptiveQuantization) {
             $chkAdaptiveQuantization.Checked = [bool]$settings.AdaptiveQuantization
         }
+        if ($null -ne $settings.TemporalAq) { $chkTemporalAq.Checked = [bool]$settings.TemporalAq }
         if ($settings.AqStrength) { $numAqStrength.Value = [decimal]$settings.AqStrength }
+        if ($null -ne $settings.CustomEncoderOptions) { $txtCustomEncoderOptions.Text = [string]$settings.CustomEncoderOptions }
 
         foreach ($audioSetting in @(
             @('WhipAudioCodec', 'WHIP'),
+            @('GstWebRtcAudioCodec', 'GST WebRTC'),
             @('SrtAudioCodec', 'SRT'),
             @('RtmpAudioCodec', 'RTMP'),
             @('RtspAudioCodec', 'RTSP')
@@ -3248,11 +9803,25 @@ function Load-Settings {
             }
         }
 
+        if ($settings.AudioTransportMode -and $cmbAudioTransportMode.Items.Contains([string]$settings.AudioTransportMode)) { $cmbAudioTransportMode.SelectedItem = [string]$settings.AudioTransportMode }
+        if ($settings.AudioClockMode -and $cmbAudioClockMode.Items.Contains([string]$settings.AudioClockMode)) { $cmbAudioClockMode.SelectedItem = [string]$settings.AudioClockMode }
+        if ($settings.AudioTimingMode -and $cmbAudioTimingMode.Items.Contains([string]$settings.AudioTimingMode)) { $cmbAudioTimingMode.SelectedItem = [string]$settings.AudioTimingMode }
+        if ($settings.AudioSlaveMethod -and $cmbAudioSlaveMethod.Items.Contains([string]$settings.AudioSlaveMethod)) { $cmbAudioSlaveMethod.SelectedItem = [string]$settings.AudioSlaveMethod }
+        if ($settings.AudioSyncMode -and $cmbAudioSyncMode.Items.Contains([string]$settings.AudioSyncMode)) { $cmbAudioSyncMode.SelectedItem = [string]$settings.AudioSyncMode }
+        if ($null -ne $settings.AudioBufferMs) { $numAudioBufferMs.Value = [decimal]$settings.AudioBufferMs }
+        if ($null -ne $settings.AudioLatencyMs) { $numAudioLatencyMs.Value = [decimal]$settings.AudioLatencyMs }
         if ($null -ne $settings.DesktopAudio) { $chkDesktopAudio.Checked = [bool]$settings.DesktopAudio }
         if ($null -ne $settings.DesktopVolume) { $numDesktopVolume.Value = [decimal]$settings.DesktopVolume }
+        if ($settings.DesktopAudioDevice) { Restore-AudioDeviceSelection -Kind Output -Label ([string]$settings.DesktopAudioDevice) -DeviceId ([string]$settings.DesktopAudioDeviceId) }
         if ($null -ne $settings.Microphone) { $chkMic.Checked = [bool]$settings.Microphone }
         if ($null -ne $settings.MicrophoneVolume) { $numMicVolume.Value = [decimal]$settings.MicrophoneVolume }
+        if ($settings.MicrophoneDevice) { Restore-AudioDeviceSelection -Kind Input -Label ([string]$settings.MicrophoneDevice) -DeviceId ([string]$settings.MicrophoneDeviceId) }
         if ($settings.AudioBitrateKbps) { $numAudioBitrate.Value = [decimal]$settings.AudioBitrateKbps }
+        if ($settings.DirectWebRtcOpusMode -and $cmbDirectWebRtcOpusMode.Items.Contains([string]$settings.DirectWebRtcOpusMode)) { $cmbDirectWebRtcOpusMode.SelectedItem = [string]$settings.DirectWebRtcOpusMode }
+        if ($settings.DirectWebRtcOpusFrameMs -and $cmbDirectWebRtcOpusFrameMs.Items.Contains([string]$settings.DirectWebRtcOpusFrameMs)) { $cmbDirectWebRtcOpusFrameMs.SelectedItem = [string]$settings.DirectWebRtcOpusFrameMs }
+        if ($settings.DirectWebRtcOpusAudioType -and $cmbDirectWebRtcOpusAudioType.Items.Contains([string]$settings.DirectWebRtcOpusAudioType)) { $cmbDirectWebRtcOpusAudioType.SelectedItem = [string]$settings.DirectWebRtcOpusAudioType }
+        if ($null -ne $settings.DirectWebRtcOpusFec) { $chkDirectWebRtcOpusFec.Checked = [bool]$settings.DirectWebRtcOpusFec }
+        if ($null -ne $settings.DirectWebRtcOpusDtx) { $chkDirectWebRtcOpusDtx.Checked = [bool]$settings.DirectWebRtcOpusDtx }
 
         $protocol = if ($settings.Protocol -and $cmbProtocol.Items.Contains([string]$settings.Protocol)) { [string]$settings.Protocol } else { 'WHIP' }
         $cmbProtocol.SelectedItem = $protocol
@@ -3264,9 +9833,12 @@ function Load-Settings {
     }
     finally {
         $script:SuppressProtocolChange = $false
-        Update-MediaMtxUi
-        Update-ProtocolUi
+        Update-TransportUi
+        Update-DirectWebRtcUi
         Update-EncoderUi
+        Update-RecordingUi
+        Update-NetworkUi
+        Update-SceneUi
     }
 }
 
@@ -3282,7 +9854,17 @@ function Validate-Configuration {
         return $false
     }
 
-    if ($chkStartMediaMtx.Checked) {
+    if (-not (Test-TransportEnabled) -and -not $chkRecordingEnabled.Checked -and -not $chkPreview.Checked) {
+        [System.Windows.Forms.MessageBox]::Show(
+            'Enable transport, recording, or preview before starting.',
+            $script:AppName,
+            'OK',
+            'Warning'
+        ) | Out-Null
+        return $false
+    }
+
+    if ((Test-TransportEnabled) -and $chkStartMediaMtx.Checked -and ([string]$cmbProtocol.SelectedItem -ne $script:DirectWebRtcProtocolName)) {
         $mediaMtxPath = $txtMediaMtxPath.Text.Trim()
         if (
             [string]::IsNullOrWhiteSpace($mediaMtxPath) -or
@@ -3316,10 +9898,12 @@ function Validate-Configuration {
         }
     }
 
-    $protocol = [string]$cmbProtocol.SelectedItem
-    $destination = $txtDestination.Text.Trim()
+    if (Test-TransportEnabled) {
+        $protocol = [string]$cmbProtocol.SelectedItem
+        $destination = $txtDestination.Text.Trim()
     $valid = switch ($protocol) {
         'WHIP' { $destination -match '^https?://' }
+        'GST WebRTC' { $destination -match '^https?://' }
         'SRT'  { $destination -match '^srt://' }
         'RTMP' { $destination -match '^rtmps?://' }
         'RTSP' { $destination -match '^rtsps?://' }
@@ -3366,13 +9950,13 @@ function Validate-Configuration {
     }
 
     if (
-        $protocol -eq 'WHIP' -and
+        $protocol -in @('WHIP', 'GST WebRTC') -and
         $codec -eq 'H264' -and
         $numBFrames.Enabled -and
         [int]$numBFrames.Value -gt 0
     ) {
         [System.Windows.Forms.MessageBox]::Show(
-            'H.264 B-frames are not compatible with normal WebRTC playback. Set B-frames to 0 for WHIP.',
+            'H.264 B-frames are not compatible with normal WebRTC playback. Set B-frames to 0 for WebRTC.',
             $script:AppName,
             'OK',
             'Warning'
@@ -3390,6 +9974,25 @@ function Validate-Configuration {
         if ($result -ne [System.Windows.Forms.DialogResult]::Yes) {
             return $false
         }
+    }
+    }
+
+    if ($chkRecordingEnabled.Checked) {
+        try {
+            $script:ResolvedRecordingPath = Resolve-RecordingFilePath -EnsureDirectory -AvoidExisting
+        }
+        catch {
+            [System.Windows.Forms.MessageBox]::Show(
+                "Recording output could not be prepared.`r`n`r`n$($_.Exception.Message)",
+                $script:AppName,
+                'OK',
+                'Warning'
+            ) | Out-Null
+            return $false
+        }
+    }
+    else {
+        $script:ResolvedRecordingPath = ''
     }
 
     return $true
@@ -3433,6 +10036,7 @@ function Park-PreviewWindow {
             $true
         )
         $script:PreviewParked = $true
+        Reset-PreviewAppliedState
     }
     catch {}
 }
@@ -3451,8 +10055,17 @@ function Restore-PreviewWindowFromParking {
             $chkPreview.Checked
         )
         $script:PreviewParked = $false
+        Reset-PreviewAppliedState
     }
     catch {}
+}
+
+function Reset-PreviewAppliedState {
+    # Anything that reparents, hides, or replaces the embedded renderer window
+    # invalidates what we believe we last pushed to it, so force the next
+    # Set-PreviewVisibility to re-apply geometry and visibility.
+    $script:PreviewAppliedSize = [System.Drawing.Size]::Empty
+    $script:PreviewAppliedVisible = $null
 }
 
 function Set-PreviewVisibility {
@@ -3469,7 +10082,7 @@ function Set-PreviewVisibility {
             'Preview starting...'
         }
         else {
-            'Preview hidden — stream still running'
+            'Preview hidden - stream still running'
         }
         return
     }
@@ -3486,18 +10099,37 @@ function Set-PreviewVisibility {
     }
 
     if ($chkPreview.Checked) {
-        [GstPreviewNative]::ResizeEmbeddedWindow(
-            $script:PreviewHwnd,
-            $previewPanel.ClientSize.Width,
-            $previewPanel.ClientSize.Height
-        )
-        [GstPreviewNative]::SetWindowVisible($script:PreviewHwnd, $true)
+        # Only touch the renderer window when something actually changed. This runs
+        # every poll tick; unconditional resize/show on a live d3d11videosink is a
+        # stutter source.
+        $clientSize = $previewPanel.ClientSize
+        if (
+            $clientSize.Width -ne $script:PreviewAppliedSize.Width -or
+            $clientSize.Height -ne $script:PreviewAppliedSize.Height
+        ) {
+            [GstPreviewNative]::ResizeEmbeddedWindow(
+                $script:PreviewHwnd,
+                $clientSize.Width,
+                $clientSize.Height
+            )
+            $script:PreviewAppliedSize = $clientSize
+        }
+
+        if ($script:PreviewAppliedVisible -ne $true) {
+            [GstPreviewNative]::SetWindowVisible($script:PreviewHwnd, $true)
+            $script:PreviewAppliedVisible = $true
+        }
+
         $previewPlaceholder.Visible = $false
     }
     else {
-        [GstPreviewNative]::SetWindowVisible($script:PreviewHwnd, $false)
+        if ($script:PreviewAppliedVisible -ne $false) {
+            [GstPreviewNative]::SetWindowVisible($script:PreviewHwnd, $false)
+            $script:PreviewAppliedVisible = $false
+        }
+
         $previewPlaceholder.Visible = $true
-        $previewPlaceholder.Text = 'Preview hidden — stream still running'
+        $previewPlaceholder.Text = 'Preview hidden - stream still running'
     }
 }
 
@@ -3512,6 +10144,7 @@ function Try-AttachPreview {
             if ([GstPreviewNative]::EmbedWindow($candidate, $previewPanel.Handle, $previewPanel.ClientSize.Width, $previewPanel.ClientSize.Height)) {
                 $script:PreviewHwnd = $candidate
                 $script:PreviewParked = $false
+                Reset-PreviewAppliedState
                 Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Preview window embedded for runtime toggle."
             }
         }
@@ -3539,7 +10172,7 @@ function Read-MediaMtxStartupLogs {
 }
 
 function Start-ManagedMediaMtx {
-    if (-not $chkStartMediaMtx.Checked) {
+    if ((-not (Test-TransportEnabled)) -or -not $chkStartMediaMtx.Checked -or ([string]$cmbProtocol.SelectedItem -eq $script:DirectWebRtcProtocolName)) {
         return $true
     }
 
@@ -3618,7 +10251,7 @@ function Start-ManagedMediaMtx {
         }
 
         Append-Log (
-            "MediaMTX is running — PID $($script:MediaMtxProcess.Id)."
+            "MediaMTX is running - PID $($script:MediaMtxProcess.Id)."
         )
         return $true
     }
@@ -3649,7 +10282,7 @@ function Stop-ManagedMediaMtx {
         if (-not $Quiet) {
             Append-Log (
                 "[$(Get-Date -Format 'HH:mm:ss')] Stopping managed MediaMTX " +
-                "process tree — PID $($script:MediaMtxProcess.Id)..."
+                "process tree - PID $($script:MediaMtxProcess.Id)..."
             )
         }
 
@@ -3715,33 +10348,81 @@ function Start-GstStream {
     $stamp = Get-Date -Format 'yyyyMMdd-HHmmss-fff'
     $script:StdOutPath = Join-Path $script:LogDirectory "gst-$stamp-out.log"
     $script:StdErrPath = Join-Path $script:LogDirectory "gst-$stamp-err.log"
+    $script:StdOutAudioPath = Join-Path $script:LogDirectory "gst-audio-$stamp-out.log"
+    $script:StdErrAudioPath = Join-Path $script:LogDirectory "gst-audio-$stamp-err.log"
     $script:StdOutPosition = [int64]0
     $script:StdErrPosition = [int64]0
+    $script:StdOutAudioPosition = [int64]0
+    $script:StdErrAudioPosition = [int64]0
     $script:StopRequested = $false
     $script:RestartAt = $null
     $script:PreviewHwnd = [IntPtr]::Zero
     $script:PreviewParked = $false
+    Reset-PreviewAppliedState
     $script:PipelineHasPreview = [bool]$chkPreview.Checked
     $previewPlaceholder.Visible = $true
     $previewPlaceholder.Text = if ($script:PipelineHasPreview) { 'Starting preview...' } else { 'Preview disabled for this pipeline' }
+
+    if (-not (Apply-NetworkTuningForSession)) {
+        $statusLabel.Text = 'Network tuning failed'
+        $statusLabel.ForeColor = [System.Drawing.Color]::DarkRed
+        Set-RunState $false
+        return
+    }
 
     $gstPath = $txtGstPath.Text.Trim()
     Prepare-GStreamerRuntime -GstPath $gstPath
     Initialize-GstJob
 
     if (-not (Start-ManagedMediaMtx)) {
+        if ($chkNetworkRestoreOnStop.Checked) { Restore-NetworkTuning -Quiet | Out-Null }
         $statusLabel.Text = 'MediaMTX start failed'
         $statusLabel.ForeColor = [System.Drawing.Color]::DarkRed
         Set-RunState $false
         return
     }
 
+    Write-DirectWebRtcWebClientConfig
+
     $arguments = Build-GstArguments
+    $audioArguments = ''
+    if ((Test-TransportEnabled) -and [string]$cmbProtocol.SelectedItem -eq $script:DirectWebRtcProtocolName -and (Test-DirectWebRtcSplitAvPipelines)) {
+        $audioArguments = Build-DirectWebRtcAudioOnlyArguments
+    }
 
+    $transportEnabled = Test-TransportEnabled
     Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Starting full GStreamer pipeline..."
-    Append-Log "Protocol: $([string]$cmbProtocol.SelectedItem)"
+    Append-Log "Transport: $(if ($transportEnabled) { 'Enabled' } else { 'Disabled - local recording/preview only' })"
+    if ($transportEnabled) {
+        Append-Log "Protocol: $([string]$cmbProtocol.SelectedItem)"
+        Append-Log "Absolute timestamps: $(Get-AbsoluteTimestampStatusText)"
+        if ([string]$cmbProtocol.SelectedItem -eq 'WHIP') {
+            Append-Log 'WHIP publish guard: constrained-baseline H.264 caps, GOP capped to 1s, B-frames/lookahead off, NVENC ultra-low-latency.'
+            if (Test-SendAbsoluteTimestampsEnabled) {
+                Append-Log 'WHIP timing: do-clock-signalling=true. Use with MediaMTX pathDefaults/useAbsoluteTimestamp=true.'
+            }
+            else {
+                Append-Log 'WHIP timing: receiver/server timestamps. Use with MediaMTX pathDefaults/useAbsoluteTimestamp=false.'
+            }
+        }
+        if ([string]$cmbProtocol.SelectedItem -eq $script:DirectWebRtcProtocolName) {
+            Append-Log "Direct WebRTC viewer: $(Get-DirectWebRtcViewerUrl)"
+            Append-Log "Direct WebRTC signalling WebSocket/TCP: $($txtDirectWebRtcSignalingHost.Text):$([int]$numDirectWebRtcSignalingPort.Value)"
+            Append-Log "Direct WebRTC smoothing: $([string]$cmbDirectWebRtcSmoothnessProfile.SelectedItem), recovery $([string]$cmbWebRtcRecoveryMode.SelectedItem), sender queue $([string]$cmbWebRtcSenderQueueMode.SelectedItem) / $([int]$numDirectWebRtcPacingMs.Value) ms cap, browser audio/video JBUF $([int]$numDirectWebRtcPlayerJitterMs.Value)/$([int]$numDirectWebRtcVideoJitterMs.Value) ms, timing $([string]$cmbTimingMode.SelectedItem), audio mode $([string]$cmbAudioTransportMode.SelectedItem)"
+            Append-Log "Audio source selection: $(Get-AudioSourceSelectionSummary)"
+            Append-Log "Direct WebRTC A/V pipeline topology: $([string](Get-DirectWebRtcAvPipelineMode))"
+            if (Test-DirectWebRtcSplitAvPipelines) { Append-Log "Direct WebRTC split audio signalling WebSocket/TCP: $($txtDirectWebRtcSignalingHost.Text):$(Get-DirectWebRtcSplitAudioSignalingPort)"; Append-Log "Direct WebRTC split audio player WS URL: $(Get-DirectWebRtcSplitAudioWsUrlDescriptionForLog)" }
+            Append-Log 'Direct WebRTC media: UDP through ICE. Signalling is TCP/WebSocket on the configured port; fixed media UDP 8189 requires a native helper.'
+        }
+    }
+    Append-Log "Capture method: $(Get-SelectedCaptureMethodName)"
+    if ($chkRecordingEnabled.Checked) {
+        Append-Log "Recording file: $script:ResolvedRecordingPath"
+        Append-Log "Recording encoder: $([string]$cmbRecordingEncoder.SelectedItem), $([int]$numRecordingVideoBitrate.Value) kbps, $([int]$numRecordingWidth.Value)x$([int]$numRecordingHeight.Value)@$([int]$numRecordingFps.Value)"
+        Append-Log 'Recording branch guard: decoupled from the capture thread by a shallow non-leaky queue (recordq). Sustained disk/encoder overrun will backpressure capture rather than drop recorded frames; a software recording encoder can therefore throttle the live branch.'
+    }
 
-    if ([string]$cmbProtocol.SelectedItem -eq 'SRT') {
+    if ($transportEnabled -and [string]$cmbProtocol.SelectedItem -eq 'SRT') {
         $srtTracks = if ($chkDesktopAudio.Checked -or $chkMic.Checked) {
             'video PID 256 + audio PID 257, both in program 1'
         }
@@ -3752,14 +10433,54 @@ function Start-GstStream {
         Append-Log "SRT MPEG-TS mapping: $srtTracks"
         Append-Log 'SRT low-latency mux profile: mux latency 2.9 ms, PAT/PMT 600, pkt_size 1316, Opus preferred'
     }
-    if ($chkFullscreenApp.Checked) {
+    if (Test-FullscreenCaptureMode) {
         Append-Log "Fullscreen capture target: $($script:CaptureWindowTitle) (HWND $([uint64]$script:CaptureWindowHwnd.ToInt64()))"
+    }
+    $gstDebugSpec = Get-GstDebugSpec
+    $requestedAudioQueueCapMs = [int]$numAudioQueueCapMs.Value
+    $effectiveAudioQueueCapMs = Get-EffectiveAudioQueueCapMs
+    $audioQueueCapText = if ($requestedAudioQueueCapMs -ne $effectiveAudioQueueCapMs) {
+        "$requestedAudioQueueCapMs ms -> effective $effectiveAudioQueueCapMs ms"
+    }
+    else {
+        "$requestedAudioQueueCapMs ms"
+    }
+    Append-Log "Threading: profile $([string]$cmbThreadingProfile.SelectedItem), priority $([string]$cmbGstProcessPriority.SelectedItem), capture queue $([int]$numCaptureQueueBuffers.Value) buffers, sender queue $([string]$cmbWebRtcSenderQueueMode.SelectedItem) / $([int]$numDirectWebRtcPacingMs.Value) ms, audio queue $([int]$numAudioQueueBuffers.Value) buffers / $audioQueueCapText, leak $([string]$cmbQueueLeakMode.SelectedItem), effective leak $(Get-EffectiveLiveQueueLeakValue), lateness tracer $($chkBufferLatenessTracer.Checked)."
+    $cpuWorkerText = if ([int]$numCpuWorkerLimit.Value -eq 0) { 'auto' } else { [string]([int]$numCpuWorkerLimit.Value) }
+    Append-Log "Thread budget: $([string]$cmbThreadBudget.SelectedItem), CPU workers $cpuWorkerText, boundaries capture=$($chkBudgetCaptureQueue.Checked) sender=$($chkBudgetSenderQueue.Checked) audio-input=$($chkBudgetAudioInputQueue.Checked) audio-sender=$($chkBudgetAudioFinalQueue.Checked) scene-inputs=$($chkBudgetSceneInputQueues.Checked). Total process threads are observed, not hard-capped."
+    if ((Get-QueueLeakValue) -eq 'no' -and (Get-EffectiveLiveQueueLeakValue) -ne 'no') { Append-Log 'Threading guard: No leak/block was selected but coerced to downstream/drop-old outside Blocking diagnostic profile.' }
+    if ($requestedAudioQueueCapMs -gt 0 -and $effectiveAudioQueueCapMs -gt $requestedAudioQueueCapMs) { Append-Log "Audio queue guard: raised nonzero audio queue cap from $requestedAudioQueueCapMs ms to $effectiveAudioQueueCapMs ms so GStreamer latency negotiation has enough headroom." }
+    Append-Log "Browser JBUF guard: audio/video target $([int]$numDirectWebRtcPlayerJitterMs.Value)/$([int]$numDirectWebRtcVideoJitterMs.Value) ms, watchdog $([string]$cmbJbufWatchdogMode.SelectedItem), max $([int]$numJbufMaxMs.Value) ms, URL/config bridged."
+    Append-Log "Split player sync: $([string]$cmbSplitPlayerSyncMode.SelectedItem), audio stall $([int]$numSplitAudioStallSeconds.Value) sec, offset warn $([int]$numSplitAvOffsetWarnMs.Value) ms. Default free-run never delays video."
+    Append-Log "Direct GST WebRTC Opus: $([string]$cmbDirectWebRtcOpusMode.SelectedItem), frame $([string]$cmbDirectWebRtcOpusFrameMs.SelectedItem) ms, type $([string]$cmbDirectWebRtcOpusAudioType.SelectedItem), FEC $($chkDirectWebRtcOpusFec.Checked), DTX $($chkDirectWebRtcOpusDtx.Checked)."
+    Append-Log "Video sync mode: $([string]$cmbVideoSyncMode.SelectedItem); Audio sync mode: $([string]$cmbAudioSyncMode.SelectedItem). Explicit modes insert clocksync before compatible send/mux sinks; local preview also honors Video sync mode."
+    Append-Log "Audio clock mode: $([string]$cmbAudioClockMode.SelectedItem); timing $([string]$cmbAudioTimingMode.SelectedItem); slave $([string]$cmbAudioSlaveMethod.SelectedItem); requested buffer $([int]$numAudioBufferMs.Value) ms / latency $([int]$numAudioLatencyMs.Value) ms."
+    Append-Log "Effective WASAPI source: $(Get-EffectiveAudioTimingSummary)"
+    if (-not [string]::IsNullOrWhiteSpace($gstDebugSpec)) {
+        Append-Log "GStreamer debug: GST_DEBUG=$gstDebugSpec, no color=$($chkGstDebugNoColor.Checked)."
+    }
+    else {
+        Append-Log 'GStreamer debug: off.'
     }
     Append-Log "Executable: $gstPath"
     Append-Log "Arguments: $arguments"
+    if (-not [string]::IsNullOrWhiteSpace($audioArguments)) {
+        Append-Log "Audio executable: $gstPath"
+        Append-Log "Audio arguments: $audioArguments"
+    }
 
     try {
-        $script:GstProcess = Start-Process -FilePath $gstPath -ArgumentList $arguments -RedirectStandardOutput $script:StdOutPath -RedirectStandardError $script:StdErrPath -WindowStyle Hidden -PassThru
+        $tracerEnvState = $null
+        try {
+            $tracerEnvState = Set-GstTracerEnvironment -Enable:([bool]$chkBufferLatenessTracer.Checked) -DebugSpec $gstDebugSpec -NoColor:([bool]$chkGstDebugNoColor.Checked)
+            if ($chkBufferLatenessTracer.Checked) { Append-Log 'GStreamer buffer-lateness tracer enabled for this run.' }
+            $script:GstProcess = Start-Process -FilePath $gstPath -ArgumentList $arguments -RedirectStandardOutput $script:StdOutPath -RedirectStandardError $script:StdErrPath -WindowStyle Hidden -PassThru
+        }
+        finally {
+            Restore-GstTracerEnvironment $tracerEnvState
+        }
+
+        Set-GstProcessPriority -Process $script:GstProcess
 
         if ($script:JobHandle -ne [IntPtr]::Zero) {
             try {
@@ -3770,9 +10491,27 @@ function Start-GstStream {
             }
         }
 
+        if (-not [string]::IsNullOrWhiteSpace($audioArguments)) {
+            Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Starting split audio-only GStreamer pipeline..."
+            $audioTracerEnvState = $null
+            try {
+                $audioTracerEnvState = Set-GstTracerEnvironment -Enable:([bool]$chkBufferLatenessTracer.Checked) -DebugSpec $gstDebugSpec -NoColor:([bool]$chkGstDebugNoColor.Checked)
+                $script:GstAudioProcess = Start-Process -FilePath $gstPath -ArgumentList $audioArguments -RedirectStandardOutput $script:StdOutAudioPath -RedirectStandardError $script:StdErrAudioPath -WindowStyle Hidden -PassThru
+            }
+            finally {
+                Restore-GstTracerEnvironment $audioTracerEnvState
+            }
+            Set-GstProcessPriority -Process $script:GstAudioProcess
+            if ($script:JobHandle -ne [IntPtr]::Zero) {
+                try { [GstProcessJob]::AssignProcess($script:JobHandle, $script:GstAudioProcess.Handle) }
+                catch { Append-Log "WARNING: Split audio GStreamer could not be assigned to the kill-on-close job: $($_.Exception.Message)" }
+            }
+            Append-Log "Split audio GST PID: $($script:GstAudioProcess.Id)"
+        }
+
         Save-ActiveProcessState
 
-        $targetSuffix = if ($chkFullscreenApp.Checked -and $script:CaptureWindowTitle) { " — $($script:CaptureWindowTitle)" } else { '' }
+        $targetSuffix = if ((Test-FullscreenCaptureMode) -and $script:CaptureWindowTitle) { " - $($script:CaptureWindowTitle)" } else { '' }
         $mediaSuffix = if (
             $script:MediaMtxProcess -and
             -not $script:MediaMtxProcess.HasExited
@@ -3782,13 +10521,25 @@ function Start-GstStream {
         else {
             ''
         }
-        $statusLabel.Text = "$([string]$cmbProtocol.SelectedItem) streaming — GST PID $($script:GstProcess.Id)$mediaSuffix$targetSuffix"
+        if ($transportEnabled) {
+            $audioSuffix = if ($script:GstAudioProcess -and -not $script:GstAudioProcess.HasExited) { " + Audio PID $($script:GstAudioProcess.Id)" } else { '' }
+            $statusLabel.Text = "$([string]$cmbProtocol.SelectedItem) streaming - GST PID $($script:GstProcess.Id)$audioSuffix$mediaSuffix$targetSuffix"
+        }
+        elseif ($chkRecordingEnabled.Checked) {
+            $statusLabel.Text = "Recording locally - GST PID $($script:GstProcess.Id)$targetSuffix"
+        }
+        else {
+            $statusLabel.Text = "Preview only - GST PID $($script:GstProcess.Id)$targetSuffix"
+        }
         $statusLabel.ForeColor = [System.Drawing.Color]::DarkGreen
         Set-RunState $true
     }
     catch {
         $script:GstProcess = $null
+        if ($script:GstAudioProcess -and -not $script:GstAudioProcess.HasExited) { try { Stop-ProcessTreeById -ProcessId $script:GstAudioProcess.Id } catch {} }
+        $script:GstAudioProcess = $null
         Stop-ManagedMediaMtx -Quiet
+        if ($chkNetworkRestoreOnStop.Checked) { Restore-NetworkTuning -Quiet | Out-Null }
         Remove-ActiveProcessState
         $statusLabel.Text = 'Start failed'
         $statusLabel.ForeColor = [System.Drawing.Color]::DarkRed
@@ -3812,6 +10563,7 @@ function Stop-GstStream {
     $script:PreviewHwnd = [IntPtr]::Zero
     $script:PreviewParked = $false
     $script:PipelineHasPreview = $false
+    Reset-PreviewAppliedState
     $previewPlaceholder.Visible = $true
     $previewPlaceholder.Text = 'Preview stopped'
 
@@ -3819,11 +10571,15 @@ function Stop-GstStream {
         $script:GstProcess -and
         -not $script:GstProcess.HasExited
 
+    $hadAudioGst =
+        $script:GstAudioProcess -and
+        -not $script:GstAudioProcess.HasExited
+
     $hadMedia =
         $script:MediaMtxProcess -and
         -not $script:MediaMtxProcess.HasExited
 
-    if ($hadGst -or $hadMedia) {
+    if ($hadGst -or $hadAudioGst -or $hadMedia) {
         $statusLabel.Text = 'Stopping...'
         $statusLabel.ForeColor = [System.Drawing.Color]::DarkOrange
     }
@@ -3833,7 +10589,7 @@ function Stop-GstStream {
     if ($hadGst) {
         Append-Log (
             "[$(Get-Date -Format 'HH:mm:ss')] Stopping complete GStreamer " +
-            "process tree — PID $($script:GstProcess.Id)..."
+            "process tree - PID $($script:GstProcess.Id)..."
         )
         Stop-ProcessTreeById -ProcessId $script:GstProcess.Id
 
@@ -3843,17 +10599,34 @@ function Stop-GstStream {
         catch {}
     }
 
+    if ($hadAudioGst) {
+        Append-Log (
+            "[$(Get-Date -Format 'HH:mm:ss')] Stopping split audio GStreamer " +
+            "process tree - PID $($script:GstAudioProcess.Id)..."
+        )
+        Stop-ProcessTreeById -ProcessId $script:GstAudioProcess.Id
+        try { $script:GstAudioProcess.WaitForExit(3000) | Out-Null } catch {}
+    }
+
     try {
         if ($script:GstProcess) {
             $script:GstProcess.Dispose()
         }
+        if ($script:GstAudioProcess) {
+            $script:GstAudioProcess.Dispose()
+        }
     }
     catch {}
     $script:GstProcess = $null
+    $script:GstAudioProcess = $null
 
     Stop-ManagedMediaMtx
 
     Remove-ActiveProcessState
+
+    if ((-not $Restart) -and $chkNetworkRestoreOnStop.Checked) {
+        Restore-NetworkTuning -Quiet | Out-Null
+    }
 
     if (-not $Restart) {
         $statusLabel.Text = 'Stopped'
@@ -3880,39 +10653,92 @@ function Test-GStreamerElements {
         return
     }
 
+    $transportEnabled = Test-TransportEnabled
     $definition = Get-SelectedEncoderDefinition
     $codec = [string]$definition.Codec
     $protocol = [string]$cmbProtocol.SelectedItem
 
+    $captureMethod = Get-SelectedCaptureMethod
     $elements = New-Object System.Collections.Generic.List[string]
-    foreach ($element in @(
-        'd3d11screencapturesrc',
-        'd3d11convert',
-        [string]$definition.Element
-    )) {
-        $elements.Add($element)
+    $baseElements = @([string]$captureMethod.Element, 'd3d11convert')
+    if ($transportEnabled) { $baseElements += [string]$definition.Element }
+    foreach ($element in $baseElements) {
+        if (-not [string]::IsNullOrWhiteSpace($element)) {
+            $elements.Add($element)
+        }
     }
 
-    if ([string]$definition.Input -eq 'I420') {
+    if ([string]$captureMethod.Method -eq 'MonitorGdi') {
+        foreach ($element in @('videoconvert', 'videoscale', 'd3d11upload')) {
+            $elements.Add($element)
+        }
+    }
+
+    if ($transportEnabled -and [string]$definition.Input -eq 'I420') {
         $elements.Add('d3d11download')
         $elements.Add('videoconvert')
     }
 
-    if (-not [string]::IsNullOrWhiteSpace([string]$definition.Parser)) {
+    if ($transportEnabled -and -not [string]::IsNullOrWhiteSpace([string]$definition.Parser)) {
         $elements.Add([string]$definition.Parser)
     }
 
-    if ($chkPreview.Checked) {
+    if ($chkPreview.Checked -or $chkRecordingEnabled.Checked) {
         $elements.Add('tee')
+    }
+
+    if ($chkPreview.Checked) {
         $elements.Add('d3d11videosink')
     }
 
+    if ($chkRecordingEnabled.Checked) {
+        $recordDefinition = Get-SelectedRecordingEncoderDefinition
+        foreach ($element in @(
+            'matroskamux',
+            'filesink',
+            'd3d11convert',
+            [string]$recordDefinition.Element
+        )) {
+            if (-not [string]::IsNullOrWhiteSpace($element)) {
+                $elements.Add($element)
+            }
+        }
+
+        if ([string]$recordDefinition.Input -eq 'I420') {
+            $elements.Add('d3d11download')
+            $elements.Add('videoconvert')
+        }
+
+        if (-not [string]::IsNullOrWhiteSpace([string]$recordDefinition.Parser)) {
+            $elements.Add([string]$recordDefinition.Parser)
+        }
+
+        if ($chkRecordingDesktopAudio.Checked -or $chkRecordingMic.Checked) {
+            foreach ($element in @(
+                'wasapi2src',
+                'audioconvert',
+                'audioresample',
+                'opusenc'
+            )) {
+                $elements.Add($element)
+            }
+
+            if ($chkRecordingDesktopAudio.Checked -and $chkRecordingMic.Checked) {
+                $elements.Add('audiomixer')
+            }
+        }
+    }
+
     $userAudioEnabled =
-        $chkDesktopAudio.Checked -or
-        $chkMic.Checked
+        $transportEnabled -and
+        (
+            $chkDesktopAudio.Checked -or
+            $chkMic.Checked
+        )
 
     $usingWhipSilentClockAudio =
-        $protocol -eq 'WHIP' -and
+        $transportEnabled -and
+        $protocol -in @('WHIP', 'GST WebRTC') -and
         -not $userAudioEnabled
 
     $hasAudio =
@@ -3946,7 +10772,8 @@ function Test-GStreamerElements {
         $null
     }
 
-    switch ($protocol) {
+    if ($transportEnabled) {
+        switch ($protocol) {
         'WHIP' {
             $elements.Add('whipclientsink')
 
@@ -3969,6 +10796,16 @@ function Test-GStreamerElements {
                 }
                 if ([string]$audioDefinition.Codec -eq 'OPUS') {
                     $elements.Add('rtpopuspay')
+                }
+            }
+        }
+
+        'GST WebRTC' {
+            $elements.Add('webrtcsink')
+            if ($hasAudio) {
+                $elements.Add([string]$audioDefinition.Element)
+                if (-not [string]::IsNullOrWhiteSpace([string]$audioDefinition.Parser)) {
+                    $elements.Add([string]$audioDefinition.Parser)
                 }
             }
         }
@@ -4014,6 +10851,7 @@ function Test-GStreamerElements {
                 }
             }
         }
+        }
     }
 
     $missing = New-Object System.Collections.Generic.List[string]
@@ -4031,10 +10869,11 @@ function Test-GStreamerElements {
     }
 
     $compatibilityWarning = $null
-    if (-not (Test-CodecProtocolCompatibility -Codec $codec -Protocol $protocol)) {
+    if ($transportEnabled -and -not (Test-CodecProtocolCompatibility -Codec $codec -Protocol $protocol)) {
         $compatibilityWarning = "$codec is not supported by the $protocol pipeline template."
     }
     elseif (
+        $transportEnabled -and
         $hasAudio -and
         -not $usingWhipSilentClockAudio -and
         -not (Test-AudioCodecProtocolCompatibility `
@@ -4059,8 +10898,11 @@ function Test-GStreamerElements {
         [System.Windows.Forms.MessageBox]::Show(
             (
                 "All elements required by the current configuration were found." +
-                "`r`n`r`nVideo: $([string]$definition.Element) ($codec)" +
-                "`r`nAudio: $audioSummary"
+                "`r`n`r`nTransport: $(if ($transportEnabled) { 'Enabled - ' + $protocol } else { 'Disabled' })" +
+                "`r`nCapture: $(Get-SelectedCaptureMethodName)" +
+                "`r`nVideo: $(if ($transportEnabled) { [string]$definition.Element + ' (' + $codec + ')' } else { 'No network encoder branch' })" +
+                "`r`nAudio: $audioSummary" +
+                "`r`nRecording: $(if ($chkRecordingEnabled.Checked) { 'Enabled - ' + [string]$cmbRecordingEncoder.SelectedItem } else { 'Disabled' })"
             ),
             $script:AppName,
             'OK',
@@ -4087,16 +10929,58 @@ function Test-GStreamerElements {
 
 $previewHandler = { Update-CommandPreview }
 
+function Update-PlayerConfigFromUi {
+    try {
+        Write-DirectWebRtcWebClientConfig -Quiet
+    }
+    catch {}
+    Update-DirectWebRtcUi
+    Update-CommandPreview
+}
+
 $txtGstPath.Add_TextChanged($previewHandler)
 $txtDestination.Add_TextChanged({
     $protocol = [string]$cmbProtocol.SelectedItem
     if ($protocol -and -not $script:SuppressProtocolChange) {
         $script:ProtocolDestinations[$protocol] = $txtDestination.Text
     }
+    Update-DirectWebRtcUi
     Update-CommandPreview
 })
-$cmbProtocol.Add_SelectedIndexChanged({ Update-ProtocolUi })
+$cmbProtocol.Add_SelectedIndexChanged({ Update-ProtocolUi; Update-CommandPreview })
+$chkTransportEnabled.Add_CheckedChanged({ Update-TransportUi })
+$chkSendAbsoluteTimestamps.Add_CheckedChanged({ Update-TimestampUi; Update-CommandPreview })
+$cmbTimingMode.Add_SelectedIndexChanged({ Update-TimestampUi; Update-CommandPreview })
 $cmbEncoder.Add_SelectedIndexChanged({ Update-EncoderUi })
+$cmbAudioTransportMode.Add_SelectedIndexChanged({ Update-AudioCodecChoices; Update-CommandPreview })
+$cmbAudioClockMode.Add_SelectedIndexChanged($previewHandler)
+$cmbAudioTimingMode.Add_SelectedIndexChanged({ Update-AudioTimingOptionUi; Update-AudioCodecChoices; Update-CommandPreview })
+$cmbAudioSlaveMethod.Add_SelectedIndexChanged($previewHandler)
+$cmbAudioSyncMode.Add_SelectedIndexChanged($previewHandler)
+
+function Update-AudioTimingOptionUi {
+    $timing = Get-AudioTimingMode
+    $forcesNoClock = $timing -in @('WASAPI no pipeline clock','WASAPI no clock + retimestamp')
+    $synthetic = ($timing -eq 'Synthetic silent audio')
+
+    $cmbAudioClockMode.Enabled = (-not $forcesNoClock -and -not $synthetic)
+    $cmbAudioSlaveMethod.Enabled = (-not $synthetic)
+    $numAudioBufferMs.Enabled = (-not $synthetic)
+    $numAudioLatencyMs.Enabled = (-not $synthetic)
+
+    if ($forcesNoClock -and $cmbAudioClockMode.Items.Contains('System clock / no WASAPI clock')) {
+        $cmbAudioClockMode.SelectedItem = 'System clock / no WASAPI clock'
+    }
+}
+
+$numAudioBufferMs.Add_ValueChanged($previewHandler)
+$numAudioLatencyMs.Add_ValueChanged($previewHandler)
+$cmbDirectWebRtcOpusMode.Add_SelectedIndexChanged($previewHandler)
+$cmbDirectWebRtcOpusFrameMs.Add_SelectedIndexChanged($previewHandler)
+$cmbDirectWebRtcOpusAudioType.Add_SelectedIndexChanged($previewHandler)
+$chkDirectWebRtcOpusFec.Add_CheckedChanged($previewHandler)
+$chkDirectWebRtcOpusDtx.Add_CheckedChanged($previewHandler)
+
 $cmbAudioCodec.Add_SelectedIndexChanged({
     if (-not $script:SuppressAudioCodecChange) {
         $protocol = [string]$cmbProtocol.SelectedItem
@@ -4115,8 +10999,9 @@ $cmbAudioCodec.Add_SelectedIndexChanged({
 })
 $numMonitor.Add_ValueChanged({ Update-CaptureModeUi; Update-CommandPreview })
 $chkCursor.Add_CheckedChanged($previewHandler)
-$chkFullscreenApp.Add_CheckedChanged({
-    if ($chkFullscreenApp.Checked) {
+$cmbCaptureMethod.Add_SelectedIndexChanged({
+    Sync-LegacyFullscreenFlag
+    if (Test-FullscreenCaptureMode) {
         $null = Resolve-FullscreenCaptureTarget -Quiet
     }
     else {
@@ -4125,6 +11010,14 @@ $chkFullscreenApp.Add_CheckedChanged({
         Update-CaptureModeUi
     }
     Update-CommandPreview
+})
+$chkFullscreenApp.Add_CheckedChanged({
+    if ($chkFullscreenApp.Checked -and $cmbCaptureMethod.SelectedItem -ne 'Fullscreen App - D3D11 / WGC') {
+        $cmbCaptureMethod.SelectedItem = 'Fullscreen App - D3D11 / WGC'
+    }
+    elseif (-not $chkFullscreenApp.Checked -and (Test-FullscreenCaptureMode)) {
+        $cmbCaptureMethod.SelectedItem = $script:DefaultCaptureMethodName
+    }
 })
 $chkPreview.Add_CheckedChanged({
     if ($script:GstProcess -and -not $script:GstProcess.HasExited) {
@@ -4160,14 +11053,23 @@ $numWidth.Add_ValueChanged($previewHandler)
 $numHeight.Add_ValueChanged($previewHandler)
 $numFps.Add_ValueChanged($previewHandler)
 $numVideoBitrate.Add_ValueChanged($previewHandler)
+$cmbRateControl.Add_SelectedIndexChanged({ Update-EncoderUi })
+$numMaxVideoBitrate.Add_ValueChanged($previewHandler)
+$numConstantQp.Add_ValueChanged($previewHandler)
 $numGopSeconds.Add_ValueChanged($previewHandler)
 $cmbPreset.Add_SelectedIndexChanged($previewHandler)
 $cmbProfile.Add_SelectedIndexChanged($previewHandler)
+$cmbEncoderTune.Add_SelectedIndexChanged({ Update-EncoderUi })
+$cmbMultipass.Add_SelectedIndexChanged($previewHandler)
+$cmbVideoSyncMode.Add_SelectedIndexChanged($previewHandler)
+$numVbvBuffer.Add_ValueChanged($previewHandler)
 $numBFrames.Add_ValueChanged({ Update-EncoderUi })
 $chkLookAhead.Add_CheckedChanged({ Update-EncoderUi })
 $numLookAheadFrames.Add_ValueChanged({ Update-EncoderUi })
 $chkAdaptiveQuantization.Add_CheckedChanged({ Update-EncoderUi })
+$chkTemporalAq.Add_CheckedChanged({ Update-EncoderUi })
 $numAqStrength.Add_ValueChanged({ Update-EncoderUi })
+$txtCustomEncoderOptions.Add_TextChanged($previewHandler)
 $numSrtLatency.Add_ValueChanged($previewHandler)
 $cmbRtspTransport.Add_SelectedIndexChanged($previewHandler)
 $chkDesktopAudio.Add_CheckedChanged({
@@ -4178,9 +11080,375 @@ $chkMic.Add_CheckedChanged({
     Update-AudioCodecChoices -PreserveCurrent
 })
 $numMicVolume.Add_ValueChanged($previewHandler)
+$cmbDesktopAudioDevice.Add_SelectedIndexChanged($previewHandler)
+$cmbMicAudioDevice.Add_SelectedIndexChanged($previewHandler)
+$btnRefreshAudioDevices.Add_Click({
+    try {
+        Refresh-AudioDevices
+        Save-Settings
+    }
+    catch {
+        Append-Log "Audio device refresh button failed: $($_.Exception.Message)"
+        if ($lblAudioDeviceStatus) {
+            $lblAudioDeviceStatus.Text = 'Audio device refresh failed; see log'
+            $lblAudioDeviceStatus.ForeColor = [System.Drawing.Color]::DarkOrange
+        }
+    }
+})
 $numAudioBitrate.Add_ValueChanged($previewHandler)
 $chkStartMediaMtx.Add_CheckedChanged({
     Update-MediaMtxUi
+    Update-CommandPreview
+})
+
+foreach ($control in @(
+    $txtDirectWebRtcSignalingHost,
+    $numDirectWebRtcSignalingPort,
+    $txtDirectWebRtcStun,
+    $txtDirectWebRtcWebPath,
+    $cmbDirectWebRtcBundledWebMode,
+    $txtDirectWebRtcBundledWebDirectory,
+    $cmbDirectWebRtcWorkingWebMode,
+    $txtDirectWebRtcWebDirectory,
+    $cmbDirectWebRtcCongestion,
+    $cmbDirectWebRtcMitigation,
+    $cmbWebRtcRecoveryMode,
+    $cmbWebRtcSenderQueueMode,
+    $cmbThreadingProfile,
+    $cmbGstProcessPriority,
+    $cmbQueueLeakMode,
+    $chkDirectWebRtcFec,
+    $chkDirectWebRtcRetransmission,
+    $cmbJbufWatchdogMode,
+    $numJbufMaxMs,
+    $numDirectWebRtcPlayerJitterMs,
+    $numDirectWebRtcVideoJitterMs,
+    $chkPlayerStatsOverlay,
+    $chkPlayerJbufDebug,
+    $chkPlayerUrlOverrides,
+    $cmbDirectWebRtcOpusMode,
+    $cmbDirectWebRtcOpusFrameMs,
+    $cmbDirectWebRtcOpusAudioType,
+    $chkDirectWebRtcOpusFec,
+    $chkDirectWebRtcOpusDtx
+)) {
+    if ($control -is [System.Windows.Forms.TextBox]) {
+        $control.Add_TextChanged({ Update-PlayerConfigFromUi })
+    }
+    elseif ($control -is [System.Windows.Forms.NumericUpDown]) {
+        $control.Add_ValueChanged({ Update-PlayerConfigFromUi })
+    }
+    elseif ($control -is [System.Windows.Forms.ComboBox]) {
+        $control.Add_SelectedIndexChanged({ Update-PlayerConfigFromUi })
+    }
+    elseif ($control -is [System.Windows.Forms.CheckBox]) {
+        $control.Add_CheckedChanged({ Update-PlayerConfigFromUi })
+    }
+}
+
+$btnBrowseDirectWebRtcBundledWebDirectory.Add_Click({
+    try {
+        $initial = $txtDirectWebRtcBundledWebDirectory.Text
+        if ([string]::IsNullOrWhiteSpace($initial)) { $initial = Get-BundledDirectWebRtcWebDirectory }
+        $picked = Select-DirectWebRtcFolderPath -Title 'Select bundled/static gstwebrtc-api\dist source folder' -InitialPath $initial -AllowNewFolder:$false
+        if ([string]::IsNullOrWhiteSpace($picked)) { return }
+        $txtDirectWebRtcBundledWebDirectory.Text = $picked
+        $cmbDirectWebRtcBundledWebMode.SelectedItem = 'Manual path'
+        if (Test-DirectWebRtcWebDirectory $picked) {
+            Append-Log "Bundled Web UI source selected: $picked"
+        }
+        else {
+            Append-Log "Bundled Web UI source selected, but index.html/player.js were not found: $picked"
+            [System.Windows.Forms.MessageBox]::Show('Selected bundled source must contain index.html and player.js.', $script:AppName, 'OK', 'Warning') | Out-Null
+        }
+        Save-Settings
+        Update-PlayerConfigFromUi
+    }
+    catch {
+        [System.Windows.Forms.MessageBox]::Show("Could not select bundled Web UI source: $($_.Exception.Message)", $script:AppName, 'OK', 'Warning') | Out-Null
+    }
+})
+
+$btnDetectDirectWebRtcBundledWebDirectory.Add_Click({
+    try {
+        $found = ''
+        if (-not [string]::IsNullOrWhiteSpace($script:ApplicationDirectory)) {
+            $candidate = Join-Path $script:ApplicationDirectory 'gstwebrtc-api\dist'
+            if (Test-DirectWebRtcWebDirectory $candidate) { $found = [System.IO.Path]::GetFullPath($candidate) }
+        }
+        if ([string]::IsNullOrWhiteSpace($found)) { $found = Find-DirectWebRtcWebDirectory $txtGstPath.Text }
+        if ([string]::IsNullOrWhiteSpace($found)) {
+            Append-Log 'Bundled Web UI source was not found. Need gstwebrtc-api\dist beside the app/script or select it manually.'
+            [System.Windows.Forms.MessageBox]::Show('Could not find bundled gstwebrtc-api\dist automatically. Select the bundled source folder manually.', $script:AppName, 'OK', 'Warning') | Out-Null
+        }
+        else {
+            $txtDirectWebRtcBundledWebDirectory.Text = $found
+            $cmbDirectWebRtcBundledWebMode.SelectedItem = 'Manual path'
+            Append-Log "Bundled Web UI source detected: $found"
+        }
+        Save-Settings
+        Update-PlayerConfigFromUi
+    }
+    catch {
+        [System.Windows.Forms.MessageBox]::Show("Could not detect bundled Web UI source: $($_.Exception.Message)", $script:AppName, 'OK', 'Warning') | Out-Null
+    }
+})
+
+$btnBrowseDirectWebRtcWebDirectory.Add_Click({
+    try {
+        $initial = $txtDirectWebRtcWebDirectory.Text
+        if ([string]::IsNullOrWhiteSpace($initial)) { $initial = Get-DefaultDirectWebRtcWorkingWebDirectory }
+        $picked = Select-DirectWebRtcFolderPath -Title 'Select writable working/served Web UI directory' -InitialPath $initial -AllowNewFolder:$true
+        if ([string]::IsNullOrWhiteSpace($picked)) { return }
+        $txtDirectWebRtcWebDirectory.Text = $picked
+        $cmbDirectWebRtcWorkingWebMode.SelectedItem = 'Manual path'
+        if (-not (Test-DirectWebRtcWebDirectoryWritable $picked)) {
+            Append-Log "Working Web UI directory selected, but it is not writable: $picked"
+            [System.Windows.Forms.MessageBox]::Show('Selected working Web UI directory is not writable.', $script:AppName, 'OK', 'Warning') | Out-Null
+            return
+        }
+        Save-Settings
+        $source = Get-DirectWebRtcSourceWebDirectory
+        $served = Ensure-DirectWebRtcRuntimeWebDirectory $source
+        Write-DirectWebRtcWebClientConfig
+        Append-Log "Working Web UI directory selected: $picked; serving from $served"
+        Update-DirectWebRtcUi
+        Update-CommandPreview
+    }
+    catch {
+        [System.Windows.Forms.MessageBox]::Show("Could not select working Web UI directory: $($_.Exception.Message)", $script:AppName, 'OK', 'Warning') | Out-Null
+    }
+})
+
+$btnDetectDirectWebRtcWebDirectory.Add_Click({
+    try {
+        $working = Get-DefaultDirectWebRtcWorkingWebDirectory
+        $txtDirectWebRtcWebDirectory.Text = $working
+        $cmbDirectWebRtcWorkingWebMode.SelectedItem = 'Auto: LocalAppData'
+        if (-not (Test-DirectWebRtcWebDirectoryWritable $working)) { throw "Working directory is not writable: $working" }
+        $source = Get-DirectWebRtcSourceWebDirectory
+        $served = Ensure-DirectWebRtcRuntimeWebDirectory $source
+        Write-DirectWebRtcWebClientConfig
+        Save-Settings
+        Append-Log "Working Web UI directory detected/created: $served"
+        Update-DirectWebRtcUi
+        Update-CommandPreview
+    }
+    catch {
+        [System.Windows.Forms.MessageBox]::Show("Could not detect/create working Web UI directory: $($_.Exception.Message)", $script:AppName, 'OK', 'Warning') | Out-Null
+    }
+})
+
+
+$btnRefreshDirectWebRtcWebUi.Add_Click({
+    try {
+        $source = Get-DirectWebRtcSourceWebDirectory
+        $served = Ensure-DirectWebRtcRuntimeWebDirectory -SourceDirectory $source -ForceRefresh
+        Write-DirectWebRtcWebClientConfig
+        Update-DirectWebRtcWebUiStatus
+        Append-Log "Direct WebRTC web UI force refresh requested from Player tab: $source -> $served"
+    }
+    catch {
+        [System.Windows.Forms.MessageBox]::Show("Could not refresh Direct WebRTC web UI: $($_.Exception.Message)", $script:AppName, 'OK', 'Warning') | Out-Null
+    }
+})
+
+$btnOpenDirectWebRtcServedDir.Add_Click({
+    try {
+        $served = Get-DirectWebRtcWorkingWebDirectory
+        if (-not (Test-Path -LiteralPath $served)) { $null = New-Item -ItemType Directory -Path $served -Force }
+        Start-Process explorer.exe $served | Out-Null
+    }
+    catch {
+        [System.Windows.Forms.MessageBox]::Show("Could not open working/served web UI directory: $($_.Exception.Message)", $script:AppName, 'OK', 'Warning') | Out-Null
+    }
+})
+
+$btnOpenDirectWebRtcBundledDir.Add_Click({
+    try {
+        $bundled = Get-BundledDirectWebRtcWebDirectory
+        if ([string]::IsNullOrWhiteSpace($bundled)) { throw 'Bundled gstwebrtc-api\dist directory not found beside the app/script.' }
+        Start-Process explorer.exe $bundled | Out-Null
+    }
+    catch {
+        [System.Windows.Forms.MessageBox]::Show("Could not open bundled web UI directory: $($_.Exception.Message)", $script:AppName, 'OK', 'Warning') | Out-Null
+    }
+})
+
+$btnOpenDirectWebRtcViewer.Add_Click({
+    try {
+        Start-Process (Get-DirectWebRtcViewerUrl) | Out-Null
+    }
+    catch {
+        [System.Windows.Forms.MessageBox]::Show("Could not open viewer URL: $($_.Exception.Message)", $script:AppName, 'OK', 'Warning') | Out-Null
+    }
+})
+
+$cmbDirectWebRtcSmoothnessProfile.Add_SelectedIndexChanged({
+    Apply-DirectWebRtcSmoothnessProfile
+    Update-DirectWebRtcUi
+    Update-CommandPreview
+})
+
+foreach ($smoothControl in @($numDirectWebRtcPacingMs, $numDirectWebRtcPlayerJitterMs, $numDirectWebRtcVideoJitterMs, $numJbufMaxMs)) {
+    $smoothControl.Add_ValueChanged({
+        if (-not $script:ApplyingDirectWebRtcSmoothnessProfile -and $cmbDirectWebRtcSmoothnessProfile.SelectedItem -ne 'Custom') { $cmbDirectWebRtcSmoothnessProfile.SelectedItem = 'Custom' }
+        Update-PlayerConfigFromUi
+    })
+}
+
+foreach ($splitPlayerNumeric in @($numSplitAudioStallSeconds, $numSplitAvOffsetWarnMs)) {
+    $splitPlayerNumeric.Add_ValueChanged({ Update-PlayerConfigFromUi })
+}
+
+
+foreach ($playerControl in @($chkPlayerStatsOverlay, $chkPlayerJbufDebug, $chkPlayerUrlOverrides, $cmbPlayerAvRenderMode, $cmbDirectWebRtcAvPipelineMode, $cmbSplitPlayerSyncMode, $cmbJbufWatchdogMode)) {
+    if ($playerControl -is [System.Windows.Forms.CheckBox]) {
+        $playerControl.Add_CheckedChanged({ Update-PlayerConfigFromUi })
+    }
+    elseif ($playerControl -is [System.Windows.Forms.ComboBox]) {
+        $playerControl.Add_SelectedIndexChanged({ Update-PlayerConfigFromUi })
+    }
+}
+
+$cmbThreadingProfile.Add_SelectedIndexChanged({ Apply-ThreadingProfile; Save-Settings })
+$cmbThreadBudget.Add_SelectedIndexChanged({ Apply-ThreadBudget; Save-Settings })
+foreach ($budgetControl in @($numCpuWorkerLimit,$chkBudgetCaptureQueue,$chkBudgetSenderQueue,$chkBudgetAudioInputQueue,$chkBudgetAudioFinalQueue)) {
+    if ($budgetControl -is [System.Windows.Forms.NumericUpDown]) {
+        $budgetControl.Add_ValueChanged({
+            if ($script:ApplyingThreadBudget) { return }
+            if ($cmbThreadBudget.SelectedItem -ne 'Custom') { $cmbThreadBudget.SelectedItem = 'Custom' }
+            Update-CommandPreview
+            Save-Settings
+        })
+    }
+    else {
+        $budgetControl.Add_CheckedChanged({
+            if ($script:ApplyingThreadBudget) { return }
+            if ($cmbThreadBudget.SelectedItem -ne 'Custom') { $cmbThreadBudget.SelectedItem = 'Custom' }
+            Update-CommandPreview
+            Save-Settings
+        })
+    }
+}
+foreach ($threadingControl in @($cmbGstProcessPriority, $cmbQueueLeakMode, $numCaptureQueueBuffers, $numAudioQueueBuffers, $numAudioQueueCapMs, $chkBufferLatenessTracer)) {
+    if ($threadingControl -is [System.Windows.Forms.ComboBox]) {
+        $threadingControl.Add_SelectedIndexChanged({
+            if (-not $script:ApplyingThreadingProfile -and $cmbThreadingProfile.SelectedItem -ne 'Custom') { $cmbThreadingProfile.SelectedItem = 'Custom' }
+            Update-CommandPreview
+        })
+    }
+    elseif ($threadingControl -is [System.Windows.Forms.NumericUpDown]) {
+        $threadingControl.Add_ValueChanged({
+            if (-not $script:ApplyingThreadingProfile -and $cmbThreadingProfile.SelectedItem -ne 'Custom') { $cmbThreadingProfile.SelectedItem = 'Custom' }
+            Update-CommandPreview
+        })
+    }
+    elseif ($threadingControl -is [System.Windows.Forms.CheckBox]) {
+        $threadingControl.Add_CheckedChanged({
+            if (-not $script:ApplyingThreadingProfile -and $cmbThreadingProfile.SelectedItem -ne 'Custom') { $cmbThreadingProfile.SelectedItem = 'Custom' }
+            Update-CommandPreview
+        })
+    }
+}
+
+$cmbGstDebugMode.Add_SelectedIndexChanged({ Update-GstDebugUi; Save-Settings; Update-CommandPreview })
+$txtGstDebugSpec.Add_TextChanged({ Save-Settings; Update-CommandPreview })
+$chkGstDebugNoColor.Add_CheckedChanged({ Save-Settings; Update-CommandPreview })
+
+foreach ($smoothCombo in @($cmbWebRtcRecoveryMode, $cmbWebRtcSenderQueueMode)) {
+    $smoothCombo.Add_SelectedIndexChanged({
+        if (-not $script:ApplyingDirectWebRtcSmoothnessProfile -and $cmbDirectWebRtcSmoothnessProfile.SelectedItem -ne 'Custom') { $cmbDirectWebRtcSmoothnessProfile.SelectedItem = 'Custom' }
+        if ($cmbWebRtcRecoveryMode.SelectedItem) { Set-WebRtcRecoveryMode ([string]$cmbWebRtcRecoveryMode.SelectedItem) }
+        Update-DirectWebRtcUi
+        Update-CommandPreview
+    })
+}
+
+$btnResetWebRtcSane.Add_Click({ Reset-WebRtcSaneDefaults; Save-Settings; Append-Log 'WebRTC transport knobs reset to sane defaults.' })
+
+$btnCopyDirectWebRtcViewer.Add_Click({
+    try {
+        [System.Windows.Forms.Clipboard]::SetText((Get-DirectWebRtcViewerUrl))
+        Append-Log "Direct WebRTC viewer URL copied: $(Get-DirectWebRtcViewerUrl)"
+    }
+    catch {
+        [System.Windows.Forms.MessageBox]::Show("Could not copy viewer URL: $($_.Exception.Message)", $script:AppName, 'OK', 'Warning') | Out-Null
+    }
+})
+
+$chkRecordingEnabled.Add_CheckedChanged({ Update-RecordingUi })
+$txtRecordingDirectory.Add_TextChanged($previewHandler)
+$txtRecordingTemplate.Add_TextChanged($previewHandler)
+$cmbRecordingEncoder.Add_SelectedIndexChanged({ Update-RecordingUi })
+$cmbRecordingPreset.Add_SelectedIndexChanged($previewHandler)
+$cmbRecordingProfile.Add_SelectedIndexChanged($previewHandler)
+$numRecordingWidth.Add_ValueChanged($previewHandler)
+$numRecordingHeight.Add_ValueChanged($previewHandler)
+$numRecordingFps.Add_ValueChanged($previewHandler)
+$numRecordingVideoBitrate.Add_ValueChanged($previewHandler)
+$cmbRecordingRateControl.Add_SelectedIndexChanged({ Update-RecordingUi })
+$numRecordingMaxVideoBitrate.Add_ValueChanged($previewHandler)
+$numRecordingConstantQp.Add_ValueChanged($previewHandler)
+$numRecordingGopSeconds.Add_ValueChanged($previewHandler)
+$numRecordingBFrames.Add_ValueChanged({ Update-RecordingUi })
+$cmbRecordingTune.Add_SelectedIndexChanged({ Update-RecordingUi })
+$cmbRecordingMultipass.Add_SelectedIndexChanged($previewHandler)
+$chkRecordingLookAhead.Add_CheckedChanged({ Update-RecordingUi })
+$numRecordingLookAheadFrames.Add_ValueChanged($previewHandler)
+$chkRecordingSpatialAq.Add_CheckedChanged({ Update-RecordingUi })
+$chkRecordingTemporalAq.Add_CheckedChanged({ Update-RecordingUi })
+$numRecordingAqStrength.Add_ValueChanged($previewHandler)
+$numRecordingVbvBuffer.Add_ValueChanged($previewHandler)
+$txtRecordingCustomEncoderOptions.Add_TextChanged($previewHandler)
+$chkRecordingDesktopAudio.Add_CheckedChanged({ Update-RecordingUi })
+$chkRecordingMic.Add_CheckedChanged({ Update-RecordingUi })
+$numRecordingAudioBitrate.Add_ValueChanged($previewHandler)
+
+$chkNetworkTuningEnabled.Add_CheckedChanged({ Update-NetworkUi })
+$chkNetworkDscp.Add_CheckedChanged({ Update-NetworkUi })
+$cmbNetworkProfile.Add_SelectedIndexChanged({ Apply-NetworkProfileToUi })
+$btnRefreshNetworkAdapters.Add_Click({ Refresh-NetworkAdapters })
+$btnNetworkSnapshot.Add_Click({
+    try {
+        Save-NetworkSnapshot | Out-Null
+        $lowerTabs.SelectedTab = $tabLog
+    }
+    catch {
+        [System.Windows.Forms.MessageBox]::Show("Could not create network snapshot.`r`n`r`n$($_.Exception.Message)", $script:AppName, 'OK', 'Warning') | Out-Null
+    }
+})
+$btnNetworkApply.Add_Click({
+    $lowerTabs.SelectedTab = $tabLog
+    Apply-NetworkTuningForSession | Out-Null
+})
+$btnNetworkRestore.Add_Click({
+    $lowerTabs.SelectedTab = $tabLog
+    Restore-NetworkTuning | Out-Null
+})
+$btnOpenNetworkRecovery.Add_Click({
+    try {
+        Ensure-NetworkRecoveryDirectory
+        Start-Process -FilePath 'explorer.exe' -ArgumentList @($script:NetworkRecoveryDirectory) | Out-Null
+    }
+    catch {
+        Append-Log "Could not open recovery folder: $($_.Exception.Message)"
+    }
+})
+$btnResetTransport.Add_Click({ Reset-TransportDefaults; Save-Settings })
+$btnResetVideo.Add_Click({ Reset-VideoDefaults; Save-Settings })
+$btnResetAudio.Add_Click({ Reset-AudioDefaults; Save-Settings })
+$btnResetRecording.Add_Click({ Reset-RecordingDefaults; Save-Settings })
+$btnResetNetwork.Add_Click({ Reset-NetworkDefaults; Save-Settings })
+$btnResetOptions.Add_Click({ Reset-OptionsDefaults; Save-Settings })
+$btnResetAll.Add_Click({
+    $result = [System.Windows.Forms.MessageBox]::Show(
+        'Reset all GStreamer Glass app settings to defaults? This will not restore or delete Windows network snapshots.',
+        $script:AppName,
+        [System.Windows.Forms.MessageBoxButtons]::YesNo,
+        [System.Windows.Forms.MessageBoxIcon]::Question
+    )
+    if ($result -eq [System.Windows.Forms.DialogResult]::Yes) { Reset-AllAppDefaults }
 })
 
 $previewPanel.Add_Resize({
@@ -4232,6 +11500,34 @@ $btnBrowseMediaMtx.Add_Click({
         ) | Out-Null
 
         Append-Log "MediaMTX browser error: $($_.Exception.ToString())"
+    }
+})
+
+$btnBrowseRecordingDirectory.Add_Click({
+    try {
+        $selectedPath = [GstExecutableBrowser]::SelectFolder(
+            $txtRecordingDirectory.Text,
+            'Select GStreamer Glass recording folder'
+        )
+
+        if (-not [string]::IsNullOrWhiteSpace($selectedPath)) {
+            $txtRecordingDirectory.Text = $selectedPath
+            Append-Log "Selected recording folder: $selectedPath"
+        }
+    }
+    catch {
+        $message =
+            "Could not open the recording folder browser.`r`n`r`n" +
+            $_.Exception.Message
+
+        [System.Windows.Forms.MessageBox]::Show(
+            $message,
+            $script:AppName,
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Error
+        ) | Out-Null
+
+        Append-Log "Recording folder browser error: $($_.Exception.ToString())"
     }
 })
 
@@ -4350,21 +11646,12 @@ $form.Add_VisibleChanged({
 $pollTimer = New-Object System.Windows.Forms.Timer
 $pollTimer.Interval = 400
 $pollTimer.Add_Tick({
-    $stdoutText = Read-NewLogText -Path $script:StdOutPath -Position ([ref]$script:StdOutPosition)
-    if ($stdoutText) { Append-Log $stdoutText }
-
-    $stderrText = Read-NewLogText -Path $script:StdErrPath -Position ([ref]$script:StdErrPosition)
-    if ($stderrText) { Append-Log $stderrText }
-
-    $mediaStdoutText = Read-NewLogText `
-        -Path $script:MediaMtxStdOutPath `
-        -Position ([ref]$script:MediaMtxStdOutPosition)
-    if ($mediaStdoutText) { Append-Log $mediaStdoutText }
-
-    $mediaStderrText = Read-NewLogText `
-        -Path $script:MediaMtxStdErrPath `
-        -Position ([ref]$script:MediaMtxStdErrPosition)
-    if ($mediaStderrText) { Append-Log $mediaStderrText }
+    # Drain all four log streams, then append once. Four separate Append-Log calls
+    # meant four AppendText + trim-check + forced-scroll passes per tick on the UI
+    # thread; batching collapses that to one.
+    $pending = Drain-ManagedProcessLogs
+    if ($pending) { Append-Log $pending }
+    Update-GstThreadCountStatus
 
     Try-AttachPreview
 
@@ -4388,7 +11675,7 @@ $pollTimer.Add_Tick({
                 'longer running.'
             )
 
-            if ($chkAutoRestart.Checked -or $chkFullscreenApp.Checked) {
+            if ($chkAutoRestart.Checked -or (Test-FullscreenCaptureMode)) {
                 Stop-GstStream -Restart
             }
             else {
@@ -4397,10 +11684,19 @@ $pollTimer.Add_Tick({
         }
         else {
             Remove-ActiveProcessState
+
+            # Nothing left running to produce MediaMTX output. Drain the tail, then
+            # stop tracking so we do not reopen dead log files on every tick.
+            $mediaFinalText = Drain-ManagedProcessLogs
+            if ($mediaFinalText) { Append-Log $mediaFinalText }
+            $script:MediaMtxStdOutPath = $null
+            $script:MediaMtxStdErrPath = $null
+            $script:MediaMtxStdOutPosition = [int64]0
+            $script:MediaMtxStdErrPosition = [int64]0
         }
     }
 
-    if ($chkFullscreenApp.Checked -and $script:GstProcess -and -not $script:GstProcess.HasExited -and (Get-Date) -ge $script:NextFullscreenProbe) {
+    if ((Test-FullscreenCaptureMode) -and $script:GstProcess -and -not $script:GstProcess.HasExited -and (Get-Date) -ge $script:NextFullscreenProbe) {
         $script:NextFullscreenProbe = (Get-Date).AddSeconds(1)
 
         if ($script:CaptureWindowHwnd -ne [IntPtr]::Zero -and -not [GstPreviewNative]::WindowExists($script:CaptureWindowHwnd)) {
@@ -4431,7 +11727,24 @@ $pollTimer.Add_Tick({
         $script:GstProcess = $null
         Stop-ManagedMediaMtx -Quiet
         Remove-ActiveProcessState
+
+        # Final drain, then stop tracking these logs. The paths were previously left
+        # populated after exit, so every subsequent tick reopened and re-seeked four
+        # dead files forever at 2.5 Hz.
+        $finalText = Drain-ManagedProcessLogs
+        if ($finalText) { Append-Log $finalText }
+        $script:StdOutPath = $null
+        $script:StdErrPath = $null
+        $script:StdOutPosition = [int64]0
+        $script:StdErrPosition = [int64]0
+        $script:MediaMtxStdOutPath = $null
+        $script:MediaMtxStdErrPath = $null
+        $script:MediaMtxStdOutPosition = [int64]0
+        $script:MediaMtxStdErrPosition = [int64]0
+
+        if ($wasRequested -and $chkNetworkRestoreOnStop.Checked) { Restore-NetworkTuning -Quiet | Out-Null }
         $script:PreviewHwnd = [IntPtr]::Zero
+        Reset-PreviewAppliedState
         $previewPlaceholder.Visible = $true
         $previewPlaceholder.Text = 'Preview stopped'
         Set-RunState $false
@@ -4442,14 +11755,14 @@ $pollTimer.Add_Tick({
             Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Pipeline stopped."
         }
         else {
-            $statusLabel.Text = "Pipeline exited — code $exitCode"
+            $statusLabel.Text = "Pipeline exited - code $exitCode"
             $statusLabel.ForeColor = [System.Drawing.Color]::DarkRed
             $lowerTabs.SelectedTab = $tabLog
             Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Pipeline exited unexpectedly with code $exitCode."
 
-            if ($chkFullscreenApp.Checked -or $chkAutoRestart.Checked) {
+            if ((Test-FullscreenCaptureMode) -or $chkAutoRestart.Checked) {
                 $script:RestartAt = (Get-Date).AddSeconds(2)
-                if ($chkFullscreenApp.Checked) {
+                if (Test-FullscreenCaptureMode) {
                     $script:WaitingForFullscreen = $true
                     Set-WaitingForFullscreenState
                     Append-Log 'Fullscreen capture will retry every 2 seconds until an application is available.'
@@ -4471,19 +11784,26 @@ $pollTimer.Add_Tick({
 $pollTimer.Start()
 
 $form.Add_Shown({
+    Refresh-NetworkAdapters
+    Refresh-WebcamDevices
     Load-Settings
+    Update-GstDebugUi
     Initialize-GstJob
     Stop-StaleManagedProcesses
-    if ($chkFullscreenApp.Checked) {
+    if (Test-FullscreenCaptureMode) {
         $null = Resolve-FullscreenCaptureTarget -Quiet
     }
     Update-CaptureModeUi
-    Update-MediaMtxUi
-    Update-ProtocolUi
+    Update-TransportUi
     Update-AudioCodecChoices
+    Update-AudioTimingOptionUi
     Update-EncoderUi
+    Update-RecordingUi
+    Update-NetworkUi
+    Update-SceneUi
     Update-CommandPreview
     Update-TrayMenuState
+    Check-PendingNetworkRecovery
     Append-Log "Application icon: $($script:AppIconSource)"
 
     if ($chkStartMinimized.Checked) {
@@ -4521,6 +11841,13 @@ function Invoke-ApplicationCleanup {
     catch {}
 
     Remove-ActiveProcessState
+
+    try {
+        if ($chkNetworkRestoreOnExit -and $chkNetworkRestoreOnExit.Checked) {
+            Restore-NetworkTuning -Quiet | Out-Null
+        }
+    }
+    catch {}
 
     if ($script:JobHandle -ne [IntPtr]::Zero) {
         try {
