@@ -630,7 +630,7 @@ public static class GstProcessJob
 '@
 }
 
-$script:AppVersion = '3.7.52f58'
+$script:AppVersion = '3.7.52f59'
 $script:AppName = "GStreamer Glass v$($script:AppVersion)"
 $script:ConfigDirectory = Join-Path $env:APPDATA 'GStreamerBasicWhipStreamer'
 $script:ConfigPath = Join-Path $script:ConfigDirectory 'settings.json'
@@ -3957,6 +3957,12 @@ $btnRedrawScenePreview = New-Object System.Windows.Forms.Button
 $btnRedrawScenePreview.Text = 'Redraw preview'
 $toolTip.SetToolTip($btnRedrawScenePreview, 'Refreshes the embedded scene preview surface without restarting the GStreamer pipeline.')
 
+$chkDynamicScenePreviews = New-Object System.Windows.Forms.CheckBox
+$chkDynamicScenePreviews.Text = 'Dynamic previews'
+$chkDynamicScenePreviews.AutoSize = $true
+$chkDynamicScenePreviews.Checked = $false
+$toolTip.SetToolTip($chkDynamicScenePreviews, 'Experimental: try separate live desktop/webcam previews inside the scene editor. Off uses the original composed preview surface.')
+
 $cmbWebcamLayout = New-Object System.Windows.Forms.ComboBox
 $cmbWebcamLayout.DropDownStyle = 'DropDownList'
 $null = $cmbWebcamLayout.Items.AddRange(@('Bottom right', 'Bottom left', 'Top right', 'Top left', 'Custom'))
@@ -4159,7 +4165,18 @@ function Update-SceneCanvasFromValues {
             $sceneDesktopPreviewPanel.Visible = [bool]$script:DynamicScenePreviewActive
             $sceneDesktopPreviewPanel.BringToFront()
         }
-        $lblSceneDesktop.Visible = (-not $script:DynamicScenePreviewActive)
+        $usingLegacyScenePreview = (
+            $script:SceneWorkspaceActive -and
+            (-not $script:DynamicScenePreviewActive) -and
+            $chkPreview -and $chkPreview.Checked -and
+            $previewPanel -and
+            $previewPanel.Parent -eq $sceneEditorCanvas
+        )
+        $lblSceneDesktop.Visible = ((-not $script:DynamicScenePreviewActive) -and (-not $usingLegacyScenePreview))
+        if ($usingLegacyScenePreview) {
+            $previewPanel.Visible = $true
+            $previewPanel.BringToFront()
+        }
         $sceneWebcamElement.BringToFront()
         if (Get-Command Sync-DynamicScenePreviewLayout -ErrorAction SilentlyContinue) {
             Sync-DynamicScenePreviewLayout
@@ -4385,6 +4402,20 @@ function Reset-DynamicScenePreviewFallback {
 $btnRefreshWebcams.Add_Click({ Reset-DynamicScenePreviewFallback; Refresh-WebcamDevices; Update-SceneUi; Restart-DynamicScenePreviewIfActive })
 $btnRedrawScenePreview.Add_Click({ Invoke-ScenePreviewRedraw })
 $chkSceneEnabled.Add_CheckedChanged({ Reset-DynamicScenePreviewFallback; Update-SceneUi; Restart-DynamicScenePreviewIfActive; Sync-StandalonePreviewState -Quiet })
+$chkDynamicScenePreviews.Add_CheckedChanged({
+    Reset-DynamicScenePreviewFallback
+    if (-not $chkDynamicScenePreviews.Checked -and $script:DynamicScenePreviewActive) {
+        Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Dynamic scene previews disabled; falling back to the normal composed preview."
+        Stop-DynamicScenePreview -Quiet
+    }
+    elseif ($chkDynamicScenePreviews.Checked -and $script:SceneWorkspaceActive -and $script:PreviewOnlyMode -and $script:GstProcess -and -not $script:GstProcess.HasExited) {
+        Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Dynamic scene previews enabled; restarting local preview to try the experimental source preview path."
+        Stop-GstStream
+    }
+    Update-SceneCanvasFromValues
+    Sync-StandalonePreviewState -Quiet
+    Update-CommandPreview
+})
 $cmbScenePreset.Add_SelectedIndexChanged({ Reset-DynamicScenePreviewFallback; Update-SceneUi; Restart-DynamicScenePreviewIfActive })
 $cmbSceneCompositor.Add_SelectedIndexChanged({ Update-SceneUi })
 $cmbWebcamDevice.Add_SelectedIndexChanged({ Reset-DynamicScenePreviewFallback; Update-SceneUi; Restart-DynamicScenePreviewIfActive })
@@ -5259,6 +5290,7 @@ function Apply-ModernDashboardUi {
     Add-Field $r -Label 'Sources' -Control $sceneSourcePalette -Width 550 | Out-Null
     $r = Add-Row $s
     Add-Field $r -Control $btnRedrawScenePreview -Width 130 | Out-Null
+    Add-Field $r -Control $chkDynamicScenePreviews -Width 150 | Out-Null
     $r = Add-Row $s
     Add-Field $r -Control $sceneEditorCanvas -Width 550 | Out-Null
     $r = Add-Row $s
@@ -11615,6 +11647,7 @@ function Save-Settings {
             RecordingAudioBitrateKbps = [int]$numRecordingAudioBitrate.Value
             Preview           = $chkPreview.Checked
             HidePreviewDuringStream = $chkHidePreviewDuringStream.Checked
+            DynamicScenePreviews = $chkDynamicScenePreviews.Checked
             AutoRestart       = $chkAutoRestart.Checked
             Verbose           = $chkVerbose.Checked
             DiskProcessLogging = $chkDiskProcessLogging.Checked
@@ -11999,6 +12032,7 @@ function Load-Settings {
         if ($settings.RecordingAudioBitrateKbps) { $numRecordingAudioBitrate.Value = [decimal]$settings.RecordingAudioBitrateKbps }
         if ($null -ne $settings.Preview) { $chkPreview.Checked = [bool]$settings.Preview }
         if ($null -ne $settings.HidePreviewDuringStream) { $chkHidePreviewDuringStream.Checked = [bool]$settings.HidePreviewDuringStream }
+        if ($null -ne $settings.DynamicScenePreviews) { $chkDynamicScenePreviews.Checked = [bool]$settings.DynamicScenePreviews }
         if ($null -ne $settings.AutoRestart) { $chkAutoRestart.Checked = [bool]$settings.AutoRestart }
         if ($null -ne $settings.Verbose) { $chkVerbose.Checked = [bool]$settings.Verbose }
         if ($null -ne $settings.DiskProcessLogging) { $chkDiskProcessLogging.Checked = [bool]$settings.DiskProcessLogging }
@@ -12539,10 +12573,15 @@ function Try-AttachPreview {
 
 function Test-UseDynamicScenePreview {
     try {
-        # Recovery build: keep the experimental object-level scene preview inert.
-        # The scene tab uses the normal composed preview surface until the dynamic
-        # source-preview path can be reintroduced without touching stream startup.
-        return $false
+        return (
+            $script:SceneWorkspaceActive -and
+            -not $script:SuppressDynamicScenePreview -and
+            $chkDynamicScenePreviews -and $chkDynamicScenePreviews.Checked -and
+            $chkSceneEnabled -and $chkSceneEnabled.Checked -and
+            $chkPreview -and $chkPreview.Checked -and
+            (Test-StandalonePreviewAllowed) -and
+            -not ($script:GstProcess -and -not $script:GstProcess.HasExited)
+        )
     }
     catch {
         return $false
@@ -12743,8 +12782,13 @@ function Invoke-DynamicScenePreviewFallback {
         $previewPlaceholder.Visible = $true
     }
 
-    # Do not start any replacement pipeline from this fallback path. A failed
-    # preview should stay a preview failure, not become a stream/start action.
+    if ($sceneDesktopPreviewPanel) { $sceneDesktopPreviewPanel.Visible = $false }
+    if ($sceneWebcamPreviewPanel) { $sceneWebcamPreviewPanel.Visible = $false }
+    Update-SceneCanvasFromValues
+
+    if ($chkPreview -and $chkPreview.Checked -and (Test-StandalonePreviewAllowed)) {
+        Sync-StandalonePreviewState -Quiet
+    }
 }
 
 function Sync-DynamicScenePreviewLayout {
