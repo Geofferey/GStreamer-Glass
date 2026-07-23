@@ -630,7 +630,7 @@ public static class GstProcessJob
 '@
 }
 
-$script:AppVersion = '3.7.52f7'
+$script:AppVersion = '3.7.52f8'
 $script:AppName = "GStreamer Glass v$($script:AppVersion)"
 $script:ConfigDirectory = Join-Path $env:APPDATA 'GStreamerBasicWhipStreamer'
 $script:ConfigPath = Join-Path $script:ConfigDirectory 'settings.json'
@@ -763,6 +763,8 @@ $script:DefaultAudioSampleRate = 48000
 $script:DefaultAudioMixerMode = $true
 $script:DefaultDirectWebRtcSignalingHost = '0.0.0.0'
 $script:DefaultDirectWebRtcSignalingPort = 8189
+$script:DefaultDirectWebRtcSplitAudioSignalingPort = 8190
+$script:DefaultDirectWebRtcSharedSignaling = $false
 $script:DefaultDirectWebRtcStunServer = 'stun://stun.l.google.com:19302'
 $script:DefaultDirectWebRtcSmoothnessProfile = 'Sane defaults'
 $script:DefaultWebRtcRecoveryMode = 'None'
@@ -1584,6 +1586,23 @@ $numDirectWebRtcSignalingPort.Value = $script:DefaultDirectWebRtcSignalingPort
 $settingsGroup.Controls.Add($numDirectWebRtcSignalingPort)
 $toolTip.SetToolTip($numDirectWebRtcSignalingPort, 'TCP/WebSocket signalling port for webrtcsink. TCP/WebSocket signalling port. Default 8189 for proxy compatibility; media still negotiates separately through WebRTC ICE/UDP.')
 
+$numDirectWebRtcSplitAudioSignalingPort = New-Object System.Windows.Forms.NumericUpDown
+$numDirectWebRtcSplitAudioSignalingPort.Location = New-Object System.Drawing.Point(15, 548)
+$numDirectWebRtcSplitAudioSignalingPort.Size = New-Object System.Drawing.Size(85, 23)
+$numDirectWebRtcSplitAudioSignalingPort.Minimum = 1
+$numDirectWebRtcSplitAudioSignalingPort.Maximum = 65535
+$numDirectWebRtcSplitAudioSignalingPort.Value = $script:DefaultDirectWebRtcSplitAudioSignalingPort
+$settingsGroup.Controls.Add($numDirectWebRtcSplitAudioSignalingPort)
+$toolTip.SetToolTip($numDirectWebRtcSplitAudioSignalingPort, 'TCP/WebSocket signalling port for the separate split-audio producer when shared signalling is off. Default 8190.')
+
+$chkDirectWebRtcSharedSignaling = New-Object System.Windows.Forms.CheckBox
+$chkDirectWebRtcSharedSignaling.Text = 'Shared signalling for split A/V'
+$chkDirectWebRtcSharedSignaling.Location = New-Object System.Drawing.Point(15, 548)
+$chkDirectWebRtcSharedSignaling.Size = New-Object System.Drawing.Size(245, 24)
+$chkDirectWebRtcSharedSignaling.Checked = $script:DefaultDirectWebRtcSharedSignaling
+$settingsGroup.Controls.Add($chkDirectWebRtcSharedSignaling)
+$toolTip.SetToolTip($chkDirectWebRtcSharedSignaling, 'Split mode only. Video owns the configured signalling server and the audio producer joins that same server through signaller::uri. Off preserves the existing separate-port method.')
+
 $txtDirectWebRtcStun = New-Object System.Windows.Forms.TextBox
 $txtDirectWebRtcStun.Location = New-Object System.Drawing.Point(15, 548)
 $txtDirectWebRtcStun.Size = New-Object System.Drawing.Size(250, 23)
@@ -2269,7 +2288,7 @@ $cmbDirectWebRtcAvPipelineMode.DropDownStyle = 'DropDownList'
 $null = $cmbDirectWebRtcAvPipelineMode.Items.AddRange([string[]]@('Single pipeline','Split A/V pipelines - separate gst-launch'))
 $cmbDirectWebRtcAvPipelineMode.SelectedItem = $script:DefaultDirectWebRtcAvPipelineMode
 $settingsGroup.Controls.Add($cmbDirectWebRtcAvPipelineMode)
-$toolTip.SetToolTip($cmbDirectWebRtcAvPipelineMode, 'Direct GST WebRTC topology. Single pipeline keeps audio and video in one gst-launch pipeline. Split mode launches a second audio-only gst-launch/webrtcsink on signalling port +1 so audio/video clocks and latency negotiation are isolated for testing.')
+$toolTip.SetToolTip($cmbDirectWebRtcAvPipelineMode, 'Direct GST WebRTC topology. Single pipeline keeps audio and video in one gst-launch pipeline. Split mode launches a second audio-only gst-launch/webrtcsink. Transport-tab controls choose separate signalling ports or one shared signalling server.')
 
 $cmbSplitPlayerSyncMode = New-Object System.Windows.Forms.ComboBox
 $cmbSplitPlayerSyncMode.Location = New-Object System.Drawing.Point(15, 548)
@@ -4169,7 +4188,10 @@ function Apply-ModernDashboardUi {
     Add-Field $r -Control $lblDirectWebRtcStatus -Width 535 | Out-Null
     $r = Add-Row $s
     Add-Field $r -Label 'Signaling host' -Control $txtDirectWebRtcSignalingHost -Width 155 | Out-Null
-    Add-Field $r -Label 'WS TCP port' -Control $numDirectWebRtcSignalingPort -Width 85 | Out-Null
+    Add-Field $r -Label 'Video WS port' -Control $numDirectWebRtcSignalingPort -Width 85 | Out-Null
+    Add-Field $r -Label 'Audio WS port' -Control $numDirectWebRtcSplitAudioSignalingPort -Width 85 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Control $chkDirectWebRtcSharedSignaling -Width 260 | Out-Null
     Add-Field $r -Label 'STUN' -Control $txtDirectWebRtcStun -Width 270 | Out-Null
     $r = Add-Row $s
     Add-Field $r -Label 'Congestion' -Control $cmbDirectWebRtcCongestion -Width 110 | Out-Null
@@ -5956,6 +5978,8 @@ function Reset-TransportDefaults {
     $txtDestination.Text = $script:ProtocolDestinations.WHIP
     $txtDirectWebRtcSignalingHost.Text = $script:DefaultDirectWebRtcSignalingHost
     $numDirectWebRtcSignalingPort.Value = $script:DefaultDirectWebRtcSignalingPort
+    $numDirectWebRtcSplitAudioSignalingPort.Value = $script:DefaultDirectWebRtcSplitAudioSignalingPort
+    $chkDirectWebRtcSharedSignaling.Checked = $script:DefaultDirectWebRtcSharedSignaling
     $txtDirectWebRtcStun.Text = $script:DefaultDirectWebRtcStunServer
     $txtDirectWebRtcWebPath.Text = $script:DefaultDirectWebRtcWebPath
     if ($cmbDirectWebRtcBundledWebMode.Items.Contains($script:DefaultDirectWebRtcBundledWebMode)) { $cmbDirectWebRtcBundledWebMode.SelectedItem = $script:DefaultDirectWebRtcBundledWebMode }
@@ -6656,8 +6680,26 @@ function Test-DirectWebRtcSplitAvPipelines {
     return ((Get-DirectWebRtcAvPipelineMode) -like 'Split A/V pipelines*')
 }
 
+function Test-DirectWebRtcSharedSignaling {
+    return ((Test-DirectWebRtcSplitAvPipelines) -and $chkDirectWebRtcSharedSignaling -and $chkDirectWebRtcSharedSignaling.Checked)
+}
+
 function Get-DirectWebRtcSplitAudioSignalingPort {
-    return ([int]$numDirectWebRtcSignalingPort.Value + [int]$script:DefaultDirectWebRtcSplitAudioPortOffset)
+    if (Test-DirectWebRtcSharedSignaling) { return [int]$numDirectWebRtcSignalingPort.Value }
+    return [int]$numDirectWebRtcSplitAudioSignalingPort.Value
+}
+
+function Get-DirectWebRtcSignalingClientHost {
+    $hostText = $txtDirectWebRtcSignalingHost.Text.Trim()
+    if ([string]::IsNullOrWhiteSpace($hostText) -or $hostText -in @('0.0.0.0','*','::','[::]')) { return '127.0.0.1' }
+    $hostText = $hostText.Trim('[',']')
+    if ($hostText -match ':') { return "[$hostText]" }
+    return $hostText
+}
+
+function Get-DirectWebRtcSharedSignallerUri {
+    $clientHost = Get-DirectWebRtcSignalingClientHost
+    return "ws://${clientHost}:$([int]$numDirectWebRtcSignalingPort.Value)"
 }
 
 function Get-DirectWebRtcSplitAudioWebAddress {
@@ -6677,13 +6719,14 @@ function Get-DirectWebRtcSplitAudioWebAddress {
 
 function Get-DirectWebRtcSplitAudioWsUrlForPlayer {
     # Proxy-aware default: do NOT hardcode 127.0.0.1 into gstglass-config.js.
-    # player.js will derive ws/wss + host from the actual page URL and use
-    # splitAudioSignalingPort. Local page => ws://127.0.0.1:8190.
-    # Proxied HTTPS page => wss://<page-host>:8190.
+    # player.js derives ws/wss + host from the actual primary viewer socket.
+    # Separate mode uses splitAudioSignalingPort; shared mode reuses the exact
+    # primary signalling WebSocket and selects the audio producer by metadata.
     return ''
 }
 
 function Get-DirectWebRtcSplitAudioWsUrlDescriptionForLog {
+    if (Test-DirectWebRtcSharedSignaling) { return 'same primary signalling WebSocket/server' }
     return "auto/proxy-aware from viewer page host on port $(Get-DirectWebRtcSplitAudioSignalingPort)"
 }
 
@@ -7694,12 +7737,14 @@ function Add-DirectWebRtcViewerQuery {
     $debug = if ($playerSettings.JbufDebug) { '1' } else { '0' }
     $avRenderMode = [System.Uri]::EscapeDataString([string]$playerSettings.AvRenderMode)
     $avPipelineMode = [System.Uri]::EscapeDataString([string](Get-DirectWebRtcAvPipelineMode))
+    $videoSignalPort = [int]$numDirectWebRtcSignalingPort.Value
     $splitAudioPort = if (Test-DirectWebRtcSplitAvPipelines) { [int](Get-DirectWebRtcSplitAudioSignalingPort) } else { 0 }
-    $splitAudioPart = if ($splitAudioPort -gt 0) { "&splitAudioPort=$splitAudioPort&splitAudioSignalingPort=$splitAudioPort" } else { '' }
+    $sharedSignaling = if (Test-DirectWebRtcSharedSignaling) { 1 } else { 0 }
+    $splitAudioPart = if ($splitAudioPort -gt 0) { "&splitAudioPort=$splitAudioPort&splitAudioSignalingPort=$splitAudioPort&sharedSignaling=$sharedSignaling&splitSharedSignaling=$sharedSignaling" } else { '' }
     $stamp = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
     $joiner = if ($Url -match '\?') { '&' } else { '?' }
 
-    return ($Url + $joiner + "audioJbufMs=$audioJitterMs&videoJbufMs=$videoJitterMs&jitterMs=$fallbackJitterMs&browserJitterTargetMs=$fallbackJitterMs&jbufMaxMs=$maxMs&jbufWatchdog=$watchdog&jbufDebug=$debug&avRenderMode=$avRenderMode&playerAvRenderMode=$avRenderMode&avPipelineMode=$avPipelineMode$splitAudioPart&cb=$stamp")
+    return ($Url + $joiner + "signalPort=$videoSignalPort&videoSignalingPort=$videoSignalPort&audioJbufMs=$audioJitterMs&videoJbufMs=$videoJitterMs&jitterMs=$fallbackJitterMs&browserJitterTargetMs=$fallbackJitterMs&jbufMaxMs=$maxMs&jbufWatchdog=$watchdog&jbufDebug=$debug&avRenderMode=$avRenderMode&playerAvRenderMode=$avRenderMode&avPipelineMode=$avPipelineMode$splitAudioPart&cb=$stamp")
 }
 
 function Get-DirectWebRtcViewerUrl {
@@ -7726,6 +7771,8 @@ function Update-DirectWebRtcUi {
         $lblDirectWebRtcStatus,
         $txtDirectWebRtcSignalingHost,
         $numDirectWebRtcSignalingPort,
+        $numDirectWebRtcSplitAudioSignalingPort,
+        $chkDirectWebRtcSharedSignaling,
         $txtDirectWebRtcWebPath,
         $cmbDirectWebRtcBundledWebMode,
         $txtDirectWebRtcBundledWebDirectory,
@@ -7762,6 +7809,10 @@ function Update-DirectWebRtcUi {
     }
 
     if ($lblDirectWebRtcStatus) { $lblDirectWebRtcStatus.Enabled = ($directEnabled -or $webRtcTransportEnabled) }
+
+    $splitModeEnabled = $directEnabled -and (Test-DirectWebRtcSplitAvPipelines)
+    if ($chkDirectWebRtcSharedSignaling) { $chkDirectWebRtcSharedSignaling.Enabled = $splitModeEnabled }
+    if ($numDirectWebRtcSplitAudioSignalingPort) { $numDirectWebRtcSplitAudioSignalingPort.Enabled = $splitModeEnabled -and -not (Test-DirectWebRtcSharedSignaling) }
 
     foreach ($control in @(
         $txtDirectWebRtcStun,
@@ -9230,8 +9281,14 @@ function Write-DirectWebRtcWebClientConfig {
             splitAvOffsetBaselineMs = [int]$playerSettings.SplitAvOffsetBaselineMs
             splitAvBaselineMs = [int]$playerSettings.SplitAvOffsetBaselineMs
             splitAvBaselineLearnTicks = 5
+            signalingPort = [int]$numDirectWebRtcSignalingPort.Value
+            videoSignalingPort = [int]$numDirectWebRtcSignalingPort.Value
             splitAudioWsUrl = if (Test-DirectWebRtcSplitAvPipelines) { [string](Get-DirectWebRtcSplitAudioWsUrlForPlayer) } else { '' }
             splitAudioSignalingPort = if (Test-DirectWebRtcSplitAvPipelines) { [int](Get-DirectWebRtcSplitAudioSignalingPort) } else { 0 }
+            sharedSignaling = [bool](Test-DirectWebRtcSharedSignaling)
+            splitSharedSignaling = [bool](Test-DirectWebRtcSharedSignaling)
+            videoProducerName = 'GStreamer Glass Video'
+            splitAudioProducerName = 'GStreamer Glass Audio'
             webPath = [string]$playerSettings.WebPath
             bundledWebMode = [string]$playerSettings.BundledWebMode
             bundledWebDirectory = [string]$playerSettings.BundledWebDirectory
@@ -9296,6 +9353,7 @@ function Build-DirectWebRtcAudioOnlyArguments {
     if ([string]::IsNullOrWhiteSpace($signalHostText)) { $signalHostText = $script:DefaultDirectWebRtcSignalingHost }
     $signalHost = Quote-GstValue $signalHostText
     $signalPort = Get-DirectWebRtcSplitAudioSignalingPort
+    $sharedSignaling = Test-DirectWebRtcSharedSignaling
     $stunServer = $txtDirectWebRtcStun.Text.Trim()
     $stunOption = if ([string]::IsNullOrWhiteSpace($stunServer)) { '' } else { ' stun-server=' + (Quote-GstValue $stunServer) }
     $congestion = Get-ComboSelectedOrDefault $cmbDirectWebRtcCongestion 'gcc'
@@ -9310,11 +9368,20 @@ function Build-DirectWebRtcAudioOnlyArguments {
     $sinkProps = @(
         'webrtcsink',
         'name=aout',
-        'audio-caps="audio/x-opus"',
-        'run-signalling-server=true',
-        'run-web-server=false',
-        "signalling-server-host=$signalHost",
-        "signalling-server-port=$signalPort",
+        'audio-caps="audio/x-opus"'
+    )
+    if ($sharedSignaling) {
+        $sharedUri = Quote-GstValue (Get-DirectWebRtcSharedSignallerUri)
+        $sinkProps += "signaller::uri=$sharedUri"
+        $sinkProps += 'meta="meta,name=GStreamer Glass Audio,kind=audio"'
+    }
+    else {
+        $sinkProps += 'run-signalling-server=true'
+        $sinkProps += 'run-web-server=false'
+        $sinkProps += "signalling-server-host=$signalHost"
+        $sinkProps += "signalling-server-port=$signalPort"
+    }
+    $sinkProps += @(
         "congestion-control=$congestion",
         "do-fec=$fec",
         "do-retransmission=$retx",
@@ -9544,11 +9611,15 @@ function Build-GstArguments {
                 "start-bitrate=$startBitrate",
                 "max-bitrate=$maxBitrate"
             )
+            if ((Test-DirectWebRtcSplitAvPipelines) -and (Test-DirectWebRtcSharedSignaling)) {
+                $sinkProps += 'meta="meta,name=GStreamer Glass Video,kind=video"'
+            }
 
             $pipeline = (($sinkProps -join ' ') + $timestampOption + $stunOption + $webPathOption + $webDirectoryOption + " $directVideo")
             if ($hasAudio -and (Test-DirectWebRtcSplitAvPipelines)) {
                 # Split A/V diagnostic: keep this gst-launch instance video-only.
-                # Start-GstStream launches a second audio-only webrtcsink on signalling port +1.
+                # Start-GstStream launches a second audio-only webrtcsink. It either
+                # owns the configured audio signalling port or joins the video server.
             }
             elseif ($hasAudio) {
                 $directOpusMode = Get-ComboSelectedOrDefault $cmbDirectWebRtcOpusMode $script:DefaultDirectWebRtcOpusMode
@@ -9694,7 +9765,7 @@ function Update-CommandPreview {
 
         if ((Test-TransportEnabled) -and [string]$cmbProtocol.SelectedItem -eq $script:DirectWebRtcProtocolName -and (Test-DirectWebRtcSplitAvPipelines)) {
             $audioArguments = Build-DirectWebRtcAudioOnlyArguments
-            $previewText += "`r`n`r`n# Split audio pipeline - separate gst-launch / signalling port $(Get-DirectWebRtcSplitAudioSignalingPort)"
+            $previewText += "`r`n`r`n# Split audio pipeline - separate gst-launch / $(if (Test-DirectWebRtcSharedSignaling) { 'shared signalling server' } else { 'signalling port ' + (Get-DirectWebRtcSplitAudioSignalingPort) })"
             if ([string]::IsNullOrWhiteSpace($audioArguments)) {
                 $previewText += "`r`n# Split audio command unavailable: enable Normal audio and Desktop/Mic audio."
             }
@@ -9789,6 +9860,8 @@ function Save-Settings {
             GstWebRtcUrl      = $script:ProtocolDestinations[$script:DirectWebRtcProtocolName]
             DirectWebRtcSignalingHost = $txtDirectWebRtcSignalingHost.Text
             DirectWebRtcSignalingPort = [int]$numDirectWebRtcSignalingPort.Value
+            DirectWebRtcSplitAudioSignalingPort = [int]$numDirectWebRtcSplitAudioSignalingPort.Value
+            DirectWebRtcSharedSignaling = [bool]$chkDirectWebRtcSharedSignaling.Checked
             DirectWebRtcStunServer = $txtDirectWebRtcStun.Text
             DirectWebRtcWebPath = $txtDirectWebRtcWebPath.Text
             DirectWebRtcBundledWebMode = [string]$cmbDirectWebRtcBundledWebMode.SelectedItem
@@ -10084,6 +10157,15 @@ function Load-Settings {
             }
             $numDirectWebRtcSignalingPort.Value = [decimal]$loadedDirectWebRtcSignalPort
         }
+        if ($null -ne $settings.DirectWebRtcSplitAudioSignalingPort) {
+            $loadedAudioSignalPort = [int]$settings.DirectWebRtcSplitAudioSignalingPort
+            $numDirectWebRtcSplitAudioSignalingPort.Value = [decimal]([Math]::Min(65535, [Math]::Max(1, $loadedAudioSignalPort)))
+        }
+        elseif ($null -ne $settings.DirectWebRtcSignalingPort) {
+            $legacyAudioPort = [Math]::Min(65535, ([int]$numDirectWebRtcSignalingPort.Value + [int]$script:DefaultDirectWebRtcSplitAudioPortOffset))
+            $numDirectWebRtcSplitAudioSignalingPort.Value = [decimal]$legacyAudioPort
+        }
+        if ($null -ne $settings.DirectWebRtcSharedSignaling) { $chkDirectWebRtcSharedSignaling.Checked = [bool]$settings.DirectWebRtcSharedSignaling }
         if ($null -ne $settings.DirectWebRtcStunServer) { $txtDirectWebRtcStun.Text = [string]$settings.DirectWebRtcStunServer }
         if ($null -ne $settings.DirectWebRtcWebPath) { $txtDirectWebRtcWebPath.Text = [string]$settings.DirectWebRtcWebPath }
         if ($settings.DirectWebRtcBundledWebMode -and $cmbDirectWebRtcBundledWebMode.Items.Contains([string]$settings.DirectWebRtcBundledWebMode)) { $cmbDirectWebRtcBundledWebMode.SelectedItem = [string]$settings.DirectWebRtcBundledWebMode }
@@ -10922,11 +11004,11 @@ function Start-GstStream {
         }
         if ([string]$cmbProtocol.SelectedItem -eq $script:DirectWebRtcProtocolName) {
             Append-Log "Direct WebRTC viewer: $(Get-DirectWebRtcViewerUrl)"
-            Append-Log "Direct WebRTC signalling WebSocket/TCP: $($txtDirectWebRtcSignalingHost.Text):$([int]$numDirectWebRtcSignalingPort.Value)"
+            Append-Log "Direct WebRTC video signalling WebSocket/TCP: $($txtDirectWebRtcSignalingHost.Text):$([int]$numDirectWebRtcSignalingPort.Value)"
             Append-Log "Direct WebRTC smoothing: $([string]$cmbDirectWebRtcSmoothnessProfile.SelectedItem), recovery $([string]$cmbWebRtcRecoveryMode.SelectedItem), sender queue $([string]$cmbWebRtcSenderQueueMode.SelectedItem) / $([int]$numDirectWebRtcPacingMs.Value) ms cap, browser audio/video JBUF $([int]$numDirectWebRtcPlayerJitterMs.Value)/$([int]$numDirectWebRtcVideoJitterMs.Value) ms, timing $([string]$cmbTimingMode.SelectedItem), audio mode $([string]$cmbAudioTransportMode.SelectedItem)"
             Append-Log "Audio source selection: $(Get-AudioSourceSelectionSummary)"
             Append-Log "Direct WebRTC A/V pipeline topology: $([string](Get-DirectWebRtcAvPipelineMode))"
-            if (Test-DirectWebRtcSplitAvPipelines) { Append-Log "Direct WebRTC split audio signalling WebSocket/TCP: $($txtDirectWebRtcSignalingHost.Text):$(Get-DirectWebRtcSplitAudioSignalingPort)"; Append-Log "Direct WebRTC split audio player WS URL: $(Get-DirectWebRtcSplitAudioWsUrlDescriptionForLog)" }
+            if (Test-DirectWebRtcSplitAvPipelines) { if (Test-DirectWebRtcSharedSignaling) { Append-Log "Direct WebRTC split signalling: SHARED on video port $([int]$numDirectWebRtcSignalingPort.Value); audio producer joins $(Get-DirectWebRtcSharedSignallerUri)." } else { Append-Log "Direct WebRTC split audio signalling WebSocket/TCP: $($txtDirectWebRtcSignalingHost.Text):$(Get-DirectWebRtcSplitAudioSignalingPort)" }; Append-Log "Direct WebRTC split audio player WS URL: $(Get-DirectWebRtcSplitAudioWsUrlDescriptionForLog)" }
             Append-Log 'Direct WebRTC media: UDP through ICE. Signalling is TCP/WebSocket on the configured port; fixed media UDP 8189 requires a native helper.'
         }
     }
@@ -10970,6 +11052,9 @@ function Start-GstStream {
     Append-Log "Direct GST WebRTC Opus: $([string]$cmbDirectWebRtcOpusMode.SelectedItem), frame $([string]$cmbDirectWebRtcOpusFrameMs.SelectedItem) ms, type $([string]$cmbDirectWebRtcOpusAudioType.SelectedItem), FEC $($chkDirectWebRtcOpusFec.Checked), DTX $($chkDirectWebRtcOpusDtx.Checked)."
     Append-Log "Pipeline clock: $([string](Get-VideoPipelineClockMode)); video timestamps $([string](Get-VideoTimestampMode)). Explicit system modes wrap the complete main graph in clockselect."
     Append-Log "Split audio process clock: $([string](Get-SplitAudioPipelineClockMode)) (UI selection $([string]$cmbSplitAudioPipelineClockMode.SelectedItem))."
+    if ((Test-DirectWebRtcSplitAvPipelines) -and -not (Test-DirectWebRtcSharedSignaling) -and ([int]$numDirectWebRtcSignalingPort.Value -eq [int]$numDirectWebRtcSplitAudioSignalingPort.Value)) {
+        Append-Log 'WARNING: Separate split signalling is selected but video and audio ports are identical; the second server cannot bind the same TCP port.'
+    }
     $mixerSummary = if ($chkDesktopAudio.Checked -and ($chkMic.Checked -or $chkAudioMixerMode.Checked)) { 'audiomixer' } elseif ($chkDesktopAudio.Checked) { 'legacy direct desktop path' } else { 'not applicable' }
     Append-Log "Desktop audio path: $mixerSummary (mixer flag=$($chkAudioMixerMode.Checked); microphone=$($chkMic.Checked))."
     Append-Log "Video sync mode: $([string]$cmbVideoSyncMode.SelectedItem); Audio sync mode: $([string]$cmbAudioSyncMode.SelectedItem). Explicit modes insert clocksync before compatible send/mux sinks; local preview also honors Video sync mode."
@@ -11643,6 +11728,8 @@ $chkStartMediaMtx.Add_CheckedChanged({
 foreach ($control in @(
     $txtDirectWebRtcSignalingHost,
     $numDirectWebRtcSignalingPort,
+    $numDirectWebRtcSplitAudioSignalingPort,
+    $chkDirectWebRtcSharedSignaling,
     $txtDirectWebRtcStun,
     $txtDirectWebRtcWebPath,
     $cmbDirectWebRtcBundledWebMode,
