@@ -630,7 +630,7 @@ public static class GstProcessJob
 '@
 }
 
-$script:AppVersion = '3.7.52f45'
+$script:AppVersion = '3.7.52f46'
 $script:AppName = "GStreamer Glass v$($script:AppVersion)"
 $script:ConfigDirectory = Join-Path $env:APPDATA 'GStreamerBasicWhipStreamer'
 $script:ConfigPath = Join-Path $script:ConfigDirectory 'settings.json'
@@ -4821,6 +4821,8 @@ function Apply-ModernDashboardUi {
     $r = Add-Row $s
     Add-Field $r -Label 'Capture method' -Control $cmbCaptureMethod -Width 260 | Out-Null
     Add-Field $r -Control $lblCaptureModeStatus -Width 260 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -LabelControl $lblCaptureQueueBuffers -Control $numCaptureQueueBuffers -Width 90 | Out-Null
 
     $s = Add-Section $paneVideo 'Encoder'
     $r = Add-Row $s
@@ -4942,6 +4944,11 @@ function Apply-ModernDashboardUi {
     $r = Add-Row $s
     Add-Field $r -Control $chkAudioSampleRateOverride -Width 175 | Out-Null
     Add-Field $r -LabelControl $lblAudioSampleRate -Control $numAudioSampleRate -Width 115 | Out-Null
+
+    $s = Add-Section $paneAudio 'Audio queues'
+    $r = Add-Row $s
+    Add-Field $r -LabelControl $lblAudioQueueBuffers -Control $numAudioQueueBuffers -Width 90 | Out-Null
+    Add-Field $r -LabelControl $lblAudioQueueCapMs -Control $numAudioQueueCapMs -Width 100 | Out-Null
 
     $s = Add-Section $paneAudio 'Sources'
     $r = Add-Row $s
@@ -5179,9 +5186,6 @@ function Apply-ModernDashboardUi {
     $chkBudgetSceneInputQueues.Checked = $true
     $chkBudgetSceneInputQueues.Enabled = $false
     $r = Add-Row $s
-    Add-Field $r -LabelControl $lblCaptureQueueBuffers -Control $numCaptureQueueBuffers -Width 70 | Out-Null
-    Add-Field $r -LabelControl $lblAudioQueueBuffers -Control $numAudioQueueBuffers -Width 70 | Out-Null
-    Add-Field $r -LabelControl $lblAudioQueueCapMs -Control $numAudioQueueCapMs -Width 80 | Out-Null
     Add-Field $r -Control $chkBufferLatenessTracer -Width 190 | Out-Null
 
     $s = Add-Section $paneOptions 'GStreamer diagnostics'
