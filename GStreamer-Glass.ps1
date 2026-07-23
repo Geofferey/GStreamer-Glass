@@ -18,6 +18,11 @@
     output is shown in the in-memory app log. Per-run process log files are opt-in.
 #>
 
+param(
+    [switch]$ControlledLiveWorker,
+    [string]$ControlledLiveWorkerPipe
+)
+
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 [System.Windows.Forms.Application]::EnableVisualStyles()
@@ -587,12 +592,6 @@ public static class GstControlledScenePreview
     private static extern int gst_element_get_state(IntPtr element, out int state, out int pending, ulong timeout);
 
     [DllImport(Gst, CallingConvention = CallingConvention.Cdecl)]
-    private static extern IntPtr gst_event_new_eos();
-
-    [DllImport(Gst, CallingConvention = CallingConvention.Cdecl)]
-    private static extern int gst_element_send_event(IntPtr element, IntPtr evt);
-
-    [DllImport(Gst, CallingConvention = CallingConvention.Cdecl)]
     private static extern IntPtr gst_element_get_bus(IntPtr element);
 
     [DllImport(Gst, CallingConvention = CallingConvention.Cdecl)]
@@ -641,18 +640,6 @@ public static class GstControlledScenePreview
     private static extern void g_object_set_property(IntPtr obj, string property_name, ref GValue value);
 
     [DllImport(GObject, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
-    private static extern void g_object_get_property(IntPtr obj, string property_name, ref GValue value);
-
-    [DllImport(GObject, CallingConvention = CallingConvention.Cdecl)]
-    private static extern void g_value_set_boolean(ref GValue value, int enabled);
-
-    [DllImport(GObject, CallingConvention = CallingConvention.Cdecl)]
-    private static extern IntPtr g_value_get_object(ref GValue value);
-
-    [DllImport(GObject, EntryPoint = "g_signal_emit_by_name", CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
-    private static extern void g_signal_emit_by_name_void(IntPtr instance, string detailed_signal);
-
-    [DllImport(GObject, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
     private static extern IntPtr g_object_class_find_property(IntPtr oclass, string property_name);
 
     [DllImport(GLib, CallingConvention = CallingConvention.Cdecl)]
@@ -669,8 +656,6 @@ public static class GstControlledScenePreview
     private static IntPtr bus;
     private static IntPtr desktopPad;
     private static IntPtr webcamPad;
-    private static bool livePipeline;
-    private static string lastStopDetail = "No controlled pipeline has been stopped.";
 
     public static bool IsRunning
     {
@@ -680,11 +665,6 @@ public static class GstControlledScenePreview
     public static bool HasWebcamPad
     {
         get { lock (Gate) { return webcamPad != IntPtr.Zero; } }
-    }
-
-    public static string LastStopDetail
-    {
-        get { lock (Gate) { return lastStopDetail; } }
     }
 
     private static string ReadGError(IntPtr error)
@@ -742,7 +722,6 @@ public static class GstControlledScenePreview
         lock (Gate)
         {
             StopUnsafe();
-            livePipeline = String.Equals(sinkName, "localpreview", StringComparison.Ordinal);
             if (!initialized)
             {
                 gst_init(IntPtr.Zero, IntPtr.Zero);
@@ -793,9 +772,12 @@ public static class GstControlledScenePreview
                 }
             }
 
-            gst_video_overlay_set_window_handle(sink, new UIntPtr(unchecked((ulong)windowHandle)));
-            gst_video_overlay_handle_events(sink, 1);
-            gst_video_overlay_set_render_rectangle(sink, 0, 0, Math.Max(1, width), Math.Max(1, height));
+            if (windowHandle != 0)
+            {
+                gst_video_overlay_set_window_handle(sink, new UIntPtr(unchecked((ulong)windowHandle)));
+                gst_video_overlay_handle_events(sink, 1);
+                gst_video_overlay_set_render_rectangle(sink, 0, 0, Math.Max(1, width), Math.Max(1, height));
+            }
 
             int result = gst_element_set_state(pipeline, GST_STATE_PLAYING);
             if (result == GST_STATE_CHANGE_FAILURE)
@@ -928,124 +910,10 @@ public static class GstControlledScenePreview
         lock (Gate) { StopUnsafe(); }
     }
 
-    private static bool SetBooleanIfPresent(IntPtr obj, string name, bool enabled)
-    {
-        if (obj == IntPtr.Zero) return false;
-        IntPtr objectClass;
-        IntPtr paramSpec;
-        try
-        {
-            objectClass = Marshal.ReadIntPtr(obj);
-            paramSpec = objectClass == IntPtr.Zero
-                ? IntPtr.Zero
-                : g_object_class_find_property(objectClass, name);
-        }
-        catch { return false; }
-        if (paramSpec == IntPtr.Zero) return false;
-
-        GParamSpecPrefix prefix = (GParamSpecPrefix)Marshal.PtrToStructure(
-            paramSpec, typeof(GParamSpecPrefix));
-        if (prefix.value_type == UIntPtr.Zero) return false;
-
-        GValue value = new GValue();
-        g_value_init(ref value, prefix.value_type);
-        try
-        {
-            g_value_set_boolean(ref value, enabled ? 1 : 0);
-            g_object_set_property(obj, name, ref value);
-            return true;
-        }
-        finally { g_value_unset(ref value); }
-    }
-
-    private static bool ShutdownSignallerIfPresent(IntPtr transport)
-    {
-        if (transport == IntPtr.Zero) return false;
-        IntPtr objectClass;
-        IntPtr paramSpec;
-        try
-        {
-            objectClass = Marshal.ReadIntPtr(transport);
-            paramSpec = objectClass == IntPtr.Zero
-                ? IntPtr.Zero
-                : g_object_class_find_property(objectClass, "signaller");
-        }
-        catch { return false; }
-        if (paramSpec == IntPtr.Zero) return false;
-
-        GParamSpecPrefix prefix = (GParamSpecPrefix)Marshal.PtrToStructure(
-            paramSpec, typeof(GParamSpecPrefix));
-        if (prefix.value_type == UIntPtr.Zero) return false;
-
-        GValue value = new GValue();
-        g_value_init(ref value, prefix.value_type);
-        try
-        {
-            g_object_get_property(transport, "signaller", ref value);
-            IntPtr signaller = g_value_get_object(ref value);
-            if (signaller == IntPtr.Zero) return false;
-            // GstRSWebRTCSignallable's documented no-argument shutdown action
-            // ends active sessions before the owning server is removed.
-            g_signal_emit_by_name_void(signaller, "shutdown");
-            return true;
-        }
-        finally { g_value_unset(ref value); }
-    }
-
-    private static void GracefulLiveShutdownUnsafe()
-    {
-        bool signallerShutdown = false;
-        bool serverDisabled = false;
-        bool eosSent = false;
-        bool eosObserved = false;
-
-        IntPtr transport = gst_bin_get_by_name(pipeline, "out");
-        if (transport != IntPtr.Zero)
-        {
-            try
-            {
-                signallerShutdown = ShutdownSignallerIfPresent(transport);
-                serverDisabled = SetBooleanIfPresent(
-                    transport, "run-signalling-server", false);
-            }
-            catch { }
-            finally { gst_object_unref(transport); }
-        }
-
-        try
-        {
-            IntPtr eos = gst_event_new_eos();
-            if (eos != IntPtr.Zero)
-            {
-                // gst_element_send_event takes ownership of the event.
-                eosSent = gst_element_send_event(pipeline, eos) != 0;
-                if (eosSent && bus != IntPtr.Zero)
-                {
-                    IntPtr message = gst_bus_timed_pop_filtered(
-                        bus, 1000000000UL, GST_MESSAGE_EOS | GST_MESSAGE_ERROR);
-                    if (message != IntPtr.Zero)
-                    {
-                        eosObserved = true;
-                        gst_mini_object_unref(message);
-                    }
-                }
-            }
-        }
-        catch { }
-
-        // Give the producer-removed / socket-close notification a bounded chance
-        // to leave the Rust signaller before the element graph is destroyed.
-        System.Threading.Thread.Sleep(250);
-        lastStopDetail = String.Format(
-            "signaller shutdown={0}; signalling server disabled={1}; EOS sent={2}; terminal bus message={3}",
-            signallerShutdown, serverDisabled, eosSent, eosObserved);
-    }
-
     private static void StopUnsafe()
     {
         if (pipeline != IntPtr.Zero)
         {
-            if (livePipeline) GracefulLiveShutdownUnsafe();
             gst_element_set_state(pipeline, GST_STATE_NULL);
             try
             {
@@ -1062,10 +930,102 @@ public static class GstControlledScenePreview
         if (scene != IntPtr.Zero) gst_object_unref(scene);
         if (pipeline != IntPtr.Zero) gst_object_unref(pipeline);
         webcamPad = desktopPad = bus = sink = scene = pipeline = IntPtr.Zero;
-        livePipeline = false;
     }
 }
 '@
+}
+
+if ($ControlledLiveWorker) {
+    # The live-edit broadcast deliberately lives in a disposable process. The
+    # GUI sends compositor mutations over this pipe, while Stop/Restart kills
+    # this complete process tree exactly like the legacy gst-launch path. That
+    # hard process boundary is what closes every signalling socket reliably.
+    if ([string]::IsNullOrWhiteSpace($ControlledLiveWorkerPipe)) { exit 64 }
+
+    $pipeServer = $null
+    $pipeReader = $null
+    $pipeWriter = $null
+    try {
+        $pipeServer = New-Object System.IO.Pipes.NamedPipeServerStream(
+            $ControlledLiveWorkerPipe,
+            [System.IO.Pipes.PipeDirection]::InOut,
+            1,
+            [System.IO.Pipes.PipeTransmissionMode]::Byte,
+            [System.IO.Pipes.PipeOptions]::None
+        )
+        $pipeServer.WaitForConnection()
+        $utf8 = New-Object System.Text.UTF8Encoding($false)
+        $pipeReader = New-Object System.IO.StreamReader($pipeServer, $utf8, $false, 4096, $true)
+        $pipeWriter = New-Object System.IO.StreamWriter($pipeServer, $utf8, 4096, $true)
+        $pipeWriter.AutoFlush = $true
+
+        $startLine = $pipeReader.ReadLine()
+        if ([string]::IsNullOrWhiteSpace($startLine)) { throw 'No start command was received.' }
+        $start = $startLine | ConvertFrom-Json
+        if ([string]$start.Type -ne 'Start') { throw 'The first worker command was not Start.' }
+
+        [GstControlledScenePreview]::StartLive(
+            [string]$start.Pipeline,
+            [int64]$start.WindowHandle,
+            [int]$start.Width,
+            [int]$start.Height,
+            [string]$start.DesktopPad,
+            [string]$start.WebcamPad
+        )
+        $pipeWriter.WriteLine((@{ Status = 'Ready'; Error = '' } | ConvertTo-Json -Compress))
+
+        $readTask = $pipeReader.ReadLineAsync()
+        while ($true) {
+            if ($readTask.Wait(100)) {
+                $line = $readTask.Result
+                if ($null -eq $line) { break }
+                if (-not [string]::IsNullOrWhiteSpace($line)) {
+                    $command = $line | ConvertFrom-Json
+                    switch ([string]$command.Type) {
+                        'Webcam' {
+                            [GstControlledScenePreview]::UpdateWebcam(
+                                [int]$command.X,
+                                [int]$command.Y,
+                                [int]$command.Width,
+                                [int]$command.Height,
+                                [double]$command.Alpha,
+                                [uint32]$command.ZOrder,
+                                [bool]$command.KeepAspect
+                            )
+                        }
+                        'Window' {
+                            [GstControlledScenePreview]::SetWindowHandle(
+                                [int64]$command.WindowHandle,
+                                [int]$command.Width,
+                                [int]$command.Height
+                            )
+                        }
+                    }
+                }
+                $readTask = $pipeReader.ReadLineAsync()
+            }
+
+            $terminal = [GstControlledScenePreview]::PollTerminalMessage()
+            if ($terminal) { throw $terminal }
+        }
+    }
+    catch {
+        try {
+            if ($pipeWriter -and $pipeServer -and $pipeServer.IsConnected) {
+                $pipeWriter.WriteLine((@{ Status = 'Error'; Error = $_.Exception.Message } | ConvertTo-Json -Compress))
+            }
+        }
+        catch {}
+        [Console]::Error.WriteLine("Controlled live worker error: $($_.Exception)")
+        exit 70
+    }
+    finally {
+        try { [GstControlledScenePreview]::Stop() } catch {}
+        try { if ($pipeWriter) { $pipeWriter.Dispose() } } catch {}
+        try { if ($pipeReader) { $pipeReader.Dispose() } } catch {}
+        try { if ($pipeServer) { $pipeServer.Dispose() } } catch {}
+    }
+    exit 0
 }
 
 if (-not ('GstProcessJob' -as [type])) {
@@ -1178,7 +1138,7 @@ public static class GstProcessJob
 '@
 }
 
-$script:AppVersion = '3.7.52f73'
+$script:AppVersion = '3.7.52f74'
 $script:AppName = "GStreamer Glass v$($script:AppVersion)"
 $script:ConfigDirectory = Join-Path $env:APPDATA 'GStreamerBasicWhipStreamer'
 $script:ConfigPath = Join-Path $script:ConfigDirectory 'settings.json'
@@ -1268,6 +1228,9 @@ $script:SuppressDynamicScenePreview = $false
 $script:ControlledLiveStreamActive = $false
 $script:SuppressControlledLiveStream = $false
 $script:ForceLiveScenePreviewBranch = $false
+$script:ControlledLiveWorkerPipe = $null
+$script:ControlledLiveWorkerReader = $null
+$script:ControlledLiveWorkerWriter = $null
 $script:ControlledScenePreviewSurfaceHwnd = [IntPtr]::Zero
 $script:ControlledScenePreviewAppliedSize = [System.Drawing.Size]::Empty
 $script:ControlledLivePreviewSurfaceHwnd = [IntPtr]::Zero
@@ -4531,7 +4494,7 @@ $chkLiveSceneEditing = New-Object System.Windows.Forms.CheckBox
 $chkLiveSceneEditing.Text = 'Edit scene while live (experimental)'
 $chkLiveSceneEditing.AutoSize = $true
 $chkLiveSceneEditing.Checked = $false
-$toolTip.SetToolTip($chkLiveSceneEditing, 'Explicit opt-in. Available only with Dynamic previews. Runs compatible single-pipeline streams in-process so placement, size, and opacity change on the actual broadcast without restarting. Unsupported topologies automatically use the legacy launcher.')
+$toolTip.SetToolTip($chkLiveSceneEditing, 'Explicit opt-in. Available only with Dynamic previews. Runs compatible single-pipeline streams in a controlled worker process so placement, size, and opacity change on the actual broadcast without restarting. Stop/Restart terminates that worker exactly like the legacy launcher.')
 
 $chkStandardPreviewOffSceneTab = New-Object System.Windows.Forms.CheckBox
 $chkStandardPreviewOffSceneTab.Text = 'Standard preview off Scenes'
@@ -4896,9 +4859,22 @@ function Update-SceneCanvasFromValues {
 
 function Sync-ControlledScenePreviewProperties {
     if (-not (Test-ControlledSceneMutationActive)) { return }
-    if (-not [GstControlledScenePreview]::IsRunning -or -not [GstControlledScenePreview]::HasWebcamPad) { return }
 
     try {
+        if ($script:ControlledLiveStreamActive) {
+            $null = Send-ControlledLiveWorkerCommand -Command @{
+                Type       = 'Webcam'
+                X          = [int]$numWebcamX.Value
+                Y          = [int]$numWebcamY.Value
+                Width      = [int]$numWebcamWidth.Value
+                Height     = [int]$numWebcamHeight.Value
+                Alpha      = ([double]$numWebcamOpacity.Value / 100.0)
+                ZOrder     = [uint32]1
+                KeepAspect = [bool]$chkWebcamAspectLock.Checked
+            }
+            return
+        }
+        if (-not [GstControlledScenePreview]::IsRunning -or -not [GstControlledScenePreview]::HasWebcamPad) { return }
         [GstControlledScenePreview]::UpdateWebcam(
             [int]$numWebcamX.Value,
             [int]$numWebcamY.Value,
@@ -4919,7 +4895,6 @@ function Push-ControlledSceneGeometryFromElement {
     # scene coordinates and mutate the live compositor pad without touching the
     # numeric controls or rebuilding command previews on every mouse-move event.
     if (-not (Test-ControlledSceneMutationActive)) { return }
-    if (-not [GstControlledScenePreview]::IsRunning -or -not [GstControlledScenePreview]::HasWebcamPad) { return }
 
     $outputWidth = [Math]::Max(1, [int]$numWidth.Value)
     $outputHeight = [Math]::Max(1, [int]$numHeight.Value)
@@ -4932,6 +4907,20 @@ function Push-ControlledSceneGeometryFromElement {
     $height = [Math]::Max(1, [int][Math]::Round($sceneWebcamElement.Height * $scaleY))
 
     try {
+        if ($script:ControlledLiveStreamActive) {
+            $null = Send-ControlledLiveWorkerCommand -Command @{
+                Type       = 'Webcam'
+                X          = $x
+                Y          = $y
+                Width      = $width
+                Height     = $height
+                Alpha      = ([double]$numWebcamOpacity.Value / 100.0)
+                ZOrder     = [uint32]1
+                KeepAspect = [bool]$chkWebcamAspectLock.Checked
+            }
+            return
+        }
+        if (-not [GstControlledScenePreview]::IsRunning -or -not [GstControlledScenePreview]::HasWebcamPad) { return }
         [GstControlledScenePreview]::UpdateWebcam(
             $x,
             $y,
@@ -6765,9 +6754,12 @@ function Save-ActiveProcessState {
 
         if ($gstRunning) {
             $state.GstProcessId      = $script:GstProcess.Id
-            $state.GstExecutablePath = [System.IO.Path]::GetFullPath(
-                $txtGstPath.Text.Trim()
-            )
+            $state.GstExecutablePath = if ($script:ControlledLiveStreamActive) {
+                [System.IO.Path]::GetFullPath($script:GstProcess.MainModule.FileName)
+            }
+            else {
+                [System.IO.Path]::GetFullPath($txtGstPath.Text.Trim())
+            }
             $state.GstStartTimeUtc   =
                 $script:GstProcess.StartTime.ToUniversalTime().ToString('o')
 
@@ -9052,7 +9044,7 @@ function Update-GstThreadCountStatus {
     if (-not $lblLiveGstThreads) { return }
     if (-not $script:GstProcess -or $script:GstProcess.HasExited) {
         $lblLiveGstThreads.Text = if (($script:DynamicScenePreviewActive -or $script:ControlledLiveStreamActive) -and [GstControlledScenePreview]::IsRunning) {
-            if ($script:ControlledLiveStreamActive) { 'Live GST threads: controlled broadcast runs in-process' } else { 'Live GST threads: controlled scene preview runs in-process' }
+            if ($script:ControlledLiveStreamActive) { 'Live GST threads: controlled broadcast worker' } else { 'Live GST threads: controlled scene preview runs in-process' }
         }
         else {
             'Live GST threads: stopped'
@@ -13649,11 +13641,136 @@ function Build-ControlledScenePreviewPipeline {
     return (ConvertTo-InProcessGstLaunchDescription -Description $pipeline)
 }
 
-function Test-ControlledSceneMutationActive {
+function Test-ControlledLiveWorkerRunning {
     return (
-        ($script:DynamicScenePreviewActive -or $script:ControlledLiveStreamActive) -and
-        [GstControlledScenePreview]::IsRunning
+        $script:ControlledLiveStreamActive -and
+        $script:GstProcess -and
+        -not $script:GstProcess.HasExited -and
+        $script:ControlledLiveWorkerWriter
     )
+}
+
+function Close-ControlledLiveWorkerPipe {
+    try { if ($script:ControlledLiveWorkerWriter) { $script:ControlledLiveWorkerWriter.Dispose() } } catch {}
+    try { if ($script:ControlledLiveWorkerReader) { $script:ControlledLiveWorkerReader.Dispose() } } catch {}
+    try { if ($script:ControlledLiveWorkerPipe) { $script:ControlledLiveWorkerPipe.Dispose() } } catch {}
+    $script:ControlledLiveWorkerWriter = $null
+    $script:ControlledLiveWorkerReader = $null
+    $script:ControlledLiveWorkerPipe = $null
+}
+
+function Send-ControlledLiveWorkerCommand {
+    param([Parameter(Mandatory)][hashtable]$Command)
+
+    if (-not (Test-ControlledLiveWorkerRunning)) { return $false }
+    try {
+        $script:ControlledLiveWorkerWriter.WriteLine(($Command | ConvertTo-Json -Compress))
+        return $true
+    }
+    catch {
+        Append-Log "Controlled live worker command failed: $($_.Exception.Message)"
+        return $false
+    }
+}
+
+function Start-ControlledLiveWorker {
+    param(
+        [Parameter(Mandatory)][string]$Pipeline,
+        [Parameter(Mandatory)][IntPtr]$WindowHandle,
+        [Parameter(Mandatory)][int]$Width,
+        [Parameter(Mandatory)][int]$Height
+    )
+
+    Close-ControlledLiveWorkerPipe
+    $pipeName = "gstglass-live-$PID-$([Guid]::NewGuid().ToString('N'))"
+    $process = $null
+    $pipe = $null
+    $reader = $null
+    $writer = $null
+
+    try {
+        $currentProcess = [System.Diagnostics.Process]::GetCurrentProcess()
+        $currentExe = $currentProcess.MainModule.FileName
+        $currentName = [System.IO.Path]::GetFileNameWithoutExtension($currentExe)
+        if ($currentName -match '^(powershell|pwsh|powershell_ise)$') {
+            if ([string]::IsNullOrWhiteSpace($PSCommandPath) -or -not (Test-Path -LiteralPath $PSCommandPath)) {
+                throw 'The current script path is unavailable; the controlled worker cannot be launched.'
+            }
+            $escapedScript = $PSCommandPath.Replace('"', '\"')
+            $arguments = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$escapedScript`" -ControlledLiveWorker -ControlledLiveWorkerPipe `"$pipeName`""
+        }
+        else {
+            # PS2EXE/PS12EXE builds can relaunch their own executable and use
+            # the same hidden worker switch handled near the top of this file.
+            $arguments = "-ControlledLiveWorker -ControlledLiveWorkerPipe `"$pipeName`""
+        }
+
+        $startParams = @{
+            FilePath    = $currentExe
+            ArgumentList = $arguments
+            WindowStyle = 'Hidden'
+            PassThru    = $true
+        }
+        if (Test-ProcessDiskLoggingEnabled) {
+            $startParams.RedirectStandardOutput = $script:StdOutPath
+            $startParams.RedirectStandardError = $script:StdErrPath
+        }
+        $process = Start-Process @startParams
+        Set-GstProcessPriority -Process $process
+        if ($script:JobHandle -ne [IntPtr]::Zero) {
+            try { [GstProcessJob]::AssignProcess($script:JobHandle, $process.Handle) }
+            catch { Append-Log "WARNING: Controlled live worker could not be assigned to the kill-on-close job: $($_.Exception.Message)" }
+        }
+
+        $pipe = New-Object System.IO.Pipes.NamedPipeClientStream(
+            '.',
+            $pipeName,
+            [System.IO.Pipes.PipeDirection]::InOut,
+            [System.IO.Pipes.PipeOptions]::None
+        )
+        $pipe.Connect(12000)
+        $utf8 = New-Object System.Text.UTF8Encoding($false)
+        $reader = New-Object System.IO.StreamReader($pipe, $utf8, $false, 4096, $true)
+        $writer = New-Object System.IO.StreamWriter($pipe, $utf8, 4096, $true)
+        $writer.AutoFlush = $true
+        $writer.WriteLine((@{
+            Type         = 'Start'
+            Pipeline     = $Pipeline
+            # Let d3d11videosink create a worker-owned window, then embed that
+            # HWND with the same Win32 path as every external gst-launch preview.
+            WindowHandle = [int64]0
+            Width        = [Math]::Max(1, $Width)
+            Height       = [Math]::Max(1, $Height)
+            DesktopPad   = 'sink_0'
+            WebcamPad    = 'sink_1'
+        } | ConvertTo-Json -Compress))
+
+        $replyTask = $reader.ReadLineAsync()
+        if (-not $replyTask.Wait(15000)) { throw 'The controlled live worker did not acknowledge startup within 15 seconds.' }
+        $replyLine = $replyTask.Result
+        if ([string]::IsNullOrWhiteSpace($replyLine)) { throw 'The controlled live worker exited before acknowledging startup.' }
+        $reply = $replyLine | ConvertFrom-Json
+        if ([string]$reply.Status -ne 'Ready') { throw "Controlled live worker start failed: $([string]$reply.Error)" }
+
+        $script:ControlledLiveWorkerPipe = $pipe
+        $script:ControlledLiveWorkerReader = $reader
+        $script:ControlledLiveWorkerWriter = $writer
+        $script:GstProcess = $process
+        return $true
+    }
+    catch {
+        try { if ($process -and -not $process.HasExited) { Stop-ProcessTreeById -ProcessId $process.Id } } catch {}
+        try { if ($writer) { $writer.Dispose() } } catch {}
+        try { if ($reader) { $reader.Dispose() } } catch {}
+        try { if ($pipe) { $pipe.Dispose() } } catch {}
+        try { if ($process) { $process.Dispose() } } catch {}
+        throw
+    }
+}
+
+function Test-ControlledSceneMutationActive {
+    if ($script:ControlledLiveStreamActive) { return [bool](Test-ControlledLiveWorkerRunning) }
+    return ($script:DynamicScenePreviewActive -and [GstControlledScenePreview]::IsRunning)
 }
 
 function Test-ControlledLiveStreamRequested {
@@ -13870,42 +13987,30 @@ function Sync-DynamicScenePreviewLayout {
 
 function Sync-ControlledLivePreviewLayout {
     if (-not $script:ControlledLiveStreamActive) { return }
-    if (-not [GstControlledScenePreview]::IsRunning) { return }
+    if (-not (Test-ControlledLiveWorkerRunning)) { return }
 
     try {
-        $showPreview = (
-            $form.Visible -and
-            $form.WindowState -ne [System.Windows.Forms.FormWindowState]::Minimized -and
-            (Test-PreviewVisibleNow)
-        )
-        $targetControl = $previewPanel
-        $targetSize = $previewPanel.ClientSize
+        if ($script:PreviewHwnd -eq [IntPtr]::Zero) {
+            $candidate = [GstPreviewNative]::FindPreviewWindow($script:GstProcess.Id)
+            if ($candidate -ne [IntPtr]::Zero) {
+                if ([GstPreviewNative]::EmbedWindow(
+                    $candidate,
+                    $previewPanel.Handle,
+                    $previewPanel.ClientSize.Width,
+                    $previewPanel.ClientSize.Height
+                )) {
+                    $script:PreviewHwnd = $candidate
+                    $script:PreviewParked = $false
+                    Reset-PreviewAppliedState
+                    Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Controlled worker preview window embedded."
+                }
+            }
+        }
 
-        if (-not $showPreview) {
-            $targetControl = Ensure-PreviewParkingWindow
-            $targetSize = New-Object System.Drawing.Size(16, 16)
-            $previewPlaceholder.Visible = $true
-            $previewPlaceholder.Text = 'Preview hidden during stream; open Scenes to edit live'
-        }
-        else {
-            $previewPlaceholder.Visible = $false
-        }
-
-        $null = $targetControl.Handle
-        $surfaceHandle = $targetControl.Handle
-        if (
-            $surfaceHandle -ne $script:ControlledLivePreviewSurfaceHwnd -or
-            $targetSize.Width -ne $script:ControlledLivePreviewAppliedSize.Width -or
-            $targetSize.Height -ne $script:ControlledLivePreviewAppliedSize.Height
-        ) {
-            [GstControlledScenePreview]::SetWindowHandle(
-                $surfaceHandle.ToInt64(),
-                [Math]::Max(1, $targetSize.Width),
-                [Math]::Max(1, $targetSize.Height)
-            )
-            $script:ControlledLivePreviewSurfaceHwnd = $surfaceHandle
-            $script:ControlledLivePreviewAppliedSize = $targetSize
-        }
+        # From this point forward use the proven external-preview reparent,
+        # parking, visibility, and resize path rather than cross-process overlay
+        # handle mutation.
+        Set-PreviewVisibility
     }
     catch {}
 }
@@ -14354,10 +14459,10 @@ function Start-GstStream {
     $mainLaunchExecutable = $gstPath
     $mainLaunchArguments = $arguments
     if ($useControlledLiveStream) {
-        Append-Log 'Live scene editing: enabled on the actual broadcast compositor (single in-process pipeline).'
+        Append-Log 'Live scene editing: enabled on the actual broadcast compositor (single controlled worker pipeline).'
         Append-Log ('In-process pipeline: ' + (ConvertTo-InProcessGstLaunchDescription -Description $arguments))
         if ($processDiskLogging) {
-            Append-Log 'Process disk logging note: the in-process pipeline reports terminal bus errors to the UI log; gst-launch stdout/stderr files are not created for this run.'
+            Append-Log 'Process disk logging: controlled worker stdout/stderr uses the normal per-run log files.'
         }
     }
     elseif ($runNeedsUnifiedPublisherHost) {
@@ -14399,14 +14504,12 @@ function Start-GstStream {
             $tracerEnvState = $null
             try {
                 $tracerEnvState = Set-GstTracerEnvironment -Enable:([bool]$chkBufferLatenessTracer.Checked) -DebugSpec $gstDebugSpec -NoColor:([bool]$chkGstDebugNoColor.Checked)
-                [GstControlledScenePreview]::StartLive(
-                    $pipelineDescription,
-                    $renderTarget.Handle.ToInt64(),
-                    [Math]::Max(1, $renderSize.Width),
-                    [Math]::Max(1, $renderSize.Height),
-                    'sink_0',
-                    'sink_1'
-                )
+                $workerStarted = Start-ControlledLiveWorker `
+                    -Pipeline $pipelineDescription `
+                    -WindowHandle $renderTarget.Handle `
+                    -Width ([Math]::Max(1, $renderSize.Width)) `
+                    -Height ([Math]::Max(1, $renderSize.Height))
+                if (-not $workerStarted) { throw 'The controlled live worker did not start.' }
             }
             finally {
                 Restore-GstTracerEnvironment $tracerEnvState
@@ -14423,17 +14526,17 @@ function Start-GstStream {
 
             $mediaSuffix = if ($script:MediaMtxProcess -and -not $script:MediaMtxProcess.HasExited) { " + MediaMTX PID $($script:MediaMtxProcess.Id)" } else { '' }
             if ($transportEnabled) {
-                $statusLabel.Text = "$([string]$cmbProtocol.SelectedItem) streaming - controlled in-process$mediaSuffix"
+                $statusLabel.Text = "$([string]$cmbProtocol.SelectedItem) streaming - controlled worker PID $($script:GstProcess.Id)$mediaSuffix"
             }
             elseif ($chkRecordingEnabled.Checked) {
-                $statusLabel.Text = 'Recording locally - controlled in-process'
+                $statusLabel.Text = "Recording locally - controlled worker PID $($script:GstProcess.Id)"
             }
             else {
-                $statusLabel.Text = 'Controlled live scene pipeline running'
+                $statusLabel.Text = "Controlled live scene pipeline - worker PID $($script:GstProcess.Id)"
             }
             $statusLabel.ForeColor = [System.Drawing.Color]::DarkGreen
             Set-RunState $true
-            Append-Log "[$(Get-Date -Format 'HH:mm:ss')] LIVE SCENE CONTROL ACTIVE: editor geometry and opacity now mutate the broadcast compositor directly."
+            Append-Log "[$(Get-Date -Format 'HH:mm:ss')] LIVE SCENE CONTROL ACTIVE: worker PID $($script:GstProcess.Id); editor geometry and opacity mutate its broadcast compositor over IPC."
             return
         }
         catch {
@@ -14441,7 +14544,15 @@ function Start-GstStream {
             Append-Log 'Falling back to the unchanged external gst-launch stream for this run.'
             $script:SuppressControlledLiveStream = $true
             $script:ControlledLiveStreamActive = $false
-            try { [GstControlledScenePreview]::Stop() } catch {}
+            try {
+                if ($script:GstProcess -and -not $script:GstProcess.HasExited) {
+                    Stop-ProcessTreeById -ProcessId $script:GstProcess.Id
+                }
+            }
+            catch {}
+            Close-ControlledLiveWorkerPipe
+            try { if ($script:GstProcess) { $script:GstProcess.Dispose() } } catch {}
+            $script:GstProcess = $null
             $script:ControlledLivePreviewSurfaceHwnd = [IntPtr]::Zero
             $script:ControlledLivePreviewAppliedSize = [System.Drawing.Size]::Empty
             [System.Threading.Thread]::Sleep(750)
@@ -14574,17 +14685,22 @@ function Stop-ControlledLiveStream {
 
     $script:StopRequested = $true
     $script:WaitingForFullscreen = $false
-    # Do not begin the restart countdown until the controlled graph has sent
-    # its signalling shutdown/EOS boundary and released the owned listener.
-    $script:RestartAt = $null
-    Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Stopping controlled in-process live pipeline..."
-
-    try { [GstControlledScenePreview]::Stop() }
-    catch { Append-Log "Controlled live pipeline stop warning: $($_.Exception.Message)" }
-    try {
-        Append-Log "Controlled live signalling teardown: $([GstControlledScenePreview]::LastStopDetail)"
+    $script:RestartAt = if ($Restart) { (Get-Date).AddMilliseconds(800) } else { $null }
+    $workerProcess = $script:GstProcess
+    if ($workerProcess -and -not $workerProcess.HasExited) {
+        Append-Log (
+            "[$(Get-Date -Format 'HH:mm:ss')] Stopping complete controlled live " +
+            "process tree - PID $($workerProcess.Id)..."
+        )
+        # Intentionally identical to every legacy publisher stop. Do not send a
+        # pipe Stop command or transition the graph to NULL first: terminating
+        # this process is the signalling/socket boundary the web player expects.
+        Stop-ProcessTreeById -ProcessId $workerProcess.Id
+        try { $workerProcess.WaitForExit(3000) | Out-Null } catch {}
     }
-    catch {}
+    Close-ControlledLiveWorkerPipe
+    try { if ($workerProcess) { $workerProcess.Dispose() } } catch {}
+    $script:GstProcess = $null
 
     $script:ControlledLiveStreamActive = $false
     $script:ControlledLivePreviewSurfaceHwnd = [IntPtr]::Zero
@@ -14609,13 +14725,6 @@ function Stop-ControlledLiveStream {
     Remove-ActiveProcessState
     if ((-not $Restart) -and $chkNetworkRestoreOnStop.Checked) {
         Restore-NetworkTuning -Quiet | Out-Null
-    }
-
-    if ($Restart) {
-        # Preserve a real disconnect interval after teardown. Starting this
-        # timer before the bounded native shutdown could otherwise make the
-        # replacement producer appear immediately and strand existing players.
-        $script:RestartAt = (Get-Date).AddMilliseconds(1200)
     }
 
     Set-RunState $false
@@ -15201,7 +15310,7 @@ $chkPreview.Add_CheckedChanged({
     }
 
     if ($script:ControlledLiveStreamActive -and -not $chkPreview.Checked) {
-        Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Preview disabled; restarting the live stream without in-process scene editing."
+        Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Preview disabled; restarting the live stream without controlled live scene editing."
         Stop-GstStream -Restart
         Update-CommandPreview
         return
@@ -16004,21 +16113,6 @@ $pollTimer.Add_Tick({
 
     Try-AttachPreview
 
-    if ($script:ControlledLiveStreamActive) {
-        $controlledTerminal = $null
-        try { $controlledTerminal = [GstControlledScenePreview]::PollTerminalMessage() }
-        catch { $controlledTerminal = "bus polling failed: $($_.Exception.Message)" }
-
-        if ($controlledTerminal -or -not [GstControlledScenePreview]::IsRunning) {
-            $reason = if ($controlledTerminal) { $controlledTerminal } else { 'pipeline stopped unexpectedly' }
-            Append-Log "Controlled live stream terminal message: $reason"
-            Append-Log 'Live-control failure latched; restarting this stream with the legacy external launcher.'
-            $script:SuppressControlledLiveStream = $true
-            Stop-GstStream -Restart
-            return
-        }
-    }
-
     if ($script:DynamicScenePreviewActive) {
         $controlledTerminal = $null
         try { $controlledTerminal = [GstControlledScenePreview]::PollTerminalMessage() }
@@ -16122,6 +16216,14 @@ $pollTimer.Add_Tick({
         $exitCode = $script:GstProcess.ExitCode
         $wasRequested = $script:StopRequested
         $wasPreviewOnly = [bool]$script:PreviewOnlyMode
+        $wasControlledLive = [bool]$script:ControlledLiveStreamActive
+
+        if ($wasControlledLive) {
+            Close-ControlledLiveWorkerPipe
+            $script:ControlledLiveStreamActive = $false
+            $script:ControlledLivePreviewSurfaceHwnd = [IntPtr]::Zero
+            $script:ControlledLivePreviewAppliedSize = [System.Drawing.Size]::Empty
+        }
 
         if ($script:GstVideoProcess -and -not $script:GstVideoProcess.HasExited) { try { Stop-ProcessTreeById -ProcessId $script:GstVideoProcess.Id } catch {} }
         if ($script:GstAudioProcess -and -not $script:GstAudioProcess.HasExited) { try { Stop-ProcessTreeById -ProcessId $script:GstAudioProcess.Id } catch {} }
@@ -16183,7 +16285,12 @@ $pollTimer.Add_Tick({
             $lowerTabs.SelectedTab = $tabLog
             Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Pipeline exited unexpectedly with code $exitCode."
 
-            if ((Test-FullscreenCaptureMode) -or $chkAutoRestart.Checked) {
+            if ($wasControlledLive) {
+                $script:SuppressControlledLiveStream = $true
+                $script:RestartAt = (Get-Date).AddMilliseconds(800)
+                Append-Log 'Controlled live worker failure latched; restarting with the legacy external launcher.'
+            }
+            elseif ((Test-FullscreenCaptureMode) -or $chkAutoRestart.Checked) {
                 $script:RestartAt = (Get-Date).AddSeconds(2)
                 if (Test-FullscreenCaptureMode) {
                     $script:WaitingForFullscreen = $true
@@ -16271,7 +16378,6 @@ function Invoke-ApplicationCleanup {
 
     try {
         if ($script:ControlledLiveStreamActive) {
-            try { [GstControlledScenePreview]::Stop() } catch {}
             $script:ControlledLiveStreamActive = $false
         }
         Stop-DynamicScenePreview -Quiet
@@ -16293,6 +16399,8 @@ function Invoke-ApplicationCleanup {
         }
     }
     catch {}
+
+    Close-ControlledLiveWorkerPipe
 
     try {
         Stop-ManagedMediaMtx -Quiet
