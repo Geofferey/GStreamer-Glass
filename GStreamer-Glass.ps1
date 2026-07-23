@@ -522,7 +522,7 @@ public static class GstProcessJob
 '@
 }
 
-$script:AppVersion = '3.6.3'
+$script:AppVersion = '3.6.4'
 $script:AppName = "GStreamer Glass v$($script:AppVersion)"
 $script:ConfigDirectory = Join-Path $env:APPDATA 'GStreamerBasicWhipStreamer'
 $script:ConfigPath = Join-Path $script:ConfigDirectory 'settings.json'
@@ -702,14 +702,14 @@ $script:AudioCodecCatalog = [ordered]@{
 
 $script:DefaultAudioCodecByProtocol = [ordered]@{
     WHIP = 'Opus'
-    SRT  = 'AAC (Media Foundation)'
+    SRT  = 'Opus'
     RTMP = 'AAC (Media Foundation)'
     RTSP = 'Opus'
 }
 
 $script:ProtocolAudioCodecs = [ordered]@{
     WHIP = 'Opus'
-    SRT  = 'AAC (Media Foundation)'
+    SRT  = 'Opus'
     RTMP = 'AAC (Media Foundation)'
     RTSP = 'Opus'
 }
@@ -1470,7 +1470,7 @@ $audioNote.ForeColor = [System.Drawing.Color]::DimGray
 $settingsGroup.Controls.Add($audioNote)
 
 $protocolNote = New-Object System.Windows.Forms.Label
-$protocolNote.Text = 'Audio defaults: WHIP/RTSP use Opus; SRT/RTMP use AAC. SRT pins video/audio to MPEG-TS PID 256/257 in program 1.'
+$protocolNote.Text = 'Audio defaults: WHIP/SRT/RTSP use Opus; RTMP uses AAC. SRT uses PID 256/257, program 1, 2.9 ms mux sync.'
 $protocolNote.Location = New-Object System.Drawing.Point(15, 418)
 $protocolNote.Size = New-Object System.Drawing.Size(700, 22)
 $protocolNote.ForeColor = [System.Drawing.Color]::DimGray
@@ -2913,8 +2913,13 @@ function Build-GstArguments {
         }
 
         'SRT' {
-            $latency = [int]$numSrtLatency.Value
-
+            # Known-good MediaMTX SRT -> WebRTC shape:
+            # - Opus survives SRT ingest and WebRTC egress.
+            # - AAC is valid in MPEG-TS, but MediaMTX WebRTC readers skip
+            #   MPEG-4 Audio.
+            # - 2.9 ms aggregator latency avoids the one-track PMT race
+            #   without adding the huge delay of the diagnostic 1s value.
+            # - srtsink latency is intentionally omitted.
             $programMap = if ($hasAudio) {
                 'prog-map="program_map,sink_256=1,sink_257=1"'
             }
@@ -2922,13 +2927,23 @@ function Build-GstArguments {
                 'prog-map="program_map,sink_256=1"'
             }
 
+            $destination = $quotedDestination
+            if ($destination -notmatch 'pkt_size=') {
+                $joiner = if ($destination -match '\?') { '&' } else { '?' }
+                $destination =
+                    $destination.TrimEnd('"') +
+                    "$joiner" +
+                    'pkt_size=1316"'
+            }
+
             $pipeline =
                 "mpegtsmux name=mux alignment=7 " +
-                "pat-interval=900 pmt-interval=900 " +
+                "latency=2900000 " +
+                "min-upstream-latency=2900000 " +
+                "pat-interval=600 pmt-interval=600 " +
                 "$programMap " +
-                "! srtsink uri=$quotedDestination " +
-                "latency=$latency wait-for-connection=true " +
-                "auto-reconnect=true " +
+                "! srtsink uri=$destination " +
+                "wait-for-connection=true auto-reconnect=true " +
                 "$video ! mux.sink_256"
 
             if ($hasAudio) {
@@ -3554,6 +3569,7 @@ function Start-GstStream {
         }
 
         Append-Log "SRT MPEG-TS mapping: $srtTracks"
+        Append-Log 'SRT low-latency mux profile: mux latency 2.9 ms, PAT/PMT 600, pkt_size 1316, Opus preferred'
     }
     if ($chkFullscreenApp.Checked) {
         Append-Log "Fullscreen capture target: $($script:CaptureWindowTitle) (HWND $([uint64]$script:CaptureWindowHwnd.ToInt64()))"
