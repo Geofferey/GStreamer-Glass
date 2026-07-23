@@ -630,7 +630,7 @@ public static class GstProcessJob
 '@
 }
 
-$script:AppVersion = '3.7.52f61'
+$script:AppVersion = '3.7.52f62'
 $script:AppName = "GStreamer Glass v$($script:AppVersion)"
 $script:ConfigDirectory = Join-Path $env:APPDATA 'GStreamerBasicWhipStreamer'
 $script:ConfigPath = Join-Path $script:ConfigDirectory 'settings.json'
@@ -4191,6 +4191,7 @@ function Restore-SceneEditorCanvasHome {
         if ($null -ne $script:SceneEditorCanvasHomeMargin) { $sceneEditorCanvas.Margin = $script:SceneEditorCanvasHomeMargin }
         if ($null -ne $script:SceneEditorCanvasHomeAnchor) { $sceneEditorCanvas.Anchor = $script:SceneEditorCanvasHomeAnchor }
         if ($null -ne $script:SceneEditorCanvasHomeBorderStyle) { $sceneEditorCanvas.BorderStyle = $script:SceneEditorCanvasHomeBorderStyle }
+        $sceneEditorCanvas.Location = New-Object System.Drawing.Point(0, 0)
         $sceneEditorCanvas.Visible = $true
         $script:SceneEditorCanvasHostedInPreview = $false
         Set-SceneEditorChromeVisible $true
@@ -4198,6 +4199,46 @@ function Restore-SceneEditorCanvasHome {
     finally {
         $sceneEditorCanvas.ResumeLayout($true)
     }
+}
+
+function Resize-DynamicScenePreviewCardCanvas {
+    if (-not $script:SceneEditorCanvasHostedInPreview) { return }
+    if (-not $previewPanel -or -not $sceneEditorCanvas) { return }
+    if ($previewPanel.ClientSize.Width -le 0 -or $previewPanel.ClientSize.Height -le 0) { return }
+
+    $outputWidth = [Math]::Max(1, [int]$numWidth.Value)
+    $outputHeight = [Math]::Max(1, [int]$numHeight.Value)
+    $aspect = [double]$outputWidth / [double]$outputHeight
+
+    $availableWidth = [Math]::Max(1, [int]$previewPanel.ClientSize.Width)
+    $availableHeight = [Math]::Max(1, [int]$previewPanel.ClientSize.Height)
+
+    $fitWidth = $availableWidth
+    $fitHeight = [int][Math]::Round($fitWidth / $aspect)
+    if ($fitHeight -gt $availableHeight) {
+        $fitHeight = $availableHeight
+        $fitWidth = [int][Math]::Round($fitHeight * $aspect)
+    }
+
+    $fitWidth = [Math]::Max(1, $fitWidth)
+    $fitHeight = [Math]::Max(1, $fitHeight)
+    $left = [int][Math]::Max(0, [Math]::Round(($availableWidth - $fitWidth) / 2))
+    $top = [int][Math]::Max(0, [Math]::Round(($availableHeight - $fitHeight) / 2))
+
+    $sceneEditorCanvas.SuspendLayout()
+    try {
+        $sceneEditorCanvas.Dock = 'None'
+        $sceneEditorCanvas.Anchor = 'None'
+        $sceneEditorCanvas.Location = New-Object System.Drawing.Point($left, $top)
+        $sceneEditorCanvas.Size = New-Object System.Drawing.Size($fitWidth, $fitHeight)
+        $sceneEditorCanvas.BringToFront()
+        Update-SceneCanvasFromValues
+    }
+    finally {
+        $sceneEditorCanvas.ResumeLayout($true)
+    }
+
+    Sync-DynamicScenePreviewLayout
 }
 
 function Show-DynamicScenePreviewInPreviewCard {
@@ -4211,21 +4252,20 @@ function Show-DynamicScenePreviewInPreviewCard {
     $sceneEditorCanvas.SuspendLayout()
     try {
         $sceneEditorCanvas.Parent = $previewPanel
-        $sceneEditorCanvas.Dock = 'Fill'
+        $sceneEditorCanvas.Dock = 'None'
         $sceneEditorCanvas.Margin = New-Object System.Windows.Forms.Padding(0)
-        $sceneEditorCanvas.Anchor = 'Top,Bottom,Left,Right'
+        $sceneEditorCanvas.Anchor = 'None'
         $sceneEditorCanvas.BorderStyle = [System.Windows.Forms.BorderStyle]::None
         $sceneEditorCanvas.Visible = $true
         $script:SceneEditorCanvasHostedInPreview = $true
         Set-SceneEditorChromeVisible $false
         $sceneEditorCanvas.BringToFront()
-        Update-SceneCanvasFromValues
     }
     finally {
         $sceneEditorCanvas.ResumeLayout($true)
     }
 
-    Sync-DynamicScenePreviewLayout
+    Resize-DynamicScenePreviewCardCanvas
 }
 
 function Update-SceneCanvasFromValues {
@@ -4522,8 +4562,8 @@ $cmbWebcamDevice.Add_SelectedIndexChanged({ Reset-DynamicScenePreviewFallback; U
 $cmbWebcamLayout.Add_SelectedIndexChanged({ Set-WebcamLayoutPreset; Update-SceneUi })
 foreach ($control in @($numWebcamWidth,$numWebcamHeight,$numWebcamX,$numWebcamY,$numWebcamFps,$numWebcamOpacity,$numWebcamBorder,$numSceneInputQueueBuffers,$numSceneInputQueueCapMs)) { $control.Add_ValueChanged({ Update-SceneUi }) }
 $numWebcamFps.Add_ValueChanged({ Reset-DynamicScenePreviewFallback; Restart-DynamicScenePreviewIfActive })
-$numWidth.Add_ValueChanged({ Resize-LiveSceneCanvas; Update-SceneCanvasFromValues })
-$numHeight.Add_ValueChanged({ Resize-LiveSceneCanvas; Update-SceneCanvasFromValues })
+$numWidth.Add_ValueChanged({ Resize-LiveSceneCanvas; Resize-DynamicScenePreviewCardCanvas; Update-SceneCanvasFromValues })
+$numHeight.Add_ValueChanged({ Resize-LiveSceneCanvas; Resize-DynamicScenePreviewCardCanvas; Update-SceneCanvasFromValues })
 $chkWebcamMirror.Add_CheckedChanged({ Reset-DynamicScenePreviewFallback; Update-SceneUi; Restart-DynamicScenePreviewIfActive })
 
 function Resize-LiveSceneCanvas {
@@ -14571,7 +14611,10 @@ $btnResetAll.Add_Click({
 })
 
 $previewPanel.Add_Resize({
-    if ($script:PreviewHwnd -ne [IntPtr]::Zero) {
+    if ($script:SceneEditorCanvasHostedInPreview) {
+        Resize-DynamicScenePreviewCardCanvas
+    }
+    elseif ($script:PreviewHwnd -ne [IntPtr]::Zero) {
         Set-PreviewVisibility
     }
 })
