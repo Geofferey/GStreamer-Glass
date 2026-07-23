@@ -630,7 +630,7 @@ public static class GstProcessJob
 '@
 }
 
-$script:AppVersion = '3.7.52f37'
+$script:AppVersion = '3.7.52f38'
 $script:AppName = "GStreamer Glass v$($script:AppVersion)"
 $script:ConfigDirectory = Join-Path $env:APPDATA 'GStreamerBasicWhipStreamer'
 $script:ConfigPath = Join-Path $script:ConfigDirectory 'settings.json'
@@ -1510,11 +1510,79 @@ function Get-UnifiedPublisherHostLaunch {
     return [pscustomobject]@{ Executable = $hostExe; Arguments = $hostArgs; HelperPath = $helperPath; PipelinePath = $pipelinePath }
 }
 
+function Get-GStreamerRuntimeFingerprint {
+    param(
+        [Parameter(Mandatory)][string]$GstPath,
+        [string[]]$PluginDirectories = @(),
+        [string]$Scanner
+    )
+
+    $parts = New-Object System.Collections.Generic.List[string]
+
+    foreach ($filePath in @($GstPath, $Scanner)) {
+        if ([string]::IsNullOrWhiteSpace($filePath)) { continue }
+        try {
+            $item = Get-Item -LiteralPath $filePath -ErrorAction Stop
+            $parts.Add("file=$($item.FullName.ToLowerInvariant())|len=$($item.Length)|ticks=$($item.LastWriteTimeUtc.Ticks)")
+        }
+        catch {
+            $parts.Add("file=$filePath|missing")
+        }
+    }
+
+    foreach ($directory in $PluginDirectories) {
+        if ([string]::IsNullOrWhiteSpace($directory)) { continue }
+        try {
+            $dirItem = Get-Item -LiteralPath $directory -ErrorAction Stop
+            $pluginFiles = @(Get-ChildItem -LiteralPath $directory -Filter '*.dll' -File -ErrorAction SilentlyContinue)
+            $latestPluginTicks = 0L
+            foreach ($pluginFile in $pluginFiles) {
+                if ($pluginFile.LastWriteTimeUtc.Ticks -gt $latestPluginTicks) {
+                    $latestPluginTicks = $pluginFile.LastWriteTimeUtc.Ticks
+                }
+            }
+            $parts.Add("plugins=$($dirItem.FullName.ToLowerInvariant())|count=$($pluginFiles.Count)|dirTicks=$($dirItem.LastWriteTimeUtc.Ticks)|latestDllTicks=$latestPluginTicks")
+        }
+        catch {
+            $parts.Add("plugins=$directory|missing")
+        }
+    }
+
+    return ($parts -join '||')
+}
+
+function Set-GStreamerProcessEnvironmentValue {
+    param(
+        [Parameter(Mandatory)][string]$Name,
+        [AllowNull()][string]$Value
+    )
+
+    [Environment]::SetEnvironmentVariable($Name, $Value, 'Process')
+}
+
 function Prepare-GStreamerRuntime {
     param([Parameter(Mandatory)][string]$GstPath)
 
-    $binDirectory = Split-Path -Parent $GstPath
+    $normalizedGstPath = Normalize-GstLaunchPath $GstPath
+    $binDirectory = Split-Path -Parent $normalizedGstPath
     $runtimeRoot = Split-Path -Parent $binDirectory
+
+    # Fully own the gst-launch child-process environment from the selected binary.
+    # This prevents stale global/user variables from an old Strom or alternate
+    # GStreamer install from poisoning a newly selected runtime.
+    foreach ($name in @(
+        'GST_PLUGIN_PATH',
+        'GST_PLUGIN_PATH_1_0',
+        'GST_PLUGIN_SYSTEM_PATH',
+        'GST_PLUGIN_SYSTEM_PATH_1_0',
+        'GST_PLUGIN_SCANNER',
+        'GST_PLUGIN_SCANNER_1_0',
+        'GST_REGISTRY',
+        'GST_REGISTRY_1_0'
+    )) {
+        Set-GStreamerProcessEnvironmentValue -Name $name -Value $null
+    }
+
     $env:PATH = "$binDirectory;$($script:BasePathEnvironment)"
 
     $pluginDirectories = New-Object System.Collections.Generic.List[string]
@@ -1542,12 +1610,12 @@ function Prepare-GStreamerRuntime {
 
     if ($pluginDirectories.Count -gt 0) {
         $pluginPath = $pluginDirectories -join ';'
-        $env:GST_PLUGIN_PATH_1_0 = $pluginPath
-        $env:GST_PLUGIN_SYSTEM_PATH_1_0 = $pluginPath
-    }
-    else {
-        [Environment]::SetEnvironmentVariable('GST_PLUGIN_PATH_1_0', $null, 'Process')
-        [Environment]::SetEnvironmentVariable('GST_PLUGIN_SYSTEM_PATH_1_0', $null, 'Process')
+        # Set both versioned and unversioned names. Different Windows builds and
+        # helper processes have historically respected different variants.
+        Set-GStreamerProcessEnvironmentValue -Name 'GST_PLUGIN_PATH_1_0' -Value $pluginPath
+        Set-GStreamerProcessEnvironmentValue -Name 'GST_PLUGIN_SYSTEM_PATH_1_0' -Value $pluginPath
+        Set-GStreamerProcessEnvironmentValue -Name 'GST_PLUGIN_PATH' -Value $pluginPath
+        Set-GStreamerProcessEnvironmentValue -Name 'GST_PLUGIN_SYSTEM_PATH' -Value $pluginPath
     }
 
     $scanner = $null
@@ -1562,29 +1630,38 @@ function Prepare-GStreamerRuntime {
     }
 
     if ($scanner) {
-        $env:GST_PLUGIN_SCANNER_1_0 = $scanner
-        $env:GST_PLUGIN_SCANNER = $scanner
-    }
-    else {
-        [Environment]::SetEnvironmentVariable('GST_PLUGIN_SCANNER_1_0', $null, 'Process')
-        [Environment]::SetEnvironmentVariable('GST_PLUGIN_SCANNER', $null, 'Process')
+        Set-GStreamerProcessEnvironmentValue -Name 'GST_PLUGIN_SCANNER_1_0' -Value $scanner
+        Set-GStreamerProcessEnvironmentValue -Name 'GST_PLUGIN_SCANNER' -Value $scanner
     }
 
     if (-not (Test-Path -LiteralPath $script:ConfigDirectory)) {
         $null = New-Item -ItemType Directory -Path $script:ConfigDirectory -Force
     }
 
-    $runtimeHash = Get-PathHash -Value ([System.IO.Path]::GetFullPath($GstPath))
-    $env:GST_REGISTRY_1_0 = Join-Path $script:ConfigDirectory "gstreamer-registry-$runtimeHash.bin"
+    $fingerprint = Get-GStreamerRuntimeFingerprint -GstPath $normalizedGstPath -PluginDirectories @($pluginDirectories) -Scanner $scanner
+    $runtimeHash = Get-PathHash -Value $fingerprint
+    $registryPath = Join-Path $script:ConfigDirectory "gstreamer-registry-$runtimeHash.bin"
 
-    Append-Log "GStreamer runtime: $GstPath"
+    # Set both names. The unversioned GST_REGISTRY is the important one for many
+    # Windows builds; GST_REGISTRY_1_0 is kept for compatibility and clarity.
+    Set-GStreamerProcessEnvironmentValue -Name 'GST_REGISTRY_1_0' -Value $registryPath
+    Set-GStreamerProcessEnvironmentValue -Name 'GST_REGISTRY' -Value $registryPath
+
+    Append-Log "GStreamer runtime: $normalizedGstPath"
     if ($pluginDirectories.Count -gt 0) {
         Append-Log "Plugin path: $($pluginDirectories -join ';')"
+    }
+    else {
+        Append-Log "Plugin path: not found under $runtimeRoot"
     }
     if ($scanner) {
         Append-Log "Plugin scanner: $scanner"
     }
-    Append-Log "Isolated registry: $($env:GST_REGISTRY_1_0)"
+    else {
+        Append-Log "Plugin scanner: not found under $runtimeRoot"
+    }
+    Append-Log "Isolated registry: $registryPath"
+    Append-Log "Runtime registry fingerprint: $runtimeHash"
 }
 function Format-InvariantNumber {
     param(
@@ -1700,7 +1777,7 @@ $txtGstPath.Location = New-Object System.Drawing.Point(150, 25)
 $txtGstPath.Size = New-Object System.Drawing.Size(370, 23)
 $txtGstPath.Text = Find-GstLaunch
 $settingsGroup.Controls.Add($txtGstPath)
-$toolTip.SetToolTip($txtGstPath, 'Fresh installs prefer C:\Program Files\gstreamer\1.0\msvc_x86_64\bin\gst-launch-1.0.exe. A user-selected valid binary is preserved; Strom is fallback only.')
+$toolTip.SetToolTip($txtGstPath, 'Fresh installs prefer C:\Program Files\gstreamer\1.0\msvc_x86_64\bin\gst-launch-1.0.exe. A valid user-selected binary is preserved and gets its own plugin/scanner/registry environment; Strom is fallback only.')
 
 $btnBrowseGst = New-Object System.Windows.Forms.Button
 $btnBrowseGst.Text = 'Browse...'
@@ -13267,6 +13344,9 @@ $btnBrowseGst.Add_Click({
         if (-not [string]::IsNullOrWhiteSpace($selectedPath)) {
             $txtGstPath.Text = $selectedPath
             Append-Log "Selected GStreamer executable: $selectedPath"
+            if (Test-GstLaunchPath $selectedPath) {
+                Prepare-GStreamerRuntime -GstPath $selectedPath
+            }
         }
     }
     catch {
@@ -13339,6 +13419,9 @@ $btnDetectGst.Add_Click({
     $detected = Find-GstLaunch
     $txtGstPath.Text = $detected
     Append-Log "Detected GStreamer executable: $detected"
+    if (Test-GstLaunchPath $detected) {
+        Prepare-GStreamerRuntime -GstPath $detected
+    }
 })
 $btnCheckGst.Add_Click({
     $lowerTabs.SelectedTab = $tabLog
