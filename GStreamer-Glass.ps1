@@ -4250,6 +4250,35 @@ function Apply-ModernDashboardUi {
     $script:ColorGood     = [System.Drawing.ColorTranslator]::FromHtml('#22C55E')
     $script:ColorWarn     = [System.Drawing.ColorTranslator]::FromHtml('#F59E0B')
 
+    # UI glyphs. Built from code points via ConvertFromUtf32 so they survive any
+    # source-file encoding round-trip under Windows PowerShell 5.1 (which has no
+    # \u escape). IMPORTANT: WinForms buttons draw text through GDI (TextRenderer),
+    # whose font-linking falls back to Segoe UI Symbol for Basic-Multilingual-Plane
+    # symbols but points astral-plane emoji (U+1F###) at Segoe UI Emoji, a color
+    # font GDI cannot rasterize -> those render as tofu boxes. So every glyph here
+    # is a BMP symbol from a block GDI links reliably: Geometric Shapes (U+25xx),
+    # Arrows (U+21xx), Latin-1 (U+00xx), plus a few individually confirmed marks.
+    $script:Glyph = @{
+        Transport = [char]::ConvertFromUtf32(0x2191)   # up arrow (uplink / publish)
+        WebRtc    = [char]::ConvertFromUtf32(0x21C4)   # paired arrows (peer duplex)
+        Video     = [char]::ConvertFromUtf32(0x25A3)   # framed square (viewport)
+        Scenes    = [char]::ConvertFromUtf32(0x25F0)   # quadrant square (layout)
+        Audio     = [char]::ConvertFromUtf32(0x266A)   # musical note
+        Player    = [char]::ConvertFromUtf32(0x25B6)   # play triangle
+        Recording = [char]::ConvertFromUtf32(0x23FA)   # record circle
+        Network   = [char]::ConvertFromUtf32(0x25C9)   # fisheye (hub / node)
+        Options   = [char]::ConvertFromUtf32(0x2699)   # gear
+        Logs      = [char]::ConvertFromUtf32(0x25A4)   # square w/ horizontal fill (lines)
+        Command   = [char]::ConvertFromUtf32(0x00BB)   # >> (prompt)
+        Start     = [char]::ConvertFromUtf32(0x25B6)   # play triangle
+        Stop      = [char]::ConvertFromUtf32(0x25A0)   # black square
+        Restart   = [char]::ConvertFromUtf32(0x21BB)   # clockwise arrow
+        Copy      = [char]::ConvertFromUtf32(0x2750)   # shadowed square (duplicate)
+        Clear     = [char]::ConvertFromUtf32(0x00D7)   # multiplication sign (x)
+        OpenLogs  = [char]::ConvertFromUtf32(0x2197)   # up-right arrow (open external)
+        Ready     = [char]::ConvertFromUtf32(0x25CF)   # filled circle
+    }
+
     $form.Size = New-Object System.Drawing.Size(1500, 930)
     $form.MinimumSize = New-Object System.Drawing.Size(1280, 760)
     $form.BackColor = $script:ColorBg
@@ -4353,6 +4382,24 @@ function Apply-ModernDashboardUi {
         return $btn
     }
 
+    function New-SidebarHeading {
+        param([string]$Text)
+
+        # A small muted caption that groups the buttons below it. Keeps the two
+        # navigation clusters (settings panes vs. output views) visually distinct
+        # so the sidebar reads as an outline rather than a flat list.
+        $lbl = New-Object System.Windows.Forms.Label
+        $lbl.Text = $Text.ToUpperInvariant()
+        $lbl.AutoSize = $false
+        $lbl.Width = 172
+        $lbl.Height = 20
+        $lbl.TextAlign = 'BottomLeft'
+        $lbl.Margin = New-Object System.Windows.Forms.Padding(4, 10, 0, 2)
+        $lbl.ForeColor = $script:ColorMuted
+        $lbl.Font = New-Object System.Drawing.Font('Segoe UI', 7.5, [System.Drawing.FontStyle]::Bold)
+        return $lbl
+    }
+
     # Shell.
     # The visible window chrome is now fully layout-panel driven:
     # Form -> root table -> sidebar + main table -> header / dashboard / lower tabs.
@@ -4423,20 +4470,41 @@ function Apply-ModernDashboardUi {
         $brandBox.Controls.Add($ver, 0, 1)
         $brandBox.SetColumnSpan($ver, 2)
 
-        $sidebar.Controls.Add((New-SidebarButton '  (o)  Stream' 0 { if ($script:SettingsTabs -and $script:SettingsTabTransport) { $script:SettingsTabs.SelectedTab = $script:SettingsTabTransport } } $true))
-        $sidebar.Controls.Add((New-SidebarButton '  [box]  Video' 0 { if ($script:SettingsTabs -and $script:SettingsTabVideo) { $script:SettingsTabs.SelectedTab = $script:SettingsTabVideo } }))
-        $sidebar.Controls.Add((New-SidebarButton '  [panel]  Scenes' 0 { if ($script:SettingsTabs -and $script:SettingsTabScenes) { $script:SettingsTabs.SelectedTab = $script:SettingsTabScenes } }))
-        $sidebar.Controls.Add((New-SidebarButton '  <>  Audio' 0 { if ($script:SettingsTabs -and $script:SettingsTabAudio) { $script:SettingsTabs.SelectedTab = $script:SettingsTabAudio } }))
-        $sidebar.Controls.Add((New-SidebarButton '  Play  Player' 0 { if ($script:SettingsTabs -and $script:SettingsTabPlayer) { $script:SettingsTabs.SelectedTab = $script:SettingsTabPlayer } }))
-        $sidebar.Controls.Add((New-SidebarButton '  *  Recording' 0 { if ($script:SettingsTabs -and $script:SettingsTabRecording) { $script:SettingsTabs.SelectedTab = $script:SettingsTabRecording } }))
-        $sidebar.Controls.Add((New-SidebarButton '  <->  Network' 0 { if ($script:SettingsTabs -and $script:SettingsTabNetwork) { $script:SettingsTabs.SelectedTab = $script:SettingsTabNetwork } }))
-        $sidebar.Controls.Add((New-SidebarButton '  (o)  Preview' 0 { $chkPreview.Focus() }))
-        $sidebar.Controls.Add((New-SidebarButton '  Menu  Logs' 0 { $lowerTabs.SelectedTab = $tabLog }))
-        $sidebar.Controls.Add((New-SidebarButton '  </> Command' 0 { $lowerTabs.SelectedTab = $tabCommand }))
-        $sidebar.Controls.Add((New-SidebarButton '  Gear  Options' 0 { if ($script:SettingsTabs -and $script:SettingsTabOptions) { $script:SettingsTabs.SelectedTab = $script:SettingsTabOptions } }))
+        # Sidebar navigation mirrors the settings tab strip one-to-one (same names,
+        # same order) plus the two bottom output views. The leading glyph is a real
+        # Unicode symbol; Segoe UI on Windows 10+ resolves these through emoji/symbol
+        # fallback, so no icon font or embedded image resources are required.
+        $script:SidebarNavButtons = @{}
+
+        $sidebar.Controls.Add((New-SidebarHeading 'Settings'))
+        $script:SidebarNavButtons['Transport'] = New-SidebarButton "  $($script:Glyph.Transport)   Transport" 0 { if ($script:SettingsTabs -and $script:SettingsTabTransport) { $script:SettingsTabs.SelectedTab = $script:SettingsTabTransport } } $true
+        $sidebar.Controls.Add($script:SidebarNavButtons['Transport'])
+        $script:SidebarNavButtons['WebRtc'] = New-SidebarButton "  $($script:Glyph.WebRtc)   WebRTC" 0 { if ($script:SettingsTabs -and $script:SettingsTabWebRtc) { $script:SettingsTabs.SelectedTab = $script:SettingsTabWebRtc } }
+        $sidebar.Controls.Add($script:SidebarNavButtons['WebRtc'])
+        $script:SidebarNavButtons['Video'] = New-SidebarButton "  $($script:Glyph.Video)   Video" 0 { if ($script:SettingsTabs -and $script:SettingsTabVideo) { $script:SettingsTabs.SelectedTab = $script:SettingsTabVideo } }
+        $sidebar.Controls.Add($script:SidebarNavButtons['Video'])
+        $script:SidebarNavButtons['Scenes'] = New-SidebarButton "  $($script:Glyph.Scenes)   Scenes" 0 { if ($script:SettingsTabs -and $script:SettingsTabScenes) { $script:SettingsTabs.SelectedTab = $script:SettingsTabScenes } }
+        $sidebar.Controls.Add($script:SidebarNavButtons['Scenes'])
+        $script:SidebarNavButtons['Audio'] = New-SidebarButton "  $($script:Glyph.Audio)   Audio" 0 { if ($script:SettingsTabs -and $script:SettingsTabAudio) { $script:SettingsTabs.SelectedTab = $script:SettingsTabAudio } }
+        $sidebar.Controls.Add($script:SidebarNavButtons['Audio'])
+        $script:SidebarNavButtons['Player'] = New-SidebarButton "  $($script:Glyph.Player)   Player" 0 { if ($script:SettingsTabs -and $script:SettingsTabPlayer) { $script:SettingsTabs.SelectedTab = $script:SettingsTabPlayer } }
+        $sidebar.Controls.Add($script:SidebarNavButtons['Player'])
+        $script:SidebarNavButtons['Recording'] = New-SidebarButton "  $($script:Glyph.Recording)   Recording" 0 { if ($script:SettingsTabs -and $script:SettingsTabRecording) { $script:SettingsTabs.SelectedTab = $script:SettingsTabRecording } }
+        $sidebar.Controls.Add($script:SidebarNavButtons['Recording'])
+        $script:SidebarNavButtons['Network'] = New-SidebarButton "  $($script:Glyph.Network)   Network" 0 { if ($script:SettingsTabs -and $script:SettingsTabNetwork) { $script:SettingsTabs.SelectedTab = $script:SettingsTabNetwork } }
+        $sidebar.Controls.Add($script:SidebarNavButtons['Network'])
+        $script:SidebarNavButtons['Options'] = New-SidebarButton "  $($script:Glyph.Options)   Options" 0 { if ($script:SettingsTabs -and $script:SettingsTabOptions) { $script:SettingsTabs.SelectedTab = $script:SettingsTabOptions } }
+        $sidebar.Controls.Add($script:SidebarNavButtons['Options'])
+
+        $sidebar.Controls.Add((New-SidebarHeading 'Output'))
+        $script:SidebarNavButtons['Logs'] = New-SidebarButton "  $($script:Glyph.Logs)   Logs" 0 { $lowerTabs.SelectedTab = $tabLog }
+        $sidebar.Controls.Add($script:SidebarNavButtons['Logs'])
+        $script:SidebarNavButtons['Command'] = New-SidebarButton "  $($script:Glyph.Command)   Command" 0 { $lowerTabs.SelectedTab = $tabCommand }
+        $sidebar.Controls.Add($script:SidebarNavButtons['Command'])
 
         $sidebarStatus = New-Object System.Windows.Forms.Label
-        $sidebarStatus.Text = '* Ready'
+        $sidebarStatus.Text = "$($script:Glyph.Ready) Ready"
+        $script:SidebarStatusLabel = $sidebarStatus
         $sidebarStatus.AutoSize = $false
         $sidebarStatus.Width = 172
         $sidebarStatus.Height = 26
@@ -4541,14 +4609,21 @@ function Apply-ModernDashboardUi {
     $settingsTabs.Margin = New-Object System.Windows.Forms.Padding(12, 24, 12, 12)
     $settingsGroup.Controls.Add($settingsTabs)
 
+    # Tab captions stay plain text; the leading glyphs live in the sidebar. The two
+    # navigations still read as the same list because the names match one-to-one and
+    # in the same order. Keeping the strip text-only avoids a crowded/wrapping tab
+    # row now that there are nine panes.
     $tabTransport = New-Object System.Windows.Forms.TabPage
     $tabTransport.Text = 'Transport'
     $tabTransport.AutoScroll = $true
+    $tabWebRtc = New-Object System.Windows.Forms.TabPage
+    $tabWebRtc.Text = 'WebRTC'
+    $tabWebRtc.AutoScroll = $true
     $tabVideo = New-Object System.Windows.Forms.TabPage
     $tabVideo.Text = 'Video'
     $tabVideo.AutoScroll = $true
     $tabScenes = New-Object System.Windows.Forms.TabPage
-    $tabScenes.Text = 'Scenes (Concept)'
+    $tabScenes.Text = 'Scenes'
     $tabScenes.AutoScroll = $true
     $tabAudio = New-Object System.Windows.Forms.TabPage
     $tabAudio.Text = 'Audio'
@@ -4568,9 +4643,10 @@ function Apply-ModernDashboardUi {
     $tabOptions.Text = 'Options'
     $tabOptions.AutoScroll = $true
 
-    $settingsTabs.TabPages.AddRange(@($tabTransport, $tabVideo, $tabScenes, $tabAudio, $tabPlayer, $tabRecording, $tabNetwork, $tabOptions))
+    $settingsTabs.TabPages.AddRange(@($tabTransport, $tabWebRtc, $tabVideo, $tabScenes, $tabAudio, $tabPlayer, $tabRecording, $tabNetwork, $tabOptions))
     $script:SettingsTabs = $settingsTabs
     $script:SettingsTabTransport = $tabTransport
+    $script:SettingsTabWebRtc = $tabWebRtc
     $script:SettingsTabVideo = $tabVideo
     $script:SettingsTabScenes = $tabScenes
     $script:SettingsTabAudio = $tabAudio
@@ -4578,6 +4654,25 @@ function Apply-ModernDashboardUi {
     $script:SettingsTabRecording = $tabRecording
     $script:SettingsTabNetwork = $tabNetwork
     $script:SettingsTabOptions = $tabOptions
+
+    # Keep the sidebar highlight in sync with the active settings tab so the two
+    # parallel navigations never disagree about where the user is.
+    $settingsTabs.Add_SelectedIndexChanged({
+        if (-not $script:SidebarNavButtons) { return }
+        $map = @{
+            0 = 'Transport'; 1 = 'WebRtc'; 2 = 'Video'; 3 = 'Scenes'; 4 = 'Audio';
+            5 = 'Player'; 6 = 'Recording'; 7 = 'Network'; 8 = 'Options'
+        }
+        $activeKey = $map[$script:SettingsTabs.SelectedIndex]
+        foreach ($entry in $script:SidebarNavButtons.GetEnumerator()) {
+            $isActive = ($entry.Key -eq $activeKey)
+            $entry.Value.BackColor = if ($isActive) {
+                [System.Drawing.ColorTranslator]::FromHtml('#17345C')
+            } else {
+                [System.Drawing.ColorTranslator]::FromHtml('#0B1220')
+            }
+        }
+    })
 
     # ------------------------------------------------------------------
     # Declarative settings layout.
@@ -4713,19 +4808,18 @@ function Apply-ModernDashboardUi {
     }
 
     # ---------------- Transport ----------------
+    # The Transport pane answers one question: "where does the stream go, and how
+    # is it timed?" Protocol-specific WebRTC internals now live on their own WebRTC
+    # pane; per-monitor capture options moved to the Video pane next to the capture
+    # method they belong with.
     $paneTransport = New-SettingsPane $tabTransport
 
-    $s = Add-Section $paneTransport 'Transport'
+    $s = Add-Section $paneTransport 'Destination'
     $r = Add-Row $s
     Add-Field $r -Control $chkTransportEnabled -Width 180 | Out-Null
     $r = Add-Row $s
     Add-Field $r -Label 'Protocol' -Control $cmbProtocol -Width 110 | Out-Null
     Add-Field $r -LabelControl $lblDestination -Control $txtDestination -Width 410 | Out-Null
-
-    $s = Add-Section $paneTransport 'Capture target'
-    $r = Add-Row $s
-    Add-Field $r -Label 'Monitor' -Control $numMonitor -Width 70 | Out-Null
-    Add-Field $r -Control $chkCursor -Width 100 | Out-Null
 
     $s = Add-Section $paneTransport 'Clock signaling / timestamps'
     $r = Add-Row $s
@@ -4733,7 +4827,26 @@ function Apply-ModernDashboardUi {
     $r = Add-Row $s
     Add-Field $r -Control $lblTimestampStatus -Width 535 | Out-Null
 
-    $s = Add-Section $paneTransport 'Direct GStreamer WebRTC'
+    $s = Add-Section $paneTransport 'MediaMTX'
+    $r = Add-Row $s
+    Add-Field $r -Control $chkStartMediaMtx -Width 260 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Label 'MediaMTX executable' -Control $txtMediaMtxPath -Width 430 | Out-Null
+    Add-Field $r -Control $btnBrowseMediaMtx -Width 95 | Out-Null
+
+    $s = Add-Section $paneTransport ''
+    $r = Add-Row $s
+    Add-Field $r -Control $btnResetTransport -Width 180 | Out-Null
+
+    # ---------------- WebRTC ----------------
+    # Everything here only applies when Protocol = "GST WebRTC" (Direct GStreamer
+    # WebRTC). Update-DirectWebRtcUi enables/disables these controls by variable
+    # reference, so relocating them to their own pane changes nothing functionally
+    # while unburdening the Transport pane. Sub-sections group the ~30 controls by
+    # concern instead of presenting one flat wall.
+    $paneWebRtc = New-SettingsPane $tabWebRtc
+
+    $s = Add-Section $paneWebRtc 'Signaling'
     $r = Add-Row $s
     Add-Field $r -Control $lblDirectWebRtcStatus -Width 535 | Out-Null
     $r = Add-Row $s
@@ -4742,7 +4855,19 @@ function Apply-ModernDashboardUi {
     Add-Field $r -Label 'Audio WS port' -Control $numDirectWebRtcSplitAudioSignalingPort -Width 85 | Out-Null
     $r = Add-Row $s
     Add-Field $r -Control $chkDirectWebRtcSharedSignaling -Width 260 | Out-Null
+
+    $s = Add-Section $paneWebRtc 'ICE / connectivity'
+    $r = Add-Row $s
     Add-Field $r -Label 'STUN' -Control $txtDirectWebRtcStun -Width 270 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Control $chkDirectWebRtcTurnEnabled -Width 165 | Out-Null
+    Add-Field $r -Label 'TURN URI' -Control $txtDirectWebRtcTurn -Width 360 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Label 'Bundle policy' -Control $cmbDirectWebRtcBundlePolicy -Width 145 | Out-Null
+    Add-Field $r -Label 'Internal RTP MTU (0=default)' -Control $numDirectWebRtcInternalRtpMtu -Width 85 | Out-Null
+    Add-Field $r -Control $chkDirectWebRtcInternalRepeatHeaders -Width 250 | Out-Null
+
+    $s = Add-Section $paneWebRtc 'A/V pipeline topology'
     $r = Add-Row $s
     Add-Field $r -Label 'A/V pipeline topology' -Control $cmbDirectWebRtcAvPipelineMode -Width 310 | Out-Null
     $r = Add-Row $s
@@ -4755,9 +4880,8 @@ function Apply-ModernDashboardUi {
     $r = Add-Row $s
     Add-Field $r -Label 'Video MediaStream ID' -Control $txtDirectWebRtcVideoMediaStreamId -Width 180 | Out-Null
     Add-Field $r -Label 'Audio MediaStream ID' -Control $txtDirectWebRtcAudioMediaStreamId -Width 180 | Out-Null
-    $r = Add-Row $s
-    Add-Field $r -Control $chkDirectWebRtcTurnEnabled -Width 165 | Out-Null
-    Add-Field $r -Label 'TURN URI' -Control $txtDirectWebRtcTurn -Width 360 | Out-Null
+
+    $s = Add-Section $paneWebRtc 'Unified publisher / RTP bridge'
     $r = Add-Row $s
     Add-Field $r -Control $chkDirectWebRtcUnifiedPublisher -Width 360 | Out-Null
     $r = Add-Row $s
@@ -4769,10 +4893,8 @@ function Apply-ModernDashboardUi {
     Add-Field $r -Control $chkDirectWebRtcAudioBridgePacing -Width 310 | Out-Null
     $r = Add-Row $s
     Add-Field $r -Control $chkDirectWebRtcControlDataChannel -Width 315 | Out-Null
-    $r = Add-Row $s
-    Add-Field $r -Label 'Bundle policy' -Control $cmbDirectWebRtcBundlePolicy -Width 145 | Out-Null
-    Add-Field $r -Label 'Internal RTP MTU (0=default)' -Control $numDirectWebRtcInternalRtpMtu -Width 85 | Out-Null
-    Add-Field $r -Control $chkDirectWebRtcInternalRepeatHeaders -Width 250 | Out-Null
+
+    $s = Add-Section $paneWebRtc 'Congestion / recovery'
     $r = Add-Row $s
     Add-Field $r -Label 'Congestion' -Control $cmbDirectWebRtcCongestion -Width 110 | Out-Null
     Add-Field $r -Label 'Mitigation' -Control $cmbDirectWebRtcMitigation -Width 170 | Out-Null
@@ -4780,16 +4902,8 @@ function Apply-ModernDashboardUi {
     Add-Field $r -LabelControl $lblWebRtcRecoveryMode -Control $cmbWebRtcRecoveryMode -Width 135 | Out-Null
     Add-Field $r -LabelControl $lblDirectWebRtcSmoothnessProfile -Control $cmbDirectWebRtcSmoothnessProfile -Width 155 | Out-Null
 
-    $s = Add-Section $paneTransport 'MediaMTX'
+    $s = Add-Section $paneWebRtc ''
     $r = Add-Row $s
-    Add-Field $r -Control $chkStartMediaMtx -Width 260 | Out-Null
-    $r = Add-Row $s
-    Add-Field $r -Label 'MediaMTX executable' -Control $txtMediaMtxPath -Width 430 | Out-Null
-    Add-Field $r -Control $btnBrowseMediaMtx -Width 95 | Out-Null
-
-    $s = Add-Section $paneTransport ''
-    $r = Add-Row $s
-    Add-Field $r -Control $btnResetTransport -Width 180 | Out-Null
     Add-Field $r -Control $btnResetWebRtcSane -Width 210 | Out-Null
 
     # Non-user-facing controls that must stay alive because other code reads them:
@@ -4822,6 +4936,8 @@ function Apply-ModernDashboardUi {
     Add-Field $r -Label 'Capture method' -Control $cmbCaptureMethod -Width 260 | Out-Null
     Add-Field $r -Control $lblCaptureModeStatus -Width 260 | Out-Null
     $r = Add-Row $s
+    Add-Field $r -Label 'Monitor' -Control $numMonitor -Width 70 | Out-Null
+    Add-Field $r -Control $chkCursor -Width 100 | Out-Null
     Add-Field $r -LabelControl $lblCaptureQueueBuffers -Control $numCaptureQueueBuffers -Width 90 | Out-Null
 
     $s = Add-Section $paneVideo 'Encoder'
@@ -5203,7 +5319,7 @@ function Apply-ModernDashboardUi {
     Add-Field $r -Control $btnResetOptions -Width 160 | Out-Null
     Add-Field $r -Control $btnResetAll -Width 160 | Out-Null
 
-    foreach ($tp in @($tabTransport, $tabVideo, $tabAudio, $tabPlayer, $tabRecording, $tabNetwork, $tabOptions)) {
+    foreach ($tp in @($tabTransport, $tabWebRtc, $tabVideo, $tabAudio, $tabPlayer, $tabRecording, $tabNetwork, $tabOptions)) {
         $tp.BackColor = $script:ColorSurface
         $tp.ForeColor = $script:ColorText
     }
@@ -5211,7 +5327,7 @@ function Apply-ModernDashboardUi {
     # Action row.
     # Buttons live in ModernActionFlow. The flow panel owns placement and wraps
     # if the window is narrowed, so this row no longer depends on hardcoded X/Y.
-    $btnStart.Text = 'Play  Start'
+    $btnStart.Text = "$($script:Glyph.Start)  Start"
     $btnStart.Width = 145
     $btnStart.Height = 42
     $btnStart.Margin = New-Object System.Windows.Forms.Padding(8, 0, 0, 0)
@@ -5219,28 +5335,28 @@ function Apply-ModernDashboardUi {
     $btnStart.ForeColor = [System.Drawing.Color]::White
     $btnStart.FlatAppearance.BorderSize = 0
 
-    $btnStop.Text = '[stop]  Stop'
-    $btnStop.Width = 100
+    $btnStop.Text = "$($script:Glyph.Stop)  Stop"
+    $btnStop.Width = 110
     $btnStop.Height = 42
     $btnStop.Margin = New-Object System.Windows.Forms.Padding(8, 0, 0, 0)
 
-    $btnRestart.Text = 'Refresh  Restart'
-    $btnRestart.Width = 120
+    $btnRestart.Text = "$($script:Glyph.Restart)  Restart"
+    $btnRestart.Width = 130
     $btnRestart.Height = 42
     $btnRestart.Margin = New-Object System.Windows.Forms.Padding(8, 0, 0, 0)
 
-    $btnCopyCommand.Text = 'Copy'
-    $btnCopyCommand.Width = 85
+    $btnCopyCommand.Text = "$($script:Glyph.Copy)  Copy"
+    $btnCopyCommand.Width = 100
     $btnCopyCommand.Height = 42
     $btnCopyCommand.Margin = New-Object System.Windows.Forms.Padding(8, 0, 0, 0)
 
-    $btnClearLog.Text = 'Clear'
-    $btnClearLog.Width = 80
+    $btnClearLog.Text = "$($script:Glyph.Clear)  Clear"
+    $btnClearLog.Width = 95
     $btnClearLog.Height = 42
     $btnClearLog.Margin = New-Object System.Windows.Forms.Padding(8, 0, 0, 0)
 
-    $btnOpenLogs.Text = 'Logs'
-    $btnOpenLogs.Width = 70
+    $btnOpenLogs.Text = "$($script:Glyph.OpenLogs)  Logs"
+    $btnOpenLogs.Width = 90
     $btnOpenLogs.Height = 42
     $btnOpenLogs.Margin = New-Object System.Windows.Forms.Padding(8, 0, 0, 0)
 
@@ -5256,8 +5372,8 @@ function Apply-ModernDashboardUi {
     $lowerTabs.Dock = 'Fill'
     $lowerTabs.SelectedTab = $tabLog
 
-    $tabLog.Text = 'Logs'
-    $tabCommand.Text = 'Command Preview'
+    $tabLog.Text = " $($script:Glyph.Logs)  Logs "
+    $tabCommand.Text = " $($script:Glyph.Command)  Command Preview "
     $txtLog.BackColor = [System.Drawing.ColorTranslator]::FromHtml('#08111F')
     $txtLog.ForeColor = [System.Drawing.ColorTranslator]::FromHtml('#D1D5DB')
     $txtLog.BorderStyle = [System.Windows.Forms.BorderStyle]::None
