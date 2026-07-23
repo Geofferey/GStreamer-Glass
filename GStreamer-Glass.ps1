@@ -630,7 +630,7 @@ public static class GstProcessJob
 '@
 }
 
-$script:AppVersion = '3.7.52f44'
+$script:AppVersion = '3.7.52f45'
 $script:AppName = "GStreamer Glass v$($script:AppVersion)"
 $script:ConfigDirectory = Join-Path $env:APPDATA 'GStreamerBasicWhipStreamer'
 $script:ConfigPath = Join-Path $script:ConfigDirectory 'settings.json'
@@ -2229,7 +2229,7 @@ $cmbWebRtcRecoveryMode.SelectedItem = $script:DefaultWebRtcRecoveryMode
 $settingsGroup.Controls.Add($cmbWebRtcRecoveryMode)
 $toolTip.SetToolTip($cmbWebRtcRecoveryMode, 'WebRTC recovery mode for WHIP and GST WebRTC. None is the cleanest sane default. RTX can help loss but can add bursts; FEC can add overhead and visible stutter on low-latency desktop streams.')
 
-$lblWebRtcSenderQueueMode = Add-Label $settingsGroup 'Sender queue' 15 548 105
+$lblWebRtcSenderQueueMode = Add-Label $settingsGroup 'Encoded sender queue' 15 548 125
 
 $cmbWebRtcSenderQueueMode = New-Object System.Windows.Forms.ComboBox
 $cmbWebRtcSenderQueueMode.Location = New-Object System.Drawing.Point(15, 548)
@@ -2251,7 +2251,7 @@ $cmbDirectWebRtcSmoothnessProfile.SelectedItem = $script:DefaultDirectWebRtcSmoo
 $settingsGroup.Controls.Add($cmbDirectWebRtcSmoothnessProfile)
 $toolTip.SetToolTip($cmbDirectWebRtcSmoothnessProfile, 'Direct GST WebRTC smoothing preset. Balanced smooth adds a tiny sender pacing queue and receiver jitter target. WAN smooth adds more cushion. Adaptive viewer lets the bundled browser player raise/lower jitter target from WebRTC stats.')
 
-$lblDirectWebRtcPacingMs = Add-Label $settingsGroup 'Video sender q cap ms' 15 548 140
+$lblDirectWebRtcPacingMs = Add-Label $settingsGroup 'Queue cap ms (0=off)' 15 548 140
 
 $numDirectWebRtcPacingMs = New-Object System.Windows.Forms.NumericUpDown
 $numDirectWebRtcPacingMs.Location = New-Object System.Drawing.Point(15, 548)
@@ -2261,7 +2261,7 @@ $numDirectWebRtcPacingMs.Maximum = 500
 $numDirectWebRtcPacingMs.Increment = 10
 $numDirectWebRtcPacingMs.Value = $script:DefaultDirectWebRtcPacingMs
 $settingsGroup.Controls.Add($numDirectWebRtcPacingMs)
-$toolTip.SetToolTip($numDirectWebRtcPacingMs, 'Sender-side encoded video queue max-size-time for WHIP/GST WebRTC. This is NOT the browser JBUF target and not deterministic latency. 0-80ms is sane; high values can drift/rubber-band.')
+$toolTip.SetToolTip($numDirectWebRtcPacingMs, 'Encoded-video sender queue max-size-time for WHIP/GST WebRTC. 0 always emits max-size-time=0 with no hidden fallback. This is not the browser JBUF target; high values can accumulate latency.')
 
 $lblDirectWebRtcPlayerJitterMs = Add-Label $settingsGroup 'Audio JBUF ms' 15 548 130
 
@@ -4778,10 +4778,7 @@ function Apply-ModernDashboardUi {
     Add-Field $r -Label 'Mitigation' -Control $cmbDirectWebRtcMitigation -Width 170 | Out-Null
     $r = Add-Row $s
     Add-Field $r -LabelControl $lblWebRtcRecoveryMode -Control $cmbWebRtcRecoveryMode -Width 135 | Out-Null
-    Add-Field $r -LabelControl $lblWebRtcSenderQueueMode -Control $cmbWebRtcSenderQueueMode -Width 170 | Out-Null
     Add-Field $r -LabelControl $lblDirectWebRtcSmoothnessProfile -Control $cmbDirectWebRtcSmoothnessProfile -Width 155 | Out-Null
-    $r = Add-Row $s
-    Add-Field $r -LabelControl $lblDirectWebRtcPacingMs -Control $numDirectWebRtcPacingMs -Width 80 | Out-Null
 
     $s = Add-Section $paneTransport 'MediaMTX'
     $r = Add-Row $s
@@ -4833,6 +4830,11 @@ function Apply-ModernDashboardUi {
     Add-Field $r -Label 'Rate control' -Control $cmbRateControl -Width 105 | Out-Null
     Add-Field $r -Label 'Tune' -Control $cmbEncoderTune -Width 170 | Out-Null
     Add-Field $r -Label 'Multipass' -Control $cmbMultipass -Width 155 | Out-Null
+
+    $s = Add-Section $paneVideo 'Encoded sender queue'
+    $r = Add-Row $s
+    Add-Field $r -LabelControl $lblWebRtcSenderQueueMode -Control $cmbWebRtcSenderQueueMode -Width 180 | Out-Null
+    Add-Field $r -LabelControl $lblDirectWebRtcPacingMs -Control $numDirectWebRtcPacingMs -Width 90 | Out-Null
 
     $s = Add-Section $paneVideo 'Clock / timing'
     $r = Add-Row $s
@@ -10102,23 +10104,22 @@ function Apply-DirectWebRtcSmoothnessProfile {
 function Get-DirectWebRtcPacingQueue {
     if ($chkBudgetSenderQueue -and -not $chkBudgetSenderQueue.Checked) { return 'identity' }
     $mode = Get-ComboSelectedOrDefault $cmbWebRtcSenderQueueMode $script:DefaultWebRtcSenderQueueMode
-    $ms = [int]$numDirectWebRtcPacingMs.Value
+    # Structurally honest: the visible cap is the emitted cap. Zero means no
+    # max-size-time limit in every mode; presets may set a nonzero value explicitly.
+    $ms = [Math]::Max(0, [int]$numDirectWebRtcPacingMs.Value)
     $leak = Get-EffectiveLiveQueueLeakValue
 
     if ($mode -eq 'Leaky live') {
         # Leaky live means newest-frame-wins. Do not let a global stale 'No leak'
         # setting override this and create rubber-band latency.
         if ($leak -eq 'no') { $leak = 'downstream' }
-        if ($ms -le 0) { return (New-LiveQueueString -Buffers 2 -MaxTimeMs 0 -Leak $leak) }
         return (New-LiveQueueString -Buffers 2 -MaxTimeMs $ms -Leak $leak)
     }
 
     if ($mode -eq 'Small cushion') {
-        if ($ms -le 0) { $ms = 40 }
         return (New-LiveQueueString -Buffers 4 -MaxTimeMs $ms -Leak $leak)
     }
 
-    if ($ms -le 0) { $ms = 80 }
     return (New-LiveQueueString -Buffers 4 -MaxTimeMs $ms -Leak 'no')
 }
 
@@ -13475,7 +13476,7 @@ foreach ($smoothCombo in @($cmbWebRtcRecoveryMode, $cmbWebRtcSenderQueueMode)) {
     })
 }
 
-$btnResetWebRtcSane.Add_Click({ Reset-WebRtcSaneDefaults; Save-Settings; Append-Log 'WebRTC transport knobs reset to sane defaults.' })
+$btnResetWebRtcSane.Add_Click({ Reset-WebRtcSaneDefaults; Save-Settings; Append-Log 'WebRTC/receiver knobs and Video sender queue reset to sane defaults.' })
 
 $btnCopyDirectWebRtcViewer.Add_Click({
     try {
