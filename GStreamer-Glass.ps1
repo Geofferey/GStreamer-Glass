@@ -781,6 +781,9 @@ $script:DefaultSplitAudioWarmupSeconds = 8
 $script:DefaultSplitAvOffsetWarnMs = 140
 $script:DefaultSplitAvOffsetBaselineMs = 0
 $script:DefaultDirectWebRtcSplitAudioPortOffset = 1
+$script:DefaultVideoPipelineClockMode = 'Automatic / element elected'
+$script:DefaultVideoTimestampMode = 'Plugin default'
+$script:DefaultSplitAudioPipelineClockMode = 'Follow video/master'
 $script:DefaultVideoSyncMode = 'Default'
 $script:DefaultAudioSyncMode = 'Default'
 
@@ -2410,6 +2413,32 @@ $cmbMultipass.SelectedItem = 'disabled'
 $settingsGroup.Controls.Add($cmbMultipass)
 $toolTip.SetToolTip($cmbMultipass, 'NVENC multipass mode. Disabled is best for live ultra-low-latency; two-pass modes can improve quality but add work/latency.')
 
+$cmbVideoPipelineClockMode = New-Object System.Windows.Forms.ComboBox
+$cmbVideoPipelineClockMode.Location = New-Object System.Drawing.Point(15, 548)
+$cmbVideoPipelineClockMode.Size = New-Object System.Drawing.Size(225, 23)
+$cmbVideoPipelineClockMode.DropDownStyle = 'DropDownList'
+$null = $cmbVideoPipelineClockMode.Items.AddRange([string[]]@(
+    'Automatic / element elected',
+    'System monotonic',
+    'System realtime'
+))
+$cmbVideoPipelineClockMode.SelectedItem = $script:DefaultVideoPipelineClockMode
+$settingsGroup.Controls.Add($cmbVideoPipelineClockMode)
+$toolTip.SetToolTip($cmbVideoPipelineClockMode, 'Shared pipeline master clock. Automatic preserves GStreamer clock election. System monotonic/realtime wrap the complete gst-launch graph in clockselect, so a single A/V pipeline cannot switch to the WASAPI device clock.')
+
+$cmbVideoTimestampMode = New-Object System.Windows.Forms.ComboBox
+$cmbVideoTimestampMode.Location = New-Object System.Drawing.Point(15, 548)
+$cmbVideoTimestampMode.Size = New-Object System.Drawing.Size(210, 23)
+$cmbVideoTimestampMode.DropDownStyle = 'DropDownList'
+$null = $cmbVideoTimestampMode.Items.AddRange([string[]]@(
+    'Plugin default',
+    'Pipeline running-time',
+    'Source timestamps'
+))
+$cmbVideoTimestampMode.SelectedItem = $script:DefaultVideoTimestampMode
+$settingsGroup.Controls.Add($cmbVideoTimestampMode)
+$toolTip.SetToolTip($cmbVideoTimestampMode, 'Video source timestamp policy. Pipeline running-time adds do-timestamp=true to screen/webcam sources. Source timestamps adds do-timestamp=false. Plugin default leaves the capture source unchanged.')
+
 $cmbVideoSyncMode = New-Object System.Windows.Forms.ComboBox
 $cmbVideoSyncMode.Location = New-Object System.Drawing.Point(15, 548)
 $cmbVideoSyncMode.Size = New-Object System.Drawing.Size(120, 23)
@@ -2632,7 +2661,21 @@ $cmbAudioTransportMode.SelectedItem = $script:DefaultAudioTransportMode
 $settingsGroup.Controls.Add($cmbAudioTransportMode)
 $toolTip.SetToolTip($cmbAudioTransportMode, 'A/V sync diagnostic. Normal uses the checkboxes below. Video only removes the audio track. Muted audio clock keeps an audio clock but emits silence.')
 
-$lblAudioClockMode = Add-Label $settingsGroup 'Audio clock' 15 548 90
+$cmbSplitAudioPipelineClockMode = New-Object System.Windows.Forms.ComboBox
+$cmbSplitAudioPipelineClockMode.Location = New-Object System.Drawing.Point(15, 548)
+$cmbSplitAudioPipelineClockMode.Size = New-Object System.Drawing.Size(225, 23)
+$cmbSplitAudioPipelineClockMode.DropDownStyle = 'DropDownList'
+$null = $cmbSplitAudioPipelineClockMode.Items.AddRange([string[]]@(
+    'Follow video/master',
+    'Automatic / element elected',
+    'System monotonic',
+    'System realtime'
+))
+$cmbSplitAudioPipelineClockMode.SelectedItem = $script:DefaultSplitAudioPipelineClockMode
+$settingsGroup.Controls.Add($cmbSplitAudioPipelineClockMode)
+$toolTip.SetToolTip($cmbSplitAudioPipelineClockMode, 'Clock for the separate split-audio gst-launch process. Single-pipeline A/V always uses the master clock selected on the Video tab. Follow video/master applies the same selection to split audio.')
+
+$lblAudioClockMode = Add-Label $settingsGroup 'WASAPI provider' 15 548 110
 
 $cmbAudioClockMode = New-Object System.Windows.Forms.ComboBox
 $cmbAudioClockMode.Location = New-Object System.Drawing.Point(15, 548)
@@ -2641,7 +2684,7 @@ $cmbAudioClockMode.DropDownStyle = 'DropDownList'
 $null = $cmbAudioClockMode.Items.AddRange([string[]]@('WASAPI clock','System clock / no WASAPI clock'))
 $cmbAudioClockMode.SelectedItem = $script:DefaultAudioClockMode
 $settingsGroup.Controls.Add($cmbAudioClockMode)
-$toolTip.SetToolTip($cmbAudioClockMode, 'Controls whether wasapi2src is allowed to provide the pipeline clock. If WASAPI loopback actual-buffer-time is huge, try System clock / no WASAPI clock.')
+$toolTip.SetToolTip($cmbAudioClockMode, 'Controls whether wasapi2src may provide the pipeline clock. For a monotonic-master test, select System clock / no WASAPI clock, then select System monotonic as the Video-tab master clock and Resample as the slave method.')
 
 $lblAudioTimingMode = Add-Label $settingsGroup 'Audio timing' 15 602 95
 $cmbAudioTimingMode = New-Object System.Windows.Forms.ComboBox
@@ -4123,8 +4166,10 @@ function Apply-ModernDashboardUi {
     Add-Field $r -Label 'Tune' -Control $cmbEncoderTune -Width 170 | Out-Null
     Add-Field $r -Label 'Multipass' -Control $cmbMultipass -Width 155 | Out-Null
 
-    $s = Add-Section $paneVideo 'Timing lab'
+    $s = Add-Section $paneVideo 'Clock / timing'
     $r = Add-Row $s
+    Add-Field $r -Label 'Pipeline master clock' -Control $cmbVideoPipelineClockMode -Width 235 | Out-Null
+    Add-Field $r -Label 'Video timestamps' -Control $cmbVideoTimestampMode -Width 220 | Out-Null
     Add-Field $r -Label 'Video sync mode' -Control $cmbVideoSyncMode -Width 130 | Out-Null
 
     $s = Add-Section $paneVideo 'Format'
@@ -4203,9 +4248,11 @@ function Apply-ModernDashboardUi {
     # ---------------- Audio ----------------
     $paneAudio = New-SettingsPane $tabAudio
 
-    $s = Add-Section $paneAudio 'A/V sync diagnostic'
+    $s = Add-Section $paneAudio 'Clock / timing'
     $r = Add-Row $s
     Add-Field $r -Label 'A/V test mode' -Control $cmbAudioTransportMode -Width 270 | Out-Null
+    Add-Field $r -Label 'Split audio pipeline clock' -Control $cmbSplitAudioPipelineClockMode -Width 235 | Out-Null
+    $r = Add-Row $s
     Add-Field $r -LabelControl $lblAudioClockMode -Control $cmbAudioClockMode -Width 230 | Out-Null
     $r = Add-Row $s
     Add-Field $r -LabelControl $lblAudioTimingMode -Control $cmbAudioTimingMode -Width 270 | Out-Null
@@ -4536,12 +4583,12 @@ function Apply-ModernDashboardUi {
         $numWidth, $numHeight, $numFps, $numVideoBitrate, $numGopSeconds,
         $cmbRateControl, $numMaxVideoBitrate, $numConstantQp,
         $cmbEncoder, $lblEncoderStatus, $cmbPreset, $cmbProfile,
-        $cmbEncoderTune, $cmbMultipass, $cmbVideoSyncMode, $numVbvBuffer,
+        $cmbEncoderTune, $cmbMultipass, $cmbVideoPipelineClockMode, $cmbVideoTimestampMode, $cmbVideoSyncMode, $numVbvBuffer,
         $numSrtLatency, $cmbRtspTransport,
         $numBFrames, $chkLookAhead, $numLookAheadFrames,
         $chkAdaptiveQuantization, $chkTemporalAq, $numAqStrength,
         $txtCustomEncoderOptions,
-        $cmbAudioTransportMode, $cmbAudioClockMode, $cmbAudioTimingMode, $cmbAudioSlaveMethod, $cmbAudioSyncMode, $numAudioBufferMs, $numAudioLatencyMs, $chkDesktopAudio, $numDesktopVolume, $cmbDesktopAudioDevice, $btnRefreshAudioDevices, $chkMic, $numMicVolume, $cmbMicAudioDevice, $lblAudioDeviceStatus,
+        $cmbAudioTransportMode, $cmbSplitAudioPipelineClockMode, $cmbAudioClockMode, $cmbAudioTimingMode, $cmbAudioSlaveMethod, $cmbAudioSyncMode, $numAudioBufferMs, $numAudioLatencyMs, $chkDesktopAudio, $numDesktopVolume, $cmbDesktopAudioDevice, $btnRefreshAudioDevices, $chkMic, $numMicVolume, $cmbMicAudioDevice, $lblAudioDeviceStatus,
         $cmbAudioCodec, $lblAudioCodecStatus, $numAudioBitrate,
         $cmbDirectWebRtcOpusMode, $cmbDirectWebRtcOpusFrameMs, $cmbDirectWebRtcOpusAudioType, $chkDirectWebRtcOpusFec, $chkDirectWebRtcOpusDtx,
         $chkRecordingEnabled, $txtRecordingDirectory, $btnBrowseRecordingDirectory,
@@ -5866,6 +5913,8 @@ function Reset-VideoDefaults {
     $cmbProfile.SelectedItem = 'constrained-baseline'
     $cmbEncoderTune.SelectedItem = 'ultra-low-latency'
     $cmbMultipass.SelectedItem = 'disabled'
+    if ($cmbVideoPipelineClockMode.Items.Contains($script:DefaultVideoPipelineClockMode)) { $cmbVideoPipelineClockMode.SelectedItem = $script:DefaultVideoPipelineClockMode }
+    if ($cmbVideoTimestampMode.Items.Contains($script:DefaultVideoTimestampMode)) { $cmbVideoTimestampMode.SelectedItem = $script:DefaultVideoTimestampMode }
     if ($cmbVideoSyncMode.Items.Contains($script:DefaultVideoSyncMode)) { $cmbVideoSyncMode.SelectedItem = $script:DefaultVideoSyncMode }
     $numVbvBuffer.Value = 0
     $numBFrames.Value = 0
@@ -5881,6 +5930,7 @@ function Reset-VideoDefaults {
 
 function Reset-AudioDefaults {
     if ($cmbAudioTransportMode.Items.Contains($script:DefaultAudioTransportMode)) { $cmbAudioTransportMode.SelectedItem = $script:DefaultAudioTransportMode }
+    if ($cmbSplitAudioPipelineClockMode.Items.Contains($script:DefaultSplitAudioPipelineClockMode)) { $cmbSplitAudioPipelineClockMode.SelectedItem = $script:DefaultSplitAudioPipelineClockMode }
     if ($cmbAudioClockMode.Items.Contains($script:DefaultAudioClockMode)) { $cmbAudioClockMode.SelectedItem = $script:DefaultAudioClockMode }
     if ($cmbAudioTimingMode.Items.Contains($script:DefaultAudioTimingMode)) { $cmbAudioTimingMode.SelectedItem = $script:DefaultAudioTimingMode }
     if ($cmbAudioSlaveMethod.Items.Contains($script:DefaultAudioSlaveMethod)) { $cmbAudioSlaveMethod.SelectedItem = $script:DefaultAudioSlaveMethod }
@@ -6418,6 +6468,61 @@ function Get-WasapiSourceString {
 }
 
 
+
+function Get-VideoPipelineClockMode {
+    return (Get-ComboSelectedOrDefault $cmbVideoPipelineClockMode $script:DefaultVideoPipelineClockMode)
+}
+
+function Get-SplitAudioPipelineClockMode {
+    $mode = Get-ComboSelectedOrDefault $cmbSplitAudioPipelineClockMode $script:DefaultSplitAudioPipelineClockMode
+    if ($mode -eq 'Follow video/master') { return (Get-VideoPipelineClockMode) }
+    return $mode
+}
+
+function Get-ClockSelectIdForMode {
+    param([Parameter(Mandatory)][string]$Mode)
+
+    switch ($Mode) {
+        'System monotonic' { return 'monotonic' }
+        'System realtime'  { return 'realtime' }
+        default            { return '' }
+    }
+}
+
+function Wrap-GstPipelineWithClockSelect {
+    param(
+        [Parameter(Mandatory)][string]$Pipeline,
+        [Parameter(Mandatory)][string]$ClockMode
+    )
+
+    $clockId = Get-ClockSelectIdForMode -Mode $ClockMode
+    if ([string]::IsNullOrWhiteSpace($clockId)) { return $Pipeline }
+
+    # clockselect is a GstPipeline subclass exposed specifically so gst-launch can
+    # force a pipeline clock. Parentheses contain the complete graph; shell escape
+    # backslashes shown in Unix documentation are not part of Windows ArgumentList.
+    return "clockselect. ( clock-id=$clockId $Pipeline )"
+}
+
+function Get-VideoTimestampMode {
+    return (Get-ComboSelectedOrDefault $cmbVideoTimestampMode $script:DefaultVideoTimestampMode)
+}
+
+function Get-VideoSourceTimestampOption {
+    switch (Get-VideoTimestampMode) {
+        'Pipeline running-time' { return 'do-timestamp=true' }
+        'Source timestamps'     { return 'do-timestamp=false' }
+        default                 { return '' }
+    }
+}
+
+function Add-VideoSourceTimestampOption {
+    param([Parameter(Mandatory)][string]$SourceText)
+
+    $option = Get-VideoSourceTimestampOption
+    if ([string]::IsNullOrWhiteSpace($option)) { return $SourceText }
+    return "$SourceText $option"
+}
 
 function Get-VideoSyncMode {
     return (Get-ComboSelectedOrDefault $cmbVideoSyncMode $script:DefaultVideoSyncMode)
@@ -8628,20 +8733,22 @@ function Build-DesktopCaptureChain {
     $fps = [int]$captureSettings.Fps
     $method = Get-SelectedCaptureMethod
     $gdiMonitor = if ($monitor -lt 0) { 0 } else { $monitor }
+    $d3d11Source = Add-VideoSourceTimestampOption 'd3d11screencapturesrc'
+    $gdiSource = Add-VideoSourceTimestampOption 'gdiscreencapsrc'
 
     switch ([string]$method.Method) {
         'FullscreenAppD3D11Wgc' {
             $windowHandle = if ($script:CaptureWindowHwnd -ne [IntPtr]::Zero) { [uint64]$script:CaptureWindowHwnd.ToInt64() } else { [uint64]0 }
-            return @('d3d11screencapturesrc','capture-api=wgc',"window-handle=$windowHandle",'window-capture-mode=default','show-border=false',"show-cursor=$cursor",'!',"`"video/x-raw(memory:D3D11Memory),framerate=$fps/1`"",'!','d3d11convert','!',"`"video/x-raw(memory:D3D11Memory),format=NV12,width=$width,height=$height,framerate=$fps/1`"") -join ' '
+            return @($d3d11Source,'capture-api=wgc',"window-handle=$windowHandle",'window-capture-mode=default','show-border=false',"show-cursor=$cursor",'!',"`"video/x-raw(memory:D3D11Memory),framerate=$fps/1`"",'!','d3d11convert','!',"`"video/x-raw(memory:D3D11Memory),format=NV12,width=$width,height=$height,framerate=$fps/1`"") -join ' '
         }
         'MonitorD3D11Wgc' {
-            return @('d3d11screencapturesrc','capture-api=wgc',"monitor-index=$monitor", "show-cursor=$cursor",'!',"`"video/x-raw(memory:D3D11Memory),framerate=$fps/1`"",'!','d3d11convert','!',"`"video/x-raw(memory:D3D11Memory),format=NV12,width=$width,height=$height,framerate=$fps/1`"") -join ' '
+            return @($d3d11Source,'capture-api=wgc',"monitor-index=$monitor", "show-cursor=$cursor",'!',"`"video/x-raw(memory:D3D11Memory),framerate=$fps/1`"",'!','d3d11convert','!',"`"video/x-raw(memory:D3D11Memory),format=NV12,width=$width,height=$height,framerate=$fps/1`"") -join ' '
         }
         'MonitorGdi' {
-            return @('gdiscreencapsrc',"monitor=$gdiMonitor", "cursor=$gdiCursor",'!',"`"video/x-raw,framerate=$fps/1`"",'!','videoconvert','!','videoscale','!',"`"video/x-raw,format=BGRA,width=$width,height=$height,framerate=$fps/1`"",'!','d3d11upload','!','d3d11convert','!',"`"video/x-raw(memory:D3D11Memory),format=NV12,width=$width,height=$height,framerate=$fps/1`"") -join ' '
+            return @($gdiSource,"monitor=$gdiMonitor", "cursor=$gdiCursor",'!',"`"video/x-raw,framerate=$fps/1`"",'!','videoconvert','!','videoscale','!',"`"video/x-raw,format=BGRA,width=$width,height=$height,framerate=$fps/1`"",'!','d3d11upload','!','d3d11convert','!',"`"video/x-raw(memory:D3D11Memory),format=NV12,width=$width,height=$height,framerate=$fps/1`"") -join ' '
         }
         default {
-            return @('d3d11screencapturesrc','capture-api=dxgi',"monitor-index=$monitor", "show-cursor=$cursor",'!',"`"video/x-raw(memory:D3D11Memory),framerate=$fps/1`"",'!','d3d11convert','!',"`"video/x-raw(memory:D3D11Memory),format=NV12,width=$width,height=$height,framerate=$fps/1`"") -join ' '
+            return @($d3d11Source,'capture-api=dxgi',"monitor-index=$monitor", "show-cursor=$cursor",'!',"`"video/x-raw(memory:D3D11Memory),framerate=$fps/1`"",'!','d3d11convert','!',"`"video/x-raw(memory:D3D11Memory),format=NV12,width=$width,height=$height,framerate=$fps/1`"") -join ' '
         }
     }
 }
@@ -8661,6 +8768,7 @@ function Build-SceneCaptureChain {
     $cameraIndex = Get-SelectedWebcamIndex
     $alpha = ([double]$numWebcamOpacity.Value / 100.0).ToString('0.00', [Globalization.CultureInfo]::InvariantCulture)
     $mirror = if ($chkWebcamMirror.Checked) { ' ! videoflip method=horizontal-flip' } else { '' }
+    $webcamSource = Add-VideoSourceTimestampOption "mfvideosrc device-index=$cameraIndex"
     $preset = [string]$cmbScenePreset.SelectedItem
     $cpuWorkers = Get-CpuWorkerLimit
     $cpuConvert = if ($cpuWorkers -gt 0) { "videoconvert n-threads=$cpuWorkers" } else { 'videoconvert' }
@@ -8674,15 +8782,15 @@ function Build-SceneCaptureChain {
     if ($preset -eq 'Desktop only') { return (Build-DesktopCaptureChain -LocalOnly:$LocalOnly) }
 
     if ($preset -eq 'Webcam only') {
-        return "mfvideosrc device-index=$cameraIndex ! video/x-raw,framerate=$cameraFps/1 ! $cpuConvert$mirror ! videoscale ! video/x-raw,format=BGRA,width=$canvasWidth,height=$canvasHeight,framerate=$canvasFps/1 ! d3d11upload ! d3d11convert ! `"video/x-raw(memory:D3D11Memory),format=NV12,width=$canvasWidth,height=$canvasHeight,framerate=$canvasFps/1`""
+        return "$webcamSource ! video/x-raw,framerate=$cameraFps/1 ! $cpuConvert$mirror ! videoscale ! video/x-raw,format=BGRA,width=$canvasWidth,height=$canvasHeight,framerate=$canvasFps/1 ! d3d11upload ! d3d11convert ! `"video/x-raw(memory:D3D11Memory),format=NV12,width=$canvasWidth,height=$canvasHeight,framerate=$canvasFps/1`""
     }
 
     $desktop = Build-DesktopCaptureChain -LocalOnly:$LocalOnly
     if ([string]$cmbSceneCompositor.SelectedItem -eq 'CPU compatibility') {
-        return "$desktop ! d3d11download ! $cpuConvert$sceneInputBoundary ! scene.sink_0 mfvideosrc device-index=$cameraIndex ! video/x-raw,framerate=$cameraFps/1 ! $cpuConvert$mirror ! videoscale ! video/x-raw,format=BGRA,width=$cameraWidth,height=$cameraHeight$sceneInputBoundary ! scene.sink_1 compositor name=scene background=black$cpuCompositorWorkers sink_0::xpos=0 sink_0::ypos=0 sink_1::xpos=$cameraX sink_1::ypos=$cameraY sink_1::alpha=$alpha ! $cpuConvert ! video/x-raw,format=BGRA,width=$canvasWidth,height=$canvasHeight,framerate=$canvasFps/1 ! d3d11upload ! d3d11convert ! `"video/x-raw(memory:D3D11Memory),format=NV12,width=$canvasWidth,height=$canvasHeight,framerate=$canvasFps/1`""
+        return "$desktop ! d3d11download ! $cpuConvert$sceneInputBoundary ! scene.sink_0 $webcamSource ! video/x-raw,framerate=$cameraFps/1 ! $cpuConvert$mirror ! videoscale ! video/x-raw,format=BGRA,width=$cameraWidth,height=$cameraHeight$sceneInputBoundary ! scene.sink_1 compositor name=scene background=black$cpuCompositorWorkers sink_0::xpos=0 sink_0::ypos=0 sink_1::xpos=$cameraX sink_1::ypos=$cameraY sink_1::alpha=$alpha ! $cpuConvert ! video/x-raw,format=BGRA,width=$canvasWidth,height=$canvasHeight,framerate=$canvasFps/1 ! d3d11upload ! d3d11convert ! `"video/x-raw(memory:D3D11Memory),format=NV12,width=$canvasWidth,height=$canvasHeight,framerate=$canvasFps/1`""
     }
 
-    return "$desktop$sceneInputBoundary ! scene.sink_0 mfvideosrc device-index=$cameraIndex ! video/x-raw,framerate=$cameraFps/1 ! $cpuConvert$mirror ! videoscale ! video/x-raw,format=BGRA,width=$cameraWidth,height=$cameraHeight ! d3d11upload ! d3d11convert ! `"video/x-raw(memory:D3D11Memory),format=BGRA,width=$cameraWidth,height=$cameraHeight`"$sceneInputBoundary ! scene.sink_1 d3d11compositor name=scene background=black sink_0::xpos=0 sink_0::ypos=0 sink_1::xpos=$cameraX sink_1::ypos=$cameraY sink_1::alpha=$alpha ! d3d11convert ! `"video/x-raw(memory:D3D11Memory),format=NV12,width=$canvasWidth,height=$canvasHeight,framerate=$canvasFps/1`""
+    return "$desktop$sceneInputBoundary ! scene.sink_0 $webcamSource ! video/x-raw,framerate=$cameraFps/1 ! $cpuConvert$mirror ! videoscale ! video/x-raw,format=BGRA,width=$cameraWidth,height=$cameraHeight ! d3d11upload ! d3d11convert ! `"video/x-raw(memory:D3D11Memory),format=BGRA,width=$cameraWidth,height=$cameraHeight`"$sceneInputBoundary ! scene.sink_1 d3d11compositor name=scene background=black sink_0::xpos=0 sink_0::ypos=0 sink_1::xpos=$cameraX sink_1::ypos=$cameraY sink_1::alpha=$alpha ! d3d11convert ! `"video/x-raw(memory:D3D11Memory),format=NV12,width=$canvasWidth,height=$canvasHeight,framerate=$canvasFps/1`""
 }
 
 function Build-CaptureChain {
@@ -8984,6 +9092,9 @@ function Write-DirectWebRtcWebClientConfig {
             servedWebDirectory = [string]$webDir
             runtimeConfigPath = [string](Join-Path $webDir 'gstglass-config.js')
             timingMode = [string]$cmbTimingMode.SelectedItem
+            videoPipelineClockMode = [string](Get-VideoPipelineClockMode)
+            videoTimestampMode = [string](Get-VideoTimestampMode)
+            splitAudioPipelineClockMode = [string](Get-SplitAudioPipelineClockMode)
             audioTransportMode = [string]$cmbAudioTransportMode.SelectedItem
             audioClockMode = [string]$cmbAudioClockMode.SelectedItem
             congestionControl = [string]$cmbDirectWebRtcCongestion.SelectedItem
@@ -9080,9 +9191,12 @@ function Build-DirectWebRtcAudioOnlyArguments {
         $audioBranch = "$audioRaw ! $directOpus ! $(Get-AudioFinalQueue)$audioSyncSuffix ! aout.audio_0"
     }
 
+    $pipeline = "$(($sinkProps -join ' '))$stunOption $audioBranch"
+    $pipeline = Wrap-GstPipelineWithClockSelect -Pipeline $pipeline -ClockMode (Get-SplitAudioPipelineClockMode)
+
     $flags = '-e'
     if ($chkVerbose.Checked) { $flags += ' -v' }
-    return "$flags $(($sinkProps -join ' '))$stunOption $audioBranch"
+    return "$flags $pipeline"
 }
 
 function Build-GstArguments {
@@ -9105,6 +9219,7 @@ function Build-GstArguments {
             $flags += ' -v'
         }
 
+        $pipeline = Wrap-GstPipelineWithClockSelect -Pipeline $pipeline -ClockMode (Get-VideoPipelineClockMode)
         return "$flags $pipeline"
     }
 
@@ -9391,12 +9506,31 @@ function Build-GstArguments {
         }
     }
 
+    $pipeline = Wrap-GstPipelineWithClockSelect -Pipeline $pipeline -ClockMode (Get-VideoPipelineClockMode)
+
     $flags = '-e'
     if ($chkVerbose.Checked) {
         $flags += ' -v'
     }
 
     return "$flags $pipeline"
+}
+
+function Convert-GstArgumentsToPowerShellPreview {
+    param([Parameter(Mandatory)][string]$Arguments)
+
+    # Start-Process passes clockselect parentheses directly to gst-launch. In the
+    # copyable PowerShell preview, quote only the outer wrapper parentheses so
+    # PowerShell does not treat them as expression syntax. Do not touch caps such
+    # as video/x-raw(memory:D3D11Memory).
+    if ($Arguments -notmatch 'clockselect\.\s+\(') { return $Arguments }
+
+    $preview = [regex]::Replace($Arguments, 'clockselect\.\s+\(', 'clockselect. "("', 1)
+    $lastClose = $preview.LastIndexOf(')')
+    if ($lastClose -ge 0) {
+        $preview = $preview.Substring(0, $lastClose) + '")"' + $preview.Substring($lastClose + 1)
+    }
+    return $preview
 }
 
 function Update-CommandPreview {
@@ -9407,7 +9541,8 @@ function Update-CommandPreview {
         }
 
         $mainArguments = Build-GstArguments
-        $previewText = '& ' + (Quote-GstValue $gstPath) + ' ' + $mainArguments
+        $previewMainArguments = Convert-GstArgumentsToPowerShellPreview -Arguments $mainArguments
+        $previewText = '& ' + (Quote-GstValue $gstPath) + ' ' + $previewMainArguments
 
         if ((Test-TransportEnabled) -and [string]$cmbProtocol.SelectedItem -eq $script:DirectWebRtcProtocolName -and (Test-DirectWebRtcSplitAvPipelines)) {
             $audioArguments = Build-DirectWebRtcAudioOnlyArguments
@@ -9416,7 +9551,8 @@ function Update-CommandPreview {
                 $previewText += "`r`n# Split audio command unavailable: enable Normal audio and Desktop/Mic audio."
             }
             else {
-                $previewText += "`r`n" + '& ' + (Quote-GstValue $gstPath) + ' ' + $audioArguments
+                $previewAudioArguments = Convert-GstArgumentsToPowerShellPreview -Arguments $audioArguments
+                $previewText += "`r`n" + '& ' + (Quote-GstValue $gstPath) + ' ' + $previewAudioArguments
             }
         }
 
@@ -9539,6 +9675,9 @@ function Save-Settings {
             WatchdogWarmupSeconds = [int]$numSplitAudioWarmupSeconds.Value
             SplitAvOffsetBaselineMs = [int]$numSplitAvOffsetBaselineMs.Value
             SplitAvOffsetWarnMs = [int]$numSplitAvOffsetWarnMs.Value
+            VideoPipelineClockMode = [string]$cmbVideoPipelineClockMode.SelectedItem
+            VideoTimestampMode = [string]$cmbVideoTimestampMode.SelectedItem
+            SplitAudioPipelineClockMode = [string]$cmbSplitAudioPipelineClockMode.SelectedItem
             VideoSyncMode = [string]$cmbVideoSyncMode.SelectedItem
             AudioSyncMode = [string]$cmbAudioSyncMode.SelectedItem
             ThreadingProfile = [string]$cmbThreadingProfile.SelectedItem
@@ -9884,6 +10023,9 @@ function Load-Settings {
         if ($settings.Profile -and $cmbProfile.Items.Contains([string]$settings.Profile)) { $cmbProfile.SelectedItem = [string]$settings.Profile }
         if ($settings.EncoderTune -and $cmbEncoderTune.Items.Contains([string]$settings.EncoderTune)) { $cmbEncoderTune.SelectedItem = [string]$settings.EncoderTune }
         if ($settings.Multipass -and $cmbMultipass.Items.Contains([string]$settings.Multipass)) { $cmbMultipass.SelectedItem = [string]$settings.Multipass }
+        if ($settings.VideoPipelineClockMode -and $cmbVideoPipelineClockMode.Items.Contains([string]$settings.VideoPipelineClockMode)) { $cmbVideoPipelineClockMode.SelectedItem = [string]$settings.VideoPipelineClockMode }
+        if ($settings.VideoTimestampMode -and $cmbVideoTimestampMode.Items.Contains([string]$settings.VideoTimestampMode)) { $cmbVideoTimestampMode.SelectedItem = [string]$settings.VideoTimestampMode }
+        if ($settings.SplitAudioPipelineClockMode -and $cmbSplitAudioPipelineClockMode.Items.Contains([string]$settings.SplitAudioPipelineClockMode)) { $cmbSplitAudioPipelineClockMode.SelectedItem = [string]$settings.SplitAudioPipelineClockMode }
         if ($settings.VideoSyncMode -and $cmbVideoSyncMode.Items.Contains([string]$settings.VideoSyncMode)) { $cmbVideoSyncMode.SelectedItem = [string]$settings.VideoSyncMode }
         if ($null -ne $settings.VbvBufferKbits) { $numVbvBuffer.Value = [decimal]$settings.VbvBufferKbits }
         if ($null -ne $settings.BFrames) { $numBFrames.Value = [decimal]$settings.BFrames }
@@ -10583,6 +10725,8 @@ function Start-GstStream {
     Append-Log "Browser JBUF guard: audio/video target $([int]$numDirectWebRtcPlayerJitterMs.Value)/$([int]$numDirectWebRtcVideoJitterMs.Value) ms, watchdog $([string]$cmbJbufWatchdogMode.SelectedItem), max $([int]$numJbufMaxMs.Value) ms, URL/config bridged."
     Append-Log "Split player sync: $([string]$cmbSplitPlayerSyncMode.SelectedItem), watchdog warmup $([int]$numSplitAudioWarmupSeconds.Value) sec applies to both JBUF and split-audio watchdogs, audio stall $([int]$numSplitAudioStallSeconds.Value) sec, offset baseline $([int]$numSplitAvOffsetBaselineMs.Value) ms (0 auto), drift warn $([int]$numSplitAvOffsetWarnMs.Value) ms. Default free-run never delays video."
     Append-Log "Direct GST WebRTC Opus: $([string]$cmbDirectWebRtcOpusMode.SelectedItem), frame $([string]$cmbDirectWebRtcOpusFrameMs.SelectedItem) ms, type $([string]$cmbDirectWebRtcOpusAudioType.SelectedItem), FEC $($chkDirectWebRtcOpusFec.Checked), DTX $($chkDirectWebRtcOpusDtx.Checked)."
+    Append-Log "Pipeline clock: $([string](Get-VideoPipelineClockMode)); video timestamps $([string](Get-VideoTimestampMode)). Explicit system modes wrap the complete main graph in clockselect."
+    Append-Log "Split audio process clock: $([string](Get-SplitAudioPipelineClockMode)) (UI selection $([string]$cmbSplitAudioPipelineClockMode.SelectedItem))."
     Append-Log "Video sync mode: $([string]$cmbVideoSyncMode.SelectedItem); Audio sync mode: $([string]$cmbAudioSyncMode.SelectedItem). Explicit modes insert clocksync before compatible send/mux sinks; local preview also honors Video sync mode."
     Append-Log "Audio clock mode: $([string]$cmbAudioClockMode.SelectedItem); timing $([string]$cmbAudioTimingMode.SelectedItem); slave $([string]$cmbAudioSlaveMethod.SelectedItem); requested buffer $([int]$numAudioBufferMs.Value) ms / latency $([int]$numAudioLatencyMs.Value) ms."
     Append-Log "Effective WASAPI source: $(Get-EffectiveAudioTimingSummary)"
@@ -11093,6 +11237,7 @@ $chkSendAbsoluteTimestamps.Add_CheckedChanged({ Update-TimestampUi; Update-Comma
 $cmbTimingMode.Add_SelectedIndexChanged({ Update-TimestampUi; Update-CommandPreview })
 $cmbEncoder.Add_SelectedIndexChanged({ Update-EncoderUi })
 $cmbAudioTransportMode.Add_SelectedIndexChanged({ Update-AudioCodecChoices; Update-CommandPreview })
+$cmbSplitAudioPipelineClockMode.Add_SelectedIndexChanged($previewHandler)
 $cmbAudioClockMode.Add_SelectedIndexChanged($previewHandler)
 $cmbAudioTimingMode.Add_SelectedIndexChanged({ Update-AudioTimingOptionUi; Update-AudioCodecChoices; Update-CommandPreview })
 $cmbAudioSlaveMethod.Add_SelectedIndexChanged($previewHandler)
@@ -11202,6 +11347,8 @@ $cmbPreset.Add_SelectedIndexChanged($previewHandler)
 $cmbProfile.Add_SelectedIndexChanged($previewHandler)
 $cmbEncoderTune.Add_SelectedIndexChanged({ Update-EncoderUi })
 $cmbMultipass.Add_SelectedIndexChanged($previewHandler)
+$cmbVideoPipelineClockMode.Add_SelectedIndexChanged($previewHandler)
+$cmbVideoTimestampMode.Add_SelectedIndexChanged($previewHandler)
 $cmbVideoSyncMode.Add_SelectedIndexChanged($previewHandler)
 $numVbvBuffer.Add_ValueChanged($previewHandler)
 $numBFrames.Add_ValueChanged({ Update-EncoderUi })
