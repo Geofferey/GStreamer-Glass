@@ -630,7 +630,7 @@ public static class GstProcessJob
 '@
 }
 
-$script:AppVersion = '3.7.52f39'
+$script:AppVersion = '3.7.52f40'
 $script:AppName = "GStreamer Glass v$($script:AppVersion)"
 $script:ConfigDirectory = Join-Path $env:APPDATA 'GStreamerBasicWhipStreamer'
 $script:ConfigPath = Join-Path $script:ConfigDirectory 'settings.json'
@@ -5566,6 +5566,164 @@ function Stop-StaleManagedProcesses {
     }
 }
 
+
+function Get-TcpListeningProcessIds {
+    param([Parameter(Mandatory)][int]$Port)
+
+    $ids = New-Object System.Collections.Generic.List[int]
+
+    try {
+        $connections = Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction Stop
+        foreach ($connection in $connections) {
+            $pidValue = [int]$connection.OwningProcess
+            if ($pidValue -gt 0 -and -not $ids.Contains($pidValue)) {
+                $ids.Add($pidValue)
+            }
+        }
+    }
+    catch {
+        try {
+            $lines = & netstat.exe -ano -p tcp 2>$null
+            foreach ($line in $lines) {
+                if ($line -notmatch '\bLISTENING\b') { continue }
+                if ($line -notmatch (':{0}\s+' -f [regex]::Escape([string]$Port))) { continue }
+                if ($line -match '\s(\d+)\s*$') {
+                    $pidValue = [int]$matches[1]
+                    if ($pidValue -gt 0 -and -not $ids.Contains($pidValue)) {
+                        $ids.Add($pidValue)
+                    }
+                }
+            }
+        }
+        catch {}
+    }
+
+    return @($ids)
+}
+
+function Get-ProcessPathSafe {
+    param([Parameter(Mandatory)][int]$ProcessId)
+
+    try {
+        $p = Get-Process -Id $ProcessId -ErrorAction Stop
+        try { return [string]$p.Path } catch { return [string]$p.ProcessName }
+    }
+    catch {
+        return ''
+    }
+}
+
+function Test-GStreamerPortOwnerIsSafeToStop {
+    param(
+        [Parameter(Mandatory)][int]$ProcessId,
+        [Parameter(Mandatory)][string]$GstPath
+    )
+
+    if ($ProcessId -le 0 -or $ProcessId -eq $PID) { return $false }
+
+    try {
+        $proc = Get-Process -Id $ProcessId -ErrorAction Stop
+        $name = [string]$proc.ProcessName
+        $actualPath = ''
+        try { $actualPath = [System.IO.Path]::GetFullPath([string]$proc.Path) } catch {}
+        $expectedPath = ''
+        try { $expectedPath = [System.IO.Path]::GetFullPath($GstPath) } catch {}
+
+        if (-not [string]::IsNullOrWhiteSpace($actualPath) -and
+            -not [string]::IsNullOrWhiteSpace($expectedPath) -and
+            $actualPath.Equals($expectedPath, [System.StringComparison]::OrdinalIgnoreCase)) {
+            return $true
+        }
+
+        # Manual gst-launch tests are the common way the direct WebRTC ports are
+        # left occupied. Treat only gst-launch-shaped process names as safe; do
+        # not kill arbitrary services that happen to use 8189/8889.
+        if ($name -match '^gst-launch(\.1\.0)?$' -or $name -match '^gst-launch-1\.0$') {
+            return $true
+        }
+    }
+    catch {}
+
+    return $false
+}
+
+function Get-DirectWebRtcWebServerPort {
+    $base = Normalize-DirectWebRtcWebAddress $txtDestination.Text.Trim()
+    if ([string]::IsNullOrWhiteSpace($base)) { $base = $script:DefaultDirectWebRtcWebAddress }
+
+    try {
+        $u = [Uri]$base
+        if ($u.Port -gt 0) { return [int]$u.Port }
+    }
+    catch {}
+
+    return 8889
+}
+
+function Clear-DirectWebRtcTcpPortIfSafe {
+    param(
+        [Parameter(Mandatory)][int]$Port,
+        [Parameter(Mandatory)][string]$Label,
+        [Parameter(Mandatory)][string]$GstPath
+    )
+
+    $owners = @(Get-TcpListeningProcessIds -Port $Port)
+    if ($owners.Count -eq 0) { return $true }
+
+    foreach ($ownerPid in $owners) {
+        $path = Get-ProcessPathSafe -ProcessId $ownerPid
+        if (Test-GStreamerPortOwnerIsSafeToStop -ProcessId $ownerPid -GstPath $GstPath) {
+            Append-Log "Direct WebRTC port preflight: $Label TCP port $Port is still owned by prior GStreamer process PID $ownerPid ($path); terminating it before launch."
+            try { Stop-ProcessTreeById -ProcessId $ownerPid } catch {}
+        }
+        else {
+            Append-Log "Direct WebRTC port preflight FAILED: $Label TCP port $Port is already owned by PID $ownerPid ($path). Change the port or stop that process first."
+            return $false
+        }
+    }
+
+    $deadline = (Get-Date).AddSeconds(3)
+    while ((Get-Date) -lt $deadline) {
+        Start-Sleep -Milliseconds 150
+        if (@(Get-TcpListeningProcessIds -Port $Port).Count -eq 0) { return $true }
+        [System.Windows.Forms.Application]::DoEvents()
+    }
+
+    Append-Log "Direct WebRTC port preflight FAILED: $Label TCP port $Port did not release after terminating stale GStreamer owner(s)."
+    return $false
+}
+
+function Invoke-DirectWebRtcPortPreflight {
+    param([Parameter(Mandatory)][string]$GstPath)
+
+    if (-not (Test-TransportEnabled)) { return $true }
+    if ([string]$cmbProtocol.SelectedItem -ne $script:DirectWebRtcProtocolName) { return $true }
+
+    $ports = New-Object System.Collections.Generic.List[object]
+    $signalPort = [int]$numDirectWebRtcSignalingPort.Value
+    $webPort = [int](Get-DirectWebRtcWebServerPort)
+    $ports.Add([pscustomobject]@{ Port = $signalPort; Label = 'primary signalling' })
+    $ports.Add([pscustomobject]@{ Port = $webPort; Label = 'viewer web server' })
+
+    if ((Test-DirectWebRtcSplitAvPipelines) -and
+        -not (Test-DirectWebRtcUnifiedPublisher) -and
+        -not (Test-DirectWebRtcSharedSignaling)) {
+        $ports.Add([pscustomobject]@{ Port = [int](Get-DirectWebRtcSplitAudioSignalingPort); Label = 'split audio signalling' })
+    }
+
+    $seen = @{}
+    foreach ($entry in $ports) {
+        $port = [int]$entry.Port
+        if ($port -le 0 -or $seen.ContainsKey($port)) { continue }
+        $seen[$port] = $true
+        if (-not (Clear-DirectWebRtcTcpPortIfSafe -Port $port -Label ([string]$entry.Label) -GstPath $GstPath)) {
+            return $false
+        }
+    }
+
+    return $true
+}
+
 function Update-TrayMenuState {
     try {
         $running = $script:GstProcess -and -not $script:GstProcess.HasExited
@@ -8705,7 +8863,7 @@ function Get-RecordingEncodedVideoCaps {
     switch ($Codec) {
         'H264' { return "video/x-h264,profile=$profile,stream-format=avc,alignment=au" }
         'H265' { return 'video/x-h265,profile=main,stream-format=hvc1,alignment=au' }
-        'AV1'  { return 'video/x-av1,stream-format=obu-stream,alignment=tu,profile=main,chroma-format=4:2:0,bit-depth-luma=(uint)8,bit-depth-chroma=(uint)8' }
+        'AV1'  { return 'video/x-av1,stream-format=obu-stream,alignment=tu,profile=main,chroma-format=(string)4:2:0,bit-depth-luma=(uint)8,bit-depth-chroma=(uint)8' }
         'VP8'  { return 'video/x-vp8' }
         'VP9'  { return 'video/x-vp9' }
         default { throw "Unsupported recording codec: $Codec" }
@@ -9309,7 +9467,7 @@ function Get-EncodedVideoCaps {
                 # already-linked pad. av1parse can first expose generic AV1 caps
                 # and then refine them with bit-depth/chroma details; pin the
                 # stable 8-bit main-profile fields before the sink sees them.
-                return "video/x-av1,stream-format=obu-stream,alignment=$alignment,profile=main,chroma-format=4:2:0,bit-depth-luma=(uint)8,bit-depth-chroma=(uint)8"
+                return "video/x-av1,stream-format=obu-stream,alignment=$alignment,profile=main,chroma-format=(string)4:2:0,bit-depth-luma=(uint)8,bit-depth-chroma=(uint)8"
             }
             return "video/x-av1,stream-format=obu-stream,alignment=$alignment"
         }
@@ -12068,6 +12226,15 @@ function Start-GstStream {
     $gstPath = Resolve-GstLaunchSelection -RequestedPath $txtGstPath.Text -UpdateControl
     Prepare-GStreamerRuntime -GstPath $gstPath
     Initialize-GstJob
+
+    if (-not (Invoke-DirectWebRtcPortPreflight -GstPath $gstPath)) {
+        if ($chkNetworkRestoreOnStop.Checked) { Restore-NetworkTuning -Quiet | Out-Null }
+        Remove-ActiveProcessState
+        $statusLabel.Text = 'Direct WebRTC port busy'
+        $statusLabel.ForeColor = [System.Drawing.Color]::DarkRed
+        Set-RunState $false
+        return
+    }
 
     if (-not (Start-ManagedMediaMtx)) {
         if ($chkNetworkRestoreOnStop.Checked) { Restore-NetworkTuning -Quiet | Out-Null }
