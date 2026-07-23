@@ -4,3 +4,5 @@
 *.bak
 /dist/
 /releases/
+/out/
+/modules/.original-backup.ps1
