@@ -630,7 +630,7 @@ public static class GstProcessJob
 '@
 }
 
-$script:AppVersion = '3.7.52f46'
+$script:AppVersion = '3.7.52f48'
 $script:AppName = "GStreamer Glass v$($script:AppVersion)"
 $script:ConfigDirectory = Join-Path $env:APPDATA 'GStreamerBasicWhipStreamer'
 $script:ConfigPath = Join-Path $script:ConfigDirectory 'settings.json'
@@ -834,6 +834,8 @@ $script:DefaultQueueLeakMode = 'Downstream - drop old'
 $script:DefaultCaptureQueueBuffers = 2
 $script:DefaultAudioQueueBuffers = 4
 $script:DefaultAudioQueueCapMs = 0
+$script:DefaultSceneInputQueueBuffers = 3
+$script:DefaultSceneInputQueueCapMs = 0
 $script:DefaultBufferLatenessTracer = $false
 $script:DefaultThreadBudget = 'Automatic'
 $script:DefaultCpuWorkerLimit = 0
@@ -3952,6 +3954,13 @@ $numWebcamFps = New-SceneNumeric 1 240 30 1
 $numWebcamOpacity = New-SceneNumeric 0 100 100 5
 $numWebcamBorder = New-SceneNumeric 0 64 0 1
 
+# Scene input queue controls. These replace the old hidden fixed scene queue
+# values. 0 ms is honest: it emits max-size-time=0 and disables the time limit.
+$numSceneInputQueueBuffers = New-SceneNumeric 1 64 $script:DefaultSceneInputQueueBuffers 1
+$numSceneInputQueueCapMs = New-SceneNumeric 0 5000 $script:DefaultSceneInputQueueCapMs 5
+$toolTip.SetToolTip($numSceneInputQueueBuffers, 'Queue depth applied independently to the desktop and webcam inputs immediately before the compositor.')
+$toolTip.SetToolTip($numSceneInputQueueCapMs, 'Scene input queue time cap in milliseconds. 0 emits max-size-time=0; no hidden fallback is substituted.')
+
 $chkWebcamMirror = New-Object System.Windows.Forms.CheckBox
 $chkWebcamMirror.Text = 'Mirror webcam'
 $chkWebcamMirror.AutoSize = $true
@@ -4222,6 +4231,9 @@ function Update-SceneUi {
     foreach ($control in @($cmbScenePreset,$cmbSceneCompositor,$cmbWebcamDevice,$btnRefreshWebcams,$cmbWebcamLayout,$numWebcamWidth,$numWebcamHeight,$numWebcamX,$numWebcamY,$numWebcamFps,$numWebcamOpacity,$numWebcamBorder,$chkWebcamMirror)) {
         $control.Enabled = $enabled
     }
+    $usesCompositor = ($enabled -and [string]$cmbScenePreset.SelectedItem -eq 'Desktop + webcam')
+    $numSceneInputQueueBuffers.Enabled = $usesCompositor
+    $numSceneInputQueueCapMs.Enabled = $usesCompositor
     $lblSceneStatus.Text = if ($enabled) { 'Experimental scene composition will replace the normal capture source when the next pipeline starts.' } else { 'Concept mode is disabled; the existing capture pipeline is unchanged.' }
     Update-SceneCanvasFromValues
     try { $txtScenePipeline.Text = Build-SceneCaptureChain -LocalOnly } catch { $txtScenePipeline.Text = $_.Exception.Message }
@@ -4234,7 +4246,7 @@ $cmbScenePreset.Add_SelectedIndexChanged({ Update-SceneUi })
 $cmbSceneCompositor.Add_SelectedIndexChanged({ Update-SceneUi })
 $cmbWebcamDevice.Add_SelectedIndexChanged({ Update-SceneUi })
 $cmbWebcamLayout.Add_SelectedIndexChanged({ Set-WebcamLayoutPreset; Update-SceneUi })
-foreach ($control in @($numWebcamWidth,$numWebcamHeight,$numWebcamX,$numWebcamY,$numWebcamFps,$numWebcamOpacity,$numWebcamBorder)) { $control.Add_ValueChanged({ Update-SceneUi }) }
+foreach ($control in @($numWebcamWidth,$numWebcamHeight,$numWebcamX,$numWebcamY,$numWebcamFps,$numWebcamOpacity,$numWebcamBorder,$numSceneInputQueueBuffers,$numSceneInputQueueCapMs)) { $control.Add_ValueChanged({ Update-SceneUi }) }
 $numWidth.Add_ValueChanged({ Update-SceneCanvasFromValues })
 $numHeight.Add_ValueChanged({ Update-SceneCanvasFromValues })
 $chkWebcamMirror.Add_CheckedChanged({ Update-SceneUi })
@@ -5015,6 +5027,11 @@ function Apply-ModernDashboardUi {
     Add-Field $r -Label 'Compositor' -Control $cmbSceneCompositor -Width 190 | Out-Null
     $r = Add-Row $s
     Add-Field $r -Control $lblSceneStatus -Width 540 | Out-Null
+
+    $s = Add-Section $paneScenes 'Scene input queues'
+    $r = Add-Row $s
+    Add-Field $r -Label 'Input q buffers' -Control $numSceneInputQueueBuffers -Width 90 | Out-Null
+    Add-Field $r -Label 'Input queue cap ms' -Control $numSceneInputQueueCapMs -Width 110 | Out-Null
 
     $s = Add-Section $paneScenes 'Webcam source'
     $r = Add-Row $s
@@ -6805,6 +6822,8 @@ function Reset-VideoDefaults {
     $chkTemporalAq.Checked = $false
     $numAqStrength.Value = 8
     $txtCustomEncoderOptions.Text = ''
+    $numSceneInputQueueBuffers.Value = $script:DefaultSceneInputQueueBuffers
+    $numSceneInputQueueCapMs.Value = $script:DefaultSceneInputQueueCapMs
     Update-CaptureModeUi
     Update-EncoderUi
 }
@@ -9995,11 +10014,11 @@ function Build-SceneCaptureChain {
     $cpuWorkers = Get-CpuWorkerLimit
     $cpuConvert = if ($cpuWorkers -gt 0) { "videoconvert n-threads=$cpuWorkers" } else { 'videoconvert' }
     $cpuCompositorWorkers = if ($cpuWorkers -gt 0) { " max-threads=$cpuWorkers" } else { '' }
-    # A compositor combines independent live clocks. Each input therefore needs
-    # its own shallow latency-reporting queue; making these optional produced
-    # GstAggregator "max latency < min latency" clock failures. The 50 ms cap is
-    # enough for a 30 fps camera frame while remaining shallow and drop-old.
-    $sceneInputBoundary = ' ! queue max-size-buffers=3 max-size-bytes=0 max-size-time=50000000 leaky=downstream'
+    # A compositor combines independent live inputs. Each input keeps its own
+    # queue boundary because removing the queues can produce GstAggregator
+    # "max latency < min latency" failures. Depth and time cap are now explicit
+    # Scene-tab settings; 0 ms is emitted literally and has no hidden fallback.
+    $sceneInputBoundary = ' ! ' + (New-LiveQueueString -Buffers ([int]$numSceneInputQueueBuffers.Value) -MaxTimeMs ([int]$numSceneInputQueueCapMs.Value) -Leak 'downstream')
 
     if ($preset -eq 'Desktop only') { return (Build-DesktopCaptureChain -LocalOnly:$LocalOnly) }
 
@@ -11212,6 +11231,8 @@ function Save-Settings {
             SceneEnabled      = $chkSceneEnabled.Checked
             ScenePreset       = [string]$cmbScenePreset.SelectedItem
             SceneCompositor   = [string]$cmbSceneCompositor.SelectedItem
+            SceneInputQueueBuffers = [int]$numSceneInputQueueBuffers.Value
+            SceneInputQueueCapMs = [int]$numSceneInputQueueCapMs.Value
             WebcamDevice      = [string]$cmbWebcamDevice.SelectedItem
             WebcamLayout      = [string]$cmbWebcamLayout.SelectedItem
             WebcamWidth       = [int]$numWebcamWidth.Value
@@ -11577,7 +11598,9 @@ function Load-Settings {
             @($settings.WebcamWidth,$numWebcamWidth), @($settings.WebcamHeight,$numWebcamHeight),
             @($settings.WebcamX,$numWebcamX), @($settings.WebcamY,$numWebcamY),
             @($settings.WebcamFps,$numWebcamFps), @($settings.WebcamOpacity,$numWebcamOpacity),
-            @($settings.WebcamBorder,$numWebcamBorder)
+            @($settings.WebcamBorder,$numWebcamBorder),
+            @($settings.SceneInputQueueBuffers,$numSceneInputQueueBuffers),
+            @($settings.SceneInputQueueCapMs,$numSceneInputQueueCapMs)
         )) {
             if ($null -ne $sceneValue[0]) {
                 $value = [int]$sceneValue[0]
@@ -12478,6 +12501,9 @@ function Start-GstStream {
         }
     }
     Append-Log "Capture method: $(Get-SelectedCaptureMethodName)"
+    if ($chkSceneEnabled.Checked -and [string]$cmbScenePreset.SelectedItem -eq 'Desktop + webcam') {
+        Append-Log "Scene input queues: $([int]$numSceneInputQueueBuffers.Value) buffers / $([int]$numSceneInputQueueCapMs.Value) ms per input, leaky=downstream. 0 ms is emitted literally with no hidden fallback."
+    }
     if ($chkRecordingEnabled.Checked) {
         Append-Log "Recording file: $script:ResolvedRecordingPath"
         Append-Log "Recording encoder: $([string]$cmbRecordingEncoder.SelectedItem), $([int]$numRecordingVideoBitrate.Value) kbps, $([int]$numRecordingWidth.Value)x$([int]$numRecordingHeight.Value)@$([int]$numRecordingFps.Value)"
