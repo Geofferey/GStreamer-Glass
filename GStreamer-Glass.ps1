@@ -630,7 +630,7 @@ public static class GstProcessJob
 '@
 }
 
-$script:AppVersion = '3.7.52f9'
+$script:AppVersion = '3.7.52f10'
 $script:AppName = "GStreamer Glass v$($script:AppVersion)"
 $script:ConfigDirectory = Join-Path $env:APPDATA 'GStreamerBasicWhipStreamer'
 $script:ConfigPath = Join-Path $script:ConfigDirectory 'settings.json'
@@ -677,6 +677,7 @@ $script:AppIconSource = 'Windows default application icon'
 
 $script:BasePathEnvironment = $env:PATH
 $script:GstProcess = $null
+$script:GstVideoProcess = $null
 $script:GstAudioProcess = $null
 $script:MediaMtxProcess = $null
 $script:MediaMtxPathInUse = ''
@@ -686,6 +687,10 @@ $script:StdOutPath = $null
 $script:StdErrPath = $null
 $script:StdOutPosition = [int64]0
 $script:StdErrPosition = [int64]0
+$script:StdOutVideoPath = $null
+$script:StdErrVideoPath = $null
+$script:StdOutVideoPosition = [int64]0
+$script:StdErrVideoPosition = [int64]0
 $script:StdOutAudioPath = $null
 $script:StdErrAudioPath = $null
 $script:StdOutAudioPosition = [int64]0
@@ -765,6 +770,10 @@ $script:DefaultDirectWebRtcSignalingHost = '0.0.0.0'
 $script:DefaultDirectWebRtcSignalingPort = 8189
 $script:DefaultDirectWebRtcSplitAudioSignalingPort = 8190
 $script:DefaultDirectWebRtcSharedSignaling = $false
+$script:DefaultDirectWebRtcUnifiedPublisher = $false
+$script:DefaultDirectWebRtcBridgeVideoPort = 5004
+$script:DefaultDirectWebRtcBridgeAudioPort = 5006
+$script:DefaultDirectWebRtcBridgeJitterMs = 0
 $script:DefaultDirectWebRtcStunServer = 'stun://stun.l.google.com:19302'
 $script:DefaultDirectWebRtcSmoothnessProfile = 'Sane defaults'
 $script:DefaultWebRtcRecoveryMode = 'None'
@@ -1602,6 +1611,41 @@ $chkDirectWebRtcSharedSignaling.Size = New-Object System.Drawing.Size(245, 24)
 $chkDirectWebRtcSharedSignaling.Checked = $script:DefaultDirectWebRtcSharedSignaling
 $settingsGroup.Controls.Add($chkDirectWebRtcSharedSignaling)
 $toolTip.SetToolTip($chkDirectWebRtcSharedSignaling, 'Split mode only. Video owns the configured signalling server and the audio producer joins that same server through signaller::uri. Off preserves the existing separate-port method.')
+
+$chkDirectWebRtcUnifiedPublisher = New-Object System.Windows.Forms.CheckBox
+$chkDirectWebRtcUnifiedPublisher.Text = 'Unified A/V producer via RTP bridge (experimental)'
+$chkDirectWebRtcUnifiedPublisher.Location = New-Object System.Drawing.Point(15, 548)
+$chkDirectWebRtcUnifiedPublisher.Size = New-Object System.Drawing.Size(355, 24)
+$chkDirectWebRtcUnifiedPublisher.Checked = $script:DefaultDirectWebRtcUnifiedPublisher
+$settingsGroup.Controls.Add($chkDirectWebRtcUnifiedPublisher)
+$toolTip.SetToolTip($chkDirectWebRtcUnifiedPublisher, 'Split capture mode only. Launches independent video and audio capture pipelines into localhost RTP, then a third publisher pipeline exposes one WebRTC producer with video_0 and audio_0. Off preserves all existing split methods.')
+
+$numDirectWebRtcBridgeVideoPort = New-Object System.Windows.Forms.NumericUpDown
+$numDirectWebRtcBridgeVideoPort.Location = New-Object System.Drawing.Point(15, 548)
+$numDirectWebRtcBridgeVideoPort.Size = New-Object System.Drawing.Size(85, 23)
+$numDirectWebRtcBridgeVideoPort.Minimum = 1
+$numDirectWebRtcBridgeVideoPort.Maximum = 65535
+$numDirectWebRtcBridgeVideoPort.Value = $script:DefaultDirectWebRtcBridgeVideoPort
+$settingsGroup.Controls.Add($numDirectWebRtcBridgeVideoPort)
+$toolTip.SetToolTip($numDirectWebRtcBridgeVideoPort, 'Localhost RTP bridge port carrying encoded video from the split video capture process to the unified WebRTC publisher.')
+
+$numDirectWebRtcBridgeAudioPort = New-Object System.Windows.Forms.NumericUpDown
+$numDirectWebRtcBridgeAudioPort.Location = New-Object System.Drawing.Point(15, 548)
+$numDirectWebRtcBridgeAudioPort.Size = New-Object System.Drawing.Size(85, 23)
+$numDirectWebRtcBridgeAudioPort.Minimum = 1
+$numDirectWebRtcBridgeAudioPort.Maximum = 65535
+$numDirectWebRtcBridgeAudioPort.Value = $script:DefaultDirectWebRtcBridgeAudioPort
+$settingsGroup.Controls.Add($numDirectWebRtcBridgeAudioPort)
+$toolTip.SetToolTip($numDirectWebRtcBridgeAudioPort, 'Localhost RTP bridge port carrying Opus audio from the split audio capture process to the unified WebRTC publisher.')
+
+$numDirectWebRtcBridgeJitterMs = New-Object System.Windows.Forms.NumericUpDown
+$numDirectWebRtcBridgeJitterMs.Location = New-Object System.Drawing.Point(15, 548)
+$numDirectWebRtcBridgeJitterMs.Size = New-Object System.Drawing.Size(75, 23)
+$numDirectWebRtcBridgeJitterMs.Minimum = 0
+$numDirectWebRtcBridgeJitterMs.Maximum = 2000
+$numDirectWebRtcBridgeJitterMs.Value = $script:DefaultDirectWebRtcBridgeJitterMs
+$settingsGroup.Controls.Add($numDirectWebRtcBridgeJitterMs)
+$toolTip.SetToolTip($numDirectWebRtcBridgeJitterMs, 'Optional jitterbuffer latency in the unified publisher for both localhost RTP legs. 0 disables and omits rtpjitterbuffer entirely.')
 
 $txtDirectWebRtcStun = New-Object System.Windows.Forms.TextBox
 $txtDirectWebRtcStun.Location = New-Object System.Drawing.Point(15, 548)
@@ -4194,6 +4238,12 @@ function Apply-ModernDashboardUi {
     Add-Field $r -Control $chkDirectWebRtcSharedSignaling -Width 260 | Out-Null
     Add-Field $r -Label 'STUN' -Control $txtDirectWebRtcStun -Width 270 | Out-Null
     $r = Add-Row $s
+    Add-Field $r -Control $chkDirectWebRtcUnifiedPublisher -Width 360 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Label 'Video RTP bridge' -Control $numDirectWebRtcBridgeVideoPort -Width 85 | Out-Null
+    Add-Field $r -Label 'Audio RTP bridge' -Control $numDirectWebRtcBridgeAudioPort -Width 85 | Out-Null
+    Add-Field $r -Label 'Bridge JBUF ms (0=off)' -Control $numDirectWebRtcBridgeJitterMs -Width 75 | Out-Null
+    $r = Add-Row $s
     Add-Field $r -Label 'Congestion' -Control $cmbDirectWebRtcCongestion -Width 110 | Out-Null
     Add-Field $r -Label 'Mitigation' -Control $cmbDirectWebRtcMitigation -Width 170 | Out-Null
     $r = Add-Row $s
@@ -4805,11 +4855,19 @@ function Save-ActiveProcessState {
             $script:GstProcess -and
             -not $script:GstProcess.HasExited
 
+        $videoRunning =
+            $script:GstVideoProcess -and
+            -not $script:GstVideoProcess.HasExited
+
+        $audioRunning =
+            $script:GstAudioProcess -and
+            -not $script:GstAudioProcess.HasExited
+
         $mediaRunning =
             $script:MediaMtxProcess -and
             -not $script:MediaMtxProcess.HasExited
 
-        if (-not $gstRunning -and -not $mediaRunning) {
+        if (-not $gstRunning -and -not $videoRunning -and -not $audioRunning -and -not $mediaRunning) {
             Remove-ActiveProcessState
             return
         }
@@ -4836,6 +4894,16 @@ function Save-ActiveProcessState {
             $state.ProcessId      = $state.GstProcessId
             $state.ExecutablePath = $state.GstExecutablePath
             $state.StartTimeUtc   = $state.GstStartTimeUtc
+        }
+
+        if ($videoRunning) {
+            $state.GstVideoProcessId = $script:GstVideoProcess.Id
+            $state.GstVideoStartTimeUtc = $script:GstVideoProcess.StartTime.ToUniversalTime().ToString('o')
+        }
+
+        if ($audioRunning) {
+            $state.GstAudioProcessId = $script:GstAudioProcess.Id
+            $state.GstAudioStartTimeUtc = $script:GstAudioProcess.StartTime.ToUniversalTime().ToString('o')
         }
 
         if ($mediaRunning) {
@@ -4983,7 +5051,19 @@ function Stop-StaleManagedProcesses {
             -ProcessId $gstPid `
             -ExecutablePath $gstPath `
             -StartTimeUtc $gstStart `
-            -Label 'GStreamer'
+            -Label 'GStreamer publisher/main'
+
+        Stop-VerifiedStaleProcess `
+            -ProcessId ([int]$state.GstVideoProcessId) `
+            -ExecutablePath $gstPath `
+            -StartTimeUtc ([string]$state.GstVideoStartTimeUtc) `
+            -Label 'GStreamer video bridge'
+
+        Stop-VerifiedStaleProcess `
+            -ProcessId ([int]$state.GstAudioProcessId) `
+            -ExecutablePath $gstPath `
+            -StartTimeUtc ([string]$state.GstAudioStartTimeUtc) `
+            -Label 'GStreamer audio bridge'
 
         Stop-VerifiedStaleProcess `
             -ProcessId ([int]$state.MediaMtxProcessId) `
@@ -5167,6 +5247,12 @@ function Drain-ManagedProcessLogs {
     if ($chunk) { $parts.Add($chunk) }
 
     $chunk = Read-NewLogText -Path $script:StdErrPath -Position ([ref]$script:StdErrPosition)
+    if ($chunk) { $parts.Add($chunk) }
+
+    $chunk = Read-NewLogText -Path $script:StdOutVideoPath -Position ([ref]$script:StdOutVideoPosition)
+    if ($chunk) { $parts.Add($chunk) }
+
+    $chunk = Read-NewLogText -Path $script:StdErrVideoPath -Position ([ref]$script:StdErrVideoPosition)
     if ($chunk) { $parts.Add($chunk) }
 
     $chunk = Read-NewLogText -Path $script:StdOutAudioPath -Position ([ref]$script:StdOutAudioPosition)
@@ -5980,6 +6066,10 @@ function Reset-TransportDefaults {
     $numDirectWebRtcSignalingPort.Value = $script:DefaultDirectWebRtcSignalingPort
     $numDirectWebRtcSplitAudioSignalingPort.Value = $script:DefaultDirectWebRtcSplitAudioSignalingPort
     $chkDirectWebRtcSharedSignaling.Checked = $script:DefaultDirectWebRtcSharedSignaling
+    $chkDirectWebRtcUnifiedPublisher.Checked = $script:DefaultDirectWebRtcUnifiedPublisher
+    $numDirectWebRtcBridgeVideoPort.Value = $script:DefaultDirectWebRtcBridgeVideoPort
+    $numDirectWebRtcBridgeAudioPort.Value = $script:DefaultDirectWebRtcBridgeAudioPort
+    $numDirectWebRtcBridgeJitterMs.Value = $script:DefaultDirectWebRtcBridgeJitterMs
     $txtDirectWebRtcStun.Text = $script:DefaultDirectWebRtcStunServer
     $txtDirectWebRtcWebPath.Text = $script:DefaultDirectWebRtcWebPath
     if ($cmbDirectWebRtcBundledWebMode.Items.Contains($script:DefaultDirectWebRtcBundledWebMode)) { $cmbDirectWebRtcBundledWebMode.SelectedItem = $script:DefaultDirectWebRtcBundledWebMode }
@@ -6239,7 +6329,10 @@ function Resolve-FullscreenCaptureTarget {
     }
 
     $gstPid = 0
-    if ($script:GstProcess -and -not $script:GstProcess.HasExited) {
+    if ((Test-DirectWebRtcUnifiedPublisher) -and $script:GstVideoProcess -and -not $script:GstVideoProcess.HasExited) {
+        $gstPid = $script:GstVideoProcess.Id
+    }
+    elseif ($script:GstProcess -and -not $script:GstProcess.HasExited) {
         $gstPid = $script:GstProcess.Id
     }
 
@@ -6680,8 +6773,12 @@ function Test-DirectWebRtcSplitAvPipelines {
     return ((Get-DirectWebRtcAvPipelineMode) -like 'Split A/V pipelines*')
 }
 
+function Test-DirectWebRtcUnifiedPublisher {
+    return ((Test-DirectWebRtcSplitAvPipelines) -and $chkDirectWebRtcUnifiedPublisher -and $chkDirectWebRtcUnifiedPublisher.Checked)
+}
+
 function Test-DirectWebRtcSharedSignaling {
-    return ((Test-DirectWebRtcSplitAvPipelines) -and $chkDirectWebRtcSharedSignaling -and $chkDirectWebRtcSharedSignaling.Checked)
+    return ((Test-DirectWebRtcSplitAvPipelines) -and -not (Test-DirectWebRtcUnifiedPublisher) -and $chkDirectWebRtcSharedSignaling -and $chkDirectWebRtcSharedSignaling.Checked)
 }
 
 function Get-DirectWebRtcSplitAudioSignalingPort {
@@ -6877,8 +6974,22 @@ function Update-GstThreadCountStatus {
         return
     }
     try {
-        $script:GstProcess.Refresh()
-        $lblLiveGstThreads.Text = "Live GST threads: $($script:GstProcess.Threads.Count)  (PID $($script:GstProcess.Id))"
+        $parts = New-Object System.Collections.Generic.List[string]
+        $total = 0
+        foreach ($entry in @(
+            [pscustomobject]@{ Label = $(if (Test-DirectWebRtcUnifiedPublisher) { 'publisher' } else { 'main' }); Process = $script:GstProcess },
+            [pscustomobject]@{ Label = 'video'; Process = $script:GstVideoProcess },
+            [pscustomobject]@{ Label = 'audio'; Process = $script:GstAudioProcess }
+        )) {
+            $process = $entry.Process
+            if ($process -and -not $process.HasExited) {
+                $process.Refresh()
+                $count = [int]$process.Threads.Count
+                $total += $count
+                $parts.Add("$($entry.Label)=$count/PID$($process.Id)")
+            }
+        }
+        $lblLiveGstThreads.Text = "Live GST threads: $total  ($($parts -join ', '))"
     }
     catch { $lblLiveGstThreads.Text = 'Live GST threads: unavailable' }
 }
@@ -7029,12 +7140,16 @@ function Test-ProcessDiskLoggingEnabled {
 function Reset-ProcessLogPaths {
     $script:StdOutPath = $null
     $script:StdErrPath = $null
+    $script:StdOutVideoPath = $null
+    $script:StdErrVideoPath = $null
     $script:StdOutAudioPath = $null
     $script:StdErrAudioPath = $null
     $script:MediaMtxStdOutPath = $null
     $script:MediaMtxStdErrPath = $null
     $script:StdOutPosition = [int64]0
     $script:StdErrPosition = [int64]0
+    $script:StdOutVideoPosition = [int64]0
+    $script:StdErrVideoPosition = [int64]0
     $script:StdOutAudioPosition = [int64]0
     $script:StdErrAudioPosition = [int64]0
     $script:MediaMtxStdOutPosition = [int64]0
@@ -7736,9 +7851,10 @@ function Add-DirectWebRtcViewerQuery {
     $watchdog = [System.Uri]::EscapeDataString([string]$playerSettings.JbufWatchdogMode)
     $debug = if ($playerSettings.JbufDebug) { '1' } else { '0' }
     $avRenderMode = [System.Uri]::EscapeDataString([string]$playerSettings.AvRenderMode)
-    $avPipelineMode = [System.Uri]::EscapeDataString([string](Get-DirectWebRtcAvPipelineMode))
+    $effectiveAvPipelineMode = if (Test-DirectWebRtcUnifiedPublisher) { 'Unified publisher - one producer' } else { [string](Get-DirectWebRtcAvPipelineMode) }
+    $avPipelineMode = [System.Uri]::EscapeDataString($effectiveAvPipelineMode)
     $videoSignalPort = [int]$numDirectWebRtcSignalingPort.Value
-    $splitAudioPort = if (Test-DirectWebRtcSplitAvPipelines) { [int](Get-DirectWebRtcSplitAudioSignalingPort) } else { 0 }
+    $splitAudioPort = if ((Test-DirectWebRtcSplitAvPipelines) -and -not (Test-DirectWebRtcUnifiedPublisher)) { [int](Get-DirectWebRtcSplitAudioSignalingPort) } else { 0 }
     $sharedSignaling = if (Test-DirectWebRtcSharedSignaling) { 1 } else { 0 }
     $splitAudioPart = if ($splitAudioPort -gt 0) { "&splitAudioPort=$splitAudioPort&splitAudioSignalingPort=$splitAudioPort&sharedSignaling=$sharedSignaling&splitSharedSignaling=$sharedSignaling" } else { '' }
     $stamp = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
@@ -7773,6 +7889,10 @@ function Update-DirectWebRtcUi {
         $numDirectWebRtcSignalingPort,
         $numDirectWebRtcSplitAudioSignalingPort,
         $chkDirectWebRtcSharedSignaling,
+        $chkDirectWebRtcUnifiedPublisher,
+        $numDirectWebRtcBridgeVideoPort,
+        $numDirectWebRtcBridgeAudioPort,
+        $numDirectWebRtcBridgeJitterMs,
         $txtDirectWebRtcWebPath,
         $cmbDirectWebRtcBundledWebMode,
         $txtDirectWebRtcBundledWebDirectory,
@@ -7811,8 +7931,13 @@ function Update-DirectWebRtcUi {
     if ($lblDirectWebRtcStatus) { $lblDirectWebRtcStatus.Enabled = ($directEnabled -or $webRtcTransportEnabled) }
 
     $splitModeEnabled = $directEnabled -and (Test-DirectWebRtcSplitAvPipelines)
-    if ($chkDirectWebRtcSharedSignaling) { $chkDirectWebRtcSharedSignaling.Enabled = $splitModeEnabled }
-    if ($numDirectWebRtcSplitAudioSignalingPort) { $numDirectWebRtcSplitAudioSignalingPort.Enabled = $splitModeEnabled -and -not (Test-DirectWebRtcSharedSignaling) }
+    $unifiedPublisherEnabled = $splitModeEnabled -and (Test-DirectWebRtcUnifiedPublisher)
+    if ($chkDirectWebRtcUnifiedPublisher) { $chkDirectWebRtcUnifiedPublisher.Enabled = $splitModeEnabled }
+    if ($chkDirectWebRtcSharedSignaling) { $chkDirectWebRtcSharedSignaling.Enabled = $splitModeEnabled -and -not $unifiedPublisherEnabled }
+    if ($numDirectWebRtcSplitAudioSignalingPort) { $numDirectWebRtcSplitAudioSignalingPort.Enabled = $splitModeEnabled -and -not $unifiedPublisherEnabled -and -not (Test-DirectWebRtcSharedSignaling) }
+    if ($numDirectWebRtcBridgeVideoPort) { $numDirectWebRtcBridgeVideoPort.Enabled = $unifiedPublisherEnabled }
+    if ($numDirectWebRtcBridgeAudioPort) { $numDirectWebRtcBridgeAudioPort.Enabled = $unifiedPublisherEnabled }
+    if ($numDirectWebRtcBridgeJitterMs) { $numDirectWebRtcBridgeJitterMs.Enabled = $unifiedPublisherEnabled }
 
     foreach ($control in @(
         $txtDirectWebRtcStun,
@@ -9235,6 +9360,9 @@ function Write-DirectWebRtcWebClientConfig {
         $statsOverlayEnabled = [bool]$playerSettings.StatsOverlay
         $jbufDebugEnabled = [bool]$playerSettings.JbufDebug
 
+        $effectiveAvPipelineMode = if (Test-DirectWebRtcUnifiedPublisher) { 'Unified publisher - one producer' } else { [string](Get-DirectWebRtcAvPipelineMode) }
+        $effectiveSharedSignaling = [bool](Test-DirectWebRtcSharedSignaling)
+
         $data = [ordered]@{
             version = $script:AppVersion
             source = 'gstglass-config.js'
@@ -9268,8 +9396,9 @@ function Write-DirectWebRtcWebClientConfig {
             statsOverlay = $statsOverlayEnabled
             playerAvRenderMode = [string]$playerSettings.AvRenderMode
             avRenderMode = [string]$playerSettings.AvRenderMode
-            avPipelineMode = [string](Get-DirectWebRtcAvPipelineMode)
-            directWebRtcAvPipelineMode = [string](Get-DirectWebRtcAvPipelineMode)
+            avPipelineMode = $effectiveAvPipelineMode
+            directWebRtcAvPipelineMode = $effectiveAvPipelineMode
+            unifiedPublisher = [bool](Test-DirectWebRtcUnifiedPublisher)
             splitPlayerSyncMode = [string]$playerSettings.SplitPlayerSyncMode
             splitAudioWatchdogMode = [string]$playerSettings.SplitPlayerSyncMode
             splitAudioStallSeconds = [int]$playerSettings.SplitAudioStallSeconds
@@ -9283,10 +9412,10 @@ function Write-DirectWebRtcWebClientConfig {
             splitAvBaselineLearnTicks = 5
             signalingPort = [int]$numDirectWebRtcSignalingPort.Value
             videoSignalingPort = [int]$numDirectWebRtcSignalingPort.Value
-            splitAudioWsUrl = if (Test-DirectWebRtcSplitAvPipelines) { [string](Get-DirectWebRtcSplitAudioWsUrlForPlayer) } else { '' }
-            splitAudioSignalingPort = if (Test-DirectWebRtcSplitAvPipelines) { [int](Get-DirectWebRtcSplitAudioSignalingPort) } else { 0 }
-            sharedSignaling = [bool](Test-DirectWebRtcSharedSignaling)
-            splitSharedSignaling = [bool](Test-DirectWebRtcSharedSignaling)
+            splitAudioWsUrl = if ((Test-DirectWebRtcSplitAvPipelines) -and -not (Test-DirectWebRtcUnifiedPublisher)) { [string](Get-DirectWebRtcSplitAudioWsUrlForPlayer) } else { '' }
+            splitAudioSignalingPort = if ((Test-DirectWebRtcSplitAvPipelines) -and -not (Test-DirectWebRtcUnifiedPublisher)) { [int](Get-DirectWebRtcSplitAudioSignalingPort) } else { 0 }
+            sharedSignaling = $effectiveSharedSignaling
+            splitSharedSignaling = $effectiveSharedSignaling
             videoProducerName = 'gstglass-video'
             splitAudioProducerName = 'gstglass-audio'
             webPath = [string]$playerSettings.WebPath
@@ -9340,7 +9469,157 @@ function Get-DirectWebRtcWebServerPathSegment {
 }
 
 
+
+function Get-DirectWebRtcUnifiedRtpVideoDefinition {
+    $definition = Get-SelectedEncoderDefinition
+    $codec = [string]$definition.Codec
+
+    switch ($codec) {
+        'H264' {
+            return [pscustomobject]@{
+                Codec = 'H264'
+                PayloadType = 96
+                RtpCaps = 'application/x-rtp,media=(string)video,encoding-name=(string)H264,payload=(int)96,clock-rate=(int)90000'
+                Payloader = 'rtph264pay pt=96 config-interval=-1 aggregate-mode=zero-latency'
+                Receiver = 'rtph264depay ! h264parse config-interval=-1 ! "video/x-h264,stream-format=byte-stream,alignment=au"'
+            }
+        }
+        'H265' {
+            return [pscustomobject]@{
+                Codec = 'H265'
+                PayloadType = 96
+                RtpCaps = 'application/x-rtp,media=(string)video,encoding-name=(string)H265,payload=(int)96,clock-rate=(int)90000'
+                Payloader = 'rtph265pay pt=96 config-interval=-1 aggregate-mode=zero-latency'
+                Receiver = 'rtph265depay ! h265parse config-interval=-1 ! "video/x-h265,stream-format=byte-stream,alignment=au"'
+            }
+        }
+        default {
+            throw "Unified A/V publisher bridge currently supports H264 and H265 only; selected codec is $codec."
+        }
+    }
+}
+
+function Build-DirectWebRtcUnifiedVideoBridgeArguments {
+    if (-not (Test-DirectWebRtcUnifiedPublisher)) { return '' }
+
+    $rtp = Get-DirectWebRtcUnifiedRtpVideoDefinition
+    $videoPort = [int]$numDirectWebRtcBridgeVideoPort.Value
+    $encodedVideo = Build-VideoBranch -Protocol $script:DirectWebRtcProtocolName
+    $videoSyncSuffix = Get-VideoBranchSyncSuffix
+    $bridgeQueue = Get-DirectWebRtcPacingQueue
+    $pipeline = "$encodedVideo$videoSyncSuffix ! $bridgeQueue ! $($rtp.Payloader) ! udpsink host=127.0.0.1 port=$videoPort sync=false async=false"
+    $pipeline = Wrap-GstPipelineWithClockSelect -Pipeline $pipeline -ClockMode (Get-VideoPipelineClockMode)
+
+    $flags = '-e'
+    if ($chkVerbose.Checked) { $flags += ' -v' }
+    return "$flags $pipeline"
+}
+
+function Build-DirectWebRtcUnifiedAudioBridgeArguments {
+    if (-not (Test-DirectWebRtcUnifiedPublisher)) { return '' }
+
+    $audioTransportMode = Get-ComboSelectedOrDefault $cmbAudioTransportMode $script:DefaultAudioTransportMode
+    if ($audioTransportMode -ne 'Normal audio' -or (-not ($chkDesktopAudio.Checked -or $chkMic.Checked))) { return '' }
+
+    $audioRaw = Build-RawAudioChain
+    if ([string]::IsNullOrWhiteSpace($audioRaw)) { return '' }
+
+    $directOpusMode = Get-ComboSelectedOrDefault $cmbDirectWebRtcOpusMode $script:DefaultDirectWebRtcOpusMode
+    if ($directOpusMode -eq 'Raw audio to webrtcsink') {
+        throw 'Unified A/V publisher bridge requires Explicit Opus encoder mode so the split audio process can cross the RTP bridge as encoded Opus.'
+    }
+
+    $directOpusBitrate = [int]$numAudioBitrate.Value * 1000
+    $directOpusFrameMs = Get-ComboSelectedOrDefault $cmbDirectWebRtcOpusFrameMs $script:DefaultDirectWebRtcOpusFrameMs
+    $directOpusAudioType = Get-ComboSelectedOrDefault $cmbDirectWebRtcOpusAudioType $script:DefaultDirectWebRtcOpusAudioType
+    $directOpusFec = if ($chkDirectWebRtcOpusFec.Checked) { 'true' } else { 'false' }
+    $directOpusDtx = if ($chkDirectWebRtcOpusDtx.Checked) { 'true' } else { 'false' }
+    $directOpus = "opusenc bitrate=$directOpusBitrate bitrate-type=cbr frame-size=$directOpusFrameMs audio-type=$directOpusAudioType inband-fec=$directOpusFec dtx=$directOpusDtx ! opusparse ! `"audio/x-opus`""
+    $audioPort = [int]$numDirectWebRtcBridgeAudioPort.Value
+    $audioSyncSuffix = Get-AudioBranchSyncSuffix
+    $pipeline = "$audioRaw ! $directOpus ! $(Get-AudioFinalQueue)$audioSyncSuffix ! rtpopuspay pt=97 dtx=$directOpusDtx ! udpsink host=127.0.0.1 port=$audioPort sync=false async=false"
+    $pipeline = Wrap-GstPipelineWithClockSelect -Pipeline $pipeline -ClockMode (Get-SplitAudioPipelineClockMode)
+
+    $flags = '-e'
+    if ($chkVerbose.Checked) { $flags += ' -v' }
+    return "$flags $pipeline"
+}
+
+function Build-DirectWebRtcUnifiedPublisherArguments {
+    if (-not (Test-DirectWebRtcUnifiedPublisher)) { return '' }
+
+    $destination = $txtDestination.Text.Trim()
+    $webAddress = Quote-GstValue (Normalize-DirectWebRtcWebAddress $destination)
+    $webPathSegment = Get-DirectWebRtcWebServerPathSegment
+    $webPathOption = if ([string]::IsNullOrWhiteSpace($webPathSegment)) { '' } else { ' web-server-path=' + (Quote-GstValue $webPathSegment) }
+    $webDirectory = Get-DirectWebRtcWebDirectory
+    $webDirectoryOption = if ([string]::IsNullOrWhiteSpace($webDirectory)) { '' } else { ' web-server-directory=' + (Quote-GstValue $webDirectory) }
+    $signalHostText = $txtDirectWebRtcSignalingHost.Text.Trim()
+    if ([string]::IsNullOrWhiteSpace($signalHostText)) { $signalHostText = $script:DefaultDirectWebRtcSignalingHost }
+    $signalHost = Quote-GstValue $signalHostText
+    $signalPort = [int]$numDirectWebRtcSignalingPort.Value
+    $stunServer = $txtDirectWebRtcStun.Text.Trim()
+    $stunOption = if ([string]::IsNullOrWhiteSpace($stunServer)) { '' } else { ' stun-server=' + (Quote-GstValue $stunServer) }
+    $timestampOption = Get-AbsoluteTimestampTransportOption -Protocol $script:DirectWebRtcProtocolName
+    $timestampOption = if ([string]::IsNullOrWhiteSpace($timestampOption)) { '' } else { " $timestampOption" }
+    $congestion = Get-ComboSelectedOrDefault $cmbDirectWebRtcCongestion 'gcc'
+    $mitigation = Get-ComboSelectedOrDefault $cmbDirectWebRtcMitigation 'none'
+    $recoveryFlags = Get-WebRtcRecoveryFlags
+    $fec = [string]$recoveryFlags.Fec
+    $retx = [string]$recoveryFlags.Retransmission
+    $startBitrate = [Math]::Max(1000, ([int]$numVideoBitrate.Value * 1000))
+    $maxKbps = [int]$numMaxVideoBitrate.Value
+    $maxBitrate = if ($maxKbps -gt 0) { [Math]::Max($startBitrate, $maxKbps * 1000) } else { $startBitrate }
+    $smoothProfile = Get-ComboSelectedOrDefault $cmbDirectWebRtcSmoothnessProfile $script:DefaultDirectWebRtcSmoothnessProfile
+    $minBitrate = switch ($smoothProfile) {
+        'Lowest latency' { [Math]::Max(1000, [int]($startBitrate / 2)) }
+        'Balanced smooth' { [Math]::Max(1000, [int]($startBitrate * 0.75)) }
+        'WAN smooth' { [Math]::Max(1000, [int]($startBitrate * 0.60)) }
+        default { [Math]::Min(1000000, [Math]::Max(1000, [int]($startBitrate / 4))) }
+    }
+
+    $videoRtp = Get-DirectWebRtcUnifiedRtpVideoDefinition
+    $mediaType = Get-CodecMediaType -Codec ([string]$videoRtp.Codec)
+    $videoPort = [int]$numDirectWebRtcBridgeVideoPort.Value
+    $audioPort = [int]$numDirectWebRtcBridgeAudioPort.Value
+    $jitterMs = [int]$numDirectWebRtcBridgeJitterMs.Value
+    $videoCaps = Quote-GstValue ([string]$videoRtp.RtpCaps)
+    $audioCaps = Quote-GstValue 'application/x-rtp,media=(string)audio,encoding-name=(string)OPUS,payload=(int)97,clock-rate=(int)48000,encoding-params=(string)2'
+
+    $sinkProps = @(
+        'webrtcsink',
+        'name=out',
+        "video-caps=`"$mediaType`"",
+        'audio-caps="audio/x-opus"',
+        'run-signalling-server=true',
+        'run-web-server=true',
+        "signalling-server-host=$signalHost",
+        "signalling-server-port=$signalPort",
+        "web-server-host-addr=$webAddress",
+        "congestion-control=$congestion",
+        "do-fec=$fec",
+        "do-retransmission=$retx",
+        "enable-mitigation-modes=$mitigation",
+        "min-bitrate=$minBitrate",
+        "start-bitrate=$startBitrate",
+        "max-bitrate=$maxBitrate",
+        'meta="meta,name=gstglass-av"'
+    )
+
+    $bridgeJitter = if ($jitterMs -gt 0) { "rtpjitterbuffer latency=$jitterMs drop-on-latency=true ! " } else { '' }
+    $videoInput = "udpsrc port=$videoPort do-timestamp=true caps=$videoCaps ! $bridgeJitter$($videoRtp.Receiver) ! out.video_0"
+    $audioInput = "udpsrc port=$audioPort do-timestamp=true caps=$audioCaps ! $bridgeJitter" + 'rtpopusdepay ! opusparse ! "audio/x-opus" ! out.audio_0'
+    $pipeline = (($sinkProps -join ' ') + $timestampOption + $stunOption + $webPathOption + $webDirectoryOption + " $videoInput $audioInput")
+    $pipeline = Wrap-GstPipelineWithClockSelect -Pipeline $pipeline -ClockMode (Get-VideoPipelineClockMode)
+
+    $flags = '-e'
+    if ($chkVerbose.Checked) { $flags += ' -v' }
+    return "$flags $pipeline"
+}
+
 function Build-DirectWebRtcAudioOnlyArguments {
+    if (Test-DirectWebRtcUnifiedPublisher) { return (Build-DirectWebRtcUnifiedAudioBridgeArguments) }
+
     $audioTransportMode = Get-ComboSelectedOrDefault $cmbAudioTransportMode $script:DefaultAudioTransportMode
     if ($audioTransportMode -ne 'Normal audio' -or (-not ($chkDesktopAudio.Checked -or $chkMic.Checked))) {
         return ''
@@ -9418,6 +9697,10 @@ function Build-GstArguments {
     $protocol = [string]$cmbProtocol.SelectedItem
     $destination = $txtDestination.Text.Trim()
     $quotedDestination = Quote-GstValue $destination
+
+    if ($protocol -eq $script:DirectWebRtcProtocolName -and (Test-DirectWebRtcUnifiedPublisher)) {
+        return (Build-DirectWebRtcUnifiedPublisherArguments)
+    }
 
     if (-not (Test-TransportEnabled)) {
         $pipeline = Build-LocalOnlyVideoPipeline
@@ -9764,14 +10047,32 @@ function Update-CommandPreview {
         $previewText = '& ' + (Quote-GstValue $gstPath) + ' ' + $previewMainArguments
 
         if ((Test-TransportEnabled) -and [string]$cmbProtocol.SelectedItem -eq $script:DirectWebRtcProtocolName -and (Test-DirectWebRtcSplitAvPipelines)) {
-            $audioArguments = Build-DirectWebRtcAudioOnlyArguments
-            $previewText += "`r`n`r`n# Split audio pipeline - separate gst-launch / $(if (Test-DirectWebRtcSharedSignaling) { 'shared signalling server' } else { 'signalling port ' + (Get-DirectWebRtcSplitAudioSignalingPort) })"
-            if ([string]::IsNullOrWhiteSpace($audioArguments)) {
-                $previewText += "`r`n# Split audio command unavailable: enable Normal audio and Desktop/Mic audio."
+            if (Test-DirectWebRtcUnifiedPublisher) {
+                $videoArguments = Build-DirectWebRtcUnifiedVideoBridgeArguments
+                $audioArguments = Build-DirectWebRtcAudioOnlyArguments
+                $previewText = "# Unified WebRTC publisher - one producer / video_0 + audio_0`r`n" + $previewText
+                $previewText += "`r`n`r`n# Split video capture -> localhost RTP bridge port $([int]$numDirectWebRtcBridgeVideoPort.Value)"
+                $previewVideoArguments = Convert-GstArgumentsToPowerShellPreview -Arguments $videoArguments
+                $previewText += "`r`n" + '& ' + (Quote-GstValue $gstPath) + ' ' + $previewVideoArguments
+                $previewText += "`r`n`r`n# Split audio capture -> localhost RTP bridge port $([int]$numDirectWebRtcBridgeAudioPort.Value)"
+                if ([string]::IsNullOrWhiteSpace($audioArguments)) {
+                    $previewText += "`r`n# Unified audio bridge unavailable: enable Normal audio, Desktop/Mic audio, and Explicit Opus encoder mode."
+                }
+                else {
+                    $previewAudioArguments = Convert-GstArgumentsToPowerShellPreview -Arguments $audioArguments
+                    $previewText += "`r`n" + '& ' + (Quote-GstValue $gstPath) + ' ' + $previewAudioArguments
+                }
             }
             else {
-                $previewAudioArguments = Convert-GstArgumentsToPowerShellPreview -Arguments $audioArguments
-                $previewText += "`r`n" + '& ' + (Quote-GstValue $gstPath) + ' ' + $previewAudioArguments
+                $audioArguments = Build-DirectWebRtcAudioOnlyArguments
+                $previewText += "`r`n`r`n# Split audio pipeline - separate gst-launch / $(if (Test-DirectWebRtcSharedSignaling) { 'shared signalling server' } else { 'signalling port ' + (Get-DirectWebRtcSplitAudioSignalingPort) })"
+                if ([string]::IsNullOrWhiteSpace($audioArguments)) {
+                    $previewText += "`r`n# Split audio command unavailable: enable Normal audio and Desktop/Mic audio."
+                }
+                else {
+                    $previewAudioArguments = Convert-GstArgumentsToPowerShellPreview -Arguments $audioArguments
+                    $previewText += "`r`n" + '& ' + (Quote-GstValue $gstPath) + ' ' + $previewAudioArguments
+                }
             }
         }
 
@@ -9862,6 +10163,10 @@ function Save-Settings {
             DirectWebRtcSignalingPort = [int]$numDirectWebRtcSignalingPort.Value
             DirectWebRtcSplitAudioSignalingPort = [int]$numDirectWebRtcSplitAudioSignalingPort.Value
             DirectWebRtcSharedSignaling = [bool]$chkDirectWebRtcSharedSignaling.Checked
+            DirectWebRtcUnifiedPublisher = [bool]$chkDirectWebRtcUnifiedPublisher.Checked
+            DirectWebRtcBridgeVideoPort = [int]$numDirectWebRtcBridgeVideoPort.Value
+            DirectWebRtcBridgeAudioPort = [int]$numDirectWebRtcBridgeAudioPort.Value
+            DirectWebRtcBridgeJitterMs = [int]$numDirectWebRtcBridgeJitterMs.Value
             DirectWebRtcStunServer = $txtDirectWebRtcStun.Text
             DirectWebRtcWebPath = $txtDirectWebRtcWebPath.Text
             DirectWebRtcBundledWebMode = [string]$cmbDirectWebRtcBundledWebMode.SelectedItem
@@ -10166,6 +10471,10 @@ function Load-Settings {
             $numDirectWebRtcSplitAudioSignalingPort.Value = [decimal]$legacyAudioPort
         }
         if ($null -ne $settings.DirectWebRtcSharedSignaling) { $chkDirectWebRtcSharedSignaling.Checked = [bool]$settings.DirectWebRtcSharedSignaling }
+        if ($null -ne $settings.DirectWebRtcUnifiedPublisher) { $chkDirectWebRtcUnifiedPublisher.Checked = [bool]$settings.DirectWebRtcUnifiedPublisher }
+        if ($null -ne $settings.DirectWebRtcBridgeVideoPort) { $numDirectWebRtcBridgeVideoPort.Value = [decimal]([Math]::Min(65535, [Math]::Max(1, [int]$settings.DirectWebRtcBridgeVideoPort))) }
+        if ($null -ne $settings.DirectWebRtcBridgeAudioPort) { $numDirectWebRtcBridgeAudioPort.Value = [decimal]([Math]::Min(65535, [Math]::Max(1, [int]$settings.DirectWebRtcBridgeAudioPort))) }
+        if ($null -ne $settings.DirectWebRtcBridgeJitterMs) { $numDirectWebRtcBridgeJitterMs.Value = [decimal]([Math]::Min(2000, [Math]::Max(0, [int]$settings.DirectWebRtcBridgeJitterMs))) }
         if ($null -ne $settings.DirectWebRtcStunServer) { $txtDirectWebRtcStun.Text = [string]$settings.DirectWebRtcStunServer }
         if ($null -ne $settings.DirectWebRtcWebPath) { $txtDirectWebRtcWebPath.Text = [string]$settings.DirectWebRtcWebPath }
         if ($settings.DirectWebRtcBundledWebMode -and $cmbDirectWebRtcBundledWebMode.Items.Contains([string]$settings.DirectWebRtcBundledWebMode)) { $cmbDirectWebRtcBundledWebMode.SelectedItem = [string]$settings.DirectWebRtcBundledWebMode }
@@ -10515,6 +10824,63 @@ function Validate-Configuration {
         return $false
     }
 
+    if (Test-DirectWebRtcUnifiedPublisher) {
+        if ($protocol -ne $script:DirectWebRtcProtocolName -or -not (Test-DirectWebRtcSplitAvPipelines)) {
+            [System.Windows.Forms.MessageBox]::Show(
+                'Unified A/V publisher requires GST WebRTC with Split A/V pipelines selected.',
+                $script:AppName,
+                'OK',
+                'Warning'
+            ) | Out-Null
+            return $false
+        }
+        if ($codec -notin @('H264','H265')) {
+            [System.Windows.Forms.MessageBox]::Show(
+                "Unified A/V publisher currently supports H.264 and H.265 RTP bridge payloaders only. Selected codec: $codec.",
+                $script:AppName,
+                'OK',
+                'Warning'
+            ) | Out-Null
+            return $false
+        }
+        if ((Get-ComboSelectedOrDefault $cmbAudioTransportMode $script:DefaultAudioTransportMode) -ne 'Normal audio' -or -not ($chkDesktopAudio.Checked -or $chkMic.Checked)) {
+            [System.Windows.Forms.MessageBox]::Show(
+                'Unified A/V publisher requires Normal audio with Desktop audio or Microphone enabled.',
+                $script:AppName,
+                'OK',
+                'Warning'
+            ) | Out-Null
+            return $false
+        }
+        if ((Get-ComboSelectedOrDefault $cmbDirectWebRtcOpusMode $script:DefaultDirectWebRtcOpusMode) -eq 'Raw audio to webrtcsink') {
+            [System.Windows.Forms.MessageBox]::Show(
+                'Unified A/V publisher requires Explicit Opus encoder mode so audio can cross the local RTP bridge as Opus.',
+                $script:AppName,
+                'OK',
+                'Warning'
+            ) | Out-Null
+            return $false
+        }
+        if ($chkRecordingEnabled.Checked -and ($chkRecordingDesktopAudio.Checked -or $chkRecordingMic.Checked)) {
+            [System.Windows.Forms.MessageBox]::Show(
+                'Unified A/V publisher lab currently supports local video-only recording. Disable Recording desktop/microphone audio so a second WASAPI source is not injected into the video capture process and allowed to contaminate this timing experiment.',
+                $script:AppName,
+                'OK',
+                'Warning'
+            ) | Out-Null
+            return $false
+        }
+        if ([int]$numDirectWebRtcBridgeVideoPort.Value -eq [int]$numDirectWebRtcBridgeAudioPort.Value) {
+            [System.Windows.Forms.MessageBox]::Show(
+                'Video and audio RTP bridge ports must be different.',
+                $script:AppName,
+                'OK',
+                'Warning'
+            ) | Out-Null
+            return $false
+        }
+    }
+
     if ($chkDesktopAudio.Checked -or $chkMic.Checked) {
         $audioCodecName = [string]$cmbAudioCodec.SelectedItem
         if (
@@ -10717,12 +11083,13 @@ function Set-PreviewVisibility {
 }
 
 function Try-AttachPreview {
-    if (-not $script:PipelineHasPreview -or -not $script:GstProcess -or $script:GstProcess.HasExited) {
+    $previewProcess = if ((Test-DirectWebRtcUnifiedPublisher) -and $script:GstVideoProcess) { $script:GstVideoProcess } else { $script:GstProcess }
+    if (-not $script:PipelineHasPreview -or -not $previewProcess -or $previewProcess.HasExited) {
         return
     }
 
     if ($script:PreviewHwnd -eq [IntPtr]::Zero) {
-        $candidate = [GstPreviewNative]::FindPreviewWindow($script:GstProcess.Id)
+        $candidate = [GstPreviewNative]::FindPreviewWindow($previewProcess.Id)
         if ($candidate -ne [IntPtr]::Zero) {
             if ([GstPreviewNative]::EmbedWindow($candidate, $previewPanel.Handle, $previewPanel.ClientSize.Width, $previewPanel.ClientSize.Height)) {
                 $script:PreviewHwnd = $candidate
@@ -10947,6 +11314,8 @@ function Start-GstStream {
         $stamp = Get-Date -Format 'yyyyMMdd-HHmmss-fff'
         $script:StdOutPath = Join-Path $script:LogDirectory "gst-$stamp-out.log"
         $script:StdErrPath = Join-Path $script:LogDirectory "gst-$stamp-err.log"
+        $script:StdOutVideoPath = Join-Path $script:LogDirectory "gst-video-$stamp-out.log"
+        $script:StdErrVideoPath = Join-Path $script:LogDirectory "gst-video-$stamp-err.log"
         $script:StdOutAudioPath = Join-Path $script:LogDirectory "gst-audio-$stamp-out.log"
         $script:StdErrAudioPath = Join-Path $script:LogDirectory "gst-audio-$stamp-err.log"
     }
@@ -10981,8 +11350,12 @@ function Start-GstStream {
     Write-DirectWebRtcWebClientConfig
 
     $arguments = Build-GstArguments
+    $videoArguments = ''
     $audioArguments = ''
     if ((Test-TransportEnabled) -and [string]$cmbProtocol.SelectedItem -eq $script:DirectWebRtcProtocolName -and (Test-DirectWebRtcSplitAvPipelines)) {
+        if (Test-DirectWebRtcUnifiedPublisher) {
+            $videoArguments = Build-DirectWebRtcUnifiedVideoBridgeArguments
+        }
         $audioArguments = Build-DirectWebRtcAudioOnlyArguments
     }
 
@@ -11008,8 +11381,20 @@ function Start-GstStream {
             Append-Log "Direct WebRTC smoothing: $([string]$cmbDirectWebRtcSmoothnessProfile.SelectedItem), recovery $([string]$cmbWebRtcRecoveryMode.SelectedItem), sender queue $([string]$cmbWebRtcSenderQueueMode.SelectedItem) / $([int]$numDirectWebRtcPacingMs.Value) ms cap, browser audio/video JBUF $([int]$numDirectWebRtcPlayerJitterMs.Value)/$([int]$numDirectWebRtcVideoJitterMs.Value) ms, timing $([string]$cmbTimingMode.SelectedItem), audio mode $([string]$cmbAudioTransportMode.SelectedItem)"
             Append-Log "Audio source selection: $(Get-AudioSourceSelectionSummary)"
             Append-Log "Direct WebRTC A/V pipeline topology: $([string](Get-DirectWebRtcAvPipelineMode))"
-            if (Test-DirectWebRtcSplitAvPipelines) { if (Test-DirectWebRtcSharedSignaling) { Append-Log "Direct WebRTC split signalling: SHARED on video port $([int]$numDirectWebRtcSignalingPort.Value); audio producer joins $(Get-DirectWebRtcSharedSignallerUri)." } else { Append-Log "Direct WebRTC split audio signalling WebSocket/TCP: $($txtDirectWebRtcSignalingHost.Text):$(Get-DirectWebRtcSplitAudioSignalingPort)" }; Append-Log "Direct WebRTC split audio player WS URL: $(Get-DirectWebRtcSplitAudioWsUrlDescriptionForLog)" }
-            Append-Log 'Direct WebRTC media: UDP through ICE. Signalling is TCP/WebSocket on the configured port; fixed media UDP 8189 requires a native helper.'
+            if (Test-DirectWebRtcUnifiedPublisher) {
+                Append-Log "Direct WebRTC unified-publisher lab: independent video/audio capture processes feed localhost RTP ports $([int]$numDirectWebRtcBridgeVideoPort.Value)/$([int]$numDirectWebRtcBridgeAudioPort.Value); one publisher exposes producer gstglass-av with video_0 + audio_0 on signalling port $([int]$numDirectWebRtcSignalingPort.Value)."
+                Append-Log "Unified publisher RTP receive jitterbuffer: $(if ([int]$numDirectWebRtcBridgeJitterMs.Value -gt 0) { [string]([int]$numDirectWebRtcBridgeJitterMs.Value) + ' ms' } else { 'disabled / element omitted' }). Player uses one PeerConnection and does not open the split-audio WebSocket."
+            }
+            elseif (Test-DirectWebRtcSplitAvPipelines) {
+                if (Test-DirectWebRtcSharedSignaling) {
+                    Append-Log "Direct WebRTC split signalling: SHARED on video port $([int]$numDirectWebRtcSignalingPort.Value); audio producer joins $(Get-DirectWebRtcSharedSignallerUri)."
+                }
+                else {
+                    Append-Log "Direct WebRTC split audio signalling WebSocket/TCP: $($txtDirectWebRtcSignalingHost.Text):$(Get-DirectWebRtcSplitAudioSignalingPort)"
+                }
+                Append-Log "Direct WebRTC split audio player WS URL: $(Get-DirectWebRtcSplitAudioWsUrlDescriptionForLog)"
+            }
+            Append-Log 'Direct WebRTC media: UDP through ICE. Signalling is TCP/WebSocket on the configured port; the unified-publisher lab additionally uses localhost RTP/UDP between its three processes.'
         }
     }
     Append-Log "Capture method: $(Get-SelectedCaptureMethodName)"
@@ -11068,6 +11453,10 @@ function Start-GstStream {
     }
     Append-Log "Executable: $gstPath"
     Append-Log "Arguments: $arguments"
+    if (-not [string]::IsNullOrWhiteSpace($videoArguments)) {
+        Append-Log "Video bridge executable: $gstPath"
+        Append-Log "Video bridge arguments: $videoArguments"
+    }
     if (-not [string]::IsNullOrWhiteSpace($audioArguments)) {
         Append-Log "Audio executable: $gstPath"
         Append-Log "Audio arguments: $audioArguments"
@@ -11098,6 +11487,31 @@ function Start-GstStream {
             catch {
                 Append-Log "WARNING: GStreamer could not be assigned to the kill-on-close job: $($_.Exception.Message)"
             }
+        }
+
+        if (-not [string]::IsNullOrWhiteSpace($videoArguments)) {
+            Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Starting split video capture / RTP bridge pipeline..."
+            # Let the unified publisher bind its UDP receivers and signalling/web listeners first.
+            Start-Sleep -Milliseconds 250
+            $videoTracerEnvState = $null
+            try {
+                $videoTracerEnvState = Set-GstTracerEnvironment -Enable:([bool]$chkBufferLatenessTracer.Checked) -DebugSpec $gstDebugSpec -NoColor:([bool]$chkGstDebugNoColor.Checked)
+                if ($processDiskLogging) {
+                    $script:GstVideoProcess = Start-Process -FilePath $gstPath -ArgumentList $videoArguments -RedirectStandardOutput $script:StdOutVideoPath -RedirectStandardError $script:StdErrVideoPath -WindowStyle Hidden -PassThru
+                }
+                else {
+                    $script:GstVideoProcess = Start-Process -FilePath $gstPath -ArgumentList $videoArguments -WindowStyle Hidden -PassThru
+                }
+            }
+            finally {
+                Restore-GstTracerEnvironment $videoTracerEnvState
+            }
+            Set-GstProcessPriority -Process $script:GstVideoProcess
+            if ($script:JobHandle -ne [IntPtr]::Zero) {
+                try { [GstProcessJob]::AssignProcess($script:JobHandle, $script:GstVideoProcess.Handle) }
+                catch { Append-Log "WARNING: Split video bridge GStreamer could not be assigned to the kill-on-close job: $($_.Exception.Message)" }
+            }
+            Append-Log "Split video bridge GST PID: $($script:GstVideoProcess.Id)"
         }
 
         if (-not [string]::IsNullOrWhiteSpace($audioArguments)) {
@@ -11136,8 +11550,9 @@ function Start-GstStream {
             ''
         }
         if ($transportEnabled) {
+            $videoSuffix = if ($script:GstVideoProcess -and -not $script:GstVideoProcess.HasExited) { " + Video PID $($script:GstVideoProcess.Id)" } else { '' }
             $audioSuffix = if ($script:GstAudioProcess -and -not $script:GstAudioProcess.HasExited) { " + Audio PID $($script:GstAudioProcess.Id)" } else { '' }
-            $statusLabel.Text = "$([string]$cmbProtocol.SelectedItem) streaming - GST PID $($script:GstProcess.Id)$audioSuffix$mediaSuffix$targetSuffix"
+            $statusLabel.Text = "$([string]$cmbProtocol.SelectedItem) streaming - GST PID $($script:GstProcess.Id)$videoSuffix$audioSuffix$mediaSuffix$targetSuffix"
         }
         elseif ($chkRecordingEnabled.Checked) {
             $statusLabel.Text = "Recording locally - GST PID $($script:GstProcess.Id)$targetSuffix"
@@ -11150,7 +11565,9 @@ function Start-GstStream {
     }
     catch {
         $script:GstProcess = $null
+        if ($script:GstVideoProcess -and -not $script:GstVideoProcess.HasExited) { try { Stop-ProcessTreeById -ProcessId $script:GstVideoProcess.Id } catch {} }
         if ($script:GstAudioProcess -and -not $script:GstAudioProcess.HasExited) { try { Stop-ProcessTreeById -ProcessId $script:GstAudioProcess.Id } catch {} }
+        $script:GstVideoProcess = $null
         $script:GstAudioProcess = $null
         Stop-ManagedMediaMtx -Quiet
         if ($chkNetworkRestoreOnStop.Checked) { Restore-NetworkTuning -Quiet | Out-Null }
@@ -11185,6 +11602,10 @@ function Stop-GstStream {
         $script:GstProcess -and
         -not $script:GstProcess.HasExited
 
+    $hadVideoGst =
+        $script:GstVideoProcess -and
+        -not $script:GstVideoProcess.HasExited
+
     $hadAudioGst =
         $script:GstAudioProcess -and
         -not $script:GstAudioProcess.HasExited
@@ -11193,7 +11614,7 @@ function Stop-GstStream {
         $script:MediaMtxProcess -and
         -not $script:MediaMtxProcess.HasExited
 
-    if ($hadGst -or $hadAudioGst -or $hadMedia) {
+    if ($hadGst -or $hadVideoGst -or $hadAudioGst -or $hadMedia) {
         $statusLabel.Text = 'Stopping...'
         $statusLabel.ForeColor = [System.Drawing.Color]::DarkOrange
     }
@@ -11213,6 +11634,15 @@ function Stop-GstStream {
         catch {}
     }
 
+    if ($hadVideoGst) {
+        Append-Log (
+            "[$(Get-Date -Format 'HH:mm:ss')] Stopping split video bridge GStreamer " +
+            "process tree - PID $($script:GstVideoProcess.Id)..."
+        )
+        Stop-ProcessTreeById -ProcessId $script:GstVideoProcess.Id
+        try { $script:GstVideoProcess.WaitForExit(3000) | Out-Null } catch {}
+    }
+
     if ($hadAudioGst) {
         Append-Log (
             "[$(Get-Date -Format 'HH:mm:ss')] Stopping split audio GStreamer " +
@@ -11226,12 +11656,16 @@ function Stop-GstStream {
         if ($script:GstProcess) {
             $script:GstProcess.Dispose()
         }
+        if ($script:GstVideoProcess) {
+            $script:GstVideoProcess.Dispose()
+        }
         if ($script:GstAudioProcess) {
             $script:GstAudioProcess.Dispose()
         }
     }
     catch {}
     $script:GstProcess = $null
+    $script:GstVideoProcess = $null
     $script:GstAudioProcess = $null
 
     Stop-ManagedMediaMtx
@@ -11416,7 +11850,36 @@ function Test-GStreamerElements {
 
         'GST WebRTC' {
             $elements.Add('webrtcsink')
-            if ($hasAudio) {
+            if (Test-DirectWebRtcUnifiedPublisher) {
+                foreach ($element in @(
+                    'udpsrc',
+                    'udpsink',
+                    'rtpopuspay',
+                    'rtpopusdepay',
+                    'opusenc',
+                    'opusparse'
+                )) {
+                    $elements.Add($element)
+                }
+
+                if ([int]$numDirectWebRtcBridgeJitterMs.Value -gt 0) {
+                    $elements.Add('rtpjitterbuffer')
+                }
+
+                switch ($codec) {
+                    'H264' {
+                        $elements.Add('rtph264pay')
+                        $elements.Add('rtph264depay')
+                        $elements.Add('h264parse')
+                    }
+                    'H265' {
+                        $elements.Add('rtph265pay')
+                        $elements.Add('rtph265depay')
+                        $elements.Add('h265parse')
+                    }
+                }
+            }
+            elseif ($hasAudio) {
                 $elements.Add([string]$audioDefinition.Element)
                 if (-not [string]::IsNullOrWhiteSpace([string]$audioDefinition.Parser)) {
                     $elements.Add([string]$audioDefinition.Parser)
@@ -11483,7 +11946,13 @@ function Test-GStreamerElements {
     }
 
     $compatibilityWarning = $null
-    if ($transportEnabled -and -not (Test-CodecProtocolCompatibility -Codec $codec -Protocol $protocol)) {
+    if ($transportEnabled -and (Test-DirectWebRtcUnifiedPublisher) -and $codec -notin @('H264','H265')) {
+        $compatibilityWarning = "Unified A/V publisher bridge currently supports H264 and H265 only; selected codec is $codec."
+    }
+    elseif ($transportEnabled -and (Test-DirectWebRtcUnifiedPublisher) -and (Get-ComboSelectedOrDefault $cmbDirectWebRtcOpusMode $script:DefaultDirectWebRtcOpusMode) -eq 'Raw audio to webrtcsink') {
+        $compatibilityWarning = 'Unified A/V publisher bridge requires Explicit Opus encoder mode.'
+    }
+    elseif ($transportEnabled -and -not (Test-CodecProtocolCompatibility -Codec $codec -Protocol $protocol)) {
         $compatibilityWarning = "$codec is not supported by the $protocol pipeline template."
     }
     elseif (
@@ -11730,6 +12199,10 @@ foreach ($control in @(
     $numDirectWebRtcSignalingPort,
     $numDirectWebRtcSplitAudioSignalingPort,
     $chkDirectWebRtcSharedSignaling,
+    $chkDirectWebRtcUnifiedPublisher,
+    $numDirectWebRtcBridgeVideoPort,
+    $numDirectWebRtcBridgeAudioPort,
+    $numDirectWebRtcBridgeJitterMs,
     $txtDirectWebRtcStun,
     $txtDirectWebRtcWebPath,
     $cmbDirectWebRtcBundledWebMode,
@@ -12343,7 +12816,8 @@ $pollTimer.Add_Tick({
             Stop-GstStream -Restart
         }
         else {
-            $candidate = [GstPreviewNative]::FindTopmostFullscreenWindow($PID, $script:GstProcess.Id)
+            $captureGstPid = if ((Test-DirectWebRtcUnifiedPublisher) -and $script:GstVideoProcess -and -not $script:GstVideoProcess.HasExited) { $script:GstVideoProcess.Id } else { $script:GstProcess.Id }
+            $candidate = [GstPreviewNative]::FindTopmostFullscreenWindow($PID, $captureGstPid)
             if ($candidate -ne [IntPtr]::Zero -and $candidate -ne $script:CaptureWindowHwnd) {
                 $newTitle = [GstPreviewNative]::GetWindowTitleSafe($candidate)
                 Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Fullscreen application changed to '$newTitle'; rebuilding the pipeline."
@@ -12355,9 +12829,34 @@ $pollTimer.Add_Tick({
         }
     }
 
+    if ($script:GstVideoProcess -and $script:GstVideoProcess.HasExited -and $script:GstProcess -and -not $script:GstProcess.HasExited) {
+        $videoExitCode = $script:GstVideoProcess.ExitCode
+        Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Split video bridge exited unexpectedly with code $videoExitCode; stopping the complete topology."
+        try { $script:GstVideoProcess.Dispose() } catch {}
+        $script:GstVideoProcess = $null
+        if ($chkAutoRestart.Checked -or (Test-FullscreenCaptureMode)) { Stop-GstStream -Restart } else { Stop-GstStream }
+        return
+    }
+
+    if ($script:GstAudioProcess -and $script:GstAudioProcess.HasExited -and $script:GstProcess -and -not $script:GstProcess.HasExited) {
+        $audioExitCode = $script:GstAudioProcess.ExitCode
+        Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Split audio pipeline exited unexpectedly with code $audioExitCode; stopping the complete topology."
+        try { $script:GstAudioProcess.Dispose() } catch {}
+        $script:GstAudioProcess = $null
+        if ($chkAutoRestart.Checked -or (Test-FullscreenCaptureMode)) { Stop-GstStream -Restart } else { Stop-GstStream }
+        return
+    }
+
     if ($script:GstProcess -and $script:GstProcess.HasExited) {
         $exitCode = $script:GstProcess.ExitCode
         $wasRequested = $script:StopRequested
+
+        if ($script:GstVideoProcess -and -not $script:GstVideoProcess.HasExited) { try { Stop-ProcessTreeById -ProcessId $script:GstVideoProcess.Id } catch {} }
+        if ($script:GstAudioProcess -and -not $script:GstAudioProcess.HasExited) { try { Stop-ProcessTreeById -ProcessId $script:GstAudioProcess.Id } catch {} }
+        try { if ($script:GstVideoProcess) { $script:GstVideoProcess.Dispose() } } catch {}
+        try { if ($script:GstAudioProcess) { $script:GstAudioProcess.Dispose() } } catch {}
+        $script:GstVideoProcess = $null
+        $script:GstAudioProcess = $null
 
         try { $script:GstProcess.Dispose() } catch {}
         $script:GstProcess = $null
@@ -12371,8 +12870,12 @@ $pollTimer.Add_Tick({
         if ($finalText) { Append-Log $finalText }
         $script:StdOutPath = $null
         $script:StdErrPath = $null
+        $script:StdOutVideoPath = $null
+        $script:StdErrVideoPath = $null
         $script:StdOutPosition = [int64]0
         $script:StdErrPosition = [int64]0
+        $script:StdOutVideoPosition = [int64]0
+        $script:StdErrVideoPosition = [int64]0
         $script:MediaMtxStdOutPath = $null
         $script:MediaMtxStdErrPath = $null
         $script:MediaMtxStdOutPosition = [int64]0
@@ -12472,6 +12975,14 @@ function Invoke-ApplicationCleanup {
     catch {}
 
     try {
+        if ($script:GstVideoProcess -and -not $script:GstVideoProcess.HasExited) {
+            Stop-ProcessTreeById -ProcessId $script:GstVideoProcess.Id
+            try { $script:GstVideoProcess.WaitForExit(3000) | Out-Null } catch {}
+        }
+        if ($script:GstAudioProcess -and -not $script:GstAudioProcess.HasExited) {
+            Stop-ProcessTreeById -ProcessId $script:GstAudioProcess.Id
+            try { $script:GstAudioProcess.WaitForExit(3000) | Out-Null } catch {}
+        }
         if ($script:GstProcess -and -not $script:GstProcess.HasExited) {
             Stop-ProcessTreeById -ProcessId $script:GstProcess.Id
             try { $script:GstProcess.WaitForExit(3000) | Out-Null } catch {}
