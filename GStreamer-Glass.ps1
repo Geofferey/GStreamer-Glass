@@ -630,7 +630,7 @@ public static class GstProcessJob
 '@
 }
 
-$script:AppVersion = '3.7.52f38'
+$script:AppVersion = '3.7.52f39'
 $script:AppName = "GStreamer Glass v$($script:AppVersion)"
 $script:ConfigDirectory = Join-Path $env:APPDATA 'GStreamerBasicWhipStreamer'
 $script:ConfigPath = Join-Path $script:ConfigDirectory 'settings.json'
@@ -8705,7 +8705,7 @@ function Get-RecordingEncodedVideoCaps {
     switch ($Codec) {
         'H264' { return "video/x-h264,profile=$profile,stream-format=avc,alignment=au" }
         'H265' { return 'video/x-h265,profile=main,stream-format=hvc1,alignment=au' }
-        'AV1'  { return 'video/x-av1,stream-format=obu-stream,alignment=tu' }
+        'AV1'  { return 'video/x-av1,stream-format=obu-stream,alignment=tu,profile=main,chroma-format=4:2:0,bit-depth-luma=(uint)8,bit-depth-chroma=(uint)8' }
         'VP8'  { return 'video/x-vp8' }
         'VP9'  { return 'video/x-vp9' }
         default { throw "Unsupported recording codec: $Codec" }
@@ -8758,10 +8758,14 @@ function Add-NvencRateControlOptions {
             $Parts.Add("qp-const-b=$ConstantQp")
         }
         'vbr' {
+            # Plain NVENC VBR. Do not append const-quality here.
+            # const-quality is a VBR quality target, not the same as normal VBR,
+            # and using the Constant QP UI value here made H.264/H.265/AV1 VBR
+            # behave like CQ-VBR. Users can still add const-quality explicitly
+            # through Custom encoder options when intentionally testing CQ-VBR.
             $Parts.Add("bitrate=$BitrateKbps")
             $Parts.Add('rc-mode=vbr')
             if ($MaxBitrateKbps -gt 0) { $Parts.Add("max-bitrate=$MaxBitrateKbps") }
-            if ($ConstantQp -gt 0) { $Parts.Add("const-quality=$ConstantQp") }
         }
         default {
             $Parts.Add("bitrate=$BitrateKbps")
@@ -9300,6 +9304,13 @@ function Get-EncodedVideoCaps {
         }
         'AV1' {
             $alignment = if ($Protocol -eq 'SRT') { 'frame' } else { 'tu' }
+            if ($Protocol -in @('GST WebRTC', 'WHIP')) {
+                # rswebrtc/webrtcsink does not support renegotiation on the
+                # already-linked pad. av1parse can first expose generic AV1 caps
+                # and then refine them with bit-depth/chroma details; pin the
+                # stable 8-bit main-profile fields before the sink sees them.
+                return "video/x-av1,stream-format=obu-stream,alignment=$alignment,profile=main,chroma-format=4:2:0,bit-depth-luma=(uint)8,bit-depth-chroma=(uint)8"
+            }
             return "video/x-av1,stream-format=obu-stream,alignment=$alignment"
         }
         'VP8' { return 'video/x-vp8' }
