@@ -630,7 +630,7 @@ public static class GstProcessJob
 '@
 }
 
-$script:AppVersion = '3.7.52f51'
+$script:AppVersion = '3.7.52f52'
 $script:AppName = "GStreamer Glass v$($script:AppVersion)"
 $script:ConfigDirectory = Join-Path $env:APPDATA 'GStreamerBasicWhipStreamer'
 $script:ConfigPath = Join-Path $script:ConfigDirectory 'settings.json'
@@ -5942,12 +5942,12 @@ function Update-TrayMenuState {
         $previewOnly = $running -and [bool]$script:PreviewOnlyMode
 
         $trayStartItem.Enabled = ((-not $running) -or $previewOnly) -and -not $waiting
-        $trayStopItem.Enabled = $running -or $waiting
+        $trayStopItem.Enabled = ($running -and -not $previewOnly) -or $waiting
         $trayRestartItem.Enabled = $running -and -not $previewOnly
 
         if ($previewOnly) {
             $trayStartItem.Text = 'Start Stream'
-            $trayStopItem.Text = 'Stop Preview'
+            $trayStopItem.Text = 'Stop Stream'
             $notifyIcon.Text = 'GStreamer Streamer - preview only'
         }
         elseif ($running) {
@@ -6032,7 +6032,10 @@ function Hide-MainWindowToTray {
     }
 
     try {
-        if ($script:PreviewHwnd -ne [IntPtr]::Zero) {
+        if ($script:PreviewOnlyMode) {
+            Sync-StandalonePreviewState
+        }
+        elseif ($script:PreviewHwnd -ne [IntPtr]::Zero) {
             Park-PreviewWindow
         }
 
@@ -6204,11 +6207,11 @@ function Set-RunState {
 
     $previewOnly = $Running -and [bool]$script:PreviewOnlyMode
     $btnStart.Enabled = (-not $Running) -or $previewOnly
-    $btnStop.Enabled = $Running
+    $btnStop.Enabled = $Running -and -not $previewOnly
     $btnRestart.Enabled = $Running -and -not $previewOnly
     if ($previewOnly) {
         $btnStart.Text = "$($script:Glyph.Start)  Go Live"
-        $btnStop.Text = "$($script:Glyph.Stop)  Stop Preview"
+        $btnStop.Text = "$($script:Glyph.Stop)  Stop"
     }
     else {
         $btnStart.Text = "$($script:Glyph.Start)  Start"
@@ -6220,6 +6223,45 @@ function Set-RunState {
 function Test-TransportEnabled {
     if ($script:ForceLocalPreviewMode) { return $false }
     return (-not $chkTransportEnabled) -or [bool]$chkTransportEnabled.Checked
+}
+
+function Test-StandalonePreviewAllowed {
+    try {
+        if (-not $form -or -not $form.Visible) { return $false }
+        if ($script:StartupTrayHidePending) { return $false }
+        if ($form.WindowState -eq [System.Windows.Forms.FormWindowState]::Minimized) { return $false }
+        return $true
+    }
+    catch {
+        return $false
+    }
+}
+
+function Sync-StandalonePreviewState {
+    param([switch]$Quiet)
+
+    if ($script:LoadingSettings) { return }
+
+    $running = $script:GstProcess -and -not $script:GstProcess.HasExited
+
+    if ($script:PreviewOnlyMode -and -not (Test-StandalonePreviewAllowed)) {
+        if (-not $Quiet) {
+            Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Standalone preview disabled while the app is hidden or minimized."
+        }
+        Stop-GstStream
+        return
+    }
+
+    if (
+        (-not $running) -and
+        $chkPreview.Checked -and
+        (Test-StandalonePreviewAllowed)
+    ) {
+        if (-not $Quiet) {
+            Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Starting standalone preview."
+        }
+        Start-GstStream -PreviewOnly
+    }
 }
 
 function Update-MediaMtxUi {
@@ -13501,7 +13543,7 @@ $chkPreview.Add_CheckedChanged({
         if ($chkPreview.Checked) {
             $previewPlaceholder.Text = 'Starting local preview...'
             $lowerTabs.SelectedTab = $tabLog
-            Start-GstStream -PreviewOnly
+            Sync-StandalonePreviewState
         }
         else {
             $previewPlaceholder.Text = 'Preview disabled for this pipeline'
@@ -14126,6 +14168,10 @@ $trayExitItem.Add_Click({
 })
 
 $form.Add_Resize({
+    if ($form.WindowState -eq [System.Windows.Forms.FormWindowState]::Minimized -and $script:PreviewOnlyMode) {
+        Sync-StandalonePreviewState
+    }
+
     if (
         $chkMinimizeToTray.Checked -and
         $form.WindowState -eq [System.Windows.Forms.FormWindowState]::Minimized
@@ -14155,6 +14201,14 @@ $form.Add_VisibleChanged({
             }
             catch {}
         })
+    }
+    elseif ($form.Visible -and -not ($script:GstProcess -and -not $script:GstProcess.HasExited)) {
+        $null = $form.BeginInvoke([Action]{
+            try { Sync-StandalonePreviewState -Quiet } catch {}
+        })
+    }
+    elseif (-not $form.Visible -and $script:PreviewOnlyMode) {
+        Sync-StandalonePreviewState
     }
     elseif (-not $form.Visible -and $script:PreviewHwnd -ne [IntPtr]::Zero) {
         Park-PreviewWindow
@@ -14368,6 +14422,9 @@ $form.Add_Shown({
             $form.ShowInTaskbar = $true
         }
         catch {}
+    }
+    else {
+        Sync-StandalonePreviewState -Quiet
     }
 })
 
