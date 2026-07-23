@@ -1138,7 +1138,7 @@ public static class GstProcessJob
 '@
 }
 
-$script:AppVersion = '3.7.52f74'
+$script:AppVersion = '3.7.52f75'
 $script:AppName = "GStreamer Glass v$($script:AppVersion)"
 $script:ConfigDirectory = Join-Path $env:APPDATA 'GStreamerBasicWhipStreamer'
 $script:ConfigPath = Join-Path $script:ConfigDirectory 'settings.json'
@@ -1335,6 +1335,7 @@ $script:DefaultDirectWebRtcStunServer = 'stun://stun.l.google.com:19302'
 $script:DefaultDirectWebRtcTurnEnabled = $false
 $script:DefaultDirectWebRtcTurnServer = 'turn://openrelay.metered.ca:80'
 $script:DefaultDirectWebRtcSmoothnessProfile = 'Sane defaults'
+$script:DefaultDirectWebRtcStartBitrateKbps = 0
 $script:DefaultWebRtcRecoveryMode = 'None'
 $script:DefaultWebRtcSenderQueueMode = 'Leaky live'
 $script:DefaultDirectWebRtcPacingMs = 0
@@ -2733,6 +2734,17 @@ $null = $cmbDirectWebRtcCongestion.Items.AddRange([string[]]@('gcc','homegrown',
 $cmbDirectWebRtcCongestion.SelectedItem = 'disabled'
 $settingsGroup.Controls.Add($cmbDirectWebRtcCongestion)
 $toolTip.SetToolTip($cmbDirectWebRtcCongestion, 'WebRTC bitrate adaptation for WHIP/GST WebRTC. Disabled/fixed bitrate is the sane debug default; gcc can create rubber-band behavior while adapting.')
+
+$numDirectWebRtcStartBitrateKbps = New-Object System.Windows.Forms.NumericUpDown
+$numDirectWebRtcStartBitrateKbps.Location = New-Object System.Drawing.Point(15, 548)
+$numDirectWebRtcStartBitrateKbps.Size = New-Object System.Drawing.Size(95, 23)
+$numDirectWebRtcStartBitrateKbps.Minimum = 0
+$numDirectWebRtcStartBitrateKbps.Maximum = 1000000
+$numDirectWebRtcStartBitrateKbps.Increment = 500
+$numDirectWebRtcStartBitrateKbps.ThousandsSeparator = $true
+$numDirectWebRtcStartBitrateKbps.Value = $script:DefaultDirectWebRtcStartBitrateKbps
+$settingsGroup.Controls.Add($numDirectWebRtcStartBitrateKbps)
+$toolTip.SetToolTip($numDirectWebRtcStartBitrateKbps, 'Initial WebRTC sender estimate in kbps for video-containing WHIP/GST WebRTC pipelines. 0 follows Video bitrate. An explicit value is clamped to Video max bitrate when that max is nonzero.')
 
 $cmbDirectWebRtcMitigation = New-Object System.Windows.Forms.ComboBox
 $cmbDirectWebRtcMitigation.Location = New-Object System.Drawing.Point(15, 548)
@@ -6091,6 +6103,8 @@ function Apply-ModernDashboardUi {
     Add-Field $r -Label 'Congestion' -Control $cmbDirectWebRtcCongestion -Width 110 | Out-Null
     Add-Field $r -Label 'Mitigation' -Control $cmbDirectWebRtcMitigation -Width 170 | Out-Null
     $r = Add-Row $s
+    Add-Field $r -Label 'Start kbps (0=Video)' -Control $numDirectWebRtcStartBitrateKbps -Width 105 | Out-Null
+    $r = Add-Row $s
     Add-Field $r -LabelControl $lblWebRtcRecoveryMode -Control $cmbWebRtcRecoveryMode -Width 135 | Out-Null
     Add-Field $r -LabelControl $lblDirectWebRtcSmoothnessProfile -Control $cmbDirectWebRtcSmoothnessProfile -Width 155 | Out-Null
 
@@ -8047,6 +8061,7 @@ function Check-PendingNetworkRecovery {
 
 function Reset-WebRtcSaneDefaults {
     $cmbDirectWebRtcCongestion.SelectedItem = 'disabled'
+    $numDirectWebRtcStartBitrateKbps.Value = $script:DefaultDirectWebRtcStartBitrateKbps
     $cmbDirectWebRtcMitigation.SelectedItem = 'none'
     if ($cmbWebRtcRecoveryMode.Items.Contains($script:DefaultWebRtcRecoveryMode)) { $cmbWebRtcRecoveryMode.SelectedItem = $script:DefaultWebRtcRecoveryMode }
     if ($cmbWebRtcSenderQueueMode.Items.Contains($script:DefaultWebRtcSenderQueueMode)) { $cmbWebRtcSenderQueueMode.SelectedItem = $script:DefaultWebRtcSenderQueueMode }
@@ -10172,6 +10187,7 @@ function Update-DirectWebRtcUi {
         $txtDirectWebRtcStun,
         $chkDirectWebRtcTurnEnabled,
         $cmbDirectWebRtcCongestion,
+        $numDirectWebRtcStartBitrateKbps,
         $cmbDirectWebRtcMitigation,
         $lblWebRtcRecoveryMode,
         $cmbWebRtcRecoveryMode,
@@ -10377,14 +10393,10 @@ function Add-NvencRateControlOptions {
             $Parts.Add("qp-const-b=$ConstantQp")
         }
         'vbr' {
-            # Plain NVENC VBR. Do not append const-quality here.
-            # const-quality is a VBR quality target, not the same as normal VBR,
-            # and using the Constant QP UI value here made H.264/H.265/AV1 VBR
-            # behave like CQ-VBR. Users can still add const-quality explicitly
-            # through Custom encoder options when intentionally testing CQ-VBR.
             $Parts.Add("bitrate=$BitrateKbps")
             $Parts.Add('rc-mode=vbr')
             if ($MaxBitrateKbps -gt 0) { $Parts.Add("max-bitrate=$MaxBitrateKbps") }
+            $Parts.Add("const-quality=$ConstantQp")
         }
         default {
             $Parts.Add("bitrate=$BitrateKbps")
@@ -10603,6 +10615,8 @@ function Update-RecordingUi {
         if ($control) { $control.Enabled = $enabled }
     }
     $isNvenc = ($family -eq 'NVENC')
+    $recordingRateControl = Get-ComboSelectedOrDefault $cmbRecordingRateControl 'constqp'
+    $numRecordingConstantQp.Enabled = $enabled -and ($recordingRateControl -eq 'constqp' -or ($isNvenc -and $recordingRateControl -eq 'vbr'))
     $cmbRecordingPreset.Enabled = $enabled -and $isNvenc
     $cmbRecordingTune.Enabled = $enabled -and $isNvenc
     $cmbRecordingMultipass.Enabled = $enabled -and $isNvenc
@@ -11213,6 +11227,8 @@ function Update-EncoderUi {
     $protocol = [string]$cmbProtocol.SelectedItem
 
     $isNvenc = ($family -eq 'NVENC')
+    $rateControl = Get-ComboSelectedOrDefault $cmbRateControl 'cbr'
+    $numConstantQp.Enabled = ($rateControl -eq 'constqp' -or ($isNvenc -and $rateControl -eq 'vbr'))
     $cmbPreset.Enabled = $isNvenc
     $cmbEncoderTune.Enabled = $isNvenc
     $cmbMultipass.Enabled = $isNvenc
@@ -11233,7 +11249,11 @@ function Update-EncoderUi {
 
     $memoryLabel = if ($inputType -eq 'D3D11') { 'D3D11 zero-copy path' } else { 'CPU/system-memory path' }
     $latencyFlags = New-Object System.Collections.Generic.List[string]
-    $latencyFlags.Add((Get-ComboSelectedOrDefault $cmbRateControl 'cbr'))
+    $latencyFlags.Add($rateControl)
+    if ($numConstantQp.Enabled) {
+        $qualityLabel = if ($rateControl -eq 'vbr') { 'CQ' } else { 'QP' }
+        $latencyFlags.Add("$qualityLabel=$([int]$numConstantQp.Value)")
+    }
     if ($numBFrames.Enabled -and [int]$numBFrames.Value -gt 0) {
         $latencyFlags.Add("B=$([int]$numBFrames.Value)")
     }
@@ -11877,6 +11897,50 @@ function Get-DirectWebRtcTurnOption {
     return ' turn-servers=' + (Quote-GstValue $turnArray)
 }
 
+function Get-DirectWebRtcVideoBitrateEnvelope {
+    $videoBitrateKbps = [Math]::Max(1, [int]$numVideoBitrate.Value)
+    $configuredStartKbps = if ($numDirectWebRtcStartBitrateKbps) {
+        [Math]::Max(0, [int]$numDirectWebRtcStartBitrateKbps.Value)
+    }
+    else {
+        [int]$script:DefaultDirectWebRtcStartBitrateKbps
+    }
+    $configuredMaxKbps = [Math]::Max(0, [int]$numMaxVideoBitrate.Value)
+
+    # Zero deliberately preserves the historic behavior: start at the Video
+    # target bitrate.  When the user supplies an explicit start estimate, keep
+    # it inside an explicitly configured Video max instead of silently
+    # widening that max.  Auto mode retains the old max>=start safeguard for
+    # backward compatibility with existing configurations.
+    $startKbps = if ($configuredStartKbps -gt 0) { $configuredStartKbps } else { $videoBitrateKbps }
+    if ($configuredStartKbps -gt 0 -and $configuredMaxKbps -gt 0) {
+        $startKbps = [Math]::Min($startKbps, $configuredMaxKbps)
+    }
+    $startBitrate = [Math]::Max(1000, ([int64]$startKbps * 1000))
+    $maxBitrate = if ($configuredMaxKbps -gt 0) {
+        [Math]::Max($startBitrate, ([int64]$configuredMaxKbps * 1000))
+    }
+    else {
+        $startBitrate
+    }
+
+    $smoothProfile = Get-ComboSelectedOrDefault $cmbDirectWebRtcSmoothnessProfile $script:DefaultDirectWebRtcSmoothnessProfile
+    $minBitrate = switch ($smoothProfile) {
+        'Lowest latency' { [Math]::Max(1000, [int64]($startBitrate / 2)) }
+        'Balanced smooth' { [Math]::Max(1000, [int64]($startBitrate * 0.75)) }
+        'WAN smooth' { [Math]::Max(1000, [int64]($startBitrate * 0.60)) }
+        default { [Math]::Min(1000000, [Math]::Max(1000, [int64]($startBitrate / 4))) }
+    }
+
+    return [pscustomobject]@{
+        MinBitrate = [int64][Math]::Min($minBitrate, $startBitrate)
+        StartBitrate = [int64]$startBitrate
+        MaxBitrate = [int64]$maxBitrate
+        ConfiguredStartKbps = [int]$configuredStartKbps
+        EffectiveStartKbps = [int]$startKbps
+    }
+}
+
 function Build-DirectWebRtcUnifiedPublisherArguments {
     if (-not (Test-DirectWebRtcUnifiedPublisher)) { return '' }
 
@@ -11900,16 +11964,10 @@ function Build-DirectWebRtcUnifiedPublisherArguments {
     $recoveryFlags = Get-WebRtcRecoveryFlags
     $fec = [string]$recoveryFlags.Fec
     $retx = [string]$recoveryFlags.Retransmission
-    $startBitrate = [Math]::Max(1000, ([int]$numVideoBitrate.Value * 1000))
-    $maxKbps = [int]$numMaxVideoBitrate.Value
-    $maxBitrate = if ($maxKbps -gt 0) { [Math]::Max($startBitrate, $maxKbps * 1000) } else { $startBitrate }
-    $smoothProfile = Get-ComboSelectedOrDefault $cmbDirectWebRtcSmoothnessProfile $script:DefaultDirectWebRtcSmoothnessProfile
-    $minBitrate = switch ($smoothProfile) {
-        'Lowest latency' { [Math]::Max(1000, [int]($startBitrate / 2)) }
-        'Balanced smooth' { [Math]::Max(1000, [int]($startBitrate * 0.75)) }
-        'WAN smooth' { [Math]::Max(1000, [int]($startBitrate * 0.60)) }
-        default { [Math]::Min(1000000, [Math]::Max(1000, [int]($startBitrate / 4))) }
-    }
+    $bitrateEnvelope = Get-DirectWebRtcVideoBitrateEnvelope
+    $startBitrate = [int64]$bitrateEnvelope.StartBitrate
+    $maxBitrate = [int64]$bitrateEnvelope.MaxBitrate
+    $minBitrate = [int64]$bitrateEnvelope.MinBitrate
 
     $videoRtp = Get-DirectWebRtcUnifiedRtpVideoDefinition
     $mediaType = Get-CodecMediaType -Codec ([string]$videoRtp.Codec)
@@ -12167,10 +12225,11 @@ function Build-GstArguments {
             $stunServer = $txtDirectWebRtcStun.Text.Trim()
             $stunOption = if ([string]::IsNullOrWhiteSpace($stunServer)) { '' } else { ' stun-server=' + (Quote-GstValue $stunServer) }
     $turnOption = Get-DirectWebRtcTurnOption
-            $startBitrate = [Math]::Max(1000, ([int]$numVideoBitrate.Value * 1000))
-            $maxKbps = [int]$numMaxVideoBitrate.Value
-            $maxBitrate = if ($maxKbps -gt 0) { [Math]::Max($startBitrate, $maxKbps * 1000) } else { $startBitrate }
-            $webRtcSinkOptions = " do-fec=$([string]$recoveryFlags.Fec) do-retransmission=$([string]$recoveryFlags.Retransmission) congestion-control=$congestion enable-mitigation-modes=$mitigation start-bitrate=$startBitrate max-bitrate=$maxBitrate"
+            $bitrateEnvelope = Get-DirectWebRtcVideoBitrateEnvelope
+            $minBitrate = [int64]$bitrateEnvelope.MinBitrate
+            $startBitrate = [int64]$bitrateEnvelope.StartBitrate
+            $maxBitrate = [int64]$bitrateEnvelope.MaxBitrate
+            $webRtcSinkOptions = " do-fec=$([string]$recoveryFlags.Fec) do-retransmission=$([string]$recoveryFlags.Retransmission) congestion-control=$congestion enable-mitigation-modes=$mitigation min-bitrate=$minBitrate start-bitrate=$startBitrate max-bitrate=$maxBitrate"
             $webRtcVideoQueue = Get-DirectWebRtcPacingQueue
 
             if ($hasAudio) {
@@ -12204,16 +12263,10 @@ function Build-GstArguments {
             $recoveryFlags = Get-WebRtcRecoveryFlags
             $fec = [string]$recoveryFlags.Fec
             $retx = [string]$recoveryFlags.Retransmission
-            $startBitrate = [Math]::Max(1000, ([int]$numVideoBitrate.Value * 1000))
-            $maxKbps = [int]$numMaxVideoBitrate.Value
-            $maxBitrate = if ($maxKbps -gt 0) { [Math]::Max($startBitrate, $maxKbps * 1000) } else { $startBitrate }
-            $smoothProfile = Get-ComboSelectedOrDefault $cmbDirectWebRtcSmoothnessProfile $script:DefaultDirectWebRtcSmoothnessProfile
-            $minBitrate = switch ($smoothProfile) {
-                'Lowest latency' { [Math]::Max(1000, [int]($startBitrate / 2)) }
-                'Balanced smooth' { [Math]::Max(1000, [int]($startBitrate * 0.75)) }
-                'WAN smooth' { [Math]::Max(1000, [int]($startBitrate * 0.60)) }
-                default { [Math]::Min(1000000, [Math]::Max(1000, [int]($startBitrate / 4))) }
-            }
+            $bitrateEnvelope = Get-DirectWebRtcVideoBitrateEnvelope
+            $startBitrate = [int64]$bitrateEnvelope.StartBitrate
+            $maxBitrate = [int64]$bitrateEnvelope.MaxBitrate
+            $minBitrate = [int64]$bitrateEnvelope.MinBitrate
 
             # Feed our explicit encoded branch into webrtcsink. The raw D3D11
             # experiment could start the web/signalling server, but this package
@@ -12535,6 +12588,7 @@ function Save-Settings {
             DirectWebRtcWorkingWebDirectory = $txtDirectWebRtcWebDirectory.Text
             DirectWebRtcWebDirectory = $txtDirectWebRtcWebDirectory.Text
             DirectWebRtcCongestion = [string]$cmbDirectWebRtcCongestion.SelectedItem
+            DirectWebRtcStartBitrateKbps = [int]$numDirectWebRtcStartBitrateKbps.Value
             DirectWebRtcMitigation = [string]$cmbDirectWebRtcMitigation.SelectedItem
             WebRtcRecoveryMode = [string]$cmbWebRtcRecoveryMode.SelectedItem
             WebRtcSenderQueueMode = [string]$cmbWebRtcSenderQueueMode.SelectedItem
@@ -12881,6 +12935,7 @@ function Load-Settings {
         if ($null -ne $settings.DirectWebRtcWorkingWebDirectory) { $txtDirectWebRtcWebDirectory.Text = [string]$settings.DirectWebRtcWorkingWebDirectory }
         elseif ($null -ne $settings.DirectWebRtcWebDirectory) { $txtDirectWebRtcWebDirectory.Text = [string]$settings.DirectWebRtcWebDirectory }
         if ($settings.DirectWebRtcCongestion -and $cmbDirectWebRtcCongestion.Items.Contains([string]$settings.DirectWebRtcCongestion)) { $cmbDirectWebRtcCongestion.SelectedItem = [string]$settings.DirectWebRtcCongestion }
+        if ($null -ne $settings.DirectWebRtcStartBitrateKbps) { $numDirectWebRtcStartBitrateKbps.Value = [decimal]([Math]::Min([int]$numDirectWebRtcStartBitrateKbps.Maximum, [Math]::Max([int]$numDirectWebRtcStartBitrateKbps.Minimum, [int]$settings.DirectWebRtcStartBitrateKbps))) }
         if ($settings.DirectWebRtcMitigation -and $cmbDirectWebRtcMitigation.Items.Contains([string]$settings.DirectWebRtcMitigation)) { $cmbDirectWebRtcMitigation.SelectedItem = [string]$settings.DirectWebRtcMitigation }
         if ($settings.WebRtcRecoveryMode -and $cmbWebRtcRecoveryMode.Items.Contains([string]$settings.WebRtcRecoveryMode)) {
             Set-WebRtcRecoveryMode ([string]$settings.WebRtcRecoveryMode)
@@ -14347,6 +14402,11 @@ function Start-GstStream {
     if ($transportEnabled) {
         Append-Log "Protocol: $([string]$cmbProtocol.SelectedItem)"
         Append-Log "Absolute timestamps: $(Get-AbsoluteTimestampStatusText)"
+        if ([string]$cmbProtocol.SelectedItem -in @('WHIP', $script:DirectWebRtcProtocolName)) {
+            $webRtcBitrateEnvelope = Get-DirectWebRtcVideoBitrateEnvelope
+            $startSource = if ([int]$webRtcBitrateEnvelope.ConfiguredStartKbps -gt 0) { 'explicit' } else { 'Video bitrate (auto)' }
+            Append-Log "WebRTC bitrate envelope: min/start/max $([int64]$webRtcBitrateEnvelope.MinBitrate)/$([int64]$webRtcBitrateEnvelope.StartBitrate)/$([int64]$webRtcBitrateEnvelope.MaxBitrate) bps; start source $startSource."
+        }
         if ([string]$cmbProtocol.SelectedItem -eq 'WHIP') {
             Append-Log 'WHIP publish guard: constrained-baseline H.264 caps, GOP capped to 1s, B-frames/lookahead off, NVENC ultra-low-latency.'
             if (Test-SendAbsoluteTimestampsEnabled) {
@@ -15480,6 +15540,7 @@ foreach ($control in @(
     $cmbDirectWebRtcWorkingWebMode,
     $txtDirectWebRtcWebDirectory,
     $cmbDirectWebRtcCongestion,
+    $numDirectWebRtcStartBitrateKbps,
     $cmbDirectWebRtcMitigation,
     $cmbWebRtcRecoveryMode,
     $cmbWebRtcSenderQueueMode,
