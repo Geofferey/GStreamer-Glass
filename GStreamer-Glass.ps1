@@ -630,7 +630,7 @@ public static class GstProcessJob
 '@
 }
 
-$script:AppVersion = '3.7.52f6'
+$script:AppVersion = '3.7.52f7'
 $script:AppName = "GStreamer Glass v$($script:AppVersion)"
 $script:ConfigDirectory = Join-Path $env:APPDATA 'GStreamerBasicWhipStreamer'
 $script:ConfigPath = Join-Path $script:ConfigDirectory 'settings.json'
@@ -645,6 +645,7 @@ $script:NetworkTuningApplied = $false
 $script:ApplyingDirectWebRtcSmoothnessProfile = $false
 $script:ApplyingThreadingProfile = $false
 $script:ApplyingThreadBudget = $false
+$script:LoadingSettings = $false
 $script:DefaultAudioOutputDeviceLabel = 'Default output device (loopback)'
 $script:DefaultAudioInputDeviceLabel = 'Default input device / microphone'
 $script:AudioOutputDeviceMap = @{}
@@ -9761,6 +9762,10 @@ function Update-ProtocolUi {
 }
 
 function Save-Settings {
+    # UI events fire while Load-Settings assigns controls. Never persist that
+    # partially restored state back over the complete settings file.
+    if ($script:LoadingSettings) { return }
+
     try {
         if (-not (Test-Path -LiteralPath $script:ConfigDirectory)) {
             $null = New-Item -ItemType Directory -Path $script:ConfigDirectory -Force
@@ -10048,6 +10053,7 @@ function Load-Settings {
         return
     }
 
+    $script:LoadingSettings = $true
     try {
         $settings = Get-Content -LiteralPath $script:ConfigPath -Raw | ConvertFrom-Json
         $script:SuppressProtocolChange = $true
@@ -10327,6 +10333,7 @@ function Load-Settings {
     }
     finally {
         $script:SuppressProtocolChange = $false
+        $script:LoadingSettings = $false
         Update-TransportUi
         Update-DirectWebRtcUi
         Update-EncoderUi
