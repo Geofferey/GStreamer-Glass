@@ -408,6 +408,12 @@ public static class GstPreviewNative
         if (child != IntPtr.Zero)
             MoveWindow(child, 0, 0, Math.Max(1, width), Math.Max(1, height), true);
     }
+
+    public static void SetWindowVisible(IntPtr child, bool visible)
+    {
+        if (child != IntPtr.Zero && IsWindow(child))
+            ShowWindow(child, visible ? SW_SHOW : SW_HIDE);
+    }
 }
 '@
 }
@@ -522,7 +528,7 @@ public static class GstProcessJob
 '@
 }
 
-$script:AppVersion = '3.6.4'
+$script:AppVersion = '3.6.5'
 $script:AppName = "GStreamer Glass v$($script:AppVersion)"
 $script:ConfigDirectory = Join-Path $env:APPDATA 'GStreamerBasicWhipStreamer'
 $script:ConfigPath = Join-Path $script:ConfigDirectory 'settings.json'
@@ -1222,12 +1228,12 @@ $chkCursor.Checked = $true
 $settingsGroup.Controls.Add($chkCursor)
 
 $chkPreview = New-Object System.Windows.Forms.CheckBox
-$chkPreview.Text = 'Preview'
+$chkPreview.Text = 'Show Preview'
 $chkPreview.Location = New-Object System.Drawing.Point(235, 130)
 $chkPreview.Size = New-Object System.Drawing.Size(80, 23)
 $chkPreview.Checked = $false
 $settingsGroup.Controls.Add($chkPreview)
-$toolTip.SetToolTip($chkPreview, 'Adds a one-frame leaky GPU preview branch. Embedding is experimental; the stream remains independent.')
+$toolTip.SetToolTip($chkPreview, 'Shows or hides the local preview while streaming. The one-frame leaky preview branch is kept available so toggling does not restart the stream.')
 
 $chkAutoRestart = New-Object System.Windows.Forms.CheckBox
 $chkAutoRestart.Text = 'Auto-restart on exit'
@@ -1532,7 +1538,7 @@ $previewPanel.Anchor = 'Top,Bottom,Left,Right'
 $previewGroup.Controls.Add($previewPanel)
 
 $previewPlaceholder = New-Object System.Windows.Forms.Label
-$previewPlaceholder.Text = 'Enable Preview and start the stream'
+$previewPlaceholder.Text = 'Preview hidden — stream can keep running'
 $previewPlaceholder.ForeColor = [System.Drawing.Color]::LightGray
 $previewPlaceholder.BackColor = [System.Drawing.Color]::Black
 $previewPlaceholder.TextAlign = 'MiddleCenter'
@@ -2802,31 +2808,32 @@ function Build-VideoBranch {
 
     $encoder = Get-EncoderElementChain -Protocol $Protocol
 
-    if ($chkPreview.Checked) {
-        $previewBranch = @(
-            'tee'
-            'name=rawtee'
-            'rawtee.'
-            '!'
-            'queue'
-            'max-size-buffers=1'
-            'max-size-bytes=0'
-            'max-size-time=0'
-            'leaky=downstream'
-            '!'
-            'd3d11videosink'
-            'name=localpreview'
-            'sync=false'
-            'force-aspect-ratio=true'
-            'rawtee.'
-            '!'
-            $encoder
-        ) -join ' '
+    # Runtime-toggleable preview:
+    # gst-launch pipelines are static after launch, so the preview branch must
+    # exist from the beginning. The checkbox only shows/hides the embedded
+    # d3d11videosink window; it does not rebuild the streaming pipeline.
+    $previewBranch = @(
+        'tee'
+        'name=rawtee'
+        'rawtee.'
+        '!'
+        'queue'
+        'max-size-buffers=1'
+        'max-size-bytes=0'
+        'max-size-time=0'
+        'leaky=downstream'
+        '!'
+        'd3d11videosink'
+        'name=localpreview'
+        'sync=false'
+        'force-aspect-ratio=true'
+        'rawtee.'
+        '!'
+        $encoder
+    ) -join ' '
 
-        return "$capture ! $previewBranch"
-    }
+    return "$capture ! $previewBranch"
 
-    return "$capture ! $encoder"
 }
 
 function Build-GstArguments {
@@ -3321,8 +3328,36 @@ function Validate-Configuration {
     return $true
 }
 
+function Set-PreviewVisibility {
+    if ($script:PreviewHwnd -eq [IntPtr]::Zero) {
+        $previewPlaceholder.Visible = $true
+        $previewPlaceholder.Text = if ($chkPreview.Checked) {
+            'Preview starting...'
+        }
+        else {
+            'Preview hidden — stream still running'
+        }
+        return
+    }
+
+    if ($chkPreview.Checked) {
+        [GstPreviewNative]::ResizeEmbeddedWindow(
+            $script:PreviewHwnd,
+            $previewPanel.ClientSize.Width,
+            $previewPanel.ClientSize.Height
+        )
+        [GstPreviewNative]::SetWindowVisible($script:PreviewHwnd, $true)
+        $previewPlaceholder.Visible = $false
+    }
+    else {
+        [GstPreviewNative]::SetWindowVisible($script:PreviewHwnd, $false)
+        $previewPlaceholder.Visible = $true
+        $previewPlaceholder.Text = 'Preview hidden — stream still running'
+    }
+}
+
 function Try-AttachPreview {
-    if (-not $chkPreview.Checked -or -not $script:GstProcess -or $script:GstProcess.HasExited) {
+    if (-not $script:GstProcess -or $script:GstProcess.HasExited) {
         return
     }
 
@@ -3331,14 +3366,12 @@ function Try-AttachPreview {
         if ($candidate -ne [IntPtr]::Zero) {
             if ([GstPreviewNative]::EmbedWindow($candidate, $previewPanel.Handle, $previewPanel.ClientSize.Width, $previewPanel.ClientSize.Height)) {
                 $script:PreviewHwnd = $candidate
-                $previewPlaceholder.Visible = $false
-                Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Preview window embedded."
+                Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Preview window embedded for runtime toggle."
             }
         }
     }
-    else {
-        [GstPreviewNative]::ResizeEmbeddedWindow($script:PreviewHwnd, $previewPanel.ClientSize.Width, $previewPanel.ClientSize.Height)
-    }
+
+    Set-PreviewVisibility
 }
 
 function Read-MediaMtxStartupLogs {
@@ -3542,7 +3575,7 @@ function Start-GstStream {
     $script:RestartAt = $null
     $script:PreviewHwnd = [IntPtr]::Zero
     $previewPlaceholder.Visible = $true
-    $previewPlaceholder.Text = if ($chkPreview.Checked) { 'Starting preview...' } else { 'Preview disabled' }
+    $previewPlaceholder.Text = if ($chkPreview.Checked) { 'Starting preview...' } else { 'Preview hidden — stream still running' }
 
     $gstPath = $txtGstPath.Text.Trim()
     Prepare-GStreamerRuntime -GstPath $gstPath
@@ -3719,10 +3752,9 @@ function Test-GStreamerElements {
         $elements.Add([string]$definition.Parser)
     }
 
-    if ($chkPreview.Checked) {
-        $elements.Add('tee')
-        $elements.Add('d3d11videosink')
-    }
+    # Preview branch is always present so it can be shown/hidden live.
+    $elements.Add('tee')
+    $elements.Add('d3d11videosink')
 
     $userAudioEnabled =
         $chkDesktopAudio.Checked -or
@@ -3944,7 +3976,20 @@ $chkFullscreenApp.Add_CheckedChanged({
     Update-CommandPreview
 })
 $chkPreview.Add_CheckedChanged({
-    $previewPlaceholder.Text = if ($chkPreview.Checked) { 'Preview applies after Start/Restart' } else { 'Preview disabled' }
+    if ($script:GstProcess -and -not $script:GstProcess.HasExited) {
+        Set-PreviewVisibility
+        $previewState = if ($chkPreview.Checked) { 'on' } else { 'off' }
+        Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Preview toggled $previewState without restarting stream."
+    }
+    else {
+        $previewPlaceholder.Text = if ($chkPreview.Checked) {
+            'Preview will show when stream starts'
+        }
+        else {
+            'Preview hidden — stream can keep running'
+        }
+    }
+
     Update-CommandPreview
 })
 $chkAutoRestart.Add_CheckedChanged($previewHandler)
@@ -3978,7 +4023,7 @@ $chkStartMediaMtx.Add_CheckedChanged({
 
 $previewPanel.Add_Resize({
     if ($script:PreviewHwnd -ne [IntPtr]::Zero) {
-        [GstPreviewNative]::ResizeEmbeddedWindow($script:PreviewHwnd, $previewPanel.ClientSize.Width, $previewPanel.ClientSize.Height)
+        Set-PreviewVisibility
     }
 })
 
