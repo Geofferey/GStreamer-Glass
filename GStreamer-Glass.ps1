@@ -630,7 +630,7 @@ public static class GstProcessJob
 '@
 }
 
-$script:AppVersion = '3.7.52f43'
+$script:AppVersion = '3.7.52f44'
 $script:AppName = "GStreamer Glass v$($script:AppVersion)"
 $script:ConfigDirectory = Join-Path $env:APPDATA 'GStreamerBasicWhipStreamer'
 $script:ConfigPath = Join-Path $script:ConfigDirectory 'settings.json'
@@ -8835,7 +8835,7 @@ function Get-RecordingEncodedVideoCaps {
     switch ($Codec) {
         'H264' { return "video/x-h264,profile=$profile,stream-format=avc,alignment=au" }
         'H265' { return 'video/x-h265,profile=main,stream-format=hvc1,alignment=au' }
-        'AV1'  { return 'video/x-av1,stream-format=obu-stream,alignment=tu,profile=main,chroma-format=4:2:0,bit-depth-luma=(uint)8,bit-depth-chroma=(uint)8' }
+        'AV1'  { return 'video/x-av1,stream-format=obu-stream,alignment=tu,profile=main,chroma-format=(string)4:2:0,bit-depth-luma=(uint)8,bit-depth-chroma=(uint)8' }
         'VP8'  { return 'video/x-vp8' }
         'VP9'  { return 'video/x-vp9' }
         default { throw "Unsupported recording codec: $Codec" }
@@ -9435,11 +9435,13 @@ function Get-EncodedVideoCaps {
         'AV1' {
             $alignment = if ($Protocol -eq 'SRT') { 'frame' } else { 'tu' }
             if ($Protocol -in @('GST WebRTC', 'WHIP')) {
-                # rswebrtc/webrtcsink does not support renegotiation on the
-                # already-linked pad. av1parse can first expose generic AV1 caps
-                # and then refine them with bit-depth/chroma details; pin the
-                # stable 8-bit main-profile fields before the sink sees them.
-                return "video/x-av1,stream-format=obu-stream,alignment=$alignment,profile=main,chroma-format=4:2:0,bit-depth-luma=(uint)8,bit-depth-chroma=(uint)8"
+                # Keep AV1 caps intentionally minimal for rswebrtc/webrtcsink.
+                # The stricter caps pinned chroma-format and bit-depth, but the
+                # GStreamer 1.28.5 rswebrtc path rejected that downstream handoff
+                # with not-negotiated before out.video_0 accepted the caps.
+                # profile=main avoids the earliest generic caps while still
+                # allowing the WebRTC sink to negotiate the RTP payload.
+                return "video/x-av1,stream-format=obu-stream,alignment=$alignment,profile=main"
             }
             return "video/x-av1,stream-format=obu-stream,alignment=$alignment"
         }
@@ -9688,7 +9690,17 @@ function Get-EncoderElementChain {
     }
 
     Add-CustomEncoderOptions $parts $txtCustomEncoderOptions.Text
-    if (-not [string]::IsNullOrWhiteSpace($parser)) {
+
+    # Direct GST WebRTC AV1 guard:
+    # GStreamer 1.28.5 av1parse emits an initial parsed AV1 caps event and then
+    # immediately enriches it with chroma/bit-depth/level. rswebrtc/webrtcsink
+    # treats that second caps event as unsupported renegotiation on out.video_0.
+    # For Direct GST WebRTC only, feed AV1 encoder output through the minimal AV1
+    # capsfilter without av1parse so the sink sees one stable caps shape. Keep
+    # parsers for H.264/H.265 and non-WebRTC protocols where they are needed.
+    $skipParserForDirectWebRtcAv1 = ($codec -eq 'AV1' -and $Protocol -eq 'GST WebRTC')
+
+    if ((-not $skipParserForDirectWebRtcAv1) -and (-not [string]::IsNullOrWhiteSpace($parser))) {
         $parts.Add('!')
         $parts.Add($parser)
 
