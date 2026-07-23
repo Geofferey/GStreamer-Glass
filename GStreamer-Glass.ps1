@@ -1,4 +1,4 @@
-﻿#requires -Version 5.1
+#requires -Version 5.1
 <#
 .SYNOPSIS
     Basic Windows GUI wrapper for low-latency GStreamer desktop streaming.
@@ -630,7 +630,7 @@ public static class GstProcessJob
 '@
 }
 
-$script:AppVersion = '3.7.52f14'
+$script:AppVersion = '3.7.52f37'
 $script:AppName = "GStreamer Glass v$($script:AppVersion)"
 $script:ConfigDirectory = Join-Path $env:APPDATA 'GStreamerBasicWhipStreamer'
 $script:ConfigPath = Join-Path $script:ConfigDirectory 'settings.json'
@@ -785,6 +785,8 @@ $script:DefaultDirectWebRtcInternalRepeatHeaders = $false
 $script:DefaultUnifiedBridgeKeyframeGuard = $false
 $script:DefaultUnifiedBridgeKeyframeIntervalMs = 500
 $script:DefaultDirectWebRtcStunServer = 'stun://stun.l.google.com:19302'
+$script:DefaultDirectWebRtcTurnEnabled = $false
+$script:DefaultDirectWebRtcTurnServer = 'turn://openrelay.metered.ca:80'
 $script:DefaultDirectWebRtcSmoothnessProfile = 'Sane defaults'
 $script:DefaultWebRtcRecoveryMode = 'None'
 $script:DefaultWebRtcSenderQueueMode = 'Leaky live'
@@ -801,6 +803,9 @@ $script:DefaultJbufMaxMs = 30
 $script:DefaultPlayerStatsOverlay = $true
 $script:DefaultPlayerJbufDebug = $false
 $script:DefaultPlayerUrlOverrides = $false
+$script:DefaultLiveEdgeGreenMs = 50
+$script:DefaultLiveEdgeYellowMs = 120
+$script:DefaultLiveEdgeAverageSec = 5
 $script:DefaultPlayerAvRenderMode = 'Synced single media element'
 $script:DefaultDirectWebRtcAvPipelineMode = 'Single pipeline'
 $script:DefaultSplitPlayerSyncMode = 'Off / free-run'
@@ -1160,46 +1165,108 @@ function Get-StromGstLaunchCandidates {
     return @($results | Sort-Object LastWriteTime -Descending | Select-Object -ExpandProperty FullName -Unique)
 }
 
+function Test-GstLaunchPath {
+    param([string]$Path)
+
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
+    try {
+        $expanded = [Environment]::ExpandEnvironmentVariables($Path.Trim().Trim('"'))
+        return (
+            (Test-Path -LiteralPath $expanded -PathType Leaf) -and
+            ([System.IO.Path]::GetFileName($expanded) -ieq 'gst-launch-1.0.exe')
+        )
+    }
+    catch {
+        return $false
+    }
+}
+
+function Normalize-GstLaunchPath {
+    param([string]$Path)
+
+    if ([string]::IsNullOrWhiteSpace($Path)) { return '' }
+    try {
+        return [System.IO.Path]::GetFullPath([Environment]::ExpandEnvironmentVariables($Path.Trim().Trim('"')))
+    }
+    catch {
+        return $Path.Trim().Trim('"')
+    }
+}
+
 function Find-GstLaunch {
-    # Strom's bundled runtime is preferred when present because it is known to
-    # include the plugin set used successfully by this application.
-    $stromCandidates = @(Get-StromGstLaunchCandidates)
-    if ($stromCandidates.Count -gt 0) {
-        return [string]$stromCandidates[0]
+    param([string]$CurrentPath)
+
+    # A user-selected/saved binary is authoritative as long as it still exists.
+    # Do not silently jump back to an auto-detected runtime unless the selected
+    # gst-launch-1.0.exe path is missing or invalid.
+    if (Test-GstLaunchPath $CurrentPath) {
+        return (Normalize-GstLaunchPath $CurrentPath)
     }
 
-    $official = Join-Path $env:SystemDrive 'gstreamer\1.0\msvc_x86_64\bin\gst-launch-1.0.exe'
-    if (Test-Path -LiteralPath $official) {
-        return $official
+    $officialMsvc = Join-Path $env:ProgramFiles 'gstreamer\1.0\msvc_x86_64\bin\gst-launch-1.0.exe'
+    if (Test-GstLaunchPath $officialMsvc) {
+        return (Normalize-GstLaunchPath $officialMsvc)
     }
 
     if ($env:GSTREAMER_ROOT_X86_64) {
         $fromEnvironment = Join-Path $env:GSTREAMER_ROOT_X86_64 'bin\gst-launch-1.0.exe'
-        if (Test-Path -LiteralPath $fromEnvironment) {
-            return $fromEnvironment
+        if (Test-GstLaunchPath $fromEnvironment) {
+            return (Normalize-GstLaunchPath $fromEnvironment)
         }
     }
 
     $command = Get-Command 'gst-launch-1.0.exe' -ErrorAction SilentlyContinue
-    if ($command) {
-        return $command.Source
+    if ($command -and (Test-GstLaunchPath $command.Source)) {
+        return (Normalize-GstLaunchPath $command.Source)
     }
 
     $candidates = @(
-        (Join-Path $env:SystemDrive 'gstreamer\1.0\mingw_x86_64\bin\gst-launch-1.0.exe'),
-        (Join-Path $env:ProgramFiles 'gstreamer\1.0\msvc_x86_64\bin\gst-launch-1.0.exe'),
         (Join-Path $env:ProgramFiles 'gstreamer\1.0\mingw_x86_64\bin\gst-launch-1.0.exe'),
+        (Join-Path $env:SystemDrive 'gstreamer\1.0\msvc_x86_64\bin\gst-launch-1.0.exe'),
+        (Join-Path $env:SystemDrive 'gstreamer\1.0\mingw_x86_64\bin\gst-launch-1.0.exe'),
         (Join-Path ${env:ProgramFiles(x86)} 'gstreamer\1.0\msvc_x86_64\bin\gst-launch-1.0.exe'),
         (Join-Path ${env:ProgramFiles(x86)} 'gstreamer\1.0\mingw_x86_64\bin\gst-launch-1.0.exe')
     )
 
     foreach ($candidate in $candidates) {
-        if ($candidate -and (Test-Path -LiteralPath $candidate)) {
-            return $candidate
+        if (Test-GstLaunchPath $candidate) {
+            return (Normalize-GstLaunchPath $candidate)
         }
     }
 
-    return $official
+    # Strom is now only a compatibility fallback. It should never beat the
+    # official Program Files\gstreamer\1.0\msvc_x86_64 install.
+    $stromCandidates = @(Get-StromGstLaunchCandidates)
+    if ($stromCandidates.Count -gt 0) {
+        return (Normalize-GstLaunchPath ([string]$stromCandidates[0]))
+    }
+
+    return $officialMsvc
+}
+
+function Resolve-GstLaunchSelection {
+    param(
+        [string]$RequestedPath,
+        [switch]$UpdateControl,
+        [switch]$Quiet
+    )
+
+    if (Test-GstLaunchPath $RequestedPath) {
+        return (Normalize-GstLaunchPath $RequestedPath)
+    }
+
+    $detected = Find-GstLaunch
+    if ($UpdateControl -and -not [string]::IsNullOrWhiteSpace($detected)) {
+        if ($txtGstPath.Text -ne $detected) {
+            if (-not $Quiet -and -not [string]::IsNullOrWhiteSpace($RequestedPath)) {
+                Append-Log "Configured GStreamer executable was not found: $RequestedPath"
+                Append-Log "Using detected GStreamer executable: $detected"
+            }
+            $txtGstPath.Text = $detected
+        }
+    }
+
+    return $detected
 }
 
 function Find-MediaMtx {
@@ -1633,7 +1700,7 @@ $txtGstPath.Location = New-Object System.Drawing.Point(150, 25)
 $txtGstPath.Size = New-Object System.Drawing.Size(370, 23)
 $txtGstPath.Text = Find-GstLaunch
 $settingsGroup.Controls.Add($txtGstPath)
-$toolTip.SetToolTip($txtGstPath, 'Fresh installs prefer Strom bundled GStreamer when found. Each selected runtime receives isolated plugin paths and registry cache.')
+$toolTip.SetToolTip($txtGstPath, 'Fresh installs prefer C:\Program Files\gstreamer\1.0\msvc_x86_64\bin\gst-launch-1.0.exe. A user-selected valid binary is preserved; Strom is fallback only.')
 
 $btnBrowseGst = New-Object System.Windows.Forms.Button
 $btnBrowseGst.Text = 'Browse...'
@@ -1907,6 +1974,21 @@ $txtDirectWebRtcStun.Size = New-Object System.Drawing.Size(250, 23)
 $txtDirectWebRtcStun.Text = $script:DefaultDirectWebRtcStunServer
 $settingsGroup.Controls.Add($txtDirectWebRtcStun)
 $toolTip.SetToolTip($txtDirectWebRtcStun, 'STUN server for Direct GStreamer WebRTC. Leave blank for no STUN.')
+
+$chkDirectWebRtcTurnEnabled = New-Object System.Windows.Forms.CheckBox
+$chkDirectWebRtcTurnEnabled.Text = 'Enable TURN relay'
+$chkDirectWebRtcTurnEnabled.Location = New-Object System.Drawing.Point(15, 548)
+$chkDirectWebRtcTurnEnabled.Size = New-Object System.Drawing.Size(145, 24)
+$chkDirectWebRtcTurnEnabled.Checked = $script:DefaultDirectWebRtcTurnEnabled
+$settingsGroup.Controls.Add($chkDirectWebRtcTurnEnabled)
+$toolTip.SetToolTip($chkDirectWebRtcTurnEnabled, 'Adds the TURN URI as a one-entry turn-servers array on rswebrtc sinks. TURN is opt-in because relayed media consumes third-party bandwidth and can add latency.')
+
+$txtDirectWebRtcTurn = New-Object System.Windows.Forms.TextBox
+$txtDirectWebRtcTurn.Location = New-Object System.Drawing.Point(15, 548)
+$txtDirectWebRtcTurn.Size = New-Object System.Drawing.Size(330, 23)
+$txtDirectWebRtcTurn.Text = $script:DefaultDirectWebRtcTurnServer
+$settingsGroup.Controls.Add($txtDirectWebRtcTurn)
+$toolTip.SetToolTip($txtDirectWebRtcTurn, 'TURN URI for Direct GST WebRTC and WHIP, for example turn://username:password@host:3478 or turns://username:password@host:5349. The public default address still requires valid credentials before it can relay media.')
 
 $txtDirectWebRtcWebPath = New-Object System.Windows.Forms.TextBox
 $txtDirectWebRtcWebPath.Location = New-Object System.Drawing.Point(15, 548)
@@ -2562,6 +2644,36 @@ $chkPlayerJbufDebug.Checked = $script:DefaultPlayerJbufDebug
 $settingsGroup.Controls.Add($chkPlayerJbufDebug)
 $toolTip.SetToolTip($chkPlayerJbufDebug, 'Enable browser console logging for player.js JBUF target/config resolution.')
 
+$numLiveEdgeAverageSec = New-Object System.Windows.Forms.NumericUpDown
+$numLiveEdgeAverageSec.Location = New-Object System.Drawing.Point(15, 548)
+$numLiveEdgeAverageSec.Size = New-Object System.Drawing.Size(70, 23)
+$numLiveEdgeAverageSec.Minimum = 1
+$numLiveEdgeAverageSec.Maximum = 30
+$numLiveEdgeAverageSec.Increment = 1
+$numLiveEdgeAverageSec.Value = $script:DefaultLiveEdgeAverageSec
+$settingsGroup.Controls.Add($numLiveEdgeAverageSec)
+$toolTip.SetToolTip($numLiveEdgeAverageSec, 'Rolling average window for Live Edge excess latency. Shorter reacts faster; longer is steadier. Range 1-30 seconds.')
+
+$numLiveEdgeGreenMs = New-Object System.Windows.Forms.NumericUpDown
+$numLiveEdgeGreenMs.Location = New-Object System.Drawing.Point(15, 548)
+$numLiveEdgeGreenMs.Size = New-Object System.Drawing.Size(80, 23)
+$numLiveEdgeGreenMs.Minimum = 1
+$numLiveEdgeGreenMs.Maximum = 4999
+$numLiveEdgeGreenMs.Increment = 1
+$numLiveEdgeGreenMs.Value = $script:DefaultLiveEdgeGreenMs
+$settingsGroup.Controls.Add($numLiveEdgeGreenMs)
+$toolTip.SetToolTip($numLiveEdgeGreenMs, 'Maximum rolling excess-latency average shown as green / Live.')
+
+$numLiveEdgeYellowMs = New-Object System.Windows.Forms.NumericUpDown
+$numLiveEdgeYellowMs.Location = New-Object System.Drawing.Point(15, 548)
+$numLiveEdgeYellowMs.Size = New-Object System.Drawing.Size(80, 23)
+$numLiveEdgeYellowMs.Minimum = 2
+$numLiveEdgeYellowMs.Maximum = 5000
+$numLiveEdgeYellowMs.Increment = 1
+$numLiveEdgeYellowMs.Value = $script:DefaultLiveEdgeYellowMs
+$settingsGroup.Controls.Add($numLiveEdgeYellowMs)
+$toolTip.SetToolTip($numLiveEdgeYellowMs, 'Maximum rolling excess-latency average shown as yellow / Delayed. Values above this are red.')
+
 $chkPlayerUrlOverrides = New-Object System.Windows.Forms.CheckBox
 $chkPlayerUrlOverrides.Text = 'Open/copy with URL overrides'
 $chkPlayerUrlOverrides.Location = New-Object System.Drawing.Point(15, 548)
@@ -2611,11 +2723,11 @@ $numSplitAudioWarmupSeconds = New-Object System.Windows.Forms.NumericUpDown
 $numSplitAudioWarmupSeconds.Location = New-Object System.Drawing.Point(15, 548)
 $numSplitAudioWarmupSeconds.Size = New-Object System.Drawing.Size(70, 23)
 $numSplitAudioWarmupSeconds.Minimum = 0
-$numSplitAudioWarmupSeconds.Maximum = 60
+$numSplitAudioWarmupSeconds.Maximum = 600
 $numSplitAudioWarmupSeconds.Increment = 1
 $numSplitAudioWarmupSeconds.Value = $script:DefaultSplitAudioWarmupSeconds
 $settingsGroup.Controls.Add($numSplitAudioWarmupSeconds)
-$toolTip.SetToolTip($numSplitAudioWarmupSeconds, 'Opt-in startup/equalization grace period for both browser JBUF watchdog and split audio watchdog/soft-sync recovery. Recovery/reconnect is blocked until this many seconds after primary or split audio connects/receives media.')
+$toolTip.SetToolTip($numSplitAudioWarmupSeconds, 'Opt-in startup/equalization grace period for both browser JBUF watchdog and split audio watchdog/soft-sync recovery. Recovery/reconnect is blocked until this many seconds after primary or split audio connects/receives media. Range 0-600 seconds.')
 
 $numSplitAvOffsetWarnMs = New-Object System.Windows.Forms.NumericUpDown
 $numSplitAvOffsetWarnMs.Location = New-Object System.Drawing.Point(15, 548)
@@ -4510,6 +4622,9 @@ function Apply-ModernDashboardUi {
     Add-Field $r -Control $chkDirectWebRtcSharedSignaling -Width 260 | Out-Null
     Add-Field $r -Label 'STUN' -Control $txtDirectWebRtcStun -Width 270 | Out-Null
     $r = Add-Row $s
+    Add-Field $r -Control $chkDirectWebRtcTurnEnabled -Width 165 | Out-Null
+    Add-Field $r -Label 'TURN URI' -Control $txtDirectWebRtcTurn -Width 360 | Out-Null
+    $r = Add-Row $s
     Add-Field $r -Control $chkDirectWebRtcUnifiedPublisher -Width 360 | Out-Null
     $r = Add-Row $s
     Add-Field $r -Label 'Video RTP bridge' -Control $numDirectWebRtcBridgeVideoPort -Width 85 | Out-Null
@@ -4740,6 +4855,10 @@ function Apply-ModernDashboardUi {
     $r = Add-Row $s
     Add-Field $r -Control $chkPlayerStatsOverlay -Width 150 | Out-Null
     Add-Field $r -Control $chkPlayerJbufDebug -Width 180 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Label 'Live avg sec' -Control $numLiveEdgeAverageSec -Width 90 | Out-Null
+    Add-Field $r -Label 'Green <= ms' -Control $numLiveEdgeGreenMs -Width 100 | Out-Null
+    Add-Field $r -Label 'Yellow <= ms' -Control $numLiveEdgeYellowMs -Width 105 | Out-Null
 
     $s = Add-Section $panePlayer 'Player A/V render mode'
     $r = Add-Row $s
@@ -6329,6 +6448,9 @@ function Reset-WebRtcSaneDefaults {
     if ($cmbJbufWatchdogMode.Items.Contains($script:DefaultJbufWatchdogMode)) { $cmbJbufWatchdogMode.SelectedItem = $script:DefaultJbufWatchdogMode }
     $chkPlayerStatsOverlay.Checked = $script:DefaultPlayerStatsOverlay
     $chkPlayerJbufDebug.Checked = $script:DefaultPlayerJbufDebug
+    $numLiveEdgeAverageSec.Value = $script:DefaultLiveEdgeAverageSec
+    $numLiveEdgeGreenMs.Value = $script:DefaultLiveEdgeGreenMs
+    $numLiveEdgeYellowMs.Value = $script:DefaultLiveEdgeYellowMs
     $chkPlayerUrlOverrides.Checked = $script:DefaultPlayerUrlOverrides
     if ($cmbDirectWebRtcClockSignaling.Items.Contains($script:DefaultDirectWebRtcClockSignaling)) { $cmbDirectWebRtcClockSignaling.SelectedItem = $script:DefaultDirectWebRtcClockSignaling }
     $chkDirectWebRtcControlDataChannel.Checked = $script:DefaultDirectWebRtcControlDataChannel
@@ -6371,6 +6493,8 @@ function Reset-TransportDefaults {
     $numDirectWebRtcInternalRtpMtu.Value = $script:DefaultDirectWebRtcInternalRtpMtu
     $chkDirectWebRtcInternalRepeatHeaders.Checked = $script:DefaultDirectWebRtcInternalRepeatHeaders
     $txtDirectWebRtcStun.Text = $script:DefaultDirectWebRtcStunServer
+    $chkDirectWebRtcTurnEnabled.Checked = $script:DefaultDirectWebRtcTurnEnabled
+    $txtDirectWebRtcTurn.Text = $script:DefaultDirectWebRtcTurnServer
     $txtDirectWebRtcWebPath.Text = $script:DefaultDirectWebRtcWebPath
     if ($cmbDirectWebRtcBundledWebMode.Items.Contains($script:DefaultDirectWebRtcBundledWebMode)) { $cmbDirectWebRtcBundledWebMode.SelectedItem = $script:DefaultDirectWebRtcBundledWebMode }
     $txtDirectWebRtcBundledWebDirectory.Text = $script:DefaultDirectWebRtcBundledWebDirectory
@@ -7993,9 +8117,19 @@ function Compare-DirectWebRtcVersionString {
     if ([string]::IsNullOrWhiteSpace($Right)) { return 1 }
 
     try {
-        $lv = [version](([regex]::Match($Left, '\d+(\.\d+){1,3}')).Value)
-        $rv = [version](([regex]::Match($Right, '\d+(\.\d+){1,3}')).Value)
-        return $lv.CompareTo($rv)
+        # Preserve the f-build suffix used by Glass web UI releases. Comparing
+        # only the dotted base made 3.7.52f18 and 3.7.52f19 look identical and
+        # could leave an older working WebRoot in place after an app upgrade.
+        $lm = [regex]::Match($Left, '(?i)(?<base>\d+(?:\.\d+){1,3})(?:f(?<revision>\d+))?')
+        $rm = [regex]::Match($Right, '(?i)(?<base>\d+(?:\.\d+){1,3})(?:f(?<revision>\d+))?')
+        if (-not $lm.Success -or -not $rm.Success) { throw 'Unrecognized version format' }
+
+        $baseCompare = ([version]$lm.Groups['base'].Value).CompareTo([version]$rm.Groups['base'].Value)
+        if ($baseCompare -ne 0) { return $baseCompare }
+
+        $leftRevision = if ($lm.Groups['revision'].Success) { [int]$lm.Groups['revision'].Value } else { 0 }
+        $rightRevision = if ($rm.Groups['revision'].Success) { [int]$rm.Groups['revision'].Value } else { 0 }
+        return $leftRevision.CompareTo($rightRevision)
     }
     catch {
         return [string]::Compare($Left, $Right, $true)
@@ -8145,6 +8279,9 @@ function Get-PlayerSettingsFromUi {
         JbufWatchdogMode = $watchdog
         JbufDebug = [bool]($chkPlayerJbufDebug -and $chkPlayerJbufDebug.Checked)
         StatsOverlay = [bool]($chkPlayerStatsOverlay -and $chkPlayerStatsOverlay.Checked)
+        LiveEdgeGreenMs = [int]$numLiveEdgeGreenMs.Value
+        LiveEdgeYellowMs = [int]$numLiveEdgeYellowMs.Value
+        LiveEdgeAverageSec = [int]$numLiveEdgeAverageSec.Value
         UrlOverrides = [bool]($chkPlayerUrlOverrides -and $chkPlayerUrlOverrides.Checked)
         AvRenderMode = [string]$cmbPlayerAvRenderMode.SelectedItem
         AvPipelineMode = [string](Get-DirectWebRtcAvPipelineMode)
@@ -8208,6 +8345,10 @@ function Add-DirectWebRtcViewerQuery {
     $maxMs = [int]$playerSettings.JbufMaxMs
     $watchdog = [System.Uri]::EscapeDataString([string]$playerSettings.JbufWatchdogMode)
     $debug = if ($playerSettings.JbufDebug) { '1' } else { '0' }
+    $liveEdgeGreenMs = [int]$playerSettings.LiveEdgeGreenMs
+    $liveEdgeYellowMs = [int]$playerSettings.LiveEdgeYellowMs
+    $liveEdgeAverageSec = [int]$playerSettings.LiveEdgeAverageSec
+    $warmupSeconds = [int]$playerSettings.WatchdogWarmupSeconds
     $avRenderMode = [System.Uri]::EscapeDataString([string]$playerSettings.AvRenderMode)
     $effectiveAvPipelineMode = if (Test-DirectWebRtcUnifiedPublisher) { 'Unified publisher - one producer' } else { [string](Get-DirectWebRtcAvPipelineMode) }
     $avPipelineMode = [System.Uri]::EscapeDataString($effectiveAvPipelineMode)
@@ -8218,7 +8359,7 @@ function Add-DirectWebRtcViewerQuery {
     $stamp = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
     $joiner = if ($Url -match '\?') { '&' } else { '?' }
 
-    return ($Url + $joiner + "signalPort=$videoSignalPort&videoSignalingPort=$videoSignalPort&audioJbufMs=$audioJitterMs&videoJbufMs=$videoJitterMs&jitterMs=$fallbackJitterMs&browserJitterTargetMs=$fallbackJitterMs&jbufMaxMs=$maxMs&jbufWatchdog=$watchdog&jbufDebug=$debug&avRenderMode=$avRenderMode&playerAvRenderMode=$avRenderMode&avPipelineMode=$avPipelineMode$splitAudioPart&cb=$stamp")
+    return ($Url + $joiner + "signalPort=$videoSignalPort&videoSignalingPort=$videoSignalPort&audioJbufMs=$audioJitterMs&videoJbufMs=$videoJitterMs&jitterMs=$fallbackJitterMs&browserJitterTargetMs=$fallbackJitterMs&jbufMaxMs=$maxMs&jbufWatchdog=$watchdog&jbufDebug=$debug&liveEdgeGreenMs=$liveEdgeGreenMs&liveEdgeYellowMs=$liveEdgeYellowMs&liveEdgeAverageSec=$liveEdgeAverageSec&watchdogWarmupSeconds=$warmupSeconds&jbufWatchdogWarmupSeconds=$warmupSeconds&splitAudioWarmupSeconds=$warmupSeconds&avRenderMode=$avRenderMode&playerAvRenderMode=$avRenderMode&avPipelineMode=$avPipelineMode$splitAudioPart&cb=$stamp")
 }
 
 function Get-DirectWebRtcViewerUrl {
@@ -8298,6 +8439,9 @@ function Update-DirectWebRtcUi {
         $cmbJbufWatchdogMode,
         $chkPlayerStatsOverlay,
         $chkPlayerJbufDebug,
+        $numLiveEdgeAverageSec,
+        $numLiveEdgeGreenMs,
+        $numLiveEdgeYellowMs,
         $chkPlayerUrlOverrides,
         $cmbPlayerAvRenderMode,
         $cmbSplitPlayerSyncMode,
@@ -8331,6 +8475,7 @@ function Update-DirectWebRtcUi {
 
     foreach ($control in @(
         $txtDirectWebRtcStun,
+        $chkDirectWebRtcTurnEnabled,
         $cmbDirectWebRtcCongestion,
         $cmbDirectWebRtcMitigation,
         $lblWebRtcRecoveryMode,
@@ -8344,6 +8489,8 @@ function Update-DirectWebRtcUi {
     )) {
         if ($control) { $control.Enabled = $webRtcTransportEnabled }
     }
+
+    if ($txtDirectWebRtcTurn) { $txtDirectWebRtcTurn.Enabled = $webRtcTransportEnabled -and $chkDirectWebRtcTurnEnabled.Checked }
 
     if ($directEnabled) {
         $webDir = Get-DirectWebRtcWebDirectory
@@ -9763,6 +9910,7 @@ function Write-DirectWebRtcWebClientConfig {
         $watchdog = [string]$playerSettings.JbufWatchdogMode
         $statsOverlayEnabled = [bool]$playerSettings.StatsOverlay
         $jbufDebugEnabled = [bool]$playerSettings.JbufDebug
+        $videoSignalingPort = [int]$numDirectWebRtcSignalingPort.Value
 
         $effectiveAvPipelineMode = if (Test-DirectWebRtcUnifiedPublisher) { 'Unified publisher - one producer' } else { [string](Get-DirectWebRtcAvPipelineMode) }
         $effectiveSharedSignaling = [bool](Test-DirectWebRtcSharedSignaling)
@@ -9798,6 +9946,11 @@ function Write-DirectWebRtcWebClientConfig {
             adaptiveJitterMaxMs = [int]([Math]::Max([Math]::Max($audioTarget, $videoTarget), 500))
             keepAliveSeconds = 15
             statsOverlay = $statsOverlayEnabled
+            liveEdgeGreenMs = [int]$playerSettings.LiveEdgeGreenMs
+            liveEdgeYellowMs = [int]$playerSettings.LiveEdgeYellowMs
+            liveEdgeAverageSec = [int]$playerSettings.LiveEdgeAverageSec
+            screenWakeLock = $true
+            connectionMode = 'auto'
             playerAvRenderMode = [string]$playerSettings.AvRenderMode
             avRenderMode = [string]$playerSettings.AvRenderMode
             avPipelineMode = $effectiveAvPipelineMode
@@ -9819,8 +9972,8 @@ function Write-DirectWebRtcWebClientConfig {
             splitAvOffsetBaselineMs = [int]$playerSettings.SplitAvOffsetBaselineMs
             splitAvBaselineMs = [int]$playerSettings.SplitAvOffsetBaselineMs
             splitAvBaselineLearnTicks = 5
-            signalingPort = [int]$numDirectWebRtcSignalingPort.Value
-            videoSignalingPort = [int]$numDirectWebRtcSignalingPort.Value
+            signalingPort = $videoSignalingPort
+            videoSignalingPort = $videoSignalingPort
             splitAudioWsUrl = if ((Test-DirectWebRtcSplitAvPipelines) -and -not (Test-DirectWebRtcUnifiedPublisher)) { [string](Get-DirectWebRtcSplitAudioWsUrlForPlayer) } else { '' }
             splitAudioSignalingPort = if ((Test-DirectWebRtcSplitAvPipelines) -and -not (Test-DirectWebRtcUnifiedPublisher)) { [int](Get-DirectWebRtcSplitAudioSignalingPort) } else { 0 }
             sharedSignaling = $effectiveSharedSignaling
@@ -9955,6 +10108,21 @@ function Build-DirectWebRtcUnifiedAudioBridgeArguments {
     return "$flags $pipeline"
 }
 
+function Get-DirectWebRtcTurnOption {
+    if (-not $chkDirectWebRtcTurnEnabled.Checked) { return '' }
+
+    $turnServer = $txtDirectWebRtcTurn.Text.Trim()
+    if ([string]::IsNullOrWhiteSpace($turnServer)) { return '' }
+
+    # webrtcsink and whipclientsink inherit GstBaseWebRTCSink.  That base
+    # element exposes TURN as a GstValueArray named turn-servers, not the
+    # singular webrtcbin convenience property turn-server.  Build a one-item
+    # array value and let Quote-GstValue preserve the embedded URI quotes for
+    # gst-launch on Windows: turn-servers=<"turn://user:pass@host:port">.
+    $turnArray = '<"' + $turnServer.Replace('"', '\"') + '">' 
+    return ' turn-servers=' + (Quote-GstValue $turnArray)
+}
+
 function Build-DirectWebRtcUnifiedPublisherArguments {
     if (-not (Test-DirectWebRtcUnifiedPublisher)) { return '' }
 
@@ -9970,6 +10138,7 @@ function Build-DirectWebRtcUnifiedPublisherArguments {
     $signalPort = [int]$numDirectWebRtcSignalingPort.Value
     $stunServer = $txtDirectWebRtcStun.Text.Trim()
     $stunOption = if ([string]::IsNullOrWhiteSpace($stunServer)) { '' } else { ' stun-server=' + (Quote-GstValue $stunServer) }
+    $turnOption = Get-DirectWebRtcTurnOption
     $timestampOption = Get-AbsoluteTimestampTransportOption -Protocol $script:DirectWebRtcProtocolName
     $timestampOption = if ([string]::IsNullOrWhiteSpace($timestampOption)) { '' } else { " $timestampOption" }
     $congestion = Get-ComboSelectedOrDefault $cmbDirectWebRtcCongestion 'gcc'
@@ -10027,7 +10196,7 @@ function Build-DirectWebRtcUnifiedPublisherArguments {
     $publisherQueue = if ($publisherQueueMs -gt 0) { "queue max-size-buffers=0 max-size-bytes=0 max-size-time=$publisherQueueNs leaky=no ! " } else { '' }
     $videoInput = "udpsrc port=$videoPort caps=$videoCaps ! $bridgeJitter$($videoRtp.Receiver) ! $publisherQueue" + 'out.video_0'
     $audioInput = "udpsrc port=$audioPort caps=$audioCaps ! $bridgeJitter" + 'rtpopusdepay ! opusparse ! "audio/x-opus" ! ' + $publisherQueue + 'out.audio_0'
-    $pipeline = (($sinkProps -join ' ') + $timestampOption + $stunOption + $webPathOption + $webDirectoryOption + " $videoInput $audioInput")
+    $pipeline = (($sinkProps -join ' ') + $timestampOption + $stunOption + $turnOption + $webPathOption + $webDirectoryOption + " $videoInput $audioInput")
     $pipeline = Wrap-GstPipelineWithClockSelect -Pipeline $pipeline -ClockMode (Get-VideoPipelineClockMode)
 
     $flags = '-e'
@@ -10053,6 +10222,7 @@ function Build-DirectWebRtcAudioOnlyArguments {
     $sharedSignaling = Test-DirectWebRtcSharedSignaling
     $stunServer = $txtDirectWebRtcStun.Text.Trim()
     $stunOption = if ([string]::IsNullOrWhiteSpace($stunServer)) { '' } else { ' stun-server=' + (Quote-GstValue $stunServer) }
+    $turnOption = Get-DirectWebRtcTurnOption
     $timestampOption = Get-AbsoluteTimestampTransportOption -Protocol $script:DirectWebRtcProtocolName
     $timestampOption = if ([string]::IsNullOrWhiteSpace($timestampOption)) { '' } else { " $timestampOption" }
     $congestion = Get-ComboSelectedOrDefault $cmbDirectWebRtcCongestion 'gcc'
@@ -10105,7 +10275,7 @@ function Build-DirectWebRtcAudioOnlyArguments {
         $audioBranch = "$audioRaw ! $directOpus ! $(Get-AudioFinalQueue)$audioSyncSuffix ! aout.audio_0"
     }
 
-    $pipeline = "$(($sinkProps -join ' '))$timestampOption$stunOption $audioBranch"
+    $pipeline = "$(($sinkProps -join ' '))$timestampOption$stunOption$turnOption $audioBranch"
     $pipeline = Wrap-GstPipelineWithClockSelect -Pipeline $pipeline -ClockMode (Get-SplitAudioPipelineClockMode)
 
     $flags = '-e'
@@ -10242,6 +10412,7 @@ function Build-GstArguments {
             $mitigation = Get-ComboSelectedOrDefault $cmbDirectWebRtcMitigation 'none'
             $stunServer = $txtDirectWebRtcStun.Text.Trim()
             $stunOption = if ([string]::IsNullOrWhiteSpace($stunServer)) { '' } else { ' stun-server=' + (Quote-GstValue $stunServer) }
+    $turnOption = Get-DirectWebRtcTurnOption
             $startBitrate = [Math]::Max(1000, ([int]$numVideoBitrate.Value * 1000))
             $maxKbps = [int]$numMaxVideoBitrate.Value
             $maxBitrate = if ($maxKbps -gt 0) { [Math]::Max($startBitrate, $maxKbps * 1000) } else { $startBitrate }
@@ -10249,10 +10420,10 @@ function Build-GstArguments {
             $webRtcVideoQueue = Get-DirectWebRtcPacingQueue
 
             if ($hasAudio) {
-                $pipeline = "whipclientsink name=out video-caps=`"$mediaType`" audio-caps=`"$audioMediaType`"$timestampOption$webRtcSinkOptions$stunOption signaller::whip-endpoint=$quotedDestination $video$videoSyncSuffix ! $webRtcVideoQueue ! out.video_0 $audioRaw ! $audioEncoded ! $(Get-AudioFinalQueue)$audioSyncSuffix ! out.audio_0"
+                $pipeline = "whipclientsink name=out video-caps=`"$mediaType`" audio-caps=`"$audioMediaType`"$timestampOption$webRtcSinkOptions$stunOption$turnOption signaller::whip-endpoint=$quotedDestination $video$videoSyncSuffix ! $webRtcVideoQueue ! out.video_0 $audioRaw ! $audioEncoded ! $(Get-AudioFinalQueue)$audioSyncSuffix ! out.audio_0"
             }
             else {
-                $pipeline = "$video$videoSyncSuffix ! $webRtcVideoQueue ! whipclientsink video-caps=`"$mediaType`"$timestampOption$webRtcSinkOptions$stunOption signaller::whip-endpoint=$quotedDestination"
+                $pipeline = "$video$videoSyncSuffix ! $webRtcVideoQueue ! whipclientsink video-caps=`"$mediaType`"$timestampOption$webRtcSinkOptions$stunOption$turnOption signaller::whip-endpoint=$quotedDestination"
             }
         }
 
@@ -10273,6 +10444,7 @@ function Build-GstArguments {
             $signalPort = [int]$numDirectWebRtcSignalingPort.Value
             $stunServer = $txtDirectWebRtcStun.Text.Trim()
             $stunOption = if ([string]::IsNullOrWhiteSpace($stunServer)) { '' } else { ' stun-server=' + (Quote-GstValue $stunServer) }
+    $turnOption = Get-DirectWebRtcTurnOption
             $congestion = Get-ComboSelectedOrDefault $cmbDirectWebRtcCongestion 'gcc'
             $mitigation = Get-ComboSelectedOrDefault $cmbDirectWebRtcMitigation 'none'
             $recoveryFlags = Get-WebRtcRecoveryFlags
@@ -10318,7 +10490,7 @@ function Build-GstArguments {
                 $sinkProps += 'meta="meta,name=gstglass-video,kind=video"'
             }
 
-            $pipeline = (($sinkProps -join ' ') + $timestampOption + $stunOption + $webPathOption + $webDirectoryOption + " $directVideo")
+            $pipeline = (($sinkProps -join ' ') + $timestampOption + $stunOption + $turnOption + $webPathOption + $webDirectoryOption + " $directVideo")
             if ($hasAudio -and (Test-DirectWebRtcSplitAvPipelines)) {
                 # Split A/V diagnostic: keep this gst-launch instance video-only.
                 # Start-GstStream launches a second audio-only webrtcsink. It either
@@ -10595,6 +10767,8 @@ function Save-Settings {
             DirectWebRtcInternalRtpMtu = [int]$numDirectWebRtcInternalRtpMtu.Value
             DirectWebRtcInternalRepeatHeaders = [bool]$chkDirectWebRtcInternalRepeatHeaders.Checked
             DirectWebRtcStunServer = $txtDirectWebRtcStun.Text
+            DirectWebRtcTurnEnabled = [bool]$chkDirectWebRtcTurnEnabled.Checked
+            DirectWebRtcTurnServer = $txtDirectWebRtcTurn.Text
             DirectWebRtcWebPath = $txtDirectWebRtcWebPath.Text
             DirectWebRtcBundledWebMode = [string]$cmbDirectWebRtcBundledWebMode.SelectedItem
             DirectWebRtcBundledWebDirectory = $txtDirectWebRtcBundledWebDirectory.Text
@@ -10622,6 +10796,9 @@ function Save-Settings {
             JbufMaxMs = [int]$numJbufMaxMs.Value
             PlayerStatsOverlay = [bool]$chkPlayerStatsOverlay.Checked
             PlayerJbufDebug = [bool]$chkPlayerJbufDebug.Checked
+            LiveEdgeGreenMs = [int]$numLiveEdgeGreenMs.Value
+            LiveEdgeYellowMs = [int]$numLiveEdgeYellowMs.Value
+            LiveEdgeAverageSec = [int]$numLiveEdgeAverageSec.Value
             PlayerUrlOverrides = [bool]$chkPlayerUrlOverrides.Checked
             PlayerAvRenderMode = [string]$cmbPlayerAvRenderMode.SelectedItem
             DirectWebRtcAvPipelineMode = [string](Get-DirectWebRtcAvPipelineMode)
@@ -10865,7 +11042,17 @@ function Load-Settings {
         $settings = Get-Content -LiteralPath $script:ConfigPath -Raw | ConvertFrom-Json
         $script:SuppressProtocolChange = $true
 
-        if ($settings.GstPath) { $txtGstPath.Text = [string]$settings.GstPath }
+        if ($settings.GstPath) {
+            $loadedGstPath = [string]$settings.GstPath
+            if (Test-GstLaunchPath $loadedGstPath) {
+                $txtGstPath.Text = Normalize-GstLaunchPath $loadedGstPath
+            }
+            else {
+                $txtGstPath.Text = Find-GstLaunch
+                Append-Log "Saved GStreamer executable was not found: $loadedGstPath"
+                Append-Log "Using detected GStreamer executable: $($txtGstPath.Text)"
+            }
+        }
         if ($settings.MediaMtxPath) {
             $txtMediaMtxPath.Text = [string]$settings.MediaMtxPath
         }
@@ -10917,6 +11104,8 @@ function Load-Settings {
         if ($null -ne $settings.DirectWebRtcInternalRtpMtu) { $numDirectWebRtcInternalRtpMtu.Value = [decimal]([Math]::Min(65535, [Math]::Max(0, [int]$settings.DirectWebRtcInternalRtpMtu))) }
         if ($null -ne $settings.DirectWebRtcInternalRepeatHeaders) { $chkDirectWebRtcInternalRepeatHeaders.Checked = [bool]$settings.DirectWebRtcInternalRepeatHeaders }
         if ($null -ne $settings.DirectWebRtcStunServer) { $txtDirectWebRtcStun.Text = [string]$settings.DirectWebRtcStunServer }
+        if ($null -ne $settings.DirectWebRtcTurnEnabled) { $chkDirectWebRtcTurnEnabled.Checked = [bool]$settings.DirectWebRtcTurnEnabled }
+        if ($null -ne $settings.DirectWebRtcTurnServer) { $txtDirectWebRtcTurn.Text = [string]$settings.DirectWebRtcTurnServer }
         if ($null -ne $settings.DirectWebRtcWebPath) { $txtDirectWebRtcWebPath.Text = [string]$settings.DirectWebRtcWebPath }
         if ($settings.DirectWebRtcBundledWebMode -and $cmbDirectWebRtcBundledWebMode.Items.Contains([string]$settings.DirectWebRtcBundledWebMode)) { $cmbDirectWebRtcBundledWebMode.SelectedItem = [string]$settings.DirectWebRtcBundledWebMode }
         if ($null -ne $settings.DirectWebRtcBundledWebDirectory) { $txtDirectWebRtcBundledWebDirectory.Text = [string]$settings.DirectWebRtcBundledWebDirectory }
@@ -10951,6 +11140,10 @@ function Load-Settings {
         if ($null -ne $settings.JbufMaxMs) { $numJbufMaxMs.Value = [decimal]([Math]::Min([int]$numJbufMaxMs.Maximum, [Math]::Max([int]$numJbufMaxMs.Minimum, [int]$settings.JbufMaxMs))) }
         if ($null -ne $settings.PlayerStatsOverlay) { $chkPlayerStatsOverlay.Checked = [bool]$settings.PlayerStatsOverlay }
         if ($null -ne $settings.PlayerJbufDebug) { $chkPlayerJbufDebug.Checked = [bool]$settings.PlayerJbufDebug }
+        if ($null -ne $settings.LiveEdgeGreenMs) { $numLiveEdgeGreenMs.Value = [decimal]([Math]::Min([int]$numLiveEdgeGreenMs.Maximum, [Math]::Max([int]$numLiveEdgeGreenMs.Minimum, [int]$settings.LiveEdgeGreenMs))) }
+        if ($null -ne $settings.LiveEdgeYellowMs) { $numLiveEdgeYellowMs.Value = [decimal]([Math]::Min([int]$numLiveEdgeYellowMs.Maximum, [Math]::Max([int]$numLiveEdgeYellowMs.Minimum, [int]$settings.LiveEdgeYellowMs))) }
+        if ($null -ne $settings.LiveEdgeAverageSec) { $numLiveEdgeAverageSec.Value = [decimal]([Math]::Min([int]$numLiveEdgeAverageSec.Maximum, [Math]::Max([int]$numLiveEdgeAverageSec.Minimum, [int]$settings.LiveEdgeAverageSec))) }
+        if ($numLiveEdgeYellowMs.Value -le $numLiveEdgeGreenMs.Value) { $numLiveEdgeYellowMs.Value = [decimal]([Math]::Min([int]$numLiveEdgeYellowMs.Maximum, [int]$numLiveEdgeGreenMs.Value + 1)) }
         if ($null -ne $settings.PlayerUrlOverrides) { $chkPlayerUrlOverrides.Checked = [bool]$settings.PlayerUrlOverrides }
         if ($settings.PlayerAvRenderMode -and $cmbPlayerAvRenderMode.Items.Contains([string]$settings.PlayerAvRenderMode)) { $cmbPlayerAvRenderMode.SelectedItem = [string]$settings.PlayerAvRenderMode }
         if ($settings.DirectWebRtcAvPipelineMode -and $cmbDirectWebRtcAvPipelineMode.Items.Contains([string]$settings.DirectWebRtcAvPipelineMode)) { $cmbDirectWebRtcAvPipelineMode.SelectedItem = [string]$settings.DirectWebRtcAvPipelineMode }
@@ -11184,8 +11377,8 @@ function Load-Settings {
 }
 
 function Validate-Configuration {
-    $gstPath = $txtGstPath.Text.Trim()
-    if ([string]::IsNullOrWhiteSpace($gstPath) -or -not (Test-Path -LiteralPath $gstPath)) {
+    $gstPath = Resolve-GstLaunchSelection -RequestedPath $txtGstPath.Text -UpdateControl
+    if (-not (Test-GstLaunchPath $gstPath)) {
         [System.Windows.Forms.MessageBox]::Show(
             'Select a valid gst-launch-1.0.exe path.',
             $script:AppName,
@@ -11784,7 +11977,7 @@ function Start-GstStream {
         return
     }
 
-    $gstPath = $txtGstPath.Text.Trim()
+    $gstPath = Resolve-GstLaunchSelection -RequestedPath $txtGstPath.Text -UpdateControl
     Prepare-GStreamerRuntime -GstPath $gstPath
     Initialize-GstJob
 
@@ -12161,8 +12354,8 @@ function Stop-GstStream {
 }
 
 function Test-GStreamerElements {
-    $gstPath = $txtGstPath.Text.Trim()
-    if ([string]::IsNullOrWhiteSpace($gstPath) -or -not (Test-Path -LiteralPath $gstPath)) {
+    $gstPath = Resolve-GstLaunchSelection -RequestedPath $txtGstPath.Text -UpdateControl
+    if (-not (Test-GstLaunchPath $gstPath)) {
         [System.Windows.Forms.MessageBox]::Show('Select a valid gst-launch-1.0.exe first.', $script:AppName, 'OK', 'Warning') | Out-Null
         return
     }
@@ -12700,6 +12893,8 @@ foreach ($control in @(
     $numDirectWebRtcInternalRtpMtu,
     $chkDirectWebRtcInternalRepeatHeaders,
     $txtDirectWebRtcStun,
+    $chkDirectWebRtcTurnEnabled,
+    $txtDirectWebRtcTurn,
     $txtDirectWebRtcWebPath,
     $cmbDirectWebRtcBundledWebMode,
     $txtDirectWebRtcBundledWebDirectory,
@@ -12720,6 +12915,9 @@ foreach ($control in @(
     $numDirectWebRtcVideoJitterMs,
     $chkPlayerStatsOverlay,
     $chkPlayerJbufDebug,
+    $numLiveEdgeAverageSec,
+    $numLiveEdgeGreenMs,
+    $numLiveEdgeYellowMs,
     $chkPlayerUrlOverrides,
     $cmbDirectWebRtcOpusMode,
     $cmbDirectWebRtcOpusFrameMs,
@@ -12896,6 +13094,16 @@ foreach ($splitPlayerNumeric in @($numSplitAudioStallSeconds, $numSplitAudioWarm
     $splitPlayerNumeric.Add_ValueChanged({ Update-PlayerConfigFromUi })
 }
 
+$numLiveEdgeGreenMs.Add_ValueChanged({
+    if ($numLiveEdgeYellowMs.Value -le $numLiveEdgeGreenMs.Value) {
+        $numLiveEdgeYellowMs.Value = [decimal]([Math]::Min([int]$numLiveEdgeYellowMs.Maximum, [int]$numLiveEdgeGreenMs.Value + 1))
+    }
+})
+$numLiveEdgeYellowMs.Add_ValueChanged({
+    if ($numLiveEdgeYellowMs.Value -le $numLiveEdgeGreenMs.Value) {
+        $numLiveEdgeGreenMs.Value = [decimal]([Math]::Max([int]$numLiveEdgeGreenMs.Minimum, [int]$numLiveEdgeYellowMs.Value - 1))
+    }
+})
 
 foreach ($playerControl in @($chkPlayerStatsOverlay, $chkPlayerJbufDebug, $chkPlayerUrlOverrides, $cmbPlayerAvRenderMode, $cmbDirectWebRtcAvPipelineMode, $cmbSplitPlayerSyncMode, $cmbJbufWatchdogMode)) {
     if ($playerControl -is [System.Windows.Forms.CheckBox]) {
