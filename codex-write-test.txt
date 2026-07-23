@@ -1,2 +1,0 @@
-Codex write test for GStreamer Glass.
-If this file exists, GitHub contents writes are working.
