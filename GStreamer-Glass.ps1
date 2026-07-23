@@ -522,7 +522,7 @@ public static class GstProcessJob
 '@
 }
 
-$script:AppVersion = '3.6.2'
+$script:AppVersion = '3.6.3'
 $script:AppName = "GStreamer Glass v$($script:AppVersion)"
 $script:ConfigDirectory = Join-Path $env:APPDATA 'GStreamerBasicWhipStreamer'
 $script:ConfigPath = Join-Path $script:ConfigDirectory 'settings.json'
@@ -1108,8 +1108,8 @@ $script:AppIcon = Get-ApplicationIcon
 $form = New-Object System.Windows.Forms.Form
 $form.Text = $script:AppName
 $form.StartPosition = 'CenterScreen'
-$form.Size = New-Object System.Drawing.Size(1220, 1106)
-$form.MinimumSize = New-Object System.Drawing.Size(1110, 1006)
+$form.Size = New-Object System.Drawing.Size(1220, 900)
+$form.MinimumSize = New-Object System.Drawing.Size(1000, 720)
 $form.AutoScaleMode = [System.Windows.Forms.AutoScaleMode]::Dpi
 $form.Font = New-Object System.Drawing.Font('Segoe UI', 9)
 $form.Icon = $script:AppIcon
@@ -1539,60 +1539,81 @@ $previewPlaceholder.TextAlign = 'MiddleCenter'
 $previewPlaceholder.Dock = 'Fill'
 $previewPanel.Controls.Add($previewPlaceholder)
 
-$commandGroup = New-Object System.Windows.Forms.GroupBox
-$commandGroup.Text = 'Generated Command'
-$commandGroup.Location = New-Object System.Drawing.Point(10, 606)
-$commandGroup.Size = New-Object System.Drawing.Size(1185, 120)
-$commandGroup.Anchor = 'Top,Left,Right'
-$form.Controls.Add($commandGroup)
+$lowerTabs = New-Object System.Windows.Forms.TabControl
+$lowerTabs.Location = New-Object System.Drawing.Point(10, 650)
+$lowerTabs.Size = New-Object System.Drawing.Size(1185, 396)
+$lowerTabs.Anchor = 'Top,Bottom,Left,Right'
+$form.Controls.Add($lowerTabs)
+
+$tabLog = New-Object System.Windows.Forms.TabPage
+$tabLog.Text = 'Output Log'
+$tabLog.Padding = New-Object System.Windows.Forms.Padding(6)
+$null = $lowerTabs.TabPages.Add($tabLog)
+
+$tabCommand = New-Object System.Windows.Forms.TabPage
+$tabCommand.Text = 'Generated Command'
+$tabCommand.Padding = New-Object System.Windows.Forms.Padding(6)
+$null = $lowerTabs.TabPages.Add($tabCommand)
 
 $txtCommand = New-Object System.Windows.Forms.TextBox
-$txtCommand.Location = New-Object System.Drawing.Point(12, 22)
-$txtCommand.Size = New-Object System.Drawing.Size(1160, 84)
 $txtCommand.Multiline = $true
-$txtCommand.ScrollBars = 'Both'
-$txtCommand.WordWrap = $false
+$txtCommand.ScrollBars = 'Vertical'
+$txtCommand.WordWrap = $true
 $txtCommand.ReadOnly = $true
-$txtCommand.Font = New-Object System.Drawing.Font('Consolas', 8.5)
-$txtCommand.Anchor = 'Top,Bottom,Left,Right'
-$commandGroup.Controls.Add($txtCommand)
+$txtCommand.AcceptsReturn = $false
+$txtCommand.AcceptsTab = $false
+$txtCommand.Font = New-Object System.Drawing.Font('Consolas', 9)
+$txtCommand.Dock = 'Fill'
+$tabCommand.Controls.Add($txtCommand)
+
+$lowerTabs.SelectedTab = $tabLog
 
 $btnStart = New-Object System.Windows.Forms.Button
 $btnStart.Text = 'Start Stream'
-$btnStart.Location = New-Object System.Drawing.Point(10, 736)
+$btnStart.Location = New-Object System.Drawing.Point(10, 606)
 $btnStart.Size = New-Object System.Drawing.Size(120, 34)
 $btnStart.Font = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Bold)
 $form.Controls.Add($btnStart)
 
 $btnStop = New-Object System.Windows.Forms.Button
 $btnStop.Text = 'Stop'
-$btnStop.Location = New-Object System.Drawing.Point(140, 736)
+$btnStop.Location = New-Object System.Drawing.Point(140, 606)
 $btnStop.Size = New-Object System.Drawing.Size(90, 34)
 $btnStop.Enabled = $false
 $form.Controls.Add($btnStop)
 
 $btnRestart = New-Object System.Windows.Forms.Button
 $btnRestart.Text = 'Restart Pipeline'
-$btnRestart.Location = New-Object System.Drawing.Point(240, 736)
+$btnRestart.Location = New-Object System.Drawing.Point(240, 606)
 $btnRestart.Size = New-Object System.Drawing.Size(125, 34)
 $btnRestart.Enabled = $false
 $form.Controls.Add($btnRestart)
 
 $btnCopyCommand = New-Object System.Windows.Forms.Button
 $btnCopyCommand.Text = 'Copy Command'
-$btnCopyCommand.Location = New-Object System.Drawing.Point(375, 736)
+$btnCopyCommand.Location = New-Object System.Drawing.Point(375, 606)
 $btnCopyCommand.Size = New-Object System.Drawing.Size(115, 34)
 $form.Controls.Add($btnCopyCommand)
 
 $btnClearLog = New-Object System.Windows.Forms.Button
 $btnClearLog.Text = 'Clear Log'
-$btnClearLog.Location = New-Object System.Drawing.Point(500, 736)
+$btnClearLog.Location = New-Object System.Drawing.Point(500, 606)
 $btnClearLog.Size = New-Object System.Drawing.Size(90, 34)
 $form.Controls.Add($btnClearLog)
 
+$btnOpenLogs = New-Object System.Windows.Forms.Button
+$btnOpenLogs.Text = 'Open Logs'
+$btnOpenLogs.Location = New-Object System.Drawing.Point(600, 606)
+$btnOpenLogs.Size = New-Object System.Drawing.Size(105, 34)
+$form.Controls.Add($btnOpenLogs)
+$toolTip.SetToolTip(
+    $btnOpenLogs,
+    "Opens the persistent log folder: $script:LogDirectory"
+)
+
 $statusLabel = New-Object System.Windows.Forms.Label
 $statusLabel.Text = 'Stopped'
-$statusLabel.Location = New-Object System.Drawing.Point(720, 741)
+$statusLabel.Location = New-Object System.Drawing.Point(720, 611)
 $statusLabel.Size = New-Object System.Drawing.Size(475, 25)
 $statusLabel.TextAlign = 'MiddleRight'
 $statusLabel.Anchor = 'Top,Right'
@@ -1632,23 +1653,14 @@ $notifyIcon.Text = $script:AppName
 $notifyIcon.ContextMenuStrip = $trayMenu
 $notifyIcon.Visible = $true
 
-$logGroup = New-Object System.Windows.Forms.GroupBox
-$logGroup.Text = 'GStreamer Output'
-$logGroup.Location = New-Object System.Drawing.Point(10, 781)
-$logGroup.Size = New-Object System.Drawing.Size(1185, 275)
-$logGroup.Anchor = 'Top,Bottom,Left,Right'
-$form.Controls.Add($logGroup)
-
 $txtLog = New-Object System.Windows.Forms.TextBox
-$txtLog.Location = New-Object System.Drawing.Point(12, 22)
-$txtLog.Size = New-Object System.Drawing.Size(1160, 240)
 $txtLog.Multiline = $true
 $txtLog.ScrollBars = 'Both'
 $txtLog.WordWrap = $false
 $txtLog.ReadOnly = $true
-$txtLog.Font = New-Object System.Drawing.Font('Consolas', 8.5)
-$txtLog.Anchor = 'Top,Bottom,Left,Right'
-$logGroup.Controls.Add($txtLog)
+$txtLog.Font = New-Object System.Drawing.Font('Consolas', 9)
+$txtLog.Dock = 'Fill'
+$tabLog.Controls.Add($txtLog)
 
 function Initialize-GstJob {
     if ($script:JobHandle -ne [IntPtr]::Zero) {
@@ -4005,13 +4017,29 @@ $btnDetectGst.Add_Click({
     $txtGstPath.Text = $detected
     Append-Log "Detected GStreamer executable: $detected"
 })
-$btnCheckGst.Add_Click({ Test-GStreamerElements })
-$btnStart.Add_Click({ Start-GstStream })
-$btnStop.Add_Click({ Stop-GstStream })
-$btnRestart.Add_Click({ Stop-GstStream -Restart })
+$btnCheckGst.Add_Click({
+    $lowerTabs.SelectedTab = $tabLog
+    Test-GStreamerElements
+})
+
+$btnStart.Add_Click({
+    $lowerTabs.SelectedTab = $tabLog
+    Start-GstStream
+})
+
+$btnStop.Add_Click({
+    $lowerTabs.SelectedTab = $tabLog
+    Stop-GstStream
+})
+
+$btnRestart.Add_Click({
+    $lowerTabs.SelectedTab = $tabLog
+    Stop-GstStream -Restart
+})
 $btnCopyCommand.Add_Click({
     try {
         [System.Windows.Forms.Clipboard]::SetText($txtCommand.Text)
+        $lowerTabs.SelectedTab = $tabCommand
         $statusLabel.Text = 'Command copied'
         $statusLabel.ForeColor = [System.Drawing.Color]::DarkBlue
     }
@@ -4021,11 +4049,42 @@ $btnCopyCommand.Add_Click({
 })
 $btnClearLog.Add_Click({ $txtLog.Clear() })
 
+$btnOpenLogs.Add_Click({
+    try {
+        if (-not (Test-Path -LiteralPath $script:LogDirectory)) {
+            $null = New-Item `
+                -ItemType Directory `
+                -Path $script:LogDirectory `
+                -Force
+        }
+
+        Start-Process `
+            -FilePath 'explorer.exe' `
+            -ArgumentList @($script:LogDirectory) |
+            Out-Null
+    }
+    catch {
+        Append-Log "Could not open log folder: $($_.Exception.Message)"
+        $lowerTabs.SelectedTab = $tabLog
+    }
+})
+
 $notifyIcon.Add_DoubleClick({ Show-MainWindow })
 $trayShowItem.Add_Click({ Show-MainWindow })
-$trayStartItem.Add_Click({ Start-GstStream })
-$trayStopItem.Add_Click({ Stop-GstStream })
-$trayRestartItem.Add_Click({ Stop-GstStream -Restart })
+$trayStartItem.Add_Click({
+    $lowerTabs.SelectedTab = $tabLog
+    Start-GstStream
+})
+
+$trayStopItem.Add_Click({
+    $lowerTabs.SelectedTab = $tabLog
+    Stop-GstStream
+})
+
+$trayRestartItem.Add_Click({
+    $lowerTabs.SelectedTab = $tabLog
+    Stop-GstStream -Restart
+})
 $trayExitItem.Add_Click({
     try {
         $form.ShowInTaskbar = $true
@@ -4141,6 +4200,7 @@ $pollTimer.Add_Tick({
         else {
             $statusLabel.Text = "Pipeline exited — code $exitCode"
             $statusLabel.ForeColor = [System.Drawing.Color]::DarkRed
+            $lowerTabs.SelectedTab = $tabLog
             Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Pipeline exited unexpectedly with code $exitCode."
 
             if ($chkFullscreenApp.Checked -or $chkAutoRestart.Checked) {
