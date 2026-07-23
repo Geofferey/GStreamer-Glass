@@ -1138,7 +1138,7 @@ public static class GstProcessJob
 '@
 }
 
-$script:AppVersion = '3.7.52f77'
+$script:AppVersion = '3.7.52f78'
 $script:AppName = "GStreamer Glass v$($script:AppVersion)"
 $script:ConfigDirectory = Join-Path $env:APPDATA 'GStreamerBasicWhipStreamer'
 $script:ConfigPath = Join-Path $script:ConfigDirectory 'settings.json'
@@ -1192,6 +1192,9 @@ $script:MediaMtxProcess = $null
 $script:MediaMtxPathInUse = ''
 $script:StopRequested = $false
 $script:RestartAt = $null
+$script:AutomaticRestartPending = $false
+$script:PipelineStartInProgress = $false
+$script:PendingPipelineStop = $false
 $script:StdOutPath = $null
 $script:StdErrPath = $null
 $script:StdOutPosition = [int64]0
@@ -6523,7 +6526,6 @@ function Apply-ModernDashboardUi {
     $r = Add-Row $s
     Add-Field $r -Control $chkRecordingEnabled -Width 170 | Out-Null
     Add-Field $r -Control $chkRecordWithStream -Width 170 | Out-Null
-    Add-Field $r -Control $btnToggleRecording -Width 150 | Out-Null
     $r = Add-Row $s
     Add-Field $r -Label 'Output folder' -Control $txtRecordingDirectory -Width 425 | Out-Null
     Add-Field $r -Control $btnBrowseRecordingDirectory -Width 95 | Out-Null
@@ -6697,10 +6699,16 @@ function Apply-ModernDashboardUi {
     $btnStart.ForeColor = [System.Drawing.Color]::White
     $btnStart.FlatAppearance.BorderSize = 0
 
-    $btnStop.Text = "$($script:Glyph.Stop)  Stop"
-    $btnStop.Width = 110
-    $btnStop.Height = 42
-    $btnStop.Margin = New-Object System.Windows.Forms.Padding(8, 0, 0, 0)
+    # f78 replaces the separate Start + gated Stop pair with one always-available
+    # stream toggle. Keep the legacy control allocated so old event wiring cannot
+    # dereference null, but never place or display it in the action row.
+    $btnStop.Visible = $false
+    $btnStop.TabStop = $false
+
+    $btnToggleRecording.Text = "$($script:Glyph.Recording)  Record"
+    $btnToggleRecording.Width = 155
+    $btnToggleRecording.Height = 42
+    $btnToggleRecording.Margin = New-Object System.Windows.Forms.Padding(8, 0, 0, 0)
 
     $btnRestart.Text = "$($script:Glyph.Restart)  Restart"
     $btnRestart.Width = 130
@@ -6723,10 +6731,13 @@ function Apply-ModernDashboardUi {
     $btnOpenLogs.Margin = New-Object System.Windows.Forms.Padding(8, 0, 0, 0)
 
     if ($script:ModernActionFlow) {
-        foreach ($btn in @($btnOpenLogs, $btnClearLog, $btnCopyCommand, $btnRestart, $btnStop, $btnStart)) {
+        foreach ($btn in @($btnOpenLogs, $btnClearLog, $btnCopyCommand, $btnRestart, $btnToggleRecording, $btnStart)) {
             if ($btn -and $btn.Parent -ne $script:ModernActionFlow) {
                 $script:ModernActionFlow.Controls.Add($btn)
             }
+        }
+        if ($btnStop.Parent -eq $script:ModernActionFlow) {
+            $script:ModernActionFlow.Controls.Remove($btnStop)
         }
     }
 
@@ -7119,7 +7130,9 @@ function Update-TrayMenuState {
         $previewOnly = $running -and [bool]$script:PreviewOnlyMode
 
         $trayStartItem.Enabled = ((-not $running) -or $previewOnly) -and -not $waiting
-        $trayStopItem.Enabled = ($running -and -not $previewOnly) -or $waiting
+        # Stop is an escape hatch, not a state-dependent action. Keeping it
+        # enabled lets the user cancel a pending retry/wait even between PIDs.
+        $trayStopItem.Enabled = $true
         $trayRestartItem.Enabled = $running -and -not $previewOnly
 
         if ($previewOnly) {
@@ -7301,9 +7314,12 @@ function Hide-MainWindowToTray {
 }
 
 function Set-WaitingForFullscreenState {
-    $btnStart.Enabled = $false
-    $btnStop.Enabled = $true
+    $btnStart.Enabled = $true
+    $btnStart.Text = "$($script:Glyph.Stop)  Stop"
+    $btnStop.Enabled = $false
+    $btnStop.Visible = $false
     $btnRestart.Enabled = $false
+    Update-RecordingUi
     Update-TrayMenuState
 }
 
@@ -7437,20 +7453,56 @@ function Append-Log {
     catch {}
 }
 
+function Test-StreamStopAvailable {
+    $previewOnly = [bool]$script:PreviewOnlyMode
+    return [bool](
+        $script:PipelineStartInProgress -or
+        $script:WaitingForFullscreen -or
+        $script:RestartAt -or
+        $script:ControlledLiveStreamActive -or
+        $script:RecordingOnlyMode -or
+        (($script:GstProcess -or $script:GstVideoProcess -or $script:GstAudioProcess -or $script:MediaMtxProcess) -and -not $previewOnly)
+    )
+}
+
+function Request-StreamStop {
+    $script:PendingPipelineStop = [bool]$script:PipelineStartInProgress
+    $script:RestartAt = $null
+    $script:AutomaticRestartPending = $false
+    $script:RestartRecordingOnlyMode = $false
+    $script:WaitingForFullscreen = $false
+    Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Stop requested by user; cancelling pending starts/restarts and stopping all managed pipeline processes."
+    Stop-GstStream
+}
+
+function Invoke-StreamToggle {
+    if (Test-StreamStopAvailable) {
+        Request-StreamStop
+    }
+    else {
+        Start-GstStream
+    }
+}
+
 function Set-RunState {
     param([bool]$Running)
 
     $previewOnly = $Running -and [bool]$script:PreviewOnlyMode
-    $btnStart.Enabled = (-not $Running) -or $previewOnly
-    $btnStop.Enabled = $Running -and -not $previewOnly
-    $btnRestart.Enabled = $Running -and -not $previewOnly
-    if ($previewOnly) {
+    $stopAvailable = Test-StreamStopAvailable
+    # The stream action is never disabled. During start/wait/retry/error cleanup
+    # it becomes a Stop request and is queued if startup has not yielded a PID yet.
+    $btnStart.Enabled = $true
+    $btnStop.Enabled = $false
+    $btnStop.Visible = $false
+    $btnRestart.Enabled = $Running -and -not $previewOnly -and -not $script:PipelineStartInProgress
+    if ($stopAvailable) {
+        $btnStart.Text = "$($script:Glyph.Stop)  Stop"
+    }
+    elseif ($previewOnly) {
         $btnStart.Text = "$($script:Glyph.Start)  Go Live"
-        $btnStop.Text = "$($script:Glyph.Stop)  Stop"
     }
     else {
         $btnStart.Text = "$($script:Glyph.Start)  Start"
-        $btnStop.Text = "$($script:Glyph.Stop)  Stop"
     }
     Update-RecordingUi
     Update-TrayMenuState
@@ -10760,8 +10812,13 @@ function Update-RecordingUi {
     }
     if ($chkRecordWithStream) { $chkRecordWithStream.Enabled = $enabled }
     if ($btnToggleRecording) {
-        $btnToggleRecording.Enabled = $enabled -and -not $script:WaitingForFullscreen
-        $btnToggleRecording.Text = if ($script:RecordingPipelineActive) { 'Stop Recording' } else { 'Start Recording' }
+        $btnToggleRecording.Enabled = $script:RecordingPipelineActive -or ($enabled -and -not $script:WaitingForFullscreen)
+        $btnToggleRecording.Text = if ($script:RecordingPipelineActive) {
+            "$($script:Glyph.Stop)  Stop Recording"
+        }
+        else {
+            "$($script:Glyph.Recording)  Record"
+        }
     }
     $isNvenc = ($family -eq 'NVENC')
     $recordingRateControl = Get-ComboSelectedOrDefault $cmbRecordingRateControl 'constqp'
@@ -10798,7 +10855,7 @@ function Update-RecordingUi {
 function Invoke-ToggleRecording {
     if (-not $chkRecordingEnabled.Checked) {
         [System.Windows.Forms.MessageBox]::Show(
-            'Enable recording first, then use Start Recording.',
+            'Enable recording first, then use Record.',
             $script:AppName,
             'OK',
             'Information'
@@ -13941,6 +13998,24 @@ function Send-ControlledLiveWorkerCommand {
     }
 }
 
+function Wait-UiResponsiveTask {
+    param(
+        [Parameter(Mandatory)][System.Threading.Tasks.Task]$Task,
+        [Parameter(Mandatory)][int]$TimeoutMs
+    )
+
+    $deadline = [DateTime]::UtcNow.AddMilliseconds([Math]::Max(1, $TimeoutMs))
+    while (-not $Task.IsCompleted -and [DateTime]::UtcNow -lt $deadline) {
+        [System.Windows.Forms.Application]::DoEvents()
+        if ($script:PendingPipelineStop) { return $false }
+        [System.Threading.Thread]::Sleep(20)
+    }
+    if (-not $Task.IsCompleted) { return $false }
+    if ($Task.IsFaulted) { throw ($Task.Exception.GetBaseException()) }
+    if ($Task.IsCanceled) { throw 'The controlled worker operation was cancelled.' }
+    return $true
+}
+
 function Start-ControlledLiveWorker {
     param(
         [Parameter(Mandatory)][string]$Pipeline,
@@ -13996,7 +14071,11 @@ function Start-ControlledLiveWorker {
             [System.IO.Pipes.PipeDirection]::InOut,
             [System.IO.Pipes.PipeOptions]::None
         )
-        $pipe.Connect(12000)
+        $connectTask = $pipe.ConnectAsync(12000)
+        if (-not (Wait-UiResponsiveTask -Task $connectTask -TimeoutMs 12500)) {
+            if ($script:PendingPipelineStop) { throw 'Controlled worker startup cancelled by Stop.' }
+            throw 'The controlled live worker pipe did not connect within 12 seconds.'
+        }
         $utf8 = New-Object System.Text.UTF8Encoding($false)
         $reader = New-Object System.IO.StreamReader($pipe, $utf8, $false, 4096, $true)
         $writer = New-Object System.IO.StreamWriter($pipe, $utf8, 4096, $true)
@@ -14014,7 +14093,10 @@ function Start-ControlledLiveWorker {
         } | ConvertTo-Json -Compress))
 
         $replyTask = $reader.ReadLineAsync()
-        if (-not $replyTask.Wait(15000)) { throw 'The controlled live worker did not acknowledge startup within 15 seconds.' }
+        if (-not (Wait-UiResponsiveTask -Task $replyTask -TimeoutMs 15000)) {
+            if ($script:PendingPipelineStop) { throw 'Controlled worker startup cancelled by Stop.' }
+            throw 'The controlled live worker did not acknowledge startup within 15 seconds.'
+        }
         $replyLine = $replyTask.Result
         if ([string]::IsNullOrWhiteSpace($replyLine)) { throw 'The controlled live worker exited before acknowledging startup.' }
         $reply = $replyLine | ConvertFrom-Json
@@ -14394,7 +14476,12 @@ function Start-ManagedMediaMtx {
         $deadline = (Get-Date).AddMilliseconds(900)
         while ((Get-Date) -lt $deadline) {
             [System.Windows.Forms.Application]::DoEvents()
+            if ($script:PendingPipelineStop) {
+                Append-Log 'MediaMTX startup cancelled by the queued Stop request.'
+                return $false
+            }
             Start-Sleep -Milliseconds 50
+            if (-not $script:MediaMtxProcess) { return $false }
             $script:MediaMtxProcess.Refresh()
 
             if ($script:MediaMtxProcess.HasExited) {
@@ -14478,6 +14565,11 @@ function Start-GstStream {
     )
 
     if ($script:ControlledLiveStreamActive) { return }
+    if ($script:PipelineStartInProgress) { return }
+
+    $script:PipelineStartInProgress = $true
+    Set-RunState $false
+    try {
 
     if ($script:DynamicScenePreviewActive) {
         if ($PreviewOnly) { return }
@@ -14644,6 +14736,7 @@ function Start-GstStream {
         [string]::IsNullOrWhiteSpace($audioArguments)
     )
     $script:ForceLocalPreviewMode = $false
+    if ($script:PendingPipelineStop) { return }
     Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Starting full GStreamer pipeline..."
     Append-Log "Process disk logging: $(if ($processDiskLogging) { 'enabled' } else { 'disabled - UI log only' })"
     Append-Log "Transport: $(if ($transportEnabled) { 'Enabled' } elseif ($runIsPreviewOnly) { 'Disabled - local preview only' } else { 'Disabled - local recording/preview only' })"
@@ -14846,8 +14939,14 @@ function Start-GstStream {
             return
         }
         catch {
-            Append-Log "Controlled live stream start error: $($_.Exception.Message)"
-            Append-Log 'Falling back to the unchanged external gst-launch stream for this run.'
+            $controlledStartCancelled = [bool]$script:PendingPipelineStop
+            if ($controlledStartCancelled) {
+                Append-Log 'Controlled live stream startup cancelled by the queued Stop request.'
+            }
+            else {
+                Append-Log "Controlled live stream start error: $($_.Exception.Message)"
+                Append-Log 'Falling back to the unchanged external gst-launch stream for this run.'
+            }
             $script:SuppressControlledLiveStream = $true
             $script:ControlledLiveStreamActive = $false
             try {
@@ -14861,6 +14960,7 @@ function Start-GstStream {
             $script:GstProcess = $null
             $script:ControlledLivePreviewSurfaceHwnd = [IntPtr]::Zero
             $script:ControlledLivePreviewAppliedSize = [System.Drawing.Size]::Empty
+            if ($controlledStartCancelled) { return }
             [System.Threading.Thread]::Sleep(750)
         }
     }
@@ -14986,19 +15086,43 @@ function Start-GstStream {
         Set-RunState $false
         Append-Log "START ERROR: $($_.Exception.Message)"
     }
+    }
+    finally {
+        $script:PipelineStartInProgress = $false
+        if ($script:PendingPipelineStop) {
+            $script:PendingPipelineStop = $false
+            $script:RestartAt = $null
+            $script:AutomaticRestartPending = $false
+            Stop-GstStream
+        }
+        else {
+            $running = (
+                ($script:GstProcess -and -not $script:GstProcess.HasExited) -or
+                $script:DynamicScenePreviewActive -or
+                $script:ControlledLiveStreamActive
+            )
+            Set-RunState ([bool]$running)
+        }
+    }
 }
 
 function Stop-ControlledLiveStream {
-    param([switch]$Restart)
+    param(
+        [switch]$Restart,
+        [switch]$AutomaticRestart,
+        [switch]$SuppressPreviewRestore
+    )
 
     if (-not $script:ControlledLiveStreamActive) { return $false }
 
     $script:StopRequested = $true
     $script:WaitingForFullscreen = $false
     if ($Restart) {
+        $script:AutomaticRestartPending = [bool]$AutomaticRestart
         $script:RestartRecordingOnlyMode = [bool]($script:RestartRecordingOnlyMode -or $script:RecordingOnlyMode)
     }
     else {
+        $script:AutomaticRestartPending = $false
         $script:RestartRecordingOnlyMode = $false
     }
     $script:RestartAt = if ($Restart) { (Get-Date).AddMilliseconds(800) } else { $null }
@@ -15055,17 +15179,23 @@ function Stop-ControlledLiveStream {
         $statusLabel.Text = 'Stopped'
         $statusLabel.ForeColor = [System.Drawing.Color]::Black
         $script:StopRequested = $false
-        $null = $form.BeginInvoke([Action]{
-            try { Sync-StandalonePreviewState -Quiet } catch {}
-        })
+        if (-not $SuppressPreviewRestore) {
+            $null = $form.BeginInvoke([Action]{
+                try { Sync-StandalonePreviewState -Quiet } catch {}
+            })
+        }
     }
     return $true
 }
 
 function Stop-GstStream {
-    param([switch]$Restart)
+    param(
+        [switch]$Restart,
+        [switch]$AutomaticRestart,
+        [switch]$SuppressPreviewRestore
+    )
 
-    if (Stop-ControlledLiveStream -Restart:$Restart) { return }
+    if (Stop-ControlledLiveStream -Restart:$Restart -AutomaticRestart:$AutomaticRestart -SuppressPreviewRestore:$SuppressPreviewRestore) { return }
 
     if ($script:DynamicScenePreviewActive) {
         Stop-DynamicScenePreview
@@ -15078,10 +15208,12 @@ function Stop-GstStream {
     $wasRecordingOnly = [bool]$script:RecordingOnlyMode
 
     if ($Restart) {
+        $script:AutomaticRestartPending = [bool]$AutomaticRestart
         $script:RestartRecordingOnlyMode = [bool]($script:RestartRecordingOnlyMode -or $wasRecordingOnly)
         $script:RestartAt = (Get-Date).AddMilliseconds(800)
     }
     else {
+        $script:AutomaticRestartPending = $false
         $script:RestartRecordingOnlyMode = $false
         $script:RestartAt = $null
     }
@@ -15181,7 +15313,7 @@ function Stop-GstStream {
         $statusLabel.ForeColor = [System.Drawing.Color]::Black
         Set-RunState $false
         $script:StopRequested = $false
-        if (-not $wasPreviewOnly) {
+        if (-not $wasPreviewOnly -and -not $SuppressPreviewRestore) {
             $null = $form.BeginInvoke([Action]{
                 try { Sync-StandalonePreviewState -Quiet } catch {}
             })
@@ -15715,7 +15847,17 @@ $chkHidePreviewDuringStream.Add_CheckedChanged({
 
     Update-CommandPreview
 })
-$chkAutoRestart.Add_CheckedChanged($previewHandler)
+$chkAutoRestart.Add_CheckedChanged({
+    if (-not $script:LoadingSettings -and -not $chkAutoRestart.Checked -and $script:AutomaticRestartPending) {
+        $script:AutomaticRestartPending = $false
+        $script:RestartAt = $null
+        $script:RestartRecordingOnlyMode = $false
+        $script:WaitingForFullscreen = $false
+        Append-Log 'Pending automatic restart cancelled because Auto-restart on exit was disabled.'
+        Set-RunState $false
+    }
+    Update-CommandPreview
+})
 $chkVerbose.Add_CheckedChanged($previewHandler)
 $chkDiskProcessLogging.Add_CheckedChanged($previewHandler)
 $numWidth.Add_ValueChanged($previewHandler)
@@ -16275,12 +16417,12 @@ $btnCheckGst.Add_Click({
 
 $btnStart.Add_Click({
     $lowerTabs.SelectedTab = $tabLog
-    Start-GstStream
+    Invoke-StreamToggle
 })
 
 $btnStop.Add_Click({
     $lowerTabs.SelectedTab = $tabLog
-    Stop-GstStream
+    Request-StreamStop
 })
 
 $btnRestart.Add_Click({
@@ -16338,7 +16480,7 @@ $trayStartItem.Add_Click({
 
 $trayStopItem.Add_Click({
     $lowerTabs.SelectedTab = $tabLog
-    Stop-GstStream
+    Request-StreamStop
 })
 
 $trayRestartItem.Add_Click({
@@ -16489,11 +16631,11 @@ $pollTimer.Add_Tick({
                 'longer running.'
             )
 
-            if ($chkAutoRestart.Checked -or (Test-FullscreenCaptureMode)) {
-                Stop-GstStream -Restart
+            if ($chkAutoRestart.Checked) {
+                Stop-GstStream -Restart -AutomaticRestart
             }
             else {
-                Stop-GstStream
+                Stop-GstStream -SuppressPreviewRestore
             }
         }
         else {
@@ -16514,11 +16656,17 @@ $pollTimer.Add_Tick({
         $script:NextFullscreenProbe = (Get-Date).AddSeconds(1)
 
         if ($script:CaptureWindowHwnd -ne [IntPtr]::Zero -and -not [GstPreviewNative]::WindowExists($script:CaptureWindowHwnd)) {
-            Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Fullscreen application closed; stopping the pipeline and waiting for another fullscreen application."
+            Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Fullscreen application closed; stopping the pipeline."
             $script:CaptureWindowHwnd = [IntPtr]::Zero
             $script:CaptureWindowTitle = ''
             Update-CaptureModeUi
-            Stop-GstStream -Restart
+            if ($chkAutoRestart.Checked) {
+                Stop-GstStream -Restart -AutomaticRestart
+            }
+            else {
+                Append-Log 'Auto-restart is disabled; fullscreen capture will remain stopped.'
+                Stop-GstStream -SuppressPreviewRestore
+            }
         }
         else {
             $captureGstPid = if ((Test-DirectWebRtcUnifiedPublisher) -and $script:GstVideoProcess -and -not $script:GstVideoProcess.HasExited) { $script:GstVideoProcess.Id } else { $script:GstProcess.Id }
@@ -16529,7 +16677,13 @@ $pollTimer.Add_Tick({
                 $script:CaptureWindowHwnd = $candidate
                 $script:CaptureWindowTitle = $newTitle
                 Update-CaptureModeUi
-                Stop-GstStream -Restart
+                if ($chkAutoRestart.Checked) {
+                    Stop-GstStream -Restart -AutomaticRestart
+                }
+                else {
+                    Append-Log 'Auto-restart is disabled; the fullscreen target change will not rebuild the pipeline.'
+                    Stop-GstStream -SuppressPreviewRestore
+                }
             }
         }
     }
@@ -16539,7 +16693,7 @@ $pollTimer.Add_Tick({
         Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Split video bridge exited unexpectedly with code $videoExitCode; stopping the complete topology."
         try { $script:GstVideoProcess.Dispose() } catch {}
         $script:GstVideoProcess = $null
-        if ($chkAutoRestart.Checked -or (Test-FullscreenCaptureMode)) { Stop-GstStream -Restart } else { Stop-GstStream }
+        if ($chkAutoRestart.Checked) { Stop-GstStream -Restart -AutomaticRestart } else { Stop-GstStream -SuppressPreviewRestore }
         return
     }
 
@@ -16548,7 +16702,7 @@ $pollTimer.Add_Tick({
         Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Split audio pipeline exited unexpectedly with code $audioExitCode; stopping the complete topology."
         try { $script:GstAudioProcess.Dispose() } catch {}
         $script:GstAudioProcess = $null
-        if ($chkAutoRestart.Checked -or (Test-FullscreenCaptureMode)) { Stop-GstStream -Restart } else { Stop-GstStream }
+        if ($chkAutoRestart.Checked) { Stop-GstStream -Restart -AutomaticRestart } else { Stop-GstStream -SuppressPreviewRestore }
         return
     }
 
@@ -16631,10 +16785,20 @@ $pollTimer.Add_Tick({
 
             if ($wasControlledLive) {
                 $script:SuppressControlledLiveStream = $true
-                $script:RestartAt = (Get-Date).AddMilliseconds(800)
-                Append-Log 'Controlled live worker failure latched; restarting with the legacy external launcher.'
+                if ($chkAutoRestart.Checked) {
+                    $script:AutomaticRestartPending = $true
+                    $script:RestartAt = (Get-Date).AddMilliseconds(800)
+                    Append-Log 'Controlled live worker failure latched; automatic restart will use the legacy external launcher.'
+                    Set-RunState $false
+                }
+                else {
+                    $script:AutomaticRestartPending = $false
+                    $script:RestartAt = $null
+                    Append-Log 'Controlled live worker failure latched; Auto-restart is disabled, so the pipeline will remain stopped.'
+                }
             }
-            elseif ((Test-FullscreenCaptureMode) -or $chkAutoRestart.Checked) {
+            elseif ($chkAutoRestart.Checked) {
+                $script:AutomaticRestartPending = $true
                 $script:RestartRecordingOnlyMode = $wasRecordingOnly
                 $script:RestartAt = (Get-Date).AddSeconds(2)
                 if (Test-FullscreenCaptureMode) {
@@ -16645,6 +16809,12 @@ $pollTimer.Add_Tick({
                 else {
                     Append-Log 'Automatic full restart scheduled in 2 seconds.'
                 }
+                Set-RunState $false
+            }
+            else {
+                $script:AutomaticRestartPending = $false
+                $script:RestartAt = $null
+                Append-Log 'Auto-restart is disabled; no pipeline restart will be attempted.'
             }
         }
 
@@ -16653,8 +16823,16 @@ $pollTimer.Add_Tick({
 
     if (-not $script:GstProcess -and $script:RestartAt -and (Get-Date) -ge $script:RestartAt) {
         $script:RestartAt = $null
+        $restartWasAutomatic = [bool]$script:AutomaticRestartPending
+        $script:AutomaticRestartPending = $false
         $restartRecordingOnly = [bool]$script:RestartRecordingOnlyMode
         $script:RestartRecordingOnlyMode = $false
+        if ($restartWasAutomatic -and -not $chkAutoRestart.Checked) {
+            Append-Log 'Pending automatic restart cancelled because Auto-restart on exit is disabled.'
+            $script:WaitingForFullscreen = $false
+            Set-RunState $false
+            return
+        }
         if ($restartRecordingOnly) {
             Start-GstStream -Automatic -RecordingOnly
         }
@@ -16720,6 +16898,11 @@ function Invoke-ApplicationCleanup {
     }
 
     $script:ExitCleanupStarted = $true
+    # Closing the UI is also an unconditional cancellation request. If the form
+    # is closed while a controlled worker or MediaMTX is still handshaking, the
+    # responsive startup waits will unwind instead of launching after cleanup.
+    $script:PendingPipelineStop = $true
+    $script:AutomaticRestartPending = $false
     $script:WaitingForFullscreen = $false
     $script:RestartAt = $null
 
