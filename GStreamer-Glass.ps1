@@ -630,7 +630,7 @@ public static class GstProcessJob
 '@
 }
 
-$script:AppVersion = '3.7.52f3'
+$script:AppVersion = '3.7.52f4'
 $script:AppName = "GStreamer Glass v$($script:AppVersion)"
 $script:ConfigDirectory = Join-Path $env:APPDATA 'GStreamerBasicWhipStreamer'
 $script:ConfigPath = Join-Path $script:ConfigDirectory 'settings.json'
@@ -749,11 +749,14 @@ $script:DefaultDirectWebRtcWorkingWebDirectory = Join-Path $env:LOCALAPPDATA 'GS
 $script:DirectWebRtcRuntimeWebDirectory = $script:DefaultDirectWebRtcWorkingWebDirectory
 $script:DefaultTimingMode = 'Receiver/server timestamps (default)'
 $script:DefaultAudioTransportMode = 'Normal audio'
-$script:DefaultAudioClockMode = 'WASAPI clock'
-$script:DefaultAudioTimingMode = 'WASAPI normal'
+$script:DefaultAudioClockMode = 'Plugin default / allow WASAPI clock'
+$script:DefaultAudioTimingMode = 'Plugin default / WASAPI normal'
 $script:DefaultAudioSlaveMethod = 'Auto'
 $script:DefaultAudioBufferMs = 20
 $script:DefaultAudioLatencyMs = 10
+$script:DefaultWasapiLowLatencyOverride = $false
+$script:DefaultAudioBufferOverride = $false
+$script:DefaultAudioLatencyOverride = $false
 $script:DefaultAudioMixerMode = $true
 $script:DefaultDirectWebRtcSignalingHost = '0.0.0.0'
 $script:DefaultDirectWebRtcSignalingPort = 8189
@@ -2690,10 +2693,10 @@ $cmbAudioClockMode = New-Object System.Windows.Forms.ComboBox
 $cmbAudioClockMode.Location = New-Object System.Drawing.Point(15, 548)
 $cmbAudioClockMode.Size = New-Object System.Drawing.Size(230, 23)
 $cmbAudioClockMode.DropDownStyle = 'DropDownList'
-$null = $cmbAudioClockMode.Items.AddRange([string[]]@('WASAPI clock','System clock / no WASAPI clock'))
+$null = $cmbAudioClockMode.Items.AddRange([string[]]@('Plugin default / allow WASAPI clock','System clock / no WASAPI clock'))
 $cmbAudioClockMode.SelectedItem = $script:DefaultAudioClockMode
 $settingsGroup.Controls.Add($cmbAudioClockMode)
-$toolTip.SetToolTip($cmbAudioClockMode, 'Controls whether wasapi2src may provide the pipeline clock. For a monotonic-master test, select System clock / no WASAPI clock, then select System monotonic as the Video-tab master clock and Resample as the slave method.')
+$toolTip.SetToolTip($cmbAudioClockMode, 'Plugin default emits no provide-clock property. System clock / no WASAPI clock explicitly appends provide-clock=false. For a monotonic-master test, also select System monotonic on the Video tab and Resample as the slave method.')
 
 $lblAudioTimingMode = Add-Label $settingsGroup 'Audio timing' 15 602 95
 $cmbAudioTimingMode = New-Object System.Windows.Forms.ComboBox
@@ -2701,7 +2704,7 @@ $cmbAudioTimingMode.Location = New-Object System.Drawing.Point(115, 602)
 $cmbAudioTimingMode.Size = New-Object System.Drawing.Size(260, 23)
 $cmbAudioTimingMode.DropDownStyle = 'DropDownList'
 $null = $cmbAudioTimingMode.Items.AddRange([string[]]@(
-    'WASAPI normal',
+    'Plugin default / WASAPI normal',
     'WASAPI no pipeline clock',
     'WASAPI retimestamp',
     'WASAPI no clock + retimestamp',
@@ -2709,7 +2712,7 @@ $null = $cmbAudioTimingMode.Items.AddRange([string[]]@(
 ))
 $cmbAudioTimingMode.SelectedItem = $script:DefaultAudioTimingMode
 $settingsGroup.Controls.Add($cmbAudioTimingMode)
-$toolTip.SetToolTip($cmbAudioTimingMode, 'Audio timing lab. Synthetic silent audio bypasses WASAPI entirely; no-clock/retimestamp variants test whether WASAPI loopback timing is causing browser jbuf growth.')
+$toolTip.SetToolTip($cmbAudioTimingMode, 'Plugin default emits no do-timestamp or clock override. Synthetic silent audio bypasses WASAPI; the other entries explicitly add the named timing behavior.')
 
 $lblAudioSlaveMethod = Add-Label $settingsGroup 'Slave method' 395 602 95
 $cmbAudioSlaveMethod = New-Object System.Windows.Forms.ComboBox
@@ -2730,6 +2733,30 @@ $cmbAudioSyncMode.SelectedItem = $script:DefaultAudioSyncMode
 $settingsGroup.Controls.Add($cmbAudioSyncMode)
 $toolTip.SetToolTip($cmbAudioSyncMode, 'Audio branch sync lab. Default leaves audio send branches unchanged. sync=true/sync=false inserts a clocksync element before compatible send/mux sinks so we can test whether sender-side timestamp scheduling is coupling A/V latency.')
 
+$chkWasapiLowLatencyOverride = New-Object System.Windows.Forms.CheckBox
+$chkWasapiLowLatencyOverride.Text = 'Force low-latency=true'
+$chkWasapiLowLatencyOverride.Location = New-Object System.Drawing.Point(650, 602)
+$chkWasapiLowLatencyOverride.Size = New-Object System.Drawing.Size(175, 23)
+$chkWasapiLowLatencyOverride.Checked = $script:DefaultWasapiLowLatencyOverride
+$settingsGroup.Controls.Add($chkWasapiLowLatencyOverride)
+$toolTip.SetToolTip($chkWasapiLowLatencyOverride, 'Unchecked emits no low-latency property and leaves the WASAPI source at its plugin default. Checked explicitly appends low-latency=true.')
+
+$chkAudioBufferOverride = New-Object System.Windows.Forms.CheckBox
+$chkAudioBufferOverride.Text = 'Override buffer-time'
+$chkAudioBufferOverride.Location = New-Object System.Drawing.Point(365, 648)
+$chkAudioBufferOverride.Size = New-Object System.Drawing.Size(155, 23)
+$chkAudioBufferOverride.Checked = $script:DefaultAudioBufferOverride
+$settingsGroup.Controls.Add($chkAudioBufferOverride)
+$toolTip.SetToolTip($chkAudioBufferOverride, 'Unchecked emits no buffer-time property. Checked explicitly appends buffer-time using the Buffer ms value.')
+
+$chkAudioLatencyOverride = New-Object System.Windows.Forms.CheckBox
+$chkAudioLatencyOverride.Text = 'Override latency-time'
+$chkAudioLatencyOverride.Location = New-Object System.Drawing.Point(525, 648)
+$chkAudioLatencyOverride.Size = New-Object System.Drawing.Size(155, 23)
+$chkAudioLatencyOverride.Checked = $script:DefaultAudioLatencyOverride
+$settingsGroup.Controls.Add($chkAudioLatencyOverride)
+$toolTip.SetToolTip($chkAudioLatencyOverride, 'Unchecked emits no latency-time property. Checked explicitly appends latency-time using the Latency ms value.')
+
 $lblAudioBufferMs = Add-Label $settingsGroup 'Buffer ms' 15 648 80
 $numAudioBufferMs = New-Object System.Windows.Forms.NumericUpDown
 $numAudioBufferMs.Location = New-Object System.Drawing.Point(95, 648)
@@ -2738,7 +2765,7 @@ $numAudioBufferMs.Minimum = 1
 $numAudioBufferMs.Maximum = 1000
 $numAudioBufferMs.Value = $script:DefaultAudioBufferMs
 $settingsGroup.Controls.Add($numAudioBufferMs)
-$toolTip.SetToolTip($numAudioBufferMs, 'Requested WASAPI buffer-time in milliseconds. The log still reports actual-buffer-time; if it says 500 ms, the driver ignored the request.')
+$toolTip.SetToolTip($numAudioBufferMs, 'WASAPI buffer-time in milliseconds. This value is emitted only while Override buffer-time is checked.')
 
 $lblAudioLatencyMs = Add-Label $settingsGroup 'Latency ms' 195 648 80
 $numAudioLatencyMs = New-Object System.Windows.Forms.NumericUpDown
@@ -2748,7 +2775,7 @@ $numAudioLatencyMs.Minimum = 1
 $numAudioLatencyMs.Maximum = 1000
 $numAudioLatencyMs.Value = $script:DefaultAudioLatencyMs
 $settingsGroup.Controls.Add($numAudioLatencyMs)
-$toolTip.SetToolTip($numAudioLatencyMs, 'Requested WASAPI latency-time in milliseconds.')
+$toolTip.SetToolTip($numAudioLatencyMs, 'WASAPI latency-time in milliseconds. This value is emitted only while Override latency-time is checked.')
 
 $null = Add-Label $settingsGroup 'Audio codec' 15 354 80
 $cmbAudioCodec = New-Object System.Windows.Forms.ComboBox
@@ -4263,12 +4290,15 @@ function Apply-ModernDashboardUi {
     Add-Field $r -Label 'Split audio pipeline clock' -Control $cmbSplitAudioPipelineClockMode -Width 235 | Out-Null
     $r = Add-Row $s
     Add-Field $r -LabelControl $lblAudioClockMode -Control $cmbAudioClockMode -Width 230 | Out-Null
+    Add-Field $r -Control $chkWasapiLowLatencyOverride -Width 190 | Out-Null
     $r = Add-Row $s
     Add-Field $r -LabelControl $lblAudioTimingMode -Control $cmbAudioTimingMode -Width 270 | Out-Null
     Add-Field $r -LabelControl $lblAudioSlaveMethod -Control $cmbAudioSlaveMethod -Width 180 | Out-Null
     Add-Field $r -Label 'Audio sync mode' -Control $cmbAudioSyncMode -Width 130 | Out-Null
     $r = Add-Row $s
+    Add-Field $r -Control $chkAudioBufferOverride -Width 165 | Out-Null
     Add-Field $r -LabelControl $lblAudioBufferMs -Control $numAudioBufferMs -Width 80 | Out-Null
+    Add-Field $r -Control $chkAudioLatencyOverride -Width 165 | Out-Null
     Add-Field $r -LabelControl $lblAudioLatencyMs -Control $numAudioLatencyMs -Width 80 | Out-Null
 
     $s = Add-Section $paneAudio 'Sources'
@@ -4598,7 +4628,7 @@ function Apply-ModernDashboardUi {
         $numBFrames, $chkLookAhead, $numLookAheadFrames,
         $chkAdaptiveQuantization, $chkTemporalAq, $numAqStrength,
         $txtCustomEncoderOptions,
-        $cmbAudioTransportMode, $cmbSplitAudioPipelineClockMode, $cmbAudioClockMode, $cmbAudioTimingMode, $cmbAudioSlaveMethod, $cmbAudioSyncMode, $numAudioBufferMs, $numAudioLatencyMs, $chkDesktopAudio, $chkAudioMixerMode, $numDesktopVolume, $cmbDesktopAudioDevice, $btnRefreshAudioDevices, $chkMic, $numMicVolume, $cmbMicAudioDevice, $lblAudioDeviceStatus,
+        $cmbAudioTransportMode, $cmbSplitAudioPipelineClockMode, $cmbAudioClockMode, $cmbAudioTimingMode, $cmbAudioSlaveMethod, $cmbAudioSyncMode, $chkWasapiLowLatencyOverride, $chkAudioBufferOverride, $numAudioBufferMs, $chkAudioLatencyOverride, $numAudioLatencyMs, $chkDesktopAudio, $chkAudioMixerMode, $numDesktopVolume, $cmbDesktopAudioDevice, $btnRefreshAudioDevices, $chkMic, $numMicVolume, $cmbMicAudioDevice, $lblAudioDeviceStatus,
         $cmbAudioCodec, $lblAudioCodecStatus, $numAudioBitrate,
         $cmbDirectWebRtcOpusMode, $cmbDirectWebRtcOpusFrameMs, $cmbDirectWebRtcOpusAudioType, $chkDirectWebRtcOpusFec, $chkDirectWebRtcOpusDtx,
         $chkRecordingEnabled, $txtRecordingDirectory, $btnBrowseRecordingDirectory,
@@ -5945,7 +5975,10 @@ function Reset-AudioDefaults {
     if ($cmbAudioTimingMode.Items.Contains($script:DefaultAudioTimingMode)) { $cmbAudioTimingMode.SelectedItem = $script:DefaultAudioTimingMode }
     if ($cmbAudioSlaveMethod.Items.Contains($script:DefaultAudioSlaveMethod)) { $cmbAudioSlaveMethod.SelectedItem = $script:DefaultAudioSlaveMethod }
     if ($cmbAudioSyncMode.Items.Contains($script:DefaultAudioSyncMode)) { $cmbAudioSyncMode.SelectedItem = $script:DefaultAudioSyncMode }
+    $chkWasapiLowLatencyOverride.Checked = $script:DefaultWasapiLowLatencyOverride
+    $chkAudioBufferOverride.Checked = $script:DefaultAudioBufferOverride
     $numAudioBufferMs.Value = $script:DefaultAudioBufferMs
+    $chkAudioLatencyOverride.Checked = $script:DefaultAudioLatencyOverride
     $numAudioLatencyMs.Value = $script:DefaultAudioLatencyMs
     $chkDesktopAudio.Checked = $true
     $chkAudioMixerMode.Checked = $script:DefaultAudioMixerMode
@@ -6212,13 +6245,22 @@ function Get-WasapiSlaveMethodOption {
     }
 }
 
+function Get-WasapiLowLatencyOption {
+    if ($chkWasapiLowLatencyOverride -and $chkWasapiLowLatencyOverride.Checked) { return 'low-latency=true' }
+    return ''
+}
+
 function Get-WasapiBufferTimeOption {
-    $ms = [Math]::Max(1, [int]$numAudioBufferMs.Value)
+    if (-not $chkAudioBufferOverride -or -not $chkAudioBufferOverride.Checked) { return '' }
+    $ms = [int]$numAudioBufferMs.Value
+    if ($ms -le 0) { return '' }
     return ('buffer-time=' + ([int64]$ms * 1000))
 }
 
 function Get-WasapiLatencyTimeOption {
-    $ms = [Math]::Max(1, [int]$numAudioLatencyMs.Value)
+    if (-not $chkAudioLatencyOverride -or -not $chkAudioLatencyOverride.Checked) { return '' }
+    $ms = [int]$numAudioLatencyMs.Value
+    if ($ms -le 0) { return '' }
     return ('latency-time=' + ([int64]$ms * 1000))
 }
 
@@ -6466,15 +6508,15 @@ function Get-WasapiSourceString {
     foreach ($opt in @(
         (Get-WasapiClockOption),
         (Get-WasapiTimestampOption),
-        (Get-WasapiSlaveMethodOption)
+        (Get-WasapiSlaveMethodOption),
+        (Get-WasapiLowLatencyOption),
+        (Get-WasapiBufferTimeOption),
+        (Get-WasapiLatencyTimeOption)
     )) {
         if (-not [string]::IsNullOrWhiteSpace($opt)) { $parts.Add($opt) }
     }
 
     if ($Loopback) { $parts.Add('loopback=true') }
-    $parts.Add('low-latency=true')
-    $parts.Add((Get-WasapiBufferTimeOption))
-    $parts.Add((Get-WasapiLatencyTimeOption))
     return ($parts -join ' ')
 }
 
@@ -6621,30 +6663,33 @@ function Get-EffectiveAudioTimingSummary {
     $timing = Get-AudioTimingMode
     $clockMode = Get-ComboSelectedOrDefault $cmbAudioClockMode $script:DefaultAudioClockMode
     $clockOpt = Get-WasapiClockOption
-    $timestampOpt = Get-WasapiTimestampOption
-    $slaveOpt = Get-WasapiSlaveMethodOption
+
+    if ($timing -eq 'Synthetic silent audio') {
+        return 'synthetic source; WASAPI timing controls bypassed'
+    }
 
     $items = New-Object System.Collections.Generic.List[string]
-    if ([string]::IsNullOrWhiteSpace($clockOpt)) {
-        $items.Add('provide-clock=true/default')
-    }
-    else {
-        $items.Add($clockOpt)
-    }
-    if (-not [string]::IsNullOrWhiteSpace($timestampOpt)) { $items.Add($timestampOpt) }
-    if (-not [string]::IsNullOrWhiteSpace($slaveOpt)) { $items.Add($slaveOpt) } else { $items.Add('slave-method=auto/default') }
-    $items.Add((Get-WasapiBufferTimeOption))
-    $items.Add((Get-WasapiLatencyTimeOption))
-
-    $contradiction = ''
-    if ($clockMode -eq 'WASAPI clock' -and $clockOpt -eq 'provide-clock=false') {
-        $contradiction = ' UI note: timing mode overrides Audio clock and disables WASAPI clock.'
-    }
-    if ($timing -eq 'Synthetic silent audio') {
-        $contradiction = ' UI note: synthetic mode bypasses WASAPI source options.'
+    foreach ($opt in @(
+        $clockOpt,
+        (Get-WasapiTimestampOption),
+        (Get-WasapiSlaveMethodOption),
+        (Get-WasapiLowLatencyOption),
+        (Get-WasapiBufferTimeOption),
+        (Get-WasapiLatencyTimeOption)
+    )) {
+        if (-not [string]::IsNullOrWhiteSpace($opt)) { $items.Add($opt) }
     }
 
-    return (($items -join ' ') + $contradiction)
+    if ($items.Count -eq 0) {
+        $items.Add('plugin defaults; no WASAPI timing overrides emitted')
+    }
+
+    $note = ''
+    if ($clockMode -eq 'Plugin default / allow WASAPI clock' -and $clockOpt -eq 'provide-clock=false') {
+        $note = ' UI note: the selected Audio timing mode explicitly disables the WASAPI clock.'
+    }
+
+    return (($items -join ' ') + $note)
 }
 
 function New-LiveQueueString {
@@ -6746,8 +6791,8 @@ function Get-EffectiveAudioQueueCapMs {
     $requestedMs = [int]$numAudioQueueCapMs.Value
     if ($requestedMs -le 0) { return 0 }
 
-    $requestedBufferMs = [Math]::Max(1, [int]$numAudioBufferMs.Value)
-    $requestedLatencyMs = [Math]::Max(1, [int]$numAudioLatencyMs.Value)
+    $requestedBufferMs = if ($chkAudioBufferOverride -and $chkAudioBufferOverride.Checked) { [Math]::Max(1, [int]$numAudioBufferMs.Value) } else { 0 }
+    $requestedLatencyMs = if ($chkAudioLatencyOverride -and $chkAudioLatencyOverride.Checked) { [Math]::Max(1, [int]$numAudioLatencyMs.Value) } else { 0 }
     $safeFloorMs = [Math]::Max(30, ($requestedBufferMs + $requestedLatencyMs + 10))
     return [Math]::Max($requestedMs, [int]$safeFloorMs)
 }
@@ -8012,14 +8057,21 @@ function Build-RecordingRawAudioChain {
     $desktopEnabled = $chkRecordingDesktopAudio.Checked
     $micEnabled = $chkRecordingMic.Checked
     if (-not $desktopEnabled -and -not $micEnabled) { return '' }
+
+    # Recording audio shares the same pipeline clock. Reuse the Audio-tab WASAPI
+    # source builder so recording cannot silently inject low-latency/buffer/clock
+    # properties that are disabled in the timing lab.
+    $desktopSource = Get-WasapiSourceString -Loopback
+    $micSource = Get-WasapiSourceString
+
     if ($desktopEnabled -and -not $micEnabled) {
-        return @('wasapi2src','loopback=true','low-latency=true','buffer-time=20000','latency-time=10000','!','queue','max-size-buffers=16','max-size-bytes=0','max-size-time=0','leaky=downstream','!','audioconvert','!','audioresample','!','"audio/x-raw,format=S16LE,rate=48000,channels=2"') -join ' '
+        return @($desktopSource,'!','queue','max-size-buffers=16','max-size-bytes=0','max-size-time=0','leaky=downstream','!','audioconvert','!','audioresample','!','"audio/x-raw,format=S16LE,rate=48000,channels=2"') -join ' '
     }
     if (-not $desktopEnabled -and $micEnabled) {
-        return @('wasapi2src','low-latency=true','buffer-time=20000','latency-time=10000','!','queue','max-size-buffers=16','max-size-bytes=0','max-size-time=0','leaky=downstream','!','audioconvert','!','audioresample','!','"audio/x-raw,format=S16LE,rate=48000,channels=2"') -join ' '
+        return @($micSource,'!','queue','max-size-buffers=16','max-size-bytes=0','max-size-time=0','leaky=downstream','!','audioconvert','!','audioresample','!','"audio/x-raw,format=S16LE,rate=48000,channels=2"') -join ' '
     }
-    $desktopMixBranch = @('wasapi2src','loopback=true','low-latency=true','buffer-time=20000','latency-time=10000','!','queue','max-size-buffers=16','max-size-bytes=0','max-size-time=0','leaky=downstream','!','audioconvert','!','audioresample','!','"audio/x-raw,format=F32LE,rate=48000,channels=2"','!','recordaudiomix.') -join ' '
-    $micMixBranch = @('wasapi2src','low-latency=true','buffer-time=20000','latency-time=10000','!','queue','max-size-buffers=16','max-size-bytes=0','max-size-time=0','leaky=downstream','!','audioconvert','!','audioresample','!','"audio/x-raw,format=F32LE,rate=48000,channels=2"','!','recordaudiomix.') -join ' '
+    $desktopMixBranch = @($desktopSource,'!','queue','max-size-buffers=16','max-size-bytes=0','max-size-time=0','leaky=downstream','!','audioconvert','!','audioresample','!','"audio/x-raw,format=F32LE,rate=48000,channels=2"','!','recordaudiomix.') -join ' '
+    $micMixBranch = @($micSource,'!','queue','max-size-buffers=16','max-size-bytes=0','max-size-time=0','leaky=downstream','!','audioconvert','!','audioresample','!','"audio/x-raw,format=F32LE,rate=48000,channels=2"','!','recordaudiomix.') -join ' '
     $mixOutput = @('recordaudiomix.','!','queue','max-size-buffers=16','max-size-bytes=0','max-size-time=0','leaky=downstream','!','audioconvert','!','"audio/x-raw,format=S16LE,rate=48000,channels=2"') -join ' '
     return "audiomixer name=recordaudiomix $desktopMixBranch $micMixBranch $mixOutput"
 }
@@ -9827,7 +9879,10 @@ function Save-Settings {
             AudioClockMode = [string]$cmbAudioClockMode.SelectedItem
             AudioTimingMode = [string]$cmbAudioTimingMode.SelectedItem
             AudioSlaveMethod = [string]$cmbAudioSlaveMethod.SelectedItem
+            WasapiLowLatencyOverride = [bool]$chkWasapiLowLatencyOverride.Checked
+            AudioBufferOverride = [bool]$chkAudioBufferOverride.Checked
             AudioBufferMs = [int]$numAudioBufferMs.Value
+            AudioLatencyOverride = [bool]$chkAudioLatencyOverride.Checked
             AudioLatencyMs = [int]$numAudioLatencyMs.Value
             DesktopAudio      = $chkDesktopAudio.Checked
             AudioMixerMode    = $chkAudioMixerMode.Checked
@@ -10093,11 +10148,18 @@ function Load-Settings {
         }
 
         if ($settings.AudioTransportMode -and $cmbAudioTransportMode.Items.Contains([string]$settings.AudioTransportMode)) { $cmbAudioTransportMode.SelectedItem = [string]$settings.AudioTransportMode }
-        if ($settings.AudioClockMode -and $cmbAudioClockMode.Items.Contains([string]$settings.AudioClockMode)) { $cmbAudioClockMode.SelectedItem = [string]$settings.AudioClockMode }
-        if ($settings.AudioTimingMode -and $cmbAudioTimingMode.Items.Contains([string]$settings.AudioTimingMode)) { $cmbAudioTimingMode.SelectedItem = [string]$settings.AudioTimingMode }
+        $savedAudioClockMode = [string]$settings.AudioClockMode
+        if ($savedAudioClockMode -eq 'WASAPI clock') { $savedAudioClockMode = 'Plugin default / allow WASAPI clock' }
+        if ($savedAudioClockMode -and $cmbAudioClockMode.Items.Contains($savedAudioClockMode)) { $cmbAudioClockMode.SelectedItem = $savedAudioClockMode }
+        $savedAudioTimingMode = [string]$settings.AudioTimingMode
+        if ($savedAudioTimingMode -eq 'WASAPI normal') { $savedAudioTimingMode = 'Plugin default / WASAPI normal' }
+        if ($savedAudioTimingMode -and $cmbAudioTimingMode.Items.Contains($savedAudioTimingMode)) { $cmbAudioTimingMode.SelectedItem = $savedAudioTimingMode }
         if ($settings.AudioSlaveMethod -and $cmbAudioSlaveMethod.Items.Contains([string]$settings.AudioSlaveMethod)) { $cmbAudioSlaveMethod.SelectedItem = [string]$settings.AudioSlaveMethod }
         if ($settings.AudioSyncMode -and $cmbAudioSyncMode.Items.Contains([string]$settings.AudioSyncMode)) { $cmbAudioSyncMode.SelectedItem = [string]$settings.AudioSyncMode }
+        if ($null -ne $settings.WasapiLowLatencyOverride) { $chkWasapiLowLatencyOverride.Checked = [bool]$settings.WasapiLowLatencyOverride }
+        if ($null -ne $settings.AudioBufferOverride) { $chkAudioBufferOverride.Checked = [bool]$settings.AudioBufferOverride }
         if ($null -ne $settings.AudioBufferMs) { $numAudioBufferMs.Value = [decimal]$settings.AudioBufferMs }
+        if ($null -ne $settings.AudioLatencyOverride) { $chkAudioLatencyOverride.Checked = [bool]$settings.AudioLatencyOverride }
         if ($null -ne $settings.AudioLatencyMs) { $numAudioLatencyMs.Value = [decimal]$settings.AudioLatencyMs }
         if ($null -ne $settings.DesktopAudio) { $chkDesktopAudio.Checked = [bool]$settings.DesktopAudio }
         if ($null -ne $settings.AudioMixerMode) { $chkAudioMixerMode.Checked = [bool]$settings.AudioMixerMode }
@@ -10762,7 +10824,7 @@ function Start-GstStream {
     $mixerSummary = if ($chkDesktopAudio.Checked -and ($chkMic.Checked -or $chkAudioMixerMode.Checked)) { 'audiomixer' } elseif ($chkDesktopAudio.Checked) { 'legacy direct desktop path' } else { 'not applicable' }
     Append-Log "Desktop audio path: $mixerSummary (mixer flag=$($chkAudioMixerMode.Checked); microphone=$($chkMic.Checked))."
     Append-Log "Video sync mode: $([string]$cmbVideoSyncMode.SelectedItem); Audio sync mode: $([string]$cmbAudioSyncMode.SelectedItem). Explicit modes insert clocksync before compatible send/mux sinks; local preview also honors Video sync mode."
-    Append-Log "Audio clock mode: $([string]$cmbAudioClockMode.SelectedItem); timing $([string]$cmbAudioTimingMode.SelectedItem); slave $([string]$cmbAudioSlaveMethod.SelectedItem); requested buffer $([int]$numAudioBufferMs.Value) ms / latency $([int]$numAudioLatencyMs.Value) ms."
+    Append-Log "Audio timing UI: clock=$([string]$cmbAudioClockMode.SelectedItem); mode=$([string]$cmbAudioTimingMode.SelectedItem); slave=$([string]$cmbAudioSlaveMethod.SelectedItem); low-latency override=$($chkWasapiLowLatencyOverride.Checked); buffer override=$($chkAudioBufferOverride.Checked) [$([int]$numAudioBufferMs.Value) ms]; latency override=$($chkAudioLatencyOverride.Checked) [$([int]$numAudioLatencyMs.Value) ms]."
     Append-Log "Effective WASAPI source: $(Get-EffectiveAudioTimingSummary)"
     if (-not [string]::IsNullOrWhiteSpace($gstDebugSpec)) {
         Append-Log "GStreamer debug: GST_DEBUG=$gstDebugSpec, no color=$($chkGstDebugNoColor.Checked)."
@@ -11276,6 +11338,9 @@ $cmbAudioClockMode.Add_SelectedIndexChanged($previewHandler)
 $cmbAudioTimingMode.Add_SelectedIndexChanged({ Update-AudioTimingOptionUi; Update-AudioCodecChoices; Update-CommandPreview })
 $cmbAudioSlaveMethod.Add_SelectedIndexChanged($previewHandler)
 $cmbAudioSyncMode.Add_SelectedIndexChanged($previewHandler)
+$chkWasapiLowLatencyOverride.Add_CheckedChanged({ Update-AudioTimingOptionUi; Update-CommandPreview })
+$chkAudioBufferOverride.Add_CheckedChanged({ Update-AudioTimingOptionUi; Update-CommandPreview })
+$chkAudioLatencyOverride.Add_CheckedChanged({ Update-AudioTimingOptionUi; Update-CommandPreview })
 
 function Update-AudioTimingOptionUi {
     $timing = Get-AudioTimingMode
@@ -11284,12 +11349,11 @@ function Update-AudioTimingOptionUi {
 
     $cmbAudioClockMode.Enabled = (-not $forcesNoClock -and -not $synthetic)
     $cmbAudioSlaveMethod.Enabled = (-not $synthetic)
-    $numAudioBufferMs.Enabled = (-not $synthetic)
-    $numAudioLatencyMs.Enabled = (-not $synthetic)
-
-    if ($forcesNoClock -and $cmbAudioClockMode.Items.Contains('System clock / no WASAPI clock')) {
-        $cmbAudioClockMode.SelectedItem = 'System clock / no WASAPI clock'
-    }
+    $chkWasapiLowLatencyOverride.Enabled = (-not $synthetic)
+    $chkAudioBufferOverride.Enabled = (-not $synthetic)
+    $chkAudioLatencyOverride.Enabled = (-not $synthetic)
+    $numAudioBufferMs.Enabled = (-not $synthetic -and $chkAudioBufferOverride.Checked)
+    $numAudioLatencyMs.Enabled = (-not $synthetic -and $chkAudioLatencyOverride.Checked)
 }
 
 $numAudioBufferMs.Add_ValueChanged($previewHandler)
