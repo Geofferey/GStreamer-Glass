@@ -630,7 +630,7 @@ public static class GstProcessJob
 '@
 }
 
-$script:AppVersion = '3.7.52f42'
+$script:AppVersion = '3.7.52f43'
 $script:AppName = "GStreamer Glass v$($script:AppVersion)"
 $script:ConfigDirectory = Join-Path $env:APPDATA 'GStreamerBasicWhipStreamer'
 $script:ConfigPath = Join-Path $script:ConfigDirectory 'settings.json'
@@ -754,7 +754,7 @@ $script:DefaultDirectWebRtcBundledWebDirectory = ''
 $script:DefaultDirectWebRtcWorkingWebMode = 'Auto: LocalAppData'
 $script:DefaultDirectWebRtcWorkingWebDirectory = Join-Path $env:LOCALAPPDATA 'GStreamerGlass\WebRoot\gstwebrtc-api\dist'
 $script:DirectWebRtcRuntimeWebDirectory = $script:DefaultDirectWebRtcWorkingWebDirectory
-$script:DefaultTimingMode = 'Receiver/server timestamps (default)'
+$script:DefaultTimingMode = 'Off / plugin default'
 $script:DefaultAudioTransportMode = 'Normal audio'
 $script:DefaultAudioClockMode = 'Plugin default / allow WASAPI clock'
 $script:DefaultAudioTimingMode = 'Plugin default / WASAPI normal'
@@ -771,13 +771,18 @@ $script:DefaultDirectWebRtcSignalingHost = '0.0.0.0'
 $script:DefaultDirectWebRtcSignalingPort = 8189
 $script:DefaultDirectWebRtcSplitAudioSignalingPort = 8190
 $script:DefaultDirectWebRtcSharedSignaling = $false
+$script:DefaultDirectWebRtcMediaStreamGrouping = 'Combined A/V MediaStream (default)'
+$script:DefaultDirectWebRtcVideoMediaStreamId = 'gstglass-video'
+$script:DefaultDirectWebRtcAudioMediaStreamId = 'gstglass-audio'
 $script:DefaultDirectWebRtcUnifiedPublisher = $false
 $script:DefaultDirectWebRtcBridgeVideoPort = 5004
 $script:DefaultDirectWebRtcBridgeAudioPort = 5006
 $script:DefaultDirectWebRtcBridgeJitterMs = 0
 $script:DefaultDirectWebRtcPublisherQueueMs = 50
 $script:DefaultDirectWebRtcAudioBridgePacing = $true
-$script:DefaultDirectWebRtcClockSignaling = 'Off'
+$script:DefaultSplitClockSignalingOverrides = $false
+$script:DefaultSplitVideoClockSignaling = 'Off / plugin default'
+$script:DefaultSplitAudioClockSignaling = 'Off / plugin default'
 $script:DefaultDirectWebRtcControlDataChannel = $false
 $script:DefaultDirectWebRtcBundlePolicy = 'Default'
 $script:DefaultDirectWebRtcInternalRtpMtu = 0
@@ -806,7 +811,8 @@ $script:DefaultPlayerUrlOverrides = $false
 $script:DefaultLiveEdgeGreenMs = 50
 $script:DefaultLiveEdgeYellowMs = 120
 $script:DefaultLiveEdgeAverageSec = 5
-$script:DefaultPlayerAvRenderMode = 'Synced single media element'
+$script:DefaultPlayerAvRenderMode = 'Synced single media element' # legacy config compatibility
+$script:DefaultPlayerSeparateHtmlMediaElements = $false
 $script:DefaultDirectWebRtcAvPipelineMode = 'Single pipeline'
 $script:DefaultSplitPlayerSyncMode = 'Off / free-run'
 $script:DefaultSplitAudioStallSeconds = 3
@@ -1878,7 +1884,7 @@ $chkCursor.Size = New-Object System.Drawing.Size(75, 23)
 $chkCursor.Checked = $true
 $settingsGroup.Controls.Add($chkCursor)
 
-# Legacy compatibility flag for older settings. The live UI now uses Timing mode.
+# Legacy compatibility flag for older settings. The live UI now uses the protocol-aware clock signaling selector.
 $chkSendAbsoluteTimestamps = New-Object System.Windows.Forms.CheckBox
 $chkSendAbsoluteTimestamps.Text = 'Legacy absolute timestamps'
 $chkSendAbsoluteTimestamps.Location = New-Object System.Drawing.Point(235, 130)
@@ -1888,18 +1894,44 @@ $chkSendAbsoluteTimestamps.Visible = $false
 $chkSendAbsoluteTimestamps.TabStop = $false
 $settingsGroup.Controls.Add($chkSendAbsoluteTimestamps)
 
-$lblTimingMode = Add-Label $settingsGroup 'Timing mode' 235 130 85
+$lblTimingMode = Add-Label $settingsGroup 'WHIP clock signaling' 235 130 175
 $cmbTimingMode = New-Object System.Windows.Forms.ComboBox
-$cmbTimingMode.Location = New-Object System.Drawing.Point(325, 130)
-$cmbTimingMode.Size = New-Object System.Drawing.Size(245, 23)
+$cmbTimingMode.Location = New-Object System.Drawing.Point(415, 130)
+$cmbTimingMode.Size = New-Object System.Drawing.Size(215, 23)
 $cmbTimingMode.DropDownStyle = 'DropDownList'
 $null = $cmbTimingMode.Items.AddRange([string[]]@(
-    'Receiver/server timestamps (default)',
-    'Send absolute timestamps / clock signalling'
+    'Off / plugin default',
+    'On / protocol clock signaling'
 ))
 $cmbTimingMode.SelectedItem = $script:DefaultTimingMode
 $settingsGroup.Controls.Add($cmbTimingMode)
-$toolTip.SetToolTip($cmbTimingMode, 'Global transport timing mode. This selector remains available for every transport. For Direct GST WebRTC it stays synchronized with the dedicated RFC7273 clock-signalling control; WHIP and RTSP emit their protocol-specific timing properties.')
+$toolTip.SetToolTip($cmbTimingMode, 'One protocol-aware sink setting. WHIP and GST WebRTC emit do-clock-signalling=true when On; RTSP emits ntp-time-source=ntp. It does not alter upstream source, encoder, queue, or pipeline-clock properties.')
+
+$chkSplitClockSignalingOverrides = New-Object System.Windows.Forms.CheckBox
+$chkSplitClockSignalingOverrides.Text = 'Separate clock signaling per split pipeline'
+$chkSplitClockSignalingOverrides.Location = New-Object System.Drawing.Point(15, 548)
+$chkSplitClockSignalingOverrides.Size = New-Object System.Drawing.Size(300, 24)
+$chkSplitClockSignalingOverrides.Checked = $script:DefaultSplitClockSignalingOverrides
+$settingsGroup.Controls.Add($chkSplitClockSignalingOverrides)
+$toolTip.SetToolTip($chkSplitClockSignalingOverrides, 'Physical split GST WebRTC only. Off makes both webrtcsink instances inherit the main WebRTC clock signaling setting. On exposes independent video-sink and audio-sink RFC7273 state.')
+
+$cmbSplitVideoClockSignaling = New-Object System.Windows.Forms.ComboBox
+$cmbSplitVideoClockSignaling.Location = New-Object System.Drawing.Point(15, 548)
+$cmbSplitVideoClockSignaling.Size = New-Object System.Drawing.Size(215, 23)
+$cmbSplitVideoClockSignaling.DropDownStyle = 'DropDownList'
+$null = $cmbSplitVideoClockSignaling.Items.AddRange([string[]]@('Off / plugin default','RFC7273 NTP/PTP signaling'))
+$cmbSplitVideoClockSignaling.SelectedItem = $script:DefaultSplitVideoClockSignaling
+$settingsGroup.Controls.Add($cmbSplitVideoClockSignaling)
+$toolTip.SetToolTip($cmbSplitVideoClockSignaling, 'Physical split mode video webrtcsink only. On emits do-clock-signalling=true on the video pipeline sink.')
+
+$cmbSplitAudioClockSignaling = New-Object System.Windows.Forms.ComboBox
+$cmbSplitAudioClockSignaling.Location = New-Object System.Drawing.Point(15, 548)
+$cmbSplitAudioClockSignaling.Size = New-Object System.Drawing.Size(215, 23)
+$cmbSplitAudioClockSignaling.DropDownStyle = 'DropDownList'
+$null = $cmbSplitAudioClockSignaling.Items.AddRange([string[]]@('Off / plugin default','RFC7273 NTP/PTP signaling'))
+$cmbSplitAudioClockSignaling.SelectedItem = $script:DefaultSplitAudioClockSignaling
+$settingsGroup.Controls.Add($cmbSplitAudioClockSignaling)
+$toolTip.SetToolTip($cmbSplitAudioClockSignaling, 'Physical split mode audio webrtcsink only. On emits do-clock-signalling=true on the audio pipeline sink.')
 
 $lblTimestampStatus = New-Object System.Windows.Forms.Label
 $lblTimestampStatus.Text = 'Timing: receiver/server timestamps'
@@ -1949,6 +1981,29 @@ $chkDirectWebRtcSharedSignaling.Size = New-Object System.Drawing.Size(245, 24)
 $chkDirectWebRtcSharedSignaling.Checked = $script:DefaultDirectWebRtcSharedSignaling
 $settingsGroup.Controls.Add($chkDirectWebRtcSharedSignaling)
 $toolTip.SetToolTip($chkDirectWebRtcSharedSignaling, 'Split mode only. Video owns the configured signalling server and the audio producer joins that same server through signaller::uri. Off preserves the existing separate-port method.')
+
+$cmbDirectWebRtcMediaStreamGrouping = New-Object System.Windows.Forms.ComboBox
+$cmbDirectWebRtcMediaStreamGrouping.Location = New-Object System.Drawing.Point(15, 548)
+$cmbDirectWebRtcMediaStreamGrouping.Size = New-Object System.Drawing.Size(315, 23)
+$cmbDirectWebRtcMediaStreamGrouping.DropDownStyle = 'DropDownList'
+$null = $cmbDirectWebRtcMediaStreamGrouping.Items.AddRange([string[]]@('Combined A/V MediaStream (default)','Separate audio/video MediaStreams (experimental)'))
+$cmbDirectWebRtcMediaStreamGrouping.SelectedItem = $script:DefaultDirectWebRtcMediaStreamGrouping
+$settingsGroup.Controls.Add($cmbDirectWebRtcMediaStreamGrouping)
+$toolTip.SetToolTip($cmbDirectWebRtcMediaStreamGrouping, 'Direct GST WebRTC single-pipeline experiment. Separate mode rewrites the incoming SDP in the bundled player so Chromium receives video and audio under different MediaStream IDs. It preserves one producer, PeerConnection, ICE session, and gst-launch pipeline. Combined mode changes nothing.')
+
+$txtDirectWebRtcVideoMediaStreamId = New-Object System.Windows.Forms.TextBox
+$txtDirectWebRtcVideoMediaStreamId.Location = New-Object System.Drawing.Point(15, 548)
+$txtDirectWebRtcVideoMediaStreamId.Size = New-Object System.Drawing.Size(180, 23)
+$txtDirectWebRtcVideoMediaStreamId.Text = $script:DefaultDirectWebRtcVideoMediaStreamId
+$settingsGroup.Controls.Add($txtDirectWebRtcVideoMediaStreamId)
+$toolTip.SetToolTip($txtDirectWebRtcVideoMediaStreamId, 'MediaStream ID written into video a=msid SDP attributes when separate MediaStreams is enabled. The existing MediaStreamTrack ID is preserved.')
+
+$txtDirectWebRtcAudioMediaStreamId = New-Object System.Windows.Forms.TextBox
+$txtDirectWebRtcAudioMediaStreamId.Location = New-Object System.Drawing.Point(15, 548)
+$txtDirectWebRtcAudioMediaStreamId.Size = New-Object System.Drawing.Size(180, 23)
+$txtDirectWebRtcAudioMediaStreamId.Text = $script:DefaultDirectWebRtcAudioMediaStreamId
+$settingsGroup.Controls.Add($txtDirectWebRtcAudioMediaStreamId)
+$toolTip.SetToolTip($txtDirectWebRtcAudioMediaStreamId, 'MediaStream ID written into audio a=msid SDP attributes when separate MediaStreams is enabled. The existing MediaStreamTrack ID is preserved.')
 
 $chkDirectWebRtcUnifiedPublisher = New-Object System.Windows.Forms.CheckBox
 $chkDirectWebRtcUnifiedPublisher.Text = 'Unified A/V producer via RTP bridge (experimental)'
@@ -2001,15 +2056,6 @@ $chkDirectWebRtcAudioBridgePacing.Size = New-Object System.Drawing.Size(300, 24)
 $chkDirectWebRtcAudioBridgePacing.Checked = $script:DefaultDirectWebRtcAudioBridgePacing
 $settingsGroup.Controls.Add($chkDirectWebRtcAudioBridgePacing)
 $toolTip.SetToolTip($chkDirectWebRtcAudioBridgePacing, 'Unified publisher only. sync=true on the audio bridge udpsink paces Opus RTP using the isolated audio pipeline clock instead of dumping packets immediately when its thread runs.')
-
-$cmbDirectWebRtcClockSignaling = New-Object System.Windows.Forms.ComboBox
-$cmbDirectWebRtcClockSignaling.Location = New-Object System.Drawing.Point(15, 548)
-$cmbDirectWebRtcClockSignaling.Size = New-Object System.Drawing.Size(235, 23)
-$cmbDirectWebRtcClockSignaling.DropDownStyle = 'DropDownList'
-$null = $cmbDirectWebRtcClockSignaling.Items.AddRange([string[]]@('Off','RFC7273 NTP/PTP signalling'))
-$cmbDirectWebRtcClockSignaling.SelectedItem = $script:DefaultDirectWebRtcClockSignaling
-$settingsGroup.Controls.Add($cmbDirectWebRtcClockSignaling)
-$toolTip.SetToolTip($cmbDirectWebRtcClockSignaling, 'Direct GST WebRTC only. RFC7273 emits do-clock-signalling=true so the RTP-to-NTP/PTP clock mapping is signalled. Off omits the property.')
 
 $chkDirectWebRtcControlDataChannel = New-Object System.Windows.Forms.CheckBox
 $chkDirectWebRtcControlDataChannel.Text = 'Control data channel for upstream events'
@@ -2759,14 +2805,13 @@ $chkPlayerUrlOverrides.Checked = $script:DefaultPlayerUrlOverrides
 $settingsGroup.Controls.Add($chkPlayerUrlOverrides)
 $toolTip.SetToolTip($chkPlayerUrlOverrides, 'Debug escape hatch. Off = clean /live/ URL uses gstglass-config.js. On = append current Player tab values as query overrides.')
 
-$cmbPlayerAvRenderMode = New-Object System.Windows.Forms.ComboBox
-$cmbPlayerAvRenderMode.Location = New-Object System.Drawing.Point(15, 548)
-$cmbPlayerAvRenderMode.Size = New-Object System.Drawing.Size(260, 23)
-$cmbPlayerAvRenderMode.DropDownStyle = 'DropDownList'
-$null = $cmbPlayerAvRenderMode.Items.AddRange([string[]]@('Synced single media element','Decoupled video/audio elements'))
-$cmbPlayerAvRenderMode.SelectedItem = $script:DefaultPlayerAvRenderMode
-$settingsGroup.Controls.Add($cmbPlayerAvRenderMode)
-$toolTip.SetToolTip($cmbPlayerAvRenderMode, 'Browser/player render mode. Synced uses the original single media element. Decoupled puts video and audio tracks on separate media elements so audio NetEQ growth is less likely to drag video playback.')
+$chkPlayerSeparateHtmlMediaElements = New-Object System.Windows.Forms.CheckBox
+$chkPlayerSeparateHtmlMediaElements.Text = 'Separate video and audio HTML media elements'
+$chkPlayerSeparateHtmlMediaElements.Location = New-Object System.Drawing.Point(15, 548)
+$chkPlayerSeparateHtmlMediaElements.Size = New-Object System.Drawing.Size(340, 24)
+$chkPlayerSeparateHtmlMediaElements.Checked = $script:DefaultPlayerSeparateHtmlMediaElements
+$settingsGroup.Controls.Add($chkPlayerSeparateHtmlMediaElements)
+$toolTip.SetToolTip($chkPlayerSeparateHtmlMediaElements, 'Player rendering only. On attaches the video track to the video element and the audio track to a separate audio element. Off recombines both tracks into one MediaStream on the video element. Independent of A/V MediaStream grouping. Physical split WebRTC producers necessarily use separate elements.')
 
 $cmbDirectWebRtcAvPipelineMode = New-Object System.Windows.Forms.ComboBox
 $cmbDirectWebRtcAvPipelineMode.Location = New-Object System.Drawing.Point(15, 548)
@@ -4682,11 +4727,11 @@ function Apply-ModernDashboardUi {
     Add-Field $r -Label 'Monitor' -Control $numMonitor -Width 70 | Out-Null
     Add-Field $r -Control $chkCursor -Width 100 | Out-Null
 
-    $s = Add-Section $paneTransport 'Timestamps'
+    $s = Add-Section $paneTransport 'Clock signaling / timestamps'
     $r = Add-Row $s
-    Add-Field $r -LabelControl $lblTimingMode -Control $cmbTimingMode -Width 280 | Out-Null
+    Add-Field $r -LabelControl $lblTimingMode -Control $cmbTimingMode -Width 225 | Out-Null
     $r = Add-Row $s
-    Add-Field $r -Control $lblTimestampStatus -Width 245 | Out-Null
+    Add-Field $r -Control $lblTimestampStatus -Width 535 | Out-Null
 
     $s = Add-Section $paneTransport 'Direct GStreamer WebRTC'
     $r = Add-Row $s
@@ -4698,6 +4743,18 @@ function Apply-ModernDashboardUi {
     $r = Add-Row $s
     Add-Field $r -Control $chkDirectWebRtcSharedSignaling -Width 260 | Out-Null
     Add-Field $r -Label 'STUN' -Control $txtDirectWebRtcStun -Width 270 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Label 'A/V pipeline topology' -Control $cmbDirectWebRtcAvPipelineMode -Width 310 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Control $chkSplitClockSignalingOverrides -Width 320 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Label 'Video pipeline clock signaling' -Control $cmbSplitVideoClockSignaling -Width 220 | Out-Null
+    Add-Field $r -Label 'Audio pipeline clock signaling' -Control $cmbSplitAudioClockSignaling -Width 220 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Label 'A/V MediaStream grouping' -Control $cmbDirectWebRtcMediaStreamGrouping -Width 315 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Label 'Video MediaStream ID' -Control $txtDirectWebRtcVideoMediaStreamId -Width 180 | Out-Null
+    Add-Field $r -Label 'Audio MediaStream ID' -Control $txtDirectWebRtcAudioMediaStreamId -Width 180 | Out-Null
     $r = Add-Row $s
     Add-Field $r -Control $chkDirectWebRtcTurnEnabled -Width 165 | Out-Null
     Add-Field $r -Label 'TURN URI' -Control $txtDirectWebRtcTurn -Width 360 | Out-Null
@@ -4711,7 +4768,6 @@ function Apply-ModernDashboardUi {
     Add-Field $r -Label 'Publisher queue ms (0=off)' -Control $numDirectWebRtcPublisherQueueMs -Width 75 | Out-Null
     Add-Field $r -Control $chkDirectWebRtcAudioBridgePacing -Width 310 | Out-Null
     $r = Add-Row $s
-    Add-Field $r -Label 'WebRTC clock signalling' -Control $cmbDirectWebRtcClockSignaling -Width 235 | Out-Null
     Add-Field $r -Control $chkDirectWebRtcControlDataChannel -Width 315 | Out-Null
     $r = Add-Row $s
     Add-Field $r -Label 'Bundle policy' -Control $cmbDirectWebRtcBundlePolicy -Width 145 | Out-Null
@@ -4937,10 +4993,9 @@ function Apply-ModernDashboardUi {
     Add-Field $r -Label 'Green <= ms' -Control $numLiveEdgeGreenMs -Width 100 | Out-Null
     Add-Field $r -Label 'Yellow <= ms' -Control $numLiveEdgeYellowMs -Width 105 | Out-Null
 
-    $s = Add-Section $panePlayer 'Player A/V render mode'
+    $s = Add-Section $panePlayer 'Player A/V rendering'
     $r = Add-Row $s
-    Add-Field $r -Label 'A/V render mode' -Control $cmbPlayerAvRenderMode -Width 285 | Out-Null
-    Add-Field $r -Label 'A/V pipeline topology' -Control $cmbDirectWebRtcAvPipelineMode -Width 310 | Out-Null
+    Add-Field $r -Control $chkPlayerSeparateHtmlMediaElements -Width 365 | Out-Null
     $r = Add-Row $s
     Add-Field $r -Label 'Split sync mode' -Control $cmbSplitPlayerSyncMode -Width 235 | Out-Null
     Add-Field $r -Label 'Audio stall sec' -Control $numSplitAudioStallSeconds -Width 95 | Out-Null
@@ -5213,7 +5268,7 @@ function Apply-ModernDashboardUi {
         $cmbDirectWebRtcBundledWebMode, $txtDirectWebRtcBundledWebDirectory, $btnBrowseDirectWebRtcBundledWebDirectory, $btnDetectDirectWebRtcBundledWebDirectory,
         $cmbDirectWebRtcWorkingWebMode, $txtDirectWebRtcWebDirectory, $btnBrowseDirectWebRtcWebDirectory, $btnDetectDirectWebRtcWebDirectory,
         $numWidth, $numHeight, $numFps, $numVideoBitrate, $numGopSeconds, $chkUnifiedBridgeKeyframeGuard, $numUnifiedBridgeKeyframeIntervalMs,
-        $cmbDirectWebRtcClockSignaling, $chkDirectWebRtcControlDataChannel, $cmbDirectWebRtcBundlePolicy, $numDirectWebRtcInternalRtpMtu, $chkDirectWebRtcInternalRepeatHeaders,
+        $cmbTimingMode, $chkSplitClockSignalingOverrides, $cmbSplitVideoClockSignaling, $cmbSplitAudioClockSignaling, $chkDirectWebRtcControlDataChannel, $cmbDirectWebRtcBundlePolicy, $numDirectWebRtcInternalRtpMtu, $chkDirectWebRtcInternalRepeatHeaders,
         $cmbRateControl, $numMaxVideoBitrate, $numConstantQp,
         $cmbEncoder, $lblEncoderStatus, $cmbPreset, $cmbProfile,
         $cmbEncoderTune, $cmbMultipass, $cmbVideoPipelineClockMode, $cmbVideoTimestampMode, $cmbVideoSyncMode, $numVbvBuffer,
@@ -5564,164 +5619,6 @@ function Stop-StaleManagedProcesses {
     finally {
         Remove-ActiveProcessState
     }
-}
-
-
-function Get-TcpListeningProcessIds {
-    param([Parameter(Mandatory)][int]$Port)
-
-    $ids = New-Object System.Collections.Generic.List[int]
-
-    try {
-        $connections = Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction Stop
-        foreach ($connection in $connections) {
-            $pidValue = [int]$connection.OwningProcess
-            if ($pidValue -gt 0 -and -not $ids.Contains($pidValue)) {
-                $ids.Add($pidValue)
-            }
-        }
-    }
-    catch {
-        try {
-            $lines = & netstat.exe -ano -p tcp 2>$null
-            foreach ($line in $lines) {
-                if ($line -notmatch '\bLISTENING\b') { continue }
-                if ($line -notmatch (':{0}\s+' -f [regex]::Escape([string]$Port))) { continue }
-                if ($line -match '\s(\d+)\s*$') {
-                    $pidValue = [int]$matches[1]
-                    if ($pidValue -gt 0 -and -not $ids.Contains($pidValue)) {
-                        $ids.Add($pidValue)
-                    }
-                }
-            }
-        }
-        catch {}
-    }
-
-    return @($ids)
-}
-
-function Get-ProcessPathSafe {
-    param([Parameter(Mandatory)][int]$ProcessId)
-
-    try {
-        $p = Get-Process -Id $ProcessId -ErrorAction Stop
-        try { return [string]$p.Path } catch { return [string]$p.ProcessName }
-    }
-    catch {
-        return ''
-    }
-}
-
-function Test-GStreamerPortOwnerIsSafeToStop {
-    param(
-        [Parameter(Mandatory)][int]$ProcessId,
-        [Parameter(Mandatory)][string]$GstPath
-    )
-
-    if ($ProcessId -le 0 -or $ProcessId -eq $PID) { return $false }
-
-    try {
-        $proc = Get-Process -Id $ProcessId -ErrorAction Stop
-        $name = [string]$proc.ProcessName
-        $actualPath = ''
-        try { $actualPath = [System.IO.Path]::GetFullPath([string]$proc.Path) } catch {}
-        $expectedPath = ''
-        try { $expectedPath = [System.IO.Path]::GetFullPath($GstPath) } catch {}
-
-        if (-not [string]::IsNullOrWhiteSpace($actualPath) -and
-            -not [string]::IsNullOrWhiteSpace($expectedPath) -and
-            $actualPath.Equals($expectedPath, [System.StringComparison]::OrdinalIgnoreCase)) {
-            return $true
-        }
-
-        # Manual gst-launch tests are the common way the direct WebRTC ports are
-        # left occupied. Treat only gst-launch-shaped process names as safe; do
-        # not kill arbitrary services that happen to use 8189/8889.
-        if ($name -match '^gst-launch(\.1\.0)?$' -or $name -match '^gst-launch-1\.0$') {
-            return $true
-        }
-    }
-    catch {}
-
-    return $false
-}
-
-function Get-DirectWebRtcWebServerPort {
-    $base = Normalize-DirectWebRtcWebAddress $txtDestination.Text.Trim()
-    if ([string]::IsNullOrWhiteSpace($base)) { $base = $script:DefaultDirectWebRtcWebAddress }
-
-    try {
-        $u = [Uri]$base
-        if ($u.Port -gt 0) { return [int]$u.Port }
-    }
-    catch {}
-
-    return 8889
-}
-
-function Clear-DirectWebRtcTcpPortIfSafe {
-    param(
-        [Parameter(Mandatory)][int]$Port,
-        [Parameter(Mandatory)][string]$Label,
-        [Parameter(Mandatory)][string]$GstPath
-    )
-
-    $owners = @(Get-TcpListeningProcessIds -Port $Port)
-    if ($owners.Count -eq 0) { return $true }
-
-    foreach ($ownerPid in $owners) {
-        $path = Get-ProcessPathSafe -ProcessId $ownerPid
-        if (Test-GStreamerPortOwnerIsSafeToStop -ProcessId $ownerPid -GstPath $GstPath) {
-            Append-Log "Direct WebRTC port preflight: $Label TCP port $Port is still owned by prior GStreamer process PID $ownerPid ($path); terminating it before launch."
-            try { Stop-ProcessTreeById -ProcessId $ownerPid } catch {}
-        }
-        else {
-            Append-Log "Direct WebRTC port preflight FAILED: $Label TCP port $Port is already owned by PID $ownerPid ($path). Change the port or stop that process first."
-            return $false
-        }
-    }
-
-    $deadline = (Get-Date).AddSeconds(3)
-    while ((Get-Date) -lt $deadline) {
-        Start-Sleep -Milliseconds 150
-        if (@(Get-TcpListeningProcessIds -Port $Port).Count -eq 0) { return $true }
-        [System.Windows.Forms.Application]::DoEvents()
-    }
-
-    Append-Log "Direct WebRTC port preflight FAILED: $Label TCP port $Port did not release after terminating stale GStreamer owner(s)."
-    return $false
-}
-
-function Invoke-DirectWebRtcPortPreflight {
-    param([Parameter(Mandatory)][string]$GstPath)
-
-    if (-not (Test-TransportEnabled)) { return $true }
-    if ([string]$cmbProtocol.SelectedItem -ne $script:DirectWebRtcProtocolName) { return $true }
-
-    $ports = New-Object System.Collections.Generic.List[object]
-    $signalPort = [int]$numDirectWebRtcSignalingPort.Value
-    $webPort = [int](Get-DirectWebRtcWebServerPort)
-    $ports.Add([pscustomobject]@{ Port = $signalPort; Label = 'primary signalling' })
-    $ports.Add([pscustomobject]@{ Port = $webPort; Label = 'viewer web server' })
-
-    if ((Test-DirectWebRtcSplitAvPipelines) -and
-        -not (Test-DirectWebRtcUnifiedPublisher) -and
-        -not (Test-DirectWebRtcSharedSignaling)) {
-        $ports.Add([pscustomobject]@{ Port = [int](Get-DirectWebRtcSplitAudioSignalingPort); Label = 'split audio signalling' })
-    }
-
-    $seen = @{}
-    foreach ($entry in $ports) {
-        $port = [int]$entry.Port
-        if ($port -le 0 -or $seen.ContainsKey($port)) { continue }
-        $seen[$port] = $true
-        if (-not (Clear-DirectWebRtcTcpPortIfSafe -Port $port -Label ([string]$entry.Label) -GstPath $GstPath)) {
-            return $false
-        }
-    }
-
-    return $true
 }
 
 function Update-TrayMenuState {
@@ -6687,12 +6584,15 @@ function Reset-WebRtcSaneDefaults {
     $numLiveEdgeGreenMs.Value = $script:DefaultLiveEdgeGreenMs
     $numLiveEdgeYellowMs.Value = $script:DefaultLiveEdgeYellowMs
     $chkPlayerUrlOverrides.Checked = $script:DefaultPlayerUrlOverrides
-    if ($cmbDirectWebRtcClockSignaling.Items.Contains($script:DefaultDirectWebRtcClockSignaling)) { $cmbDirectWebRtcClockSignaling.SelectedItem = $script:DefaultDirectWebRtcClockSignaling }
+    if ($cmbTimingMode.Items.Contains($script:DefaultTimingMode)) { $cmbTimingMode.SelectedItem = $script:DefaultTimingMode }
+    $chkSplitClockSignalingOverrides.Checked = $script:DefaultSplitClockSignalingOverrides
+    if ($cmbSplitVideoClockSignaling.Items.Contains($script:DefaultSplitVideoClockSignaling)) { $cmbSplitVideoClockSignaling.SelectedItem = $script:DefaultSplitVideoClockSignaling }
+    if ($cmbSplitAudioClockSignaling.Items.Contains($script:DefaultSplitAudioClockSignaling)) { $cmbSplitAudioClockSignaling.SelectedItem = $script:DefaultSplitAudioClockSignaling }
     $chkDirectWebRtcControlDataChannel.Checked = $script:DefaultDirectWebRtcControlDataChannel
     if ($cmbDirectWebRtcBundlePolicy.Items.Contains($script:DefaultDirectWebRtcBundlePolicy)) { $cmbDirectWebRtcBundlePolicy.SelectedItem = $script:DefaultDirectWebRtcBundlePolicy }
     $numDirectWebRtcInternalRtpMtu.Value = $script:DefaultDirectWebRtcInternalRtpMtu
     $chkDirectWebRtcInternalRepeatHeaders.Checked = $script:DefaultDirectWebRtcInternalRepeatHeaders
-    if ($cmbPlayerAvRenderMode.Items.Contains($script:DefaultPlayerAvRenderMode)) { $cmbPlayerAvRenderMode.SelectedItem = $script:DefaultPlayerAvRenderMode }
+    $chkPlayerSeparateHtmlMediaElements.Checked = $script:DefaultPlayerSeparateHtmlMediaElements
     if ($cmbDirectWebRtcAvPipelineMode.Items.Contains($script:DefaultDirectWebRtcAvPipelineMode)) { $cmbDirectWebRtcAvPipelineMode.SelectedItem = $script:DefaultDirectWebRtcAvPipelineMode }
     if ($cmbSplitPlayerSyncMode.Items.Contains($script:DefaultSplitPlayerSyncMode)) { $cmbSplitPlayerSyncMode.SelectedItem = $script:DefaultSplitPlayerSyncMode }
     $numSplitAudioStallSeconds.Value = $script:DefaultSplitAudioStallSeconds
@@ -6716,13 +6616,19 @@ function Reset-TransportDefaults {
     $numDirectWebRtcSignalingPort.Value = $script:DefaultDirectWebRtcSignalingPort
     $numDirectWebRtcSplitAudioSignalingPort.Value = $script:DefaultDirectWebRtcSplitAudioSignalingPort
     $chkDirectWebRtcSharedSignaling.Checked = $script:DefaultDirectWebRtcSharedSignaling
+    if ($cmbDirectWebRtcMediaStreamGrouping.Items.Contains($script:DefaultDirectWebRtcMediaStreamGrouping)) { $cmbDirectWebRtcMediaStreamGrouping.SelectedItem = $script:DefaultDirectWebRtcMediaStreamGrouping }
+    $txtDirectWebRtcVideoMediaStreamId.Text = $script:DefaultDirectWebRtcVideoMediaStreamId
+    $txtDirectWebRtcAudioMediaStreamId.Text = $script:DefaultDirectWebRtcAudioMediaStreamId
     $chkDirectWebRtcUnifiedPublisher.Checked = $script:DefaultDirectWebRtcUnifiedPublisher
     $numDirectWebRtcBridgeVideoPort.Value = $script:DefaultDirectWebRtcBridgeVideoPort
     $numDirectWebRtcBridgeAudioPort.Value = $script:DefaultDirectWebRtcBridgeAudioPort
     $numDirectWebRtcBridgeJitterMs.Value = $script:DefaultDirectWebRtcBridgeJitterMs
     $numDirectWebRtcPublisherQueueMs.Value = $script:DefaultDirectWebRtcPublisherQueueMs
     $chkDirectWebRtcAudioBridgePacing.Checked = $script:DefaultDirectWebRtcAudioBridgePacing
-    if ($cmbDirectWebRtcClockSignaling.Items.Contains($script:DefaultDirectWebRtcClockSignaling)) { $cmbDirectWebRtcClockSignaling.SelectedItem = $script:DefaultDirectWebRtcClockSignaling }
+    if ($cmbTimingMode.Items.Contains($script:DefaultTimingMode)) { $cmbTimingMode.SelectedItem = $script:DefaultTimingMode }
+    $chkSplitClockSignalingOverrides.Checked = $script:DefaultSplitClockSignalingOverrides
+    if ($cmbSplitVideoClockSignaling.Items.Contains($script:DefaultSplitVideoClockSignaling)) { $cmbSplitVideoClockSignaling.SelectedItem = $script:DefaultSplitVideoClockSignaling }
+    if ($cmbSplitAudioClockSignaling.Items.Contains($script:DefaultSplitAudioClockSignaling)) { $cmbSplitAudioClockSignaling.SelectedItem = $script:DefaultSplitAudioClockSignaling }
     $chkDirectWebRtcControlDataChannel.Checked = $script:DefaultDirectWebRtcControlDataChannel
     if ($cmbDirectWebRtcBundlePolicy.Items.Contains($script:DefaultDirectWebRtcBundlePolicy)) { $cmbDirectWebRtcBundlePolicy.SelectedItem = $script:DefaultDirectWebRtcBundlePolicy }
     $numDirectWebRtcInternalRtpMtu.Value = $script:DefaultDirectWebRtcInternalRtpMtu
@@ -7435,6 +7341,27 @@ function Test-DirectWebRtcSplitAvPipelines {
     return ((Get-DirectWebRtcAvPipelineMode) -like 'Split A/V pipelines*')
 }
 
+
+function Get-DirectWebRtcMediaStreamGrouping {
+    if ($null -eq $cmbDirectWebRtcMediaStreamGrouping) { return $script:DefaultDirectWebRtcMediaStreamGrouping }
+    return (Get-ComboSelectedOrDefault $cmbDirectWebRtcMediaStreamGrouping $script:DefaultDirectWebRtcMediaStreamGrouping)
+}
+
+function Test-DirectWebRtcSeparateMediaStreams {
+    return ((Test-DirectWebRtcProtocol) -and -not (Test-DirectWebRtcSplitAvPipelines) -and ((Get-DirectWebRtcMediaStreamGrouping) -like 'Separate audio/video MediaStreams*'))
+}
+
+function Get-DirectWebRtcMediaStreamId {
+    param([ValidateSet('video','audio')][string]$Kind)
+
+    $fallback = if ($Kind -eq 'audio') { $script:DefaultDirectWebRtcAudioMediaStreamId } else { $script:DefaultDirectWebRtcVideoMediaStreamId }
+    $control = if ($Kind -eq 'audio') { $txtDirectWebRtcAudioMediaStreamId } else { $txtDirectWebRtcVideoMediaStreamId }
+    if ($null -eq $control) { return $fallback }
+    $value = [string]$control.Text
+    if ([string]::IsNullOrWhiteSpace($value)) { return $fallback }
+    return $value.Trim()
+}
+
 function Test-DirectWebRtcUnifiedPublisher {
     return ((Test-DirectWebRtcSplitAvPipelines) -and $chkDirectWebRtcUnifiedPublisher -and $chkDirectWebRtcUnifiedPublisher.Checked)
 }
@@ -8038,17 +7965,53 @@ function Get-TimingMode {
         return [string]$cmbTimingMode.SelectedItem
     }
     if ($chkSendAbsoluteTimestamps.Checked) {
-        return 'Send absolute timestamps / clock signalling'
+        return 'On / protocol clock signaling'
     }
     return $script:DefaultTimingMode
 }
 
-function Test-SendAbsoluteTimestampsEnabled {
-    return ((Get-TimingMode) -eq 'Send absolute timestamps / clock signalling')
+function Test-ClockSignalingValueEnabled {
+    param([AllowNull()][string]$Value)
+
+    return ([string]$Value -in @(
+        'On / protocol clock signaling',
+        'Send absolute timestamps / clock signalling',
+        'RFC7273 NTP/PTP signalling',
+        'RFC7273 NTP/PTP signaling',
+        'On',
+        'Enabled'
+    ))
 }
 
-function Test-DirectWebRtcClockSignalingEnabled {
-    return ((Get-ComboSelectedOrDefault $cmbDirectWebRtcClockSignaling $script:DefaultDirectWebRtcClockSignaling) -eq 'RFC7273 NTP/PTP signalling')
+function Test-SendAbsoluteTimestampsEnabled {
+    return (Test-ClockSignalingValueEnabled (Get-TimingMode))
+}
+
+function Test-SplitClockSignalingOverridesActive {
+    return (
+        ([string]$cmbProtocol.SelectedItem -eq $script:DirectWebRtcProtocolName) -and
+        (Test-TransportEnabled) -and
+        (Test-DirectWebRtcSplitAvPipelines) -and
+        -not (Test-DirectWebRtcUnifiedPublisher) -and
+        $chkSplitClockSignalingOverrides -and
+        $chkSplitClockSignalingOverrides.Checked
+    )
+}
+
+function Test-WebRtcClockSignalingForSink {
+    param(
+        [ValidateSet('Global','Video','Audio')]
+        [string]$SinkRole = 'Global'
+    )
+
+    if ((Test-SplitClockSignalingOverridesActive) -and $SinkRole -ne 'Global') {
+        if ($SinkRole -eq 'Video') {
+            return (Test-ClockSignalingValueEnabled ([string]$cmbSplitVideoClockSignaling.SelectedItem))
+        }
+        return (Test-ClockSignalingValueEnabled ([string]$cmbSplitAudioClockSignaling.SelectedItem))
+    }
+
+    return (Test-SendAbsoluteTimestampsEnabled)
 }
 
 function Sync-TransportTimingControls {
@@ -8057,112 +8020,96 @@ function Sync-TransportTimingControls {
         [string]$Source = 'Protocol'
     )
 
-    if ($script:SynchronizingTimingControls -or $script:LoadingSettings) { return }
-    if ([string]$cmbProtocol.SelectedItem -ne $script:DirectWebRtcProtocolName) { return }
-
-    $script:SynchronizingTimingControls = $true
-    try {
-        if ($Source -eq 'DirectWebRtc') {
-            $targetTimingMode = if (Test-DirectWebRtcClockSignalingEnabled) {
-                'Send absolute timestamps / clock signalling'
-            }
-            else {
-                $script:DefaultTimingMode
-            }
-
-            if ([string]$cmbTimingMode.SelectedItem -ne $targetTimingMode) {
-                $cmbTimingMode.SelectedItem = $targetTimingMode
-            }
-        }
-        else {
-            $targetClockSignaling = if (Test-SendAbsoluteTimestampsEnabled) {
-                'RFC7273 NTP/PTP signalling'
-            }
-            else {
-                'Off'
-            }
-
-            if ([string]$cmbDirectWebRtcClockSignaling.SelectedItem -ne $targetClockSignaling) {
-                $cmbDirectWebRtcClockSignaling.SelectedItem = $targetClockSignaling
-            }
-        }
-    }
-    finally {
-        $script:SynchronizingTimingControls = $false
-    }
+    # Compatibility no-op. Older builds had a second GST-WebRTC-only selector;
+    # f42 keeps one protocol-aware setting and only maps old values during load.
 }
 
 function Get-AbsoluteTimestampTransportOption {
-    param([Parameter(Mandatory)][string]$Protocol)
-
-    if ($Protocol -eq 'GST WebRTC') {
-        if (Test-DirectWebRtcClockSignalingEnabled) { return 'do-clock-signalling=true' }
-        return ''
-    }
-
-    if (-not (Test-SendAbsoluteTimestampsEnabled)) {
-        return ''
-    }
+    param(
+        [Parameter(Mandatory)][string]$Protocol,
+        [ValidateSet('Global','Video','Audio')][string]$SinkRole = 'Global'
+    )
 
     switch ($Protocol) {
-        'WHIP' {
-            # WHIP must honor Timing mode. When MediaMTX useAbsoluteTimestamp=true,
-            # frames without absolute time are skipped; when it is false, receiver
-            # timestamps are expected. Do not silently guard this off.
-            return 'do-clock-signalling=true'
-        }
-        'RTSP' {
-            # RTSP absolute frame time is carried through RTCP Sender Reports.
-            return 'ntp-time-source=ntp'
-        }
-        default {
+        'GST WebRTC' {
+            if (Test-WebRtcClockSignalingForSink -SinkRole $SinkRole) { return 'do-clock-signalling=true' }
             return ''
         }
+        'WHIP' {
+            if (Test-SendAbsoluteTimestampsEnabled) { return 'do-clock-signalling=true' }
+            return ''
+        }
+        'RTSP' {
+            if (Test-SendAbsoluteTimestampsEnabled) { return 'ntp-time-source=ntp' }
+            return ''
+        }
+        default { return '' }
     }
 }
 
 function Get-AbsoluteTimestampStatusText {
     $protocol = [string]$cmbProtocol.SelectedItem
 
-    if (-not (Test-TransportEnabled)) {
-        return 'Transport disabled'
-    }
-
-    if ($protocol -eq 'GST WebRTC') {
-        if (Test-DirectWebRtcClockSignalingEnabled) { return 'GST WebRTC: RFC7273 do-clock-signalling=true' }
-        return 'GST WebRTC: RFC7273 clock signalling off'
-    }
-
-    if (-not (Test-SendAbsoluteTimestampsEnabled)) {
-        return 'Timing: receiver/server timestamps'
-    }
+    if (-not (Test-TransportEnabled)) { return 'Transport disabled' }
 
     switch ($protocol) {
-        'WHIP' { return 'WHIP: do-clock-signalling=true; pair with MediaMTX useAbsoluteTimestamp' }
-        'RTSP' { return 'RTSP: NTP sender reports' }
-        default { return ($protocol + ': timing mode retained; no protocol-specific timing flag emitted') }
+        'GST WebRTC' {
+            if (Test-SplitClockSignalingOverridesActive) {
+                $videoState = if (Test-WebRtcClockSignalingForSink -SinkRole Video) { 'on' } else { 'off' }
+                $audioState = if (Test-WebRtcClockSignalingForSink -SinkRole Audio) { 'on' } else { 'off' }
+                return "GST WebRTC split sinks: video RFC7273 $videoState; audio RFC7273 $audioState"
+            }
+            if (Test-SendAbsoluteTimestampsEnabled) { return 'GST WebRTC sink: RFC7273 do-clock-signalling=true' }
+            return 'GST WebRTC sink: clock signaling off / property omitted'
+        }
+        'WHIP' {
+            if (Test-SendAbsoluteTimestampsEnabled) { return 'WHIP sink: RFC7273 do-clock-signalling=true' }
+            return 'WHIP sink: clock signaling off / property omitted'
+        }
+        'RTSP' {
+            if (Test-SendAbsoluteTimestampsEnabled) { return 'RTSP sink: ntp-time-source=ntp' }
+            return 'RTSP sink: NTP timestamp override off / property omitted'
+        }
+        default { return ($protocol + ': no applicable clock-signaling sink property') }
     }
 }
 
 function Update-TimestampUi {
     $protocol = [string]$cmbProtocol.SelectedItem
     $transportEnabled = Test-TransportEnabled
-    $protocolTimingApplied = $transportEnabled -and ($protocol -in @('WHIP', 'RTSP'))
+    $applicable = $protocol -in @('WHIP','GST WebRTC','RTSP')
 
-    # Timing mode is a global transport control. Keep it selectable for every
-    # transport instead of disabling it when the current protocol has no
-    # protocol-specific timing property.
-    if ($null -ne $cmbTimingMode) { $cmbTimingMode.Enabled = $transportEnabled }
+    $physicalSplit = $transportEnabled -and $protocol -eq 'GST WebRTC' -and (Test-DirectWebRtcSplitAvPipelines) -and -not (Test-DirectWebRtcUnifiedPublisher)
+    $splitOverrides = $physicalSplit -and $chkSplitClockSignalingOverrides.Checked
+
+    if ($lblTimingMode) {
+        $lblTimingMode.Text = switch ($protocol) {
+            'WHIP' { 'WHIP clock signaling' }
+            'GST WebRTC' {
+                if ($splitOverrides) { 'WebRTC clock signaling (overridden)' }
+                elseif ($physicalSplit) { 'WebRTC clock signaling (both sinks)' }
+                else { 'WebRTC clock signaling' }
+            }
+            'RTSP' { 'RTSP NTP timestamps' }
+            default { 'Clock signaling' }
+        }
+    }
+
+    if ($cmbTimingMode) { $cmbTimingMode.Enabled = $transportEnabled -and $applicable -and -not $splitOverrides }
     $chkSendAbsoluteTimestamps.Checked = Test-SendAbsoluteTimestampsEnabled
 
+    if ($chkSplitClockSignalingOverrides) { $chkSplitClockSignalingOverrides.Enabled = $physicalSplit }
+    if ($cmbSplitVideoClockSignaling) { $cmbSplitVideoClockSignaling.Enabled = $splitOverrides }
+    if ($cmbSplitAudioClockSignaling) { $cmbSplitAudioClockSignaling.Enabled = $splitOverrides }
+
     $lblTimestampStatus.Text = Get-AbsoluteTimestampStatusText
-    $directClockActive = ($protocol -eq 'GST WebRTC') -and (Test-DirectWebRtcClockSignalingEnabled)
-    $lblTimestampStatus.ForeColor = if ($directClockActive -or ((Test-SendAbsoluteTimestampsEnabled) -and $protocolTimingApplied)) {
-        [System.Drawing.Color]::DarkSlateBlue
+    $active = if ($protocol -eq 'GST WebRTC' -and (Test-SplitClockSignalingOverridesActive)) {
+        (Test-WebRtcClockSignalingForSink -SinkRole Video) -or (Test-WebRtcClockSignalingForSink -SinkRole Audio)
     }
     else {
-        [System.Drawing.Color]::DimGray
+        $applicable -and (Test-SendAbsoluteTimestampsEnabled)
     }
+    $lblTimestampStatus.ForeColor = if ($active) { [System.Drawing.Color]::DarkSlateBlue } else { [System.Drawing.Color]::DimGray }
 }
 
 function Test-DirectWebRtcProtocol {
@@ -8518,8 +8465,12 @@ function Get-PlayerSettingsFromUi {
         LiveEdgeYellowMs = [int]$numLiveEdgeYellowMs.Value
         LiveEdgeAverageSec = [int]$numLiveEdgeAverageSec.Value
         UrlOverrides = [bool]($chkPlayerUrlOverrides -and $chkPlayerUrlOverrides.Checked)
-        AvRenderMode = [string]$cmbPlayerAvRenderMode.SelectedItem
+        SeparateHtmlMediaElements = [bool]($chkPlayerSeparateHtmlMediaElements -and $chkPlayerSeparateHtmlMediaElements.Checked)
+        AvRenderMode = if ($chkPlayerSeparateHtmlMediaElements -and $chkPlayerSeparateHtmlMediaElements.Checked) { 'Decoupled video/audio elements' } else { 'Synced single media element' }
         AvPipelineMode = [string](Get-DirectWebRtcAvPipelineMode)
+        MediaStreamGrouping = [string](Get-DirectWebRtcMediaStreamGrouping)
+        VideoMediaStreamId = [string](Get-DirectWebRtcMediaStreamId -Kind video)
+        AudioMediaStreamId = [string](Get-DirectWebRtcMediaStreamId -Kind audio)
         SplitPlayerSyncMode = [string](Get-ComboSelectedOrDefault $cmbSplitPlayerSyncMode $script:DefaultSplitPlayerSyncMode)
         SplitAudioStallSeconds = [int]$numSplitAudioStallSeconds.Value
         SplitAudioWarmupSeconds = [int]$numSplitAudioWarmupSeconds.Value
@@ -8585,8 +8536,13 @@ function Add-DirectWebRtcViewerQuery {
     $liveEdgeAverageSec = [int]$playerSettings.LiveEdgeAverageSec
     $warmupSeconds = [int]$playerSettings.WatchdogWarmupSeconds
     $avRenderMode = [System.Uri]::EscapeDataString([string]$playerSettings.AvRenderMode)
+    $separateHtmlMediaElements = if ($playerSettings.SeparateHtmlMediaElements) { 1 } else { 0 }
     $effectiveAvPipelineMode = if (Test-DirectWebRtcUnifiedPublisher) { 'Unified publisher - one producer' } else { [string](Get-DirectWebRtcAvPipelineMode) }
     $avPipelineMode = [System.Uri]::EscapeDataString($effectiveAvPipelineMode)
+    $effectiveMediaStreamGrouping = if (Test-DirectWebRtcSeparateMediaStreams) { [string](Get-DirectWebRtcMediaStreamGrouping) } else { $script:DefaultDirectWebRtcMediaStreamGrouping }
+    $mediaStreamGrouping = [System.Uri]::EscapeDataString($effectiveMediaStreamGrouping)
+    $videoMediaStreamId = [System.Uri]::EscapeDataString((Get-DirectWebRtcMediaStreamId -Kind video))
+    $audioMediaStreamId = [System.Uri]::EscapeDataString((Get-DirectWebRtcMediaStreamId -Kind audio))
     $videoSignalPort = [int]$numDirectWebRtcSignalingPort.Value
     $splitAudioPort = if ((Test-DirectWebRtcSplitAvPipelines) -and -not (Test-DirectWebRtcUnifiedPublisher)) { [int](Get-DirectWebRtcSplitAudioSignalingPort) } else { 0 }
     $sharedSignaling = if (Test-DirectWebRtcSharedSignaling) { 1 } else { 0 }
@@ -8594,7 +8550,7 @@ function Add-DirectWebRtcViewerQuery {
     $stamp = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
     $joiner = if ($Url -match '\?') { '&' } else { '?' }
 
-    return ($Url + $joiner + "signalPort=$videoSignalPort&videoSignalingPort=$videoSignalPort&audioJbufMs=$audioJitterMs&videoJbufMs=$videoJitterMs&jitterMs=$fallbackJitterMs&browserJitterTargetMs=$fallbackJitterMs&jbufMaxMs=$maxMs&jbufWatchdog=$watchdog&jbufDebug=$debug&liveEdgeGreenMs=$liveEdgeGreenMs&liveEdgeYellowMs=$liveEdgeYellowMs&liveEdgeAverageSec=$liveEdgeAverageSec&watchdogWarmupSeconds=$warmupSeconds&jbufWatchdogWarmupSeconds=$warmupSeconds&splitAudioWarmupSeconds=$warmupSeconds&avRenderMode=$avRenderMode&playerAvRenderMode=$avRenderMode&avPipelineMode=$avPipelineMode$splitAudioPart&cb=$stamp")
+    return ($Url + $joiner + "signalPort=$videoSignalPort&videoSignalingPort=$videoSignalPort&audioJbufMs=$audioJitterMs&videoJbufMs=$videoJitterMs&jitterMs=$fallbackJitterMs&browserJitterTargetMs=$fallbackJitterMs&jbufMaxMs=$maxMs&jbufWatchdog=$watchdog&jbufDebug=$debug&liveEdgeGreenMs=$liveEdgeGreenMs&liveEdgeYellowMs=$liveEdgeYellowMs&liveEdgeAverageSec=$liveEdgeAverageSec&watchdogWarmupSeconds=$warmupSeconds&jbufWatchdogWarmupSeconds=$warmupSeconds&splitAudioWarmupSeconds=$warmupSeconds&separateHtmlMediaElements=$separateHtmlMediaElements&playerSeparateHtmlMediaElements=$separateHtmlMediaElements&avRenderMode=$avRenderMode&playerAvRenderMode=$avRenderMode&avPipelineMode=$avPipelineMode&mediaStreamGrouping=$mediaStreamGrouping&videoMsid=$videoMediaStreamId&audioMsid=$audioMediaStreamId$splitAudioPart&cb=$stamp")
 }
 
 function Get-DirectWebRtcViewerUrl {
@@ -8640,13 +8596,18 @@ function Update-DirectWebRtcUi {
         $numDirectWebRtcSignalingPort,
         $numDirectWebRtcSplitAudioSignalingPort,
         $chkDirectWebRtcSharedSignaling,
+        $chkSplitClockSignalingOverrides,
+        $cmbSplitVideoClockSignaling,
+        $cmbSplitAudioClockSignaling,
+        $cmbDirectWebRtcMediaStreamGrouping,
+        $txtDirectWebRtcVideoMediaStreamId,
+        $txtDirectWebRtcAudioMediaStreamId,
         $chkDirectWebRtcUnifiedPublisher,
         $numDirectWebRtcBridgeVideoPort,
         $numDirectWebRtcBridgeAudioPort,
         $numDirectWebRtcBridgeJitterMs,
         $numDirectWebRtcPublisherQueueMs,
         $chkDirectWebRtcAudioBridgePacing,
-        $cmbDirectWebRtcClockSignaling,
         $chkDirectWebRtcControlDataChannel,
         $cmbDirectWebRtcBundlePolicy,
         $numDirectWebRtcInternalRtpMtu,
@@ -8678,7 +8639,7 @@ function Update-DirectWebRtcUi {
         $numLiveEdgeGreenMs,
         $numLiveEdgeYellowMs,
         $chkPlayerUrlOverrides,
-        $cmbPlayerAvRenderMode,
+        $chkPlayerSeparateHtmlMediaElements,
         $cmbSplitPlayerSyncMode,
         $numSplitAudioStallSeconds,
         $numSplitAudioWarmupSeconds,
@@ -8693,20 +8654,30 @@ function Update-DirectWebRtcUi {
 
     $splitModeEnabled = $directEnabled -and (Test-DirectWebRtcSplitAvPipelines)
     $unifiedPublisherEnabled = $splitModeEnabled -and (Test-DirectWebRtcUnifiedPublisher)
+    if ($chkPlayerSeparateHtmlMediaElements) {
+        # Two independent WebRTC producers cannot share the original event MediaStream;
+        # unified-publisher mode returns to one PeerConnection and can use either render path.
+        $chkPlayerSeparateHtmlMediaElements.Enabled = $directEnabled -and (-not $splitModeEnabled -or $unifiedPublisherEnabled)
+    }
     if ($chkDirectWebRtcUnifiedPublisher) { $chkDirectWebRtcUnifiedPublisher.Enabled = $splitModeEnabled }
     if ($chkDirectWebRtcSharedSignaling) { $chkDirectWebRtcSharedSignaling.Enabled = $splitModeEnabled -and -not $unifiedPublisherEnabled }
+    $singlePipelineGroupingAvailable = $directEnabled -and -not $splitModeEnabled
+    $separateMediaStreamsEnabled = $singlePipelineGroupingAvailable -and ((Get-DirectWebRtcMediaStreamGrouping) -like 'Separate audio/video MediaStreams*')
+    if ($cmbDirectWebRtcMediaStreamGrouping) { $cmbDirectWebRtcMediaStreamGrouping.Enabled = $singlePipelineGroupingAvailable }
+    if ($txtDirectWebRtcVideoMediaStreamId) { $txtDirectWebRtcVideoMediaStreamId.Enabled = $separateMediaStreamsEnabled }
+    if ($txtDirectWebRtcAudioMediaStreamId) { $txtDirectWebRtcAudioMediaStreamId.Enabled = $separateMediaStreamsEnabled }
     if ($numDirectWebRtcSplitAudioSignalingPort) { $numDirectWebRtcSplitAudioSignalingPort.Enabled = $splitModeEnabled -and -not $unifiedPublisherEnabled -and -not (Test-DirectWebRtcSharedSignaling) }
     if ($numDirectWebRtcBridgeVideoPort) { $numDirectWebRtcBridgeVideoPort.Enabled = $unifiedPublisherEnabled }
     if ($numDirectWebRtcBridgeAudioPort) { $numDirectWebRtcBridgeAudioPort.Enabled = $unifiedPublisherEnabled }
     if ($numDirectWebRtcBridgeJitterMs) { $numDirectWebRtcBridgeJitterMs.Enabled = $unifiedPublisherEnabled }
     if ($numDirectWebRtcPublisherQueueMs) { $numDirectWebRtcPublisherQueueMs.Enabled = $unifiedPublisherEnabled }
     if ($chkDirectWebRtcAudioBridgePacing) { $chkDirectWebRtcAudioBridgePacing.Enabled = $unifiedPublisherEnabled }
-    if ($cmbDirectWebRtcClockSignaling) { $cmbDirectWebRtcClockSignaling.Enabled = $directEnabled }
     if ($chkDirectWebRtcControlDataChannel) { $chkDirectWebRtcControlDataChannel.Enabled = $unifiedPublisherEnabled }
     if ($cmbDirectWebRtcBundlePolicy) { $cmbDirectWebRtcBundlePolicy.Enabled = $unifiedPublisherEnabled }
     if ($numDirectWebRtcInternalRtpMtu) { $numDirectWebRtcInternalRtpMtu.Enabled = $unifiedPublisherEnabled }
     if ($chkDirectWebRtcInternalRepeatHeaders) { $chkDirectWebRtcInternalRepeatHeaders.Enabled = $unifiedPublisherEnabled }
     Update-UnifiedBridgeKeyframeUi
+    Update-TimestampUi
 
     foreach ($control in @(
         $txtDirectWebRtcStun,
@@ -8734,7 +8705,8 @@ function Update-DirectWebRtcUi {
             $lblDirectWebRtcStatus.ForeColor = [System.Drawing.Color]::DarkOrange
         }
         else {
-            $lblDirectWebRtcStatus.Text = "Direct WebRTC viewer: $(Get-DirectWebRtcViewerUrl) - $([string]$cmbDirectWebRtcSmoothnessProfile.SelectedItem)"
+            $groupingStatus = if (Test-DirectWebRtcSeparateMediaStreams) { "separate msid V=$(Get-DirectWebRtcMediaStreamId -Kind video) A=$(Get-DirectWebRtcMediaStreamId -Kind audio)" } else { 'combined A/V MediaStream' }
+            $lblDirectWebRtcStatus.Text = "Direct WebRTC viewer: $(Get-DirectWebRtcViewerUrl) - $([string]$cmbDirectWebRtcSmoothnessProfile.SelectedItem) - $groupingStatus"
             $lblDirectWebRtcStatus.ForeColor = [System.Drawing.Color]::DarkSlateBlue
         }
     }
@@ -8863,7 +8835,7 @@ function Get-RecordingEncodedVideoCaps {
     switch ($Codec) {
         'H264' { return "video/x-h264,profile=$profile,stream-format=avc,alignment=au" }
         'H265' { return 'video/x-h265,profile=main,stream-format=hvc1,alignment=au' }
-        'AV1'  { return 'video/x-av1,stream-format=obu-stream,alignment=tu,profile=main,chroma-format=(string)4:2:0,bit-depth-luma=(uint)8,bit-depth-chroma=(uint)8' }
+        'AV1'  { return 'video/x-av1,stream-format=obu-stream,alignment=tu,profile=main,chroma-format=4:2:0,bit-depth-luma=(uint)8,bit-depth-chroma=(uint)8' }
         'VP8'  { return 'video/x-vp8' }
         'VP9'  { return 'video/x-vp9' }
         default { throw "Unsupported recording codec: $Codec" }
@@ -9463,13 +9435,11 @@ function Get-EncodedVideoCaps {
         'AV1' {
             $alignment = if ($Protocol -eq 'SRT') { 'frame' } else { 'tu' }
             if ($Protocol -in @('GST WebRTC', 'WHIP')) {
-                # Keep AV1 caps intentionally minimal for rswebrtc/webrtcsink.
-                # The stricter f39/f40 caps pinned chroma-format and bit-depth,
-                # but the 1.28.5 rswebrtc path rejected that downstream handoff
-                # with not-negotiated before out.video_0 accepted the caps.
-                # profile=main is enough to avoid the earliest generic caps while
-                # still allowing av1parse/webrtcsink to agree on the RTP payload.
-                return "video/x-av1,stream-format=obu-stream,alignment=$alignment,profile=main"
+                # rswebrtc/webrtcsink does not support renegotiation on the
+                # already-linked pad. av1parse can first expose generic AV1 caps
+                # and then refine them with bit-depth/chroma details; pin the
+                # stable 8-bit main-profile fields before the sink sees them.
+                return "video/x-av1,stream-format=obu-stream,alignment=$alignment,profile=main,chroma-format=4:2:0,bit-depth-luma=(uint)8,bit-depth-chroma=(uint)8"
             }
             return "video/x-av1,stream-format=obu-stream,alignment=$alignment"
         }
@@ -9718,18 +9688,7 @@ function Get-EncoderElementChain {
     }
 
     Add-CustomEncoderOptions $parts $txtCustomEncoderOptions.Text
-
-    # Direct GST WebRTC AV1 guard:
-    # GStreamer 1.28.5 av1parse emits an initial parsed AV1 caps event and then
-    # immediately enriches it with chroma/bit-depth/level. rswebrtc/webrtcsink
-    # treats that second caps event as unsupported renegotiation on out.video_0.
-    # For Direct GST WebRTC only, feed the NV/QSV/AMF AV1 encoder output through
-    # a minimal AV1 capsfilter without av1parse so webrtcsink sees one caps shape.
-    # Keep parsers for H.264/H.265 and non-WebRTC protocols where they are needed
-    # for sequence headers, muxers, and compatibility.
-    $skipParserForDirectWebRtcAv1 = ($codec -eq 'AV1' -and $Protocol -eq 'GST WebRTC')
-
-    if ((-not $skipParserForDirectWebRtcAv1) -and (-not [string]::IsNullOrWhiteSpace($parser))) {
+    if (-not [string]::IsNullOrWhiteSpace($parser)) {
         $parts.Add('!')
         $parts.Add($parser)
 
@@ -10173,6 +10132,9 @@ function Write-DirectWebRtcWebClientConfig {
 
         $effectiveAvPipelineMode = if (Test-DirectWebRtcUnifiedPublisher) { 'Unified publisher - one producer' } else { [string](Get-DirectWebRtcAvPipelineMode) }
         $effectiveSharedSignaling = [bool](Test-DirectWebRtcSharedSignaling)
+        $effectiveMediaStreamGrouping = if (Test-DirectWebRtcSeparateMediaStreams) { [string](Get-DirectWebRtcMediaStreamGrouping) } else { $script:DefaultDirectWebRtcMediaStreamGrouping }
+        $videoMediaStreamId = [string](Get-DirectWebRtcMediaStreamId -Kind video)
+        $audioMediaStreamId = [string](Get-DirectWebRtcMediaStreamId -Kind audio)
 
         $data = [ordered]@{
             version = $script:AppVersion
@@ -10210,12 +10172,24 @@ function Write-DirectWebRtcWebClientConfig {
             liveEdgeAverageSec = [int]$playerSettings.LiveEdgeAverageSec
             screenWakeLock = $true
             connectionMode = 'auto'
+            playerSeparateHtmlMediaElements = [bool]$playerSettings.SeparateHtmlMediaElements
+            separateHtmlMediaElements = [bool]$playerSettings.SeparateHtmlMediaElements
             playerAvRenderMode = [string]$playerSettings.AvRenderMode
             avRenderMode = [string]$playerSettings.AvRenderMode
             avPipelineMode = $effectiveAvPipelineMode
             directWebRtcAvPipelineMode = $effectiveAvPipelineMode
+            mediaStreamGrouping = $effectiveMediaStreamGrouping
+            avMediaStreamGrouping = $effectiveMediaStreamGrouping
+            separateMediaStreams = [bool](Test-DirectWebRtcSeparateMediaStreams)
+            videoMediaStreamId = $videoMediaStreamId
+            audioMediaStreamId = $audioMediaStreamId
+            videoMsid = $videoMediaStreamId
+            audioMsid = $audioMediaStreamId
             unifiedPublisher = [bool](Test-DirectWebRtcUnifiedPublisher)
-            directWebRtcClockSignaling = [string](Get-ComboSelectedOrDefault $cmbDirectWebRtcClockSignaling $script:DefaultDirectWebRtcClockSignaling)
+            transportClockSignaling = [string](Get-TimingMode)
+            splitClockSignalingOverrides = [bool](Test-SplitClockSignalingOverridesActive)
+            splitVideoClockSignaling = if (Test-WebRtcClockSignalingForSink -SinkRole Video) { 'RFC7273 NTP/PTP signaling' } else { 'Off / plugin default' }
+            splitAudioClockSignaling = if (Test-WebRtcClockSignalingForSink -SinkRole Audio) { 'RFC7273 NTP/PTP signaling' } else { 'Off / plugin default' }
             controlDataChannel = [bool]$chkDirectWebRtcControlDataChannel.Checked
             bundlePolicy = if ((Get-ComboSelectedOrDefault $cmbDirectWebRtcBundlePolicy $script:DefaultDirectWebRtcBundlePolicy) -eq 'Max bundle') { 'max-bundle' } else { 'default' }
             internalRtpMtu = [int]$numDirectWebRtcInternalRtpMtu.Value
@@ -10260,7 +10234,7 @@ function Write-DirectWebRtcWebClientConfig {
         Set-Content -LiteralPath $configPath -Value "window.GST_GLASS_CONFIG = $json;" -Encoding UTF8
         Update-DirectWebRtcWebUiStatus
         if (-not $Quiet) {
-            Append-Log "Direct WebRTC client config written from Player tab: audio/video target $audioTarget/$videoTarget ms, max $jbufMax ms, watchdog $watchdog, AV render=$($playerSettings.AvRenderMode), statsOverlay=$statsOverlayEnabled, jbufDebug=$jbufDebugEnabled, served=$webDir."
+            Append-Log "Direct WebRTC client config written from UI: audio/video target $audioTarget/$videoTarget ms, max $jbufMax ms, watchdog $watchdog, separateHtmlElements=$($playerSettings.SeparateHtmlMediaElements), MediaStream grouping=$effectiveMediaStreamGrouping (V=$videoMediaStreamId A=$audioMediaStreamId), statsOverlay=$statsOverlayEnabled, jbufDebug=$jbufDebugEnabled, served=$webDir."
         }
     }
     catch {
@@ -10398,7 +10372,7 @@ function Build-DirectWebRtcUnifiedPublisherArguments {
     $stunServer = $txtDirectWebRtcStun.Text.Trim()
     $stunOption = if ([string]::IsNullOrWhiteSpace($stunServer)) { '' } else { ' stun-server=' + (Quote-GstValue $stunServer) }
     $turnOption = Get-DirectWebRtcTurnOption
-    $timestampOption = Get-AbsoluteTimestampTransportOption -Protocol $script:DirectWebRtcProtocolName
+    $timestampOption = Get-AbsoluteTimestampTransportOption -Protocol $script:DirectWebRtcProtocolName -SinkRole Global
     $timestampOption = if ([string]::IsNullOrWhiteSpace($timestampOption)) { '' } else { " $timestampOption" }
     $congestion = Get-ComboSelectedOrDefault $cmbDirectWebRtcCongestion 'gcc'
     $mitigation = Get-ComboSelectedOrDefault $cmbDirectWebRtcMitigation 'none'
@@ -10482,7 +10456,7 @@ function Build-DirectWebRtcAudioOnlyArguments {
     $stunServer = $txtDirectWebRtcStun.Text.Trim()
     $stunOption = if ([string]::IsNullOrWhiteSpace($stunServer)) { '' } else { ' stun-server=' + (Quote-GstValue $stunServer) }
     $turnOption = Get-DirectWebRtcTurnOption
-    $timestampOption = Get-AbsoluteTimestampTransportOption -Protocol $script:DirectWebRtcProtocolName
+    $timestampOption = Get-AbsoluteTimestampTransportOption -Protocol $script:DirectWebRtcProtocolName -SinkRole Audio
     $timestampOption = if ([string]::IsNullOrWhiteSpace($timestampOption)) { '' } else { " $timestampOption" }
     $congestion = Get-ComboSelectedOrDefault $cmbDirectWebRtcCongestion 'gcc'
     $mitigation = Get-ComboSelectedOrDefault $cmbDirectWebRtcMitigation 'none'
@@ -10687,7 +10661,7 @@ function Build-GstArguments {
         }
 
         'GST WebRTC' {
-            $timestampOption = Get-AbsoluteTimestampTransportOption -Protocol $protocol
+            $timestampOption = Get-AbsoluteTimestampTransportOption -Protocol $protocol -SinkRole Video
             $timestampOption = if ([string]::IsNullOrWhiteSpace($timestampOption)) { '' } else { " $timestampOption" }
 
             $webAddress = Quote-GstValue (Normalize-DirectWebRtcWebAddress $destination)
@@ -11014,13 +10988,18 @@ function Save-Settings {
             DirectWebRtcSignalingPort = [int]$numDirectWebRtcSignalingPort.Value
             DirectWebRtcSplitAudioSignalingPort = [int]$numDirectWebRtcSplitAudioSignalingPort.Value
             DirectWebRtcSharedSignaling = [bool]$chkDirectWebRtcSharedSignaling.Checked
+            SplitClockSignalingOverrides = [bool]$chkSplitClockSignalingOverrides.Checked
+            SplitVideoClockSignaling = [string]$cmbSplitVideoClockSignaling.SelectedItem
+            SplitAudioClockSignaling = [string]$cmbSplitAudioClockSignaling.SelectedItem
+            DirectWebRtcMediaStreamGrouping = [string](Get-DirectWebRtcMediaStreamGrouping)
+            DirectWebRtcVideoMediaStreamId = [string](Get-DirectWebRtcMediaStreamId -Kind video)
+            DirectWebRtcAudioMediaStreamId = [string](Get-DirectWebRtcMediaStreamId -Kind audio)
             DirectWebRtcUnifiedPublisher = [bool]$chkDirectWebRtcUnifiedPublisher.Checked
             DirectWebRtcBridgeVideoPort = [int]$numDirectWebRtcBridgeVideoPort.Value
             DirectWebRtcBridgeAudioPort = [int]$numDirectWebRtcBridgeAudioPort.Value
             DirectWebRtcBridgeJitterMs = [int]$numDirectWebRtcBridgeJitterMs.Value
             DirectWebRtcPublisherQueueMs = [int]$numDirectWebRtcPublisherQueueMs.Value
             DirectWebRtcAudioBridgePacing = [bool]$chkDirectWebRtcAudioBridgePacing.Checked
-            DirectWebRtcClockSignaling = [string]$cmbDirectWebRtcClockSignaling.SelectedItem
             DirectWebRtcControlDataChannel = [bool]$chkDirectWebRtcControlDataChannel.Checked
             DirectWebRtcBundlePolicy = [string]$cmbDirectWebRtcBundlePolicy.SelectedItem
             DirectWebRtcInternalRtpMtu = [int]$numDirectWebRtcInternalRtpMtu.Value
@@ -11059,7 +11038,9 @@ function Save-Settings {
             LiveEdgeYellowMs = [int]$numLiveEdgeYellowMs.Value
             LiveEdgeAverageSec = [int]$numLiveEdgeAverageSec.Value
             PlayerUrlOverrides = [bool]$chkPlayerUrlOverrides.Checked
-            PlayerAvRenderMode = [string]$cmbPlayerAvRenderMode.SelectedItem
+            PlayerSeparateHtmlMediaElements = [bool]$chkPlayerSeparateHtmlMediaElements.Checked
+            SeparateHtmlMediaElements = [bool]$chkPlayerSeparateHtmlMediaElements.Checked
+            PlayerAvRenderMode = if ($chkPlayerSeparateHtmlMediaElements.Checked) { 'Decoupled video/audio elements' } else { 'Synced single media element' }
             DirectWebRtcAvPipelineMode = [string](Get-DirectWebRtcAvPipelineMode)
             SplitPlayerSyncMode = [string](Get-ComboSelectedOrDefault $cmbSplitPlayerSyncMode $script:DefaultSplitPlayerSyncMode)
             SplitAudioStallSeconds = [int]$numSplitAudioStallSeconds.Value
@@ -11346,18 +11327,18 @@ function Load-Settings {
             $numDirectWebRtcSplitAudioSignalingPort.Value = [decimal]$legacyAudioPort
         }
         if ($null -ne $settings.DirectWebRtcSharedSignaling) { $chkDirectWebRtcSharedSignaling.Checked = [bool]$settings.DirectWebRtcSharedSignaling }
+        if ($settings.DirectWebRtcMediaStreamGrouping -and $cmbDirectWebRtcMediaStreamGrouping.Items.Contains([string]$settings.DirectWebRtcMediaStreamGrouping)) { $cmbDirectWebRtcMediaStreamGrouping.SelectedItem = [string]$settings.DirectWebRtcMediaStreamGrouping }
+        if ($null -ne $settings.DirectWebRtcVideoMediaStreamId) { $txtDirectWebRtcVideoMediaStreamId.Text = [string]$settings.DirectWebRtcVideoMediaStreamId }
+        if ($null -ne $settings.DirectWebRtcAudioMediaStreamId) { $txtDirectWebRtcAudioMediaStreamId.Text = [string]$settings.DirectWebRtcAudioMediaStreamId }
         if ($null -ne $settings.DirectWebRtcUnifiedPublisher) { $chkDirectWebRtcUnifiedPublisher.Checked = [bool]$settings.DirectWebRtcUnifiedPublisher }
         if ($null -ne $settings.DirectWebRtcBridgeVideoPort) { $numDirectWebRtcBridgeVideoPort.Value = [decimal]([Math]::Min(65535, [Math]::Max(1, [int]$settings.DirectWebRtcBridgeVideoPort))) }
         if ($null -ne $settings.DirectWebRtcBridgeAudioPort) { $numDirectWebRtcBridgeAudioPort.Value = [decimal]([Math]::Min(65535, [Math]::Max(1, [int]$settings.DirectWebRtcBridgeAudioPort))) }
         if ($null -ne $settings.DirectWebRtcBridgeJitterMs) { $numDirectWebRtcBridgeJitterMs.Value = [decimal]([Math]::Min(2000, [Math]::Max(0, [int]$settings.DirectWebRtcBridgeJitterMs))) }
         if ($null -ne $settings.DirectWebRtcPublisherQueueMs) { $numDirectWebRtcPublisherQueueMs.Value = [decimal]([Math]::Min(2000, [Math]::Max(0, [int]$settings.DirectWebRtcPublisherQueueMs))) }
         if ($null -ne $settings.DirectWebRtcAudioBridgePacing) { $chkDirectWebRtcAudioBridgePacing.Checked = [bool]$settings.DirectWebRtcAudioBridgePacing }
-        if ($settings.DirectWebRtcClockSignaling -and $cmbDirectWebRtcClockSignaling.Items.Contains([string]$settings.DirectWebRtcClockSignaling)) {
-            $cmbDirectWebRtcClockSignaling.SelectedItem = [string]$settings.DirectWebRtcClockSignaling
-        }
-        elseif ([string]$settings.TimingMode -eq 'Send absolute timestamps / clock signalling') {
-            $cmbDirectWebRtcClockSignaling.SelectedItem = 'RFC7273 NTP/PTP signalling'
-        }
+        if ($null -ne $settings.SplitClockSignalingOverrides) { $chkSplitClockSignalingOverrides.Checked = [bool]$settings.SplitClockSignalingOverrides }
+        if ($settings.SplitVideoClockSignaling -and $cmbSplitVideoClockSignaling.Items.Contains([string]$settings.SplitVideoClockSignaling)) { $cmbSplitVideoClockSignaling.SelectedItem = [string]$settings.SplitVideoClockSignaling }
+        if ($settings.SplitAudioClockSignaling -and $cmbSplitAudioClockSignaling.Items.Contains([string]$settings.SplitAudioClockSignaling)) { $cmbSplitAudioClockSignaling.SelectedItem = [string]$settings.SplitAudioClockSignaling }
         if ($null -ne $settings.DirectWebRtcControlDataChannel) { $chkDirectWebRtcControlDataChannel.Checked = [bool]$settings.DirectWebRtcControlDataChannel }
         if ($settings.DirectWebRtcBundlePolicy -and $cmbDirectWebRtcBundlePolicy.Items.Contains([string]$settings.DirectWebRtcBundlePolicy)) { $cmbDirectWebRtcBundlePolicy.SelectedItem = [string]$settings.DirectWebRtcBundlePolicy }
         if ($null -ne $settings.DirectWebRtcInternalRtpMtu) { $numDirectWebRtcInternalRtpMtu.Value = [decimal]([Math]::Min(65535, [Math]::Max(0, [int]$settings.DirectWebRtcInternalRtpMtu))) }
@@ -11404,7 +11385,20 @@ function Load-Settings {
         if ($null -ne $settings.LiveEdgeAverageSec) { $numLiveEdgeAverageSec.Value = [decimal]([Math]::Min([int]$numLiveEdgeAverageSec.Maximum, [Math]::Max([int]$numLiveEdgeAverageSec.Minimum, [int]$settings.LiveEdgeAverageSec))) }
         if ($numLiveEdgeYellowMs.Value -le $numLiveEdgeGreenMs.Value) { $numLiveEdgeYellowMs.Value = [decimal]([Math]::Min([int]$numLiveEdgeYellowMs.Maximum, [int]$numLiveEdgeGreenMs.Value + 1)) }
         if ($null -ne $settings.PlayerUrlOverrides) { $chkPlayerUrlOverrides.Checked = [bool]$settings.PlayerUrlOverrides }
-        if ($settings.PlayerAvRenderMode -and $cmbPlayerAvRenderMode.Items.Contains([string]$settings.PlayerAvRenderMode)) { $cmbPlayerAvRenderMode.SelectedItem = [string]$settings.PlayerAvRenderMode }
+        if ($null -ne $settings.PlayerSeparateHtmlMediaElements) {
+            $chkPlayerSeparateHtmlMediaElements.Checked = [bool]$settings.PlayerSeparateHtmlMediaElements
+        }
+        elseif ($null -ne $settings.SeparateHtmlMediaElements) {
+            $chkPlayerSeparateHtmlMediaElements.Checked = [bool]$settings.SeparateHtmlMediaElements
+        }
+        elseif ($settings.DirectWebRtcMediaStreamGrouping -and ([string]$settings.DirectWebRtcMediaStreamGrouping -like 'Separate audio/video MediaStreams*')) {
+            # f40-f42 forced separate HTML elements whenever MSIDs were split. Preserve
+            # that effective behavior once while migrating to the explicit Player toggle.
+            $chkPlayerSeparateHtmlMediaElements.Checked = $true
+        }
+        elseif ($settings.PlayerAvRenderMode) {
+            $chkPlayerSeparateHtmlMediaElements.Checked = ([string]$settings.PlayerAvRenderMode -like 'Decoupled*')
+        }
         if ($settings.DirectWebRtcAvPipelineMode -and $cmbDirectWebRtcAvPipelineMode.Items.Contains([string]$settings.DirectWebRtcAvPipelineMode)) { $cmbDirectWebRtcAvPipelineMode.SelectedItem = [string]$settings.DirectWebRtcAvPipelineMode }
         if ($settings.SplitPlayerSyncMode -and $cmbSplitPlayerSyncMode.Items.Contains([string]$settings.SplitPlayerSyncMode)) { $cmbSplitPlayerSyncMode.SelectedItem = [string]$settings.SplitPlayerSyncMode }
         if ($null -ne $settings.SplitAudioStallSeconds) { $numSplitAudioStallSeconds.Value = [decimal]([Math]::Min([int]$numSplitAudioStallSeconds.Maximum, [Math]::Max([int]$numSplitAudioStallSeconds.Minimum, [int]$settings.SplitAudioStallSeconds))) }
@@ -11460,16 +11454,22 @@ function Load-Settings {
         if ($null -ne $settings.WebcamMirror) { $chkWebcamMirror.Checked = [bool]$settings.WebcamMirror }
         if ($null -ne $settings.SceneEnabled) { $chkSceneEnabled.Checked = [bool]$settings.SceneEnabled }
         Update-SceneUi
-        if ($settings.TimingMode -and $cmbTimingMode.Items.Contains([string]$settings.TimingMode)) {
-            $cmbTimingMode.SelectedItem = [string]$settings.TimingMode
+        $loadedClockSignalingEnabled = $false
+        $loadedClockSignalingKnown = $false
+        if ($settings.TimingMode) {
+            $loadedClockSignalingEnabled = Test-ClockSignalingValueEnabled ([string]$settings.TimingMode)
+            $loadedClockSignalingKnown = $true
+        }
+        elseif ($settings.DirectWebRtcClockSignaling) {
+            $loadedClockSignalingEnabled = Test-ClockSignalingValueEnabled ([string]$settings.DirectWebRtcClockSignaling)
+            $loadedClockSignalingKnown = $true
         }
         elseif ($null -ne $settings.SendAbsoluteTimestamps) {
-            if ([bool]$settings.SendAbsoluteTimestamps) {
-                $cmbTimingMode.SelectedItem = 'Send absolute timestamps / clock signalling'
-            }
-            else {
-                $cmbTimingMode.SelectedItem = $script:DefaultTimingMode
-            }
+            $loadedClockSignalingEnabled = [bool]$settings.SendAbsoluteTimestamps
+            $loadedClockSignalingKnown = $true
+        }
+        if ($loadedClockSignalingKnown) {
+            $cmbTimingMode.SelectedItem = if ($loadedClockSignalingEnabled) { 'On / protocol clock signaling' } else { $script:DefaultTimingMode }
         }
         if ($null -ne $settings.RecordingEnabled) { $chkRecordingEnabled.Checked = [bool]$settings.RecordingEnabled }
         if ($settings.RecordingDirectory) { $txtRecordingDirectory.Text = [string]$settings.RecordingDirectory }
@@ -11723,6 +11723,31 @@ function Validate-Configuration {
             'Warning'
         ) | Out-Null
         return $false
+    }
+
+
+    if (Test-DirectWebRtcSeparateMediaStreams) {
+        $videoMsid = Get-DirectWebRtcMediaStreamId -Kind video
+        $audioMsid = Get-DirectWebRtcMediaStreamId -Kind audio
+        $validMsidPattern = '^[A-Za-z0-9_.-]+$'
+        if ($videoMsid -notmatch $validMsidPattern -or $audioMsid -notmatch $validMsidPattern) {
+            [System.Windows.Forms.MessageBox]::Show(
+                'Video and audio MediaStream IDs may contain only letters, numbers, underscore, period, and hyphen.',
+                $script:AppName,
+                'OK',
+                'Warning'
+            ) | Out-Null
+            return $false
+        }
+        if ($videoMsid.Equals($audioMsid, [System.StringComparison]::Ordinal)) {
+            [System.Windows.Forms.MessageBox]::Show(
+                'Separate audio/video MediaStreams requires different Video and Audio MediaStream IDs.',
+                $script:AppName,
+                'OK',
+                'Warning'
+            ) | Out-Null
+            return $false
+        }
     }
 
     if (Test-DirectWebRtcUnifiedPublisher) {
@@ -12240,15 +12265,6 @@ function Start-GstStream {
     Prepare-GStreamerRuntime -GstPath $gstPath
     Initialize-GstJob
 
-    if (-not (Invoke-DirectWebRtcPortPreflight -GstPath $gstPath)) {
-        if ($chkNetworkRestoreOnStop.Checked) { Restore-NetworkTuning -Quiet | Out-Null }
-        Remove-ActiveProcessState
-        $statusLabel.Text = 'Direct WebRTC port busy'
-        $statusLabel.ForeColor = [System.Drawing.Color]::DarkRed
-        Set-RunState $false
-        return
-    }
-
     if (-not (Start-ManagedMediaMtx)) {
         if ($chkNetworkRestoreOnStop.Checked) { Restore-NetworkTuning -Quiet | Out-Null }
         $statusLabel.Text = 'MediaMTX start failed'
@@ -12288,9 +12304,18 @@ function Start-GstStream {
         if ([string]$cmbProtocol.SelectedItem -eq $script:DirectWebRtcProtocolName) {
             Append-Log "Direct WebRTC viewer: $(Get-DirectWebRtcViewerUrl)"
             Append-Log "Direct WebRTC video signalling WebSocket/TCP: $($txtDirectWebRtcSignalingHost.Text):$([int]$numDirectWebRtcSignalingPort.Value)"
-            Append-Log "Direct WebRTC smoothing: $([string]$cmbDirectWebRtcSmoothnessProfile.SelectedItem), recovery $([string]$cmbWebRtcRecoveryMode.SelectedItem), sender queue $([string]$cmbWebRtcSenderQueueMode.SelectedItem) / $([int]$numDirectWebRtcPacingMs.Value) ms cap, browser audio/video JBUF $([int]$numDirectWebRtcPlayerJitterMs.Value)/$([int]$numDirectWebRtcVideoJitterMs.Value) ms, RFC7273 $([string]$cmbDirectWebRtcClockSignaling.SelectedItem), audio mode $([string]$cmbAudioTransportMode.SelectedItem)"
+            Append-Log "Direct WebRTC smoothing: $([string]$cmbDirectWebRtcSmoothnessProfile.SelectedItem), recovery $([string]$cmbWebRtcRecoveryMode.SelectedItem), sender queue $([string]$cmbWebRtcSenderQueueMode.SelectedItem) / $([int]$numDirectWebRtcPacingMs.Value) ms cap, browser audio/video JBUF $([int]$numDirectWebRtcPlayerJitterMs.Value)/$([int]$numDirectWebRtcVideoJitterMs.Value) ms, clock signaling $([string](Get-TimingMode)), audio mode $([string]$cmbAudioTransportMode.SelectedItem)"
             Append-Log "Audio source selection: $(Get-AudioSourceSelectionSummary)"
             Append-Log "Direct WebRTC A/V pipeline topology: $([string](Get-DirectWebRtcAvPipelineMode))"
+            if (Test-SplitClockSignalingOverridesActive) {
+                $splitVideoClockText = if (Test-WebRtcClockSignalingForSink -SinkRole Video) { 'RFC7273 on' } else { 'off / property omitted' }
+                $splitAudioClockText = if (Test-WebRtcClockSignalingForSink -SinkRole Audio) { 'RFC7273 on' } else { 'off / property omitted' }
+                Append-Log "Split WebRTC sink clock signaling: video=$splitVideoClockText; audio=$splitAudioClockText."
+            }
+            else {
+                $webRtcClockText = if (Test-WebRtcClockSignalingForSink -SinkRole Global) { 'RFC7273 on' } else { 'off / property omitted' }
+                Append-Log "WebRTC sink clock signaling: $webRtcClockText."
+            }
             if (Test-DirectWebRtcUnifiedPublisher) {
                 Append-Log "Direct WebRTC unified-publisher lab: independent video/audio capture processes feed localhost RTP ports $([int]$numDirectWebRtcBridgeVideoPort.Value)/$([int]$numDirectWebRtcBridgeAudioPort.Value); one publisher exposes producer gstglass-av with video_0 + audio_0 on signalling port $([int]$numDirectWebRtcSignalingPort.Value)."
                 $bridgeJitterText = if ([int]$numDirectWebRtcBridgeJitterMs.Value -gt 0) { [string]([int]$numDirectWebRtcBridgeJitterMs.Value) + ' ms, non-dropping' } else { 'disabled / element omitted' }
@@ -12298,7 +12323,7 @@ function Start-GstStream {
                 $audioBridgePacingText = if ($chkDirectWebRtcAudioBridgePacing.Checked) { 'enabled (sync=true)' } else { 'disabled (sync=false)' }
                 Append-Log "Unified publisher RTP timing repair: receive JBUF $bridgeJitterText; publisher queue $publisherQueueText; audio RTP pacing $audioBridgePacingText; udpsrc do-timestamp override omitted. Player uses one PeerConnection and does not open the split-audio WebSocket."
                 $internalMtuText = if ([int]$numDirectWebRtcInternalRtpMtu.Value -gt 0) { [string]([int]$numDirectWebRtcInternalRtpMtu.Value) } else { 'plugin default' }
-                Append-Log "Unified producer advanced: RFC7273=$([bool](Test-DirectWebRtcClockSignalingEnabled)); control-data-channel=$($chkDirectWebRtcControlDataChannel.Checked); bundle=$([string]$cmbDirectWebRtcBundlePolicy.SelectedItem); internal RTP MTU=$internalMtuText; internal repeat headers=$($chkDirectWebRtcInternalRepeatHeaders.Checked)."
+                Append-Log "Unified producer advanced: clock-signaling=$([bool](Test-WebRtcClockSignalingForSink -SinkRole Global)); control-data-channel=$($chkDirectWebRtcControlDataChannel.Checked); bundle=$([string]$cmbDirectWebRtcBundlePolicy.SelectedItem); internal RTP MTU=$internalMtuText; internal repeat headers=$($chkDirectWebRtcInternalRepeatHeaders.Checked)."
                 if ($chkUnifiedBridgeKeyframeGuard.Checked) {
                     $effectiveKeyframeFrames = [Math]::Max(1, [int][Math]::Ceiling(([int]$numFps.Value * [int]$numUnifiedBridgeKeyframeIntervalMs.Value) / 1000.0))
                     Append-Log "Unified publisher keyframe guard: periodic IDR every $([int]$numUnifiedBridgeKeyframeIntervalMs.Value) ms -> encoder GOP $effectiveKeyframeFrames frames at $([int]$numFps.Value) FPS. This is the fallback for PLI/FIR requests that cannot cross the RTP process boundary."
@@ -12974,14 +12999,11 @@ $chkTransportEnabled.Add_CheckedChanged({ Update-TransportUi })
 $chkSendAbsoluteTimestamps.Add_CheckedChanged({ Update-TimestampUi; Update-CommandPreview })
 $cmbTimingMode.Add_SelectedIndexChanged({
     Sync-TransportTimingControls -Source TimingMode
-    Update-TimestampUi
-    Update-CommandPreview
+    Update-TransportUi
 })
-$cmbDirectWebRtcClockSignaling.Add_SelectedIndexChanged({
-    Sync-TransportTimingControls -Source DirectWebRtc
-    Update-TimestampUi
-    Update-CommandPreview
-})
+$chkSplitClockSignalingOverrides.Add_CheckedChanged({ Update-TimestampUi; Update-CommandPreview })
+$cmbSplitVideoClockSignaling.Add_SelectedIndexChanged({ Update-TimestampUi; Update-CommandPreview })
+$cmbSplitAudioClockSignaling.Add_SelectedIndexChanged({ Update-TimestampUi; Update-CommandPreview })
 $cmbEncoder.Add_SelectedIndexChanged({ Update-EncoderUi })
 $cmbAudioTransportMode.Add_SelectedIndexChanged({ Update-AudioCodecChoices; Update-CommandPreview })
 $cmbSplitAudioPipelineClockMode.Add_SelectedIndexChanged($previewHandler)
@@ -13149,13 +13171,18 @@ foreach ($control in @(
     $numDirectWebRtcSignalingPort,
     $numDirectWebRtcSplitAudioSignalingPort,
     $chkDirectWebRtcSharedSignaling,
+    $chkSplitClockSignalingOverrides,
+    $cmbSplitVideoClockSignaling,
+    $cmbSplitAudioClockSignaling,
+    $cmbDirectWebRtcMediaStreamGrouping,
+    $txtDirectWebRtcVideoMediaStreamId,
+    $txtDirectWebRtcAudioMediaStreamId,
     $chkDirectWebRtcUnifiedPublisher,
     $numDirectWebRtcBridgeVideoPort,
     $numDirectWebRtcBridgeAudioPort,
     $numDirectWebRtcBridgeJitterMs,
     $numDirectWebRtcPublisherQueueMs,
     $chkDirectWebRtcAudioBridgePacing,
-    $cmbDirectWebRtcClockSignaling,
     $chkDirectWebRtcControlDataChannel,
     $cmbDirectWebRtcBundlePolicy,
     $numDirectWebRtcInternalRtpMtu,
@@ -13373,7 +13400,7 @@ $numLiveEdgeYellowMs.Add_ValueChanged({
     }
 })
 
-foreach ($playerControl in @($chkPlayerStatsOverlay, $chkPlayerJbufDebug, $chkPlayerUrlOverrides, $cmbPlayerAvRenderMode, $cmbDirectWebRtcAvPipelineMode, $cmbSplitPlayerSyncMode, $cmbJbufWatchdogMode)) {
+foreach ($playerControl in @($chkPlayerStatsOverlay, $chkPlayerJbufDebug, $chkPlayerUrlOverrides, $chkPlayerSeparateHtmlMediaElements, $cmbDirectWebRtcAvPipelineMode, $cmbSplitPlayerSyncMode, $cmbJbufWatchdogMode)) {
     if ($playerControl -is [System.Windows.Forms.CheckBox]) {
         $playerControl.Add_CheckedChanged({ Update-PlayerConfigFromUi })
     }
