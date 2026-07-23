@@ -630,7 +630,7 @@ public static class GstProcessJob
 '@
 }
 
-$script:AppVersion = '3.7.52f2'
+$script:AppVersion = '3.7.52f3'
 $script:AppName = "GStreamer Glass v$($script:AppVersion)"
 $script:ConfigDirectory = Join-Path $env:APPDATA 'GStreamerBasicWhipStreamer'
 $script:ConfigPath = Join-Path $script:ConfigDirectory 'settings.json'
@@ -754,6 +754,7 @@ $script:DefaultAudioTimingMode = 'WASAPI normal'
 $script:DefaultAudioSlaveMethod = 'Auto'
 $script:DefaultAudioBufferMs = 20
 $script:DefaultAudioLatencyMs = 10
+$script:DefaultAudioMixerMode = $true
 $script:DefaultDirectWebRtcSignalingHost = '0.0.0.0'
 $script:DefaultDirectWebRtcSignalingPort = 8189
 $script:DefaultDirectWebRtcStunServer = 'stun://stun.l.google.com:19302'
@@ -2587,6 +2588,14 @@ $chkDesktopAudio.Size = New-Object System.Drawing.Size(115, 23)
 $chkDesktopAudio.Checked = $true
 $settingsGroup.Controls.Add($chkDesktopAudio)
 
+$chkAudioMixerMode = New-Object System.Windows.Forms.CheckBox
+$chkAudioMixerMode.Text = 'Route desktop through audiomixer'
+$chkAudioMixerMode.Location = New-Object System.Drawing.Point(565, 316)
+$chkAudioMixerMode.Size = New-Object System.Drawing.Size(245, 23)
+$chkAudioMixerMode.Checked = $script:DefaultAudioMixerMode
+$settingsGroup.Controls.Add($chkAudioMixerMode)
+$toolTip.SetToolTip($chkAudioMixerMode, 'Recommended timing-normalization path. When enabled, desktop-only audio is routed through audiomixer before encoding. Uncheck to restore the legacy direct WASAPI-to-encoder path. Desktop + microphone always requires audiomixer to combine both sources.')
+
 $null = Add-Label $settingsGroup 'Volume %' 130 316 65
 $numDesktopVolume = New-Object System.Windows.Forms.NumericUpDown
 $numDesktopVolume.Location = New-Object System.Drawing.Point(195, 316)
@@ -4266,6 +4275,7 @@ function Apply-ModernDashboardUi {
     $r = Add-Row $s
     Add-Field $r -Control $chkDesktopAudio -Width 180 | Out-Null
     Add-Field $r -Label 'Desktop volume' -Control $numDesktopVolume -Width 90 | Out-Null
+    Add-Field $r -Control $chkAudioMixerMode -Width 255 | Out-Null
     $r = Add-Row $s
     Add-Field $r -Label 'Desktop device' -Control $cmbDesktopAudioDevice -Width 420 | Out-Null
     Add-Field $r -Control $btnRefreshAudioDevices -Width 160 | Out-Null
@@ -4588,7 +4598,7 @@ function Apply-ModernDashboardUi {
         $numBFrames, $chkLookAhead, $numLookAheadFrames,
         $chkAdaptiveQuantization, $chkTemporalAq, $numAqStrength,
         $txtCustomEncoderOptions,
-        $cmbAudioTransportMode, $cmbSplitAudioPipelineClockMode, $cmbAudioClockMode, $cmbAudioTimingMode, $cmbAudioSlaveMethod, $cmbAudioSyncMode, $numAudioBufferMs, $numAudioLatencyMs, $chkDesktopAudio, $numDesktopVolume, $cmbDesktopAudioDevice, $btnRefreshAudioDevices, $chkMic, $numMicVolume, $cmbMicAudioDevice, $lblAudioDeviceStatus,
+        $cmbAudioTransportMode, $cmbSplitAudioPipelineClockMode, $cmbAudioClockMode, $cmbAudioTimingMode, $cmbAudioSlaveMethod, $cmbAudioSyncMode, $numAudioBufferMs, $numAudioLatencyMs, $chkDesktopAudio, $chkAudioMixerMode, $numDesktopVolume, $cmbDesktopAudioDevice, $btnRefreshAudioDevices, $chkMic, $numMicVolume, $cmbMicAudioDevice, $lblAudioDeviceStatus,
         $cmbAudioCodec, $lblAudioCodecStatus, $numAudioBitrate,
         $cmbDirectWebRtcOpusMode, $cmbDirectWebRtcOpusFrameMs, $cmbDirectWebRtcOpusAudioType, $chkDirectWebRtcOpusFec, $chkDirectWebRtcOpusDtx,
         $chkRecordingEnabled, $txtRecordingDirectory, $btnBrowseRecordingDirectory,
@@ -4634,7 +4644,7 @@ function Apply-ModernDashboardUi {
         $cmbSplitPlayerSyncMode, $numSplitAudioStallSeconds, $numSplitAudioWarmupSeconds, $numSplitAvOffsetBaselineMs, $numSplitAvOffsetWarnMs,
         $chkDirectWebRtcOpusFec, $chkDirectWebRtcOpusDtx,
         $chkLookAhead, $chkAdaptiveQuantization, $chkTemporalAq,
-        $chkDesktopAudio, $chkMic,
+        $chkDesktopAudio, $chkAudioMixerMode, $chkMic,
         $chkRecordingEnabled, $chkRecordingLookAhead, $chkRecordingSpatialAq,
         $chkRecordingTemporalAq, $chkRecordingDesktopAudio, $chkRecordingMic,
         $chkNetworkTuningEnabled, $chkNetworkDscp, $chkNetworkDisablePowerSaving,
@@ -5938,6 +5948,7 @@ function Reset-AudioDefaults {
     $numAudioBufferMs.Value = $script:DefaultAudioBufferMs
     $numAudioLatencyMs.Value = $script:DefaultAudioLatencyMs
     $chkDesktopAudio.Checked = $true
+    $chkAudioMixerMode.Checked = $script:DefaultAudioMixerMode
     $numDesktopVolume.Value = 100
     if ($cmbDesktopAudioDevice -and $cmbDesktopAudioDevice.Items.Contains($script:DefaultAudioOutputDeviceLabel)) { $cmbDesktopAudioDevice.SelectedItem = $script:DefaultAudioOutputDeviceLabel }
     $chkMic.Checked = $false
@@ -6952,26 +6963,31 @@ function Build-RawAudioChain {
 
     $desktopVolume = Format-InvariantNumber ([double]$numDesktopVolume.Value / 100.0)
     $micVolume = Format-InvariantNumber ([double]$numMicVolume.Value / 100.0)
-    $clockOpt = Get-WasapiClockOption
 
-    if ($desktopEnabled -and -not $micEnabled) {
-        return @(
-            (Get-WasapiSourceString -Loopback)
-            '!'
-            (Get-AudioInputQueue)
-            '!'
-            'audioconvert'
-            '!'
-            'audioresample'
-            '!'
-            '"audio/x-raw,format=S16LE,rate=48000,channels=2"'
-            '!'
-            'volume'
-            "volume=$desktopVolume"
-        ) -join ' '
-    }
+    # Mixer mode is deliberately forced whenever both sources are active because
+    # a single downstream encoder needs one combined raw-audio stream. The flag
+    # controls the important diagnostic case: desktop-only through audiomixer
+    # versus the legacy direct WASAPI -> encoder path.
+    $useMixer = $desktopEnabled -and ($micEnabled -or $chkAudioMixerMode.Checked)
 
-    if (-not $desktopEnabled -and $micEnabled) {
+    if (-not $useMixer) {
+        if ($desktopEnabled) {
+            return @(
+                (Get-WasapiSourceString -Loopback)
+                '!'
+                (Get-AudioInputQueue)
+                '!'
+                'audioconvert'
+                '!'
+                'audioresample'
+                '!'
+                '"audio/x-raw,format=S16LE,rate=48000,channels=2"'
+                '!'
+                'volume'
+                "volume=$desktopVolume"
+            ) -join ' '
+        }
+
         return @(
             (Get-WasapiSourceString)
             '!'
@@ -6988,39 +7004,45 @@ function Build-RawAudioChain {
         ) -join ' '
     }
 
-    $desktopMixBranch = @(
-        (Get-WasapiSourceString -Loopback)
-        '!'
-        (Get-AudioInputQueue -Multiplier 2)
-        '!'
-        'audioconvert'
-        '!'
-        'audioresample'
-        '!'
-        '"audio/x-raw,format=F32LE,rate=48000,channels=2"'
-        '!'
-        'volume'
-        "volume=$desktopVolume"
-        '!'
-        'mix.'
-    ) -join ' '
+    $mixBranches = @()
 
-    $micMixBranch = @(
-        (Get-WasapiSourceString)
-        '!'
-        (Get-AudioInputQueue -Multiplier 2)
-        '!'
-        'audioconvert'
-        '!'
-        'audioresample'
-        '!'
-        '"audio/x-raw,format=F32LE,rate=48000,channels=2"'
-        '!'
-        'volume'
-        "volume=$micVolume"
-        '!'
-        'mix.'
-    ) -join ' '
+    if ($desktopEnabled) {
+        $mixBranches += @(
+            (Get-WasapiSourceString -Loopback)
+            '!'
+            (Get-AudioInputQueue -Multiplier 2)
+            '!'
+            'audioconvert'
+            '!'
+            'audioresample'
+            '!'
+            '"audio/x-raw,format=F32LE,rate=48000,channels=2"'
+            '!'
+            'volume'
+            "volume=$desktopVolume"
+            '!'
+            'mix.'
+        ) -join ' '
+    }
+
+    if ($micEnabled) {
+        $mixBranches += @(
+            (Get-WasapiSourceString)
+            '!'
+            (Get-AudioInputQueue -Multiplier 2)
+            '!'
+            'audioconvert'
+            '!'
+            'audioresample'
+            '!'
+            '"audio/x-raw,format=F32LE,rate=48000,channels=2"'
+            '!'
+            'volume'
+            "volume=$micVolume"
+            '!'
+            'mix.'
+        ) -join ' '
+    }
 
     $mixOutput = @(
         'mix.'
@@ -7032,9 +7054,8 @@ function Build-RawAudioChain {
         '"audio/x-raw,format=S16LE,rate=48000,channels=2"'
     ) -join ' '
 
-    return "audiomixer name=mix $desktopMixBranch $micMixBranch $mixOutput"
+    return "audiomixer name=mix $($mixBranches -join ' ') $mixOutput"
 }
-
 
 function Build-WhipSilentClockAudioChain {
     # MediaMTX/GStreamer testing showed that video-only WHIP selects
@@ -8204,6 +8225,15 @@ function Update-AudioCodecChoices {
     }
 
     if ($cmbDesktopAudioDevice) { $cmbDesktopAudioDevice.Enabled = $chkDesktopAudio.Checked }
+    if ($chkAudioMixerMode) {
+        $chkAudioMixerMode.Enabled = $chkDesktopAudio.Checked
+        if ($chkDesktopAudio.Checked -and $chkMic.Checked) {
+            $toolTip.SetToolTip($chkAudioMixerMode, 'Desktop + microphone requires audiomixer to combine both sources. This flag controls desktop-only mixer normalization versus the legacy direct path.')
+        }
+        else {
+            $toolTip.SetToolTip($chkAudioMixerMode, 'Recommended timing-normalization path. When enabled, desktop-only audio is routed through audiomixer before encoding. Uncheck to restore the legacy direct WASAPI-to-encoder path.')
+        }
+    }
     if ($cmbMicAudioDevice) { $cmbMicAudioDevice.Enabled = $chkMic.Checked }
 
     Update-CommandPreview
@@ -9800,6 +9830,7 @@ function Save-Settings {
             AudioBufferMs = [int]$numAudioBufferMs.Value
             AudioLatencyMs = [int]$numAudioLatencyMs.Value
             DesktopAudio      = $chkDesktopAudio.Checked
+            AudioMixerMode    = $chkAudioMixerMode.Checked
             DesktopVolume     = [int]$numDesktopVolume.Value
             DesktopAudioDevice = if ($cmbDesktopAudioDevice.SelectedItem) { [string]$cmbDesktopAudioDevice.SelectedItem } else { $script:DefaultAudioOutputDeviceLabel }
             DesktopAudioDeviceId = Get-SelectedAudioDeviceId -Kind Output
@@ -10069,6 +10100,7 @@ function Load-Settings {
         if ($null -ne $settings.AudioBufferMs) { $numAudioBufferMs.Value = [decimal]$settings.AudioBufferMs }
         if ($null -ne $settings.AudioLatencyMs) { $numAudioLatencyMs.Value = [decimal]$settings.AudioLatencyMs }
         if ($null -ne $settings.DesktopAudio) { $chkDesktopAudio.Checked = [bool]$settings.DesktopAudio }
+        if ($null -ne $settings.AudioMixerMode) { $chkAudioMixerMode.Checked = [bool]$settings.AudioMixerMode }
         if ($null -ne $settings.DesktopVolume) { $numDesktopVolume.Value = [decimal]$settings.DesktopVolume }
         if ($settings.DesktopAudioDevice) { Restore-AudioDeviceSelection -Kind Output -Label ([string]$settings.DesktopAudioDevice) -DeviceId ([string]$settings.DesktopAudioDeviceId) }
         if ($null -ne $settings.Microphone) { $chkMic.Checked = [bool]$settings.Microphone }
@@ -10727,6 +10759,8 @@ function Start-GstStream {
     Append-Log "Direct GST WebRTC Opus: $([string]$cmbDirectWebRtcOpusMode.SelectedItem), frame $([string]$cmbDirectWebRtcOpusFrameMs.SelectedItem) ms, type $([string]$cmbDirectWebRtcOpusAudioType.SelectedItem), FEC $($chkDirectWebRtcOpusFec.Checked), DTX $($chkDirectWebRtcOpusDtx.Checked)."
     Append-Log "Pipeline clock: $([string](Get-VideoPipelineClockMode)); video timestamps $([string](Get-VideoTimestampMode)). Explicit system modes wrap the complete main graph in clockselect."
     Append-Log "Split audio process clock: $([string](Get-SplitAudioPipelineClockMode)) (UI selection $([string]$cmbSplitAudioPipelineClockMode.SelectedItem))."
+    $mixerSummary = if ($chkDesktopAudio.Checked -and ($chkMic.Checked -or $chkAudioMixerMode.Checked)) { 'audiomixer' } elseif ($chkDesktopAudio.Checked) { 'legacy direct desktop path' } else { 'not applicable' }
+    Append-Log "Desktop audio path: $mixerSummary (mixer flag=$($chkAudioMixerMode.Checked); microphone=$($chkMic.Checked))."
     Append-Log "Video sync mode: $([string]$cmbVideoSyncMode.SelectedItem); Audio sync mode: $([string]$cmbAudioSyncMode.SelectedItem). Explicit modes insert clocksync before compatible send/mux sinks; local preview also honors Video sync mode."
     Append-Log "Audio clock mode: $([string]$cmbAudioClockMode.SelectedItem); timing $([string]$cmbAudioTimingMode.SelectedItem); slave $([string]$cmbAudioSlaveMethod.SelectedItem); requested buffer $([int]$numAudioBufferMs.Value) ms / latency $([int]$numAudioLatencyMs.Value) ms."
     Append-Log "Effective WASAPI source: $(Get-EffectiveAudioTimingSummary)"
@@ -11363,6 +11397,7 @@ $cmbRtspTransport.Add_SelectedIndexChanged($previewHandler)
 $chkDesktopAudio.Add_CheckedChanged({
     Update-AudioCodecChoices -PreserveCurrent
 })
+$chkAudioMixerMode.Add_CheckedChanged($previewHandler)
 $numDesktopVolume.Add_ValueChanged($previewHandler)
 $chkMic.Add_CheckedChanged({
     Update-AudioCodecChoices -PreserveCurrent
