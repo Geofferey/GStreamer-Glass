@@ -630,7 +630,7 @@ public static class GstProcessJob
 '@
 }
 
-$script:AppVersion = '3.7.52f12'
+$script:AppVersion = '3.7.52f13'
 $script:AppName = "GStreamer Glass v$($script:AppVersion)"
 $script:ConfigDirectory = Join-Path $env:APPDATA 'GStreamerBasicWhipStreamer'
 $script:ConfigPath = Join-Path $script:ConfigDirectory 'settings.json'
@@ -776,6 +776,11 @@ $script:DefaultDirectWebRtcBridgeAudioPort = 5006
 $script:DefaultDirectWebRtcBridgeJitterMs = 0
 $script:DefaultDirectWebRtcPublisherQueueMs = 50
 $script:DefaultDirectWebRtcAudioBridgePacing = $true
+$script:DefaultDirectWebRtcClockSignaling = 'Off'
+$script:DefaultDirectWebRtcControlDataChannel = $false
+$script:DefaultDirectWebRtcBundlePolicy = 'Default'
+$script:DefaultDirectWebRtcInternalRtpMtu = 0
+$script:DefaultDirectWebRtcInternalRepeatHeaders = $false
 $script:DefaultUnifiedBridgeKeyframeGuard = $false
 $script:DefaultUnifiedBridgeKeyframeIntervalMs = 500
 $script:DefaultDirectWebRtcStunServer = 'stun://stun.l.google.com:19302'
@@ -1253,6 +1258,190 @@ function Get-PathHash {
     }
 }
 
+$script:UnifiedPublisherHostScriptBase64 = @'
+W0NtZGxldEJpbmRpbmcoKV0KcGFyYW0oCiAgICBbUGFyYW1ldGVyKE1hbmRhdG9yeSA9ICR0cnVlKV1bc3RyaW5nXSRHc3RCaW4sCiAgICBbUGFyYW1ldGVy
+KE1hbmRhdG9yeSA9ICR0cnVlKV1bc3RyaW5nXSRQaXBlbGluZUZpbGUsCiAgICBbVmFsaWRhdGVTZXQoJ0RlZmF1bHQnLCdNYXggYnVuZGxlJyldW3N0cmlu
+Z10kQnVuZGxlUG9saWN5ID0gJ0RlZmF1bHQnLAogICAgW1ZhbGlkYXRlUmFuZ2UoMCw2NTUzNSldW2ludF0kSW50ZXJuYWxSdHBNdHUgPSAwLAogICAgW3N3
+aXRjaF0kSW50ZXJuYWxSZXBlYXRIZWFkZXJzCikKCiRFcnJvckFjdGlvblByZWZlcmVuY2UgPSAnU3RvcCcKCmlmICgtbm90IChUZXN0LVBhdGggLUxpdGVy
+YWxQYXRoICRQaXBlbGluZUZpbGUgLVBhdGhUeXBlIExlYWYpKSB7CiAgICB0aHJvdyAiVW5pZmllZCBwdWJsaXNoZXIgcGlwZWxpbmUgZmlsZSB3YXMgbm90
+IGZvdW5kOiAkUGlwZWxpbmVGaWxlIgp9CmlmICgtbm90IChUZXN0LVBhdGggLUxpdGVyYWxQYXRoICRHc3RCaW4gLVBhdGhUeXBlIENvbnRhaW5lcikpIHsK
+ICAgIHRocm93ICJHU3RyZWFtZXIgYmluIGRpcmVjdG9yeSB3YXMgbm90IGZvdW5kOiAkR3N0QmluIgp9CgojIEN1cnJlbnQgR1N0cmVhbWVyIFdpbmRvd3Mg
+cGFja2FnZXMgaGF2ZSB1c2VkIGJvdGggbGliLXByZWZpeGVkIGFuZAojIHVucHJlZml4ZWQgY29yZSBETEwgbmFtZXMuICBUaGUgbmF0aXZlIGhvc3QgaW1w
+b3J0cyB0aGUgdHJhZGl0aW9uYWwKIyBsaWItcHJlZml4ZWQgbmFtZXMsIHNvIG1hdGVyaWFsaXplIHByaXZhdGUgYWxpYXNlcyB3aGVuIGEgbmV3ZXIgcnVu
+dGltZSBvbmx5CiMgc2hpcHMgZ3N0cmVhbWVyLTEuMC0wLmRsbCAvIGdvYmplY3QtMi4wLTAuZGxsIC8gZ2xpYi0yLjAtMC5kbGwuCiRuYXRpdmVBbGlhc0Rp
+ciA9IEpvaW4tUGF0aCAkZW52OkxPQ0FMQVBQREFUQSAnR1N0cmVhbWVyR2xhc3NcSGVscGVyc1xuYXRpdmUtYWxpYXNlcycKaWYgKC1ub3QgKFRlc3QtUGF0
+aCAtTGl0ZXJhbFBhdGggJG5hdGl2ZUFsaWFzRGlyKSkgewogICAgJG51bGwgPSBOZXctSXRlbSAtSXRlbVR5cGUgRGlyZWN0b3J5IC1QYXRoICRuYXRpdmVB
+bGlhc0RpciAtRm9yY2UKfQoKZnVuY3Rpb24gRW5zdXJlLU5hdGl2ZURsbEFsaWFzIHsKICAgIHBhcmFtKAogICAgICAgIFtQYXJhbWV0ZXIoTWFuZGF0b3J5
+ID0gJHRydWUpXVtzdHJpbmddJEltcG9ydE5hbWUsCiAgICAgICAgW1BhcmFtZXRlcihNYW5kYXRvcnkgPSAkdHJ1ZSldW3N0cmluZ1tdXSRDYW5kaWRhdGVz
+CiAgICApCgogICAgJGRpcmVjdCA9IEpvaW4tUGF0aCAkR3N0QmluICRJbXBvcnROYW1lCiAgICBpZiAoVGVzdC1QYXRoIC1MaXRlcmFsUGF0aCAkZGlyZWN0
+IC1QYXRoVHlwZSBMZWFmKSB7IHJldHVybiB9CgogICAgZm9yZWFjaCAoJGNhbmRpZGF0ZU5hbWUgaW4gJENhbmRpZGF0ZXMpIHsKICAgICAgICAkY2FuZGlk
+YXRlID0gSm9pbi1QYXRoICRHc3RCaW4gJGNhbmRpZGF0ZU5hbWUKICAgICAgICBpZiAoVGVzdC1QYXRoIC1MaXRlcmFsUGF0aCAkY2FuZGlkYXRlIC1QYXRo
+VHlwZSBMZWFmKSB7CiAgICAgICAgICAgIENvcHktSXRlbSAtTGl0ZXJhbFBhdGggJGNhbmRpZGF0ZSAtRGVzdGluYXRpb24gKEpvaW4tUGF0aCAkbmF0aXZl
+QWxpYXNEaXIgJEltcG9ydE5hbWUpIC1Gb3JjZQogICAgICAgICAgICByZXR1cm4KICAgICAgICB9CiAgICB9CgogICAgdGhyb3cgIlJlcXVpcmVkIEdTdHJl
+YW1lciBuYXRpdmUgRExMIHdhcyBub3QgZm91bmQuIEltcG9ydD0kSW1wb3J0TmFtZTsgc2VhcmNoZWQ9JCgkQ2FuZGlkYXRlcyAtam9pbiAnLCAnKSIKfQoK
+RW5zdXJlLU5hdGl2ZURsbEFsaWFzIC1JbXBvcnROYW1lICdsaWJnc3RyZWFtZXItMS4wLTAuZGxsJyAtQ2FuZGlkYXRlcyBAKCdsaWJnc3RyZWFtZXItMS4w
+LTAuZGxsJywnZ3N0cmVhbWVyLTEuMC0wLmRsbCcpCkVuc3VyZS1OYXRpdmVEbGxBbGlhcyAtSW1wb3J0TmFtZSAnbGliZ29iamVjdC0yLjAtMC5kbGwnIC1D
+YW5kaWRhdGVzIEAoJ2xpYmdvYmplY3QtMi4wLTAuZGxsJywnZ29iamVjdC0yLjAtMC5kbGwnKQpFbnN1cmUtTmF0aXZlRGxsQWxpYXMgLUltcG9ydE5hbWUg
+J2xpYmdsaWItMi4wLTAuZGxsJyAtQ2FuZGlkYXRlcyBAKCdsaWJnbGliLTIuMC0wLmRsbCcsJ2dsaWItMi4wLTAuZGxsJykKCiRlbnY6UEFUSCA9ICIkbmF0
+aXZlQWxpYXNEaXI7JEdzdEJpbjskZW52OlBBVEgiCiRwaXBlbGluZURlc2NyaXB0aW9uID0gR2V0LUNvbnRlbnQgLUxpdGVyYWxQYXRoICRQaXBlbGluZUZp
+bGUgLVJhdwppZiAoW3N0cmluZ106OklzTnVsbE9yV2hpdGVTcGFjZSgkcGlwZWxpbmVEZXNjcmlwdGlvbikpIHsKICAgIHRocm93ICdVbmlmaWVkIHB1Ymxp
+c2hlciBwaXBlbGluZSBkZXNjcmlwdGlvbiBpcyBlbXB0eS4nCn0KCiRuYXRpdmVTb3VyY2UgPSBAJwp1c2luZyBTeXN0ZW07CnVzaW5nIFN5c3RlbS5SdW50
+aW1lLkludGVyb3BTZXJ2aWNlczsKdXNpbmcgU3lzdGVtLlRleHQ7CnVzaW5nIFN5c3RlbS5UaHJlYWRpbmc7CgpwdWJsaWMgc3RhdGljIGNsYXNzIEdTdHJl
+YW1lckdsYXNzVW5pZmllZFB1Ymxpc2hlckhvc3QKewogICAgcHJpdmF0ZSBjb25zdCBpbnQgR1NUX1NUQVRFX05VTEwgPSAxOwogICAgcHJpdmF0ZSBjb25z
+dCBpbnQgR1NUX1NUQVRFX1BMQVlJTkcgPSA0OwogICAgcHJpdmF0ZSBjb25zdCBpbnQgR1NUX1NUQVRFX0NIQU5HRV9GQUlMVVJFID0gMDsKICAgIHByaXZh
+dGUgY29uc3QgdWludCBHU1RfTUVTU0FHRV9FUlJPUiA9IDF1IDw8IDE7CiAgICBwcml2YXRlIGNvbnN0IGludCBHX0NPTk5FQ1RfQUZURVIgPSAxOwoKICAg
+IHByaXZhdGUgc3RhdGljIGJvb2wgX21heEJ1bmRsZTsKICAgIHByaXZhdGUgc3RhdGljIGludCBfaW50ZXJuYWxSdHBNdHU7CiAgICBwcml2YXRlIHN0YXRp
+YyBib29sIF9yZXBlYXRIZWFkZXJzOwoKICAgIFtVbm1hbmFnZWRGdW5jdGlvblBvaW50ZXIoQ2FsbGluZ0NvbnZlbnRpb24uQ2RlY2wpXQogICAgcHJpdmF0
+ZSBkZWxlZ2F0ZSB2b2lkIFdlYlJ0Y0JpblJlYWR5RGVsZWdhdGUoSW50UHRyIHNlbGYsIEludFB0ciBwZWVySWQsIEludFB0ciB3ZWJydGNiaW4sIEludFB0
+ciB1c2VyRGF0YSk7CgogICAgW1VubWFuYWdlZEZ1bmN0aW9uUG9pbnRlcihDYWxsaW5nQ29udmVudGlvbi5DZGVjbCldCiAgICBwcml2YXRlIGRlbGVnYXRl
+IGludCBQYXlsb2FkZXJTZXR1cERlbGVnYXRlKEludFB0ciBzZWxmLCBJbnRQdHIgY29uc3VtZXJJZCwgSW50UHRyIHBhZE5hbWUsIEludFB0ciBwYXlsb2Fk
+ZXIsIEludFB0ciB1c2VyRGF0YSk7CgogICAgcHJpdmF0ZSBzdGF0aWMgV2ViUnRjQmluUmVhZHlEZWxlZ2F0ZSBfd2VicnRjYmluUmVhZHlEZWxlZ2F0ZSA9
+IE9uV2ViUnRjQmluUmVhZHk7CiAgICBwcml2YXRlIHN0YXRpYyBQYXlsb2FkZXJTZXR1cERlbGVnYXRlIF9wYXlsb2FkZXJTZXR1cERlbGVnYXRlID0gT25Q
+YXlsb2FkZXJTZXR1cDsKCiAgICBbU3RydWN0TGF5b3V0KExheW91dEtpbmQuU2VxdWVudGlhbCldCiAgICBwcml2YXRlIHN0cnVjdCBHRXJyb3JOYXRpdmUK
+ICAgIHsKICAgICAgICBwdWJsaWMgdWludCBkb21haW47CiAgICAgICAgcHVibGljIGludCBjb2RlOwogICAgICAgIHB1YmxpYyBJbnRQdHIgbWVzc2FnZTsK
+ICAgIH0KCiAgICBbRGxsSW1wb3J0KCJsaWJnc3RyZWFtZXItMS4wLTAuZGxsIiwgQ2FsbGluZ0NvbnZlbnRpb24gPSBDYWxsaW5nQ29udmVudGlvbi5DZGVj
+bCldCiAgICBwcml2YXRlIHN0YXRpYyBleHRlcm4gdm9pZCBnc3RfaW5pdChJbnRQdHIgYXJnYywgSW50UHRyIGFyZ3YpOwoKICAgIFtEbGxJbXBvcnQoImxp
+YmdzdHJlYW1lci0xLjAtMC5kbGwiLCBDYWxsaW5nQ29udmVudGlvbiA9IENhbGxpbmdDb252ZW50aW9uLkNkZWNsKV0KICAgIHByaXZhdGUgc3RhdGljIGV4
+dGVybiBJbnRQdHIgZ3N0X3BhcnNlX2xhdW5jaChbTWFyc2hhbEFzKFVubWFuYWdlZFR5cGUuTFBVVEY4U3RyKV0gc3RyaW5nIHBpcGVsaW5lRGVzY3JpcHRp
+b24sIG91dCBJbnRQdHIgZXJyb3IpOwoKICAgIFtEbGxJbXBvcnQoImxpYmdzdHJlYW1lci0xLjAtMC5kbGwiLCBDYWxsaW5nQ29udmVudGlvbiA9IENhbGxp
+bmdDb252ZW50aW9uLkNkZWNsKV0KICAgIHByaXZhdGUgc3RhdGljIGV4dGVybiBJbnRQdHIgZ3N0X2Jpbl9nZXRfYnlfbmFtZShJbnRQdHIgYmluLCBbTWFy
+c2hhbEFzKFVubWFuYWdlZFR5cGUuTFBVVEY4U3RyKV0gc3RyaW5nIG5hbWUpOwoKICAgIFtEbGxJbXBvcnQoImxpYmdzdHJlYW1lci0xLjAtMC5kbGwiLCBD
+YWxsaW5nQ29udmVudGlvbiA9IENhbGxpbmdDb252ZW50aW9uLkNkZWNsKV0KICAgIHByaXZhdGUgc3RhdGljIGV4dGVybiBpbnQgZ3N0X2VsZW1lbnRfc2V0
+X3N0YXRlKEludFB0ciBlbGVtZW50LCBpbnQgc3RhdGUpOwoKICAgIFtEbGxJbXBvcnQoImxpYmdzdHJlYW1lci0xLjAtMC5kbGwiLCBDYWxsaW5nQ29udmVu
+dGlvbiA9IENhbGxpbmdDb252ZW50aW9uLkNkZWNsKV0KICAgIHByaXZhdGUgc3RhdGljIGV4dGVybiBJbnRQdHIgZ3N0X2VsZW1lbnRfZ2V0X2J1cyhJbnRQ
+dHIgZWxlbWVudCk7CgogICAgW0RsbEltcG9ydCgibGliZ3N0cmVhbWVyLTEuMC0wLmRsbCIsIENhbGxpbmdDb252ZW50aW9uID0gQ2FsbGluZ0NvbnZlbnRp
+b24uQ2RlY2wpXQogICAgcHJpdmF0ZSBzdGF0aWMgZXh0ZXJuIEludFB0ciBnc3RfYnVzX3RpbWVkX3BvcF9maWx0ZXJlZChJbnRQdHIgYnVzLCB1bG9uZyB0
+aW1lb3V0LCB1aW50IHR5cGVzKTsKCiAgICBbRGxsSW1wb3J0KCJsaWJnc3RyZWFtZXItMS4wLTAuZGxsIiwgQ2FsbGluZ0NvbnZlbnRpb24gPSBDYWxsaW5n
+Q29udmVudGlvbi5DZGVjbCldCiAgICBwcml2YXRlIHN0YXRpYyBleHRlcm4gdm9pZCBnc3RfbWVzc2FnZV9wYXJzZV9lcnJvcihJbnRQdHIgbWVzc2FnZSwg
+b3V0IEludFB0ciBlcnJvciwgb3V0IEludFB0ciBkZWJ1Zyk7CgogICAgW0RsbEltcG9ydCgibGliZ3N0cmVhbWVyLTEuMC0wLmRsbCIsIENhbGxpbmdDb252
+ZW50aW9uID0gQ2FsbGluZ0NvbnZlbnRpb24uQ2RlY2wpXQogICAgcHJpdmF0ZSBzdGF0aWMgZXh0ZXJuIHZvaWQgZ3N0X21pbmlfb2JqZWN0X3VucmVmKElu
+dFB0ciBtaW5pT2JqZWN0KTsKCiAgICBbRGxsSW1wb3J0KCJsaWJnc3RyZWFtZXItMS4wLTAuZGxsIiwgQ2FsbGluZ0NvbnZlbnRpb24gPSBDYWxsaW5nQ29u
+dmVudGlvbi5DZGVjbCldCiAgICBwcml2YXRlIHN0YXRpYyBleHRlcm4gdm9pZCBnc3Rfb2JqZWN0X3VucmVmKEludFB0ciBvYmopOwoKICAgIFtEbGxJbXBv
+cnQoImxpYmdzdHJlYW1lci0xLjAtMC5kbGwiLCBDYWxsaW5nQ29udmVudGlvbiA9IENhbGxpbmdDb252ZW50aW9uLkNkZWNsKV0KICAgIHByaXZhdGUgc3Rh
+dGljIGV4dGVybiB2b2lkIGdzdF91dGlsX3NldF9vYmplY3RfYXJnKEludFB0ciBvYmosIFtNYXJzaGFsQXMoVW5tYW5hZ2VkVHlwZS5MUFVURjhTdHIpXSBz
+dHJpbmcgbmFtZSwgW01hcnNoYWxBcyhVbm1hbmFnZWRUeXBlLkxQVVRGOFN0cildIHN0cmluZyB2YWx1ZSk7CgogICAgW0RsbEltcG9ydCgibGliZ29iamVj
+dC0yLjAtMC5kbGwiLCBDYWxsaW5nQ29udmVudGlvbiA9IENhbGxpbmdDb252ZW50aW9uLkNkZWNsKV0KICAgIHByaXZhdGUgc3RhdGljIGV4dGVybiB1aW50
+IGdfc2lnbmFsX2Nvbm5lY3RfZGF0YSgKICAgICAgICBJbnRQdHIgaW5zdGFuY2UsCiAgICAgICAgW01hcnNoYWxBcyhVbm1hbmFnZWRUeXBlLkxQVVRGOFN0
+cildIHN0cmluZyBkZXRhaWxlZFNpZ25hbCwKICAgICAgICBJbnRQdHIgY2FsbGJhY2ssCiAgICAgICAgSW50UHRyIGRhdGEsCiAgICAgICAgSW50UHRyIGRl
+c3Ryb3lEYXRhLAogICAgICAgIGludCBjb25uZWN0RmxhZ3MpOwoKICAgIFtEbGxJbXBvcnQoImxpYmdsaWItMi4wLTAuZGxsIiwgQ2FsbGluZ0NvbnZlbnRp
+b24gPSBDYWxsaW5nQ29udmVudGlvbi5DZGVjbCldCiAgICBwcml2YXRlIHN0YXRpYyBleHRlcm4gdm9pZCBnX2Vycm9yX2ZyZWUoSW50UHRyIGVycm9yKTsK
+CiAgICBbRGxsSW1wb3J0KCJsaWJnbGliLTIuMC0wLmRsbCIsIENhbGxpbmdDb252ZW50aW9uID0gQ2FsbGluZ0NvbnZlbnRpb24uQ2RlY2wpXQogICAgcHJp
+dmF0ZSBzdGF0aWMgZXh0ZXJuIHZvaWQgZ19mcmVlKEludFB0ciBtZW1vcnkpOwoKICAgIHByaXZhdGUgc3RhdGljIHN0cmluZyBQdHJUb1V0ZjgoSW50UHRy
+IHB0cikKICAgIHsKICAgICAgICBpZiAocHRyID09IEludFB0ci5aZXJvKSByZXR1cm4gU3RyaW5nLkVtcHR5OwogICAgICAgIGludCBsZW5ndGggPSAwOwog
+ICAgICAgIHdoaWxlIChNYXJzaGFsLlJlYWRCeXRlKHB0ciwgbGVuZ3RoKSAhPSAwKSBsZW5ndGgrKzsKICAgICAgICBpZiAobGVuZ3RoID09IDApIHJldHVy
+biBTdHJpbmcuRW1wdHk7CiAgICAgICAgYnl0ZVtdIGJ5dGVzID0gbmV3IGJ5dGVbbGVuZ3RoXTsKICAgICAgICBNYXJzaGFsLkNvcHkocHRyLCBieXRlcywg
+MCwgbGVuZ3RoKTsKICAgICAgICByZXR1cm4gRW5jb2RpbmcuVVRGOC5HZXRTdHJpbmcoYnl0ZXMpOwogICAgfQoKICAgIHByaXZhdGUgc3RhdGljIHN0cmlu
+ZyBSZWFkR0Vycm9yKEludFB0ciBlcnJvcikKICAgIHsKICAgICAgICBpZiAoZXJyb3IgPT0gSW50UHRyLlplcm8pIHJldHVybiBTdHJpbmcuRW1wdHk7CiAg
+ICAgICAgR0Vycm9yTmF0aXZlIG5hdGl2ZSA9IChHRXJyb3JOYXRpdmUpTWFyc2hhbC5QdHJUb1N0cnVjdHVyZShlcnJvciwgdHlwZW9mKEdFcnJvck5hdGl2
+ZSkpOwogICAgICAgIHJldHVybiBQdHJUb1V0ZjgobmF0aXZlLm1lc3NhZ2UpOwogICAgfQoKICAgIHByaXZhdGUgc3RhdGljIHZvaWQgT25XZWJSdGNCaW5S
+ZWFkeShJbnRQdHIgc2VsZiwgSW50UHRyIHBlZXJJZCwgSW50UHRyIHdlYnJ0Y2JpbiwgSW50UHRyIHVzZXJEYXRhKQogICAgewogICAgICAgIGlmICghX21h
+eEJ1bmRsZSB8fCB3ZWJydGNiaW4gPT0gSW50UHRyLlplcm8pIHJldHVybjsKICAgICAgICBzdHJpbmcgcGVlciA9IFB0clRvVXRmOChwZWVySWQpOwogICAg
+ICAgIGdzdF91dGlsX3NldF9vYmplY3RfYXJnKHdlYnJ0Y2JpbiwgImJ1bmRsZS1wb2xpY3kiLCAibWF4LWJ1bmRsZSIpOwogICAgICAgIENvbnNvbGUuV3Jp
+dGVMaW5lKCJbdW5pZmllZC1ob3N0XSB3ZWJydGNiaW4tcmVhZHkgcGVlcj0iICsgcGVlciArICIgYnVuZGxlLXBvbGljeT1tYXgtYnVuZGxlIik7CiAgICB9
+CgogICAgcHJpdmF0ZSBzdGF0aWMgaW50IE9uUGF5bG9hZGVyU2V0dXAoSW50UHRyIHNlbGYsIEludFB0ciBjb25zdW1lcklkLCBJbnRQdHIgcGFkTmFtZSwg
+SW50UHRyIHBheWxvYWRlciwgSW50UHRyIHVzZXJEYXRhKQogICAgewogICAgICAgIGlmIChwYXlsb2FkZXIgPT0gSW50UHRyLlplcm8pIHJldHVybiAwOwog
+ICAgICAgIHN0cmluZyBjb25zdW1lciA9IFB0clRvVXRmOChjb25zdW1lcklkKTsKICAgICAgICBzdHJpbmcgcGFkID0gUHRyVG9VdGY4KHBhZE5hbWUpOwoK
+ICAgICAgICBpZiAoX2ludGVybmFsUnRwTXR1ID4gMCkKICAgICAgICB7CiAgICAgICAgICAgIGdzdF91dGlsX3NldF9vYmplY3RfYXJnKHBheWxvYWRlciwg
+Im10dSIsIF9pbnRlcm5hbFJ0cE10dS5Ub1N0cmluZygpKTsKICAgICAgICAgICAgQ29uc29sZS5Xcml0ZUxpbmUoIlt1bmlmaWVkLWhvc3RdIHBheWxvYWRl
+ci1zZXR1cCBjb25zdW1lcj0iICsgY29uc3VtZXIgKyAiIHBhZD0iICsgcGFkICsgIiBtdHU9IiArIF9pbnRlcm5hbFJ0cE10dSk7CiAgICAgICAgfQoKICAg
+ICAgICBpZiAoX3JlcGVhdEhlYWRlcnMgJiYgcGFkLlN0YXJ0c1dpdGgoInZpZGVvXyIsIFN0cmluZ0NvbXBhcmlzb24uT3JkaW5hbElnbm9yZUNhc2UpKQog
+ICAgICAgIHsKICAgICAgICAgICAgZ3N0X3V0aWxfc2V0X29iamVjdF9hcmcocGF5bG9hZGVyLCAiY29uZmlnLWludGVydmFsIiwgIi0xIik7CiAgICAgICAg
+ICAgIENvbnNvbGUuV3JpdGVMaW5lKCJbdW5pZmllZC1ob3N0XSBwYXlsb2FkZXItc2V0dXAgY29uc3VtZXI9IiArIGNvbnN1bWVyICsgIiBwYWQ9IiArIHBh
+ZCArICIgY29uZmlnLWludGVydmFsPS0xIik7CiAgICAgICAgfQoKICAgICAgICByZXR1cm4gMTsKICAgIH0KCiAgICBwcml2YXRlIHN0YXRpYyB1aW50IENv
+bm5lY3RTaWduYWwoSW50UHRyIGluc3RhbmNlLCBzdHJpbmcgc2lnbmFsLCBEZWxlZ2F0ZSBjYWxsYmFjaywgaW50IGZsYWdzKQogICAgewogICAgICAgIElu
+dFB0ciBmdW5jdGlvblBvaW50ZXIgPSBNYXJzaGFsLkdldEZ1bmN0aW9uUG9pbnRlckZvckRlbGVnYXRlKGNhbGxiYWNrKTsKICAgICAgICByZXR1cm4gZ19z
+aWduYWxfY29ubmVjdF9kYXRhKGluc3RhbmNlLCBzaWduYWwsIGZ1bmN0aW9uUG9pbnRlciwgSW50UHRyLlplcm8sIEludFB0ci5aZXJvLCBmbGFncyk7CiAg
+ICB9CgogICAgcHVibGljIHN0YXRpYyBpbnQgUnVuKHN0cmluZyBwaXBlbGluZURlc2NyaXB0aW9uLCBib29sIG1heEJ1bmRsZSwgaW50IGludGVybmFsUnRw
+TXR1LCBib29sIHJlcGVhdEhlYWRlcnMpCiAgICB7CiAgICAgICAgX21heEJ1bmRsZSA9IG1heEJ1bmRsZTsKICAgICAgICBfaW50ZXJuYWxSdHBNdHUgPSBp
+bnRlcm5hbFJ0cE10dTsKICAgICAgICBfcmVwZWF0SGVhZGVycyA9IHJlcGVhdEhlYWRlcnM7CgogICAgICAgIEludFB0ciBwaXBlbGluZSA9IEludFB0ci5a
+ZXJvOwogICAgICAgIEludFB0ciBzaW5rID0gSW50UHRyLlplcm87CiAgICAgICAgSW50UHRyIGJ1cyA9IEludFB0ci5aZXJvOwogICAgICAgIEludFB0ciBw
+YXJzZUVycm9yID0gSW50UHRyLlplcm87CgogICAgICAgIHRyeQogICAgICAgIHsKICAgICAgICAgICAgZ3N0X2luaXQoSW50UHRyLlplcm8sIEludFB0ci5a
+ZXJvKTsKICAgICAgICAgICAgcGlwZWxpbmUgPSBnc3RfcGFyc2VfbGF1bmNoKHBpcGVsaW5lRGVzY3JpcHRpb24sIG91dCBwYXJzZUVycm9yKTsKICAgICAg
+ICAgICAgaWYgKHBpcGVsaW5lID09IEludFB0ci5aZXJvKQogICAgICAgICAgICB7CiAgICAgICAgICAgICAgICBzdHJpbmcgcGFyc2VNZXNzYWdlID0gUmVh
+ZEdFcnJvcihwYXJzZUVycm9yKTsKICAgICAgICAgICAgICAgIENvbnNvbGUuRXJyb3IuV3JpdGVMaW5lKCJbdW5pZmllZC1ob3N0XSBnc3RfcGFyc2VfbGF1
+bmNoIGZhaWxlZDogIiArIHBhcnNlTWVzc2FnZSk7CiAgICAgICAgICAgICAgICByZXR1cm4gMTsKICAgICAgICAgICAgfQoKICAgICAgICAgICAgc2luayA9
+IGdzdF9iaW5fZ2V0X2J5X25hbWUocGlwZWxpbmUsICJvdXQiKTsKICAgICAgICAgICAgaWYgKHNpbmsgPT0gSW50UHRyLlplcm8pCiAgICAgICAgICAgIHsK
+ICAgICAgICAgICAgICAgIENvbnNvbGUuRXJyb3IuV3JpdGVMaW5lKCJbdW5pZmllZC1ob3N0XSB3ZWJydGNzaW5rIG5hbWVkICdvdXQnIHdhcyBub3QgZm91
+bmQuIik7CiAgICAgICAgICAgICAgICByZXR1cm4gMTsKICAgICAgICAgICAgfQoKICAgICAgICAgICAgaWYgKF9tYXhCdW5kbGUpCiAgICAgICAgICAgIHsK
+ICAgICAgICAgICAgICAgIENvbm5lY3RTaWduYWwoc2luaywgIndlYnJ0Y2Jpbi1yZWFkeSIsIF93ZWJydGNiaW5SZWFkeURlbGVnYXRlLCAwKTsKICAgICAg
+ICAgICAgfQogICAgICAgICAgICBpZiAoX2ludGVybmFsUnRwTXR1ID4gMCB8fCBfcmVwZWF0SGVhZGVycykKICAgICAgICAgICAgewogICAgICAgICAgICAg
+ICAgQ29ubmVjdFNpZ25hbChzaW5rLCAicGF5bG9hZGVyLXNldHVwIiwgX3BheWxvYWRlclNldHVwRGVsZWdhdGUsIEdfQ09OTkVDVF9BRlRFUik7CiAgICAg
+ICAgICAgIH0KCiAgICAgICAgICAgIENvbnNvbGUuV3JpdGVMaW5lKCJbdW5pZmllZC1ob3N0XSBwaXBlbGluZSBzdGFydGluZzsgbWF4LWJ1bmRsZT0iICsg
+X21heEJ1bmRsZSArICI7IGludGVybmFsLW10dT0iICsgX2ludGVybmFsUnRwTXR1ICsgIjsgcmVwZWF0LWhlYWRlcnM9IiArIF9yZXBlYXRIZWFkZXJzKTsK
+ICAgICAgICAgICAgaW50IHN0YXRlUmVzdWx0ID0gZ3N0X2VsZW1lbnRfc2V0X3N0YXRlKHBpcGVsaW5lLCBHU1RfU1RBVEVfUExBWUlORyk7CiAgICAgICAg
+ICAgIGlmIChzdGF0ZVJlc3VsdCA9PSBHU1RfU1RBVEVfQ0hBTkdFX0ZBSUxVUkUpCiAgICAgICAgICAgIHsKICAgICAgICAgICAgICAgIENvbnNvbGUuRXJy
+b3IuV3JpdGVMaW5lKCJbdW5pZmllZC1ob3N0XSBmYWlsZWQgdG8gc2V0IHBpcGVsaW5lIHRvIFBMQVlJTkcuIik7CiAgICAgICAgICAgICAgICByZXR1cm4g
+MTsKICAgICAgICAgICAgfQoKICAgICAgICAgICAgYnVzID0gZ3N0X2VsZW1lbnRfZ2V0X2J1cyhwaXBlbGluZSk7CiAgICAgICAgICAgIHdoaWxlICh0cnVl
+KQogICAgICAgICAgICB7CiAgICAgICAgICAgICAgICBJbnRQdHIgbWVzc2FnZSA9IGdzdF9idXNfdGltZWRfcG9wX2ZpbHRlcmVkKGJ1cywgMjUwMDAwMDAw
+VUwsIEdTVF9NRVNTQUdFX0VSUk9SKTsKICAgICAgICAgICAgICAgIGlmIChtZXNzYWdlICE9IEludFB0ci5aZXJvKQogICAgICAgICAgICAgICAgewogICAg
+ICAgICAgICAgICAgICAgIEludFB0ciBlcnJvciA9IEludFB0ci5aZXJvOwogICAgICAgICAgICAgICAgICAgIEludFB0ciBkZWJ1ZyA9IEludFB0ci5aZXJv
+OwogICAgICAgICAgICAgICAgICAgIHRyeQogICAgICAgICAgICAgICAgICAgIHsKICAgICAgICAgICAgICAgICAgICAgICAgZ3N0X21lc3NhZ2VfcGFyc2Vf
+ZXJyb3IobWVzc2FnZSwgb3V0IGVycm9yLCBvdXQgZGVidWcpOwogICAgICAgICAgICAgICAgICAgICAgICBDb25zb2xlLkVycm9yLldyaXRlTGluZSgiW3Vu
+aWZpZWQtaG9zdF0gR1N0cmVhbWVyIGVycm9yOiAiICsgUmVhZEdFcnJvcihlcnJvcikpOwogICAgICAgICAgICAgICAgICAgICAgICBzdHJpbmcgZGVidWdU
+ZXh0ID0gUHRyVG9VdGY4KGRlYnVnKTsKICAgICAgICAgICAgICAgICAgICAgICAgaWYgKCFTdHJpbmcuSXNOdWxsT3JXaGl0ZVNwYWNlKGRlYnVnVGV4dCkp
+IENvbnNvbGUuRXJyb3IuV3JpdGVMaW5lKCJbdW5pZmllZC1ob3N0XSAiICsgZGVidWdUZXh0KTsKICAgICAgICAgICAgICAgICAgICB9CiAgICAgICAgICAg
+ICAgICAgICAgZmluYWxseQogICAgICAgICAgICAgICAgICAgIHsKICAgICAgICAgICAgICAgICAgICAgICAgaWYgKGVycm9yICE9IEludFB0ci5aZXJvKSBn
+X2Vycm9yX2ZyZWUoZXJyb3IpOwogICAgICAgICAgICAgICAgICAgICAgICBpZiAoZGVidWcgIT0gSW50UHRyLlplcm8pIGdfZnJlZShkZWJ1Zyk7CiAgICAg
+ICAgICAgICAgICAgICAgICAgIGdzdF9taW5pX29iamVjdF91bnJlZihtZXNzYWdlKTsKICAgICAgICAgICAgICAgICAgICB9CiAgICAgICAgICAgICAgICAg
+ICAgcmV0dXJuIDE7CiAgICAgICAgICAgICAgICB9CiAgICAgICAgICAgICAgICBUaHJlYWQuU2xlZXAoMTApOwogICAgICAgICAgICB9CiAgICAgICAgfQog
+ICAgICAgIGNhdGNoIChFeGNlcHRpb24gZXgpCiAgICAgICAgewogICAgICAgICAgICBDb25zb2xlLkVycm9yLldyaXRlTGluZSgiW3VuaWZpZWQtaG9zdF0g
+ZmF0YWw6ICIgKyBleCk7CiAgICAgICAgICAgIHJldHVybiAxOwogICAgICAgIH0KICAgICAgICBmaW5hbGx5CiAgICAgICAgewogICAgICAgICAgICBpZiAo
+cGlwZWxpbmUgIT0gSW50UHRyLlplcm8pIGdzdF9lbGVtZW50X3NldF9zdGF0ZShwaXBlbGluZSwgR1NUX1NUQVRFX05VTEwpOwogICAgICAgICAgICBpZiAo
+YnVzICE9IEludFB0ci5aZXJvKSBnc3Rfb2JqZWN0X3VucmVmKGJ1cyk7CiAgICAgICAgICAgIGlmIChzaW5rICE9IEludFB0ci5aZXJvKSBnc3Rfb2JqZWN0
+X3VucmVmKHNpbmspOwogICAgICAgICAgICBpZiAocGlwZWxpbmUgIT0gSW50UHRyLlplcm8pIGdzdF9vYmplY3RfdW5yZWYocGlwZWxpbmUpOwogICAgICAg
+ICAgICBpZiAocGFyc2VFcnJvciAhPSBJbnRQdHIuWmVybykgZ19lcnJvcl9mcmVlKHBhcnNlRXJyb3IpOwogICAgICAgIH0KICAgIH0KfQonQAoKQWRkLVR5
+cGUgLVR5cGVEZWZpbml0aW9uICRuYXRpdmVTb3VyY2UgLUxhbmd1YWdlIENTaGFycApleGl0IFtHU3RyZWFtZXJHbGFzc1VuaWZpZWRQdWJsaXNoZXJIb3N0
+XTo6UnVuKAogICAgJHBpcGVsaW5lRGVzY3JpcHRpb24sCiAgICAoJEJ1bmRsZVBvbGljeSAtZXEgJ01heCBidW5kbGUnKSwKICAgICRJbnRlcm5hbFJ0cE10
+dSwKICAgIFtib29sXSRJbnRlcm5hbFJlcGVhdEhlYWRlcnMKKQo=
+'@
+
+function Ensure-UnifiedPublisherHostScript {
+    $helperDir = Join-Path $env:LOCALAPPDATA 'GStreamerGlass\Helpers'
+    if (-not (Test-Path -LiteralPath $helperDir)) { $null = New-Item -ItemType Directory -Path $helperDir -Force }
+    $helperPath = Join-Path $helperDir 'GStreamerGlass-UnifiedPublisherHost-f13.ps1'
+    $bytes = [Convert]::FromBase64String(($script:UnifiedPublisherHostScriptBase64 -replace '\s',''))
+    [System.IO.File]::WriteAllBytes($helperPath, $bytes)
+    return $helperPath
+}
+
+function Test-DirectWebRtcUnifiedPublisherHostRequired {
+    if (-not (Test-DirectWebRtcUnifiedPublisher)) { return $false }
+    return (
+        (Get-ComboSelectedOrDefault $cmbDirectWebRtcBundlePolicy $script:DefaultDirectWebRtcBundlePolicy) -eq 'Max bundle' -or
+        [int]$numDirectWebRtcInternalRtpMtu.Value -gt 0 -or
+        $chkDirectWebRtcInternalRepeatHeaders.Checked
+    )
+}
+
+function Convert-GstLaunchArgumentsToPipelineDescription {
+    param([Parameter(Mandatory)][string]$Arguments)
+    $pipeline = $Arguments.Trim()
+    while ($pipeline -match '^(?:-e|-v)\s+') { $pipeline = $pipeline -replace '^(?:-e|-v)\s+', '' }
+    return $pipeline.Trim()
+}
+
+function Get-PowerShellHostExecutable {
+    $candidate = if ($PSVersionTable.PSEdition -eq 'Core') { Join-Path $PSHOME 'pwsh.exe' } else { Join-Path $PSHOME 'powershell.exe' }
+    if (Test-Path -LiteralPath $candidate) { return $candidate }
+    return 'powershell.exe'
+}
+
+function Get-UnifiedPublisherHostLaunch {
+    param([Parameter(Mandatory)][string]$GstPath, [Parameter(Mandatory)][string]$GstArguments)
+    $helperPath = Ensure-UnifiedPublisherHostScript
+    if (-not (Test-Path -LiteralPath $script:ConfigDirectory)) { $null = New-Item -ItemType Directory -Path $script:ConfigDirectory -Force }
+    $pipelinePath = Join-Path $script:ConfigDirectory 'unified-publisher-pipeline.txt'
+    $pipelineDescription = Convert-GstLaunchArgumentsToPipelineDescription -Arguments $GstArguments
+    [System.IO.File]::WriteAllText($pipelinePath, $pipelineDescription, (New-Object System.Text.UTF8Encoding($false)))
+    $gstBin = Split-Path -Parent $GstPath
+    $bundlePolicy = Get-ComboSelectedOrDefault $cmbDirectWebRtcBundlePolicy $script:DefaultDirectWebRtcBundlePolicy
+    $mtu = [int]$numDirectWebRtcInternalRtpMtu.Value
+    $repeatArg = if ($chkDirectWebRtcInternalRepeatHeaders.Checked) { ' -InternalRepeatHeaders' } else { '' }
+    $hostExe = Get-PowerShellHostExecutable
+    $hostArgs = "-NoProfile -ExecutionPolicy Bypass -File `"$helperPath`" -GstBin `"$gstBin`" -PipelineFile `"$pipelinePath`" -BundlePolicy `"$bundlePolicy`" -InternalRtpMtu $mtu$repeatArg"
+    return [pscustomobject]@{ Executable = $hostExe; Arguments = $hostArgs; HelperPath = $helperPath; PipelinePath = $pipelinePath }
+}
+
 function Prepare-GStreamerRuntime {
     param([Parameter(Mandatory)][string]$GstPath)
 
@@ -1565,7 +1754,7 @@ $null = $cmbTimingMode.Items.AddRange([string[]]@(
 ))
 $cmbTimingMode.SelectedItem = $script:DefaultTimingMode
 $settingsGroup.Controls.Add($cmbTimingMode)
-$toolTip.SetToolTip($cmbTimingMode, 'Protocol-aware timing mode. WHIP/GST WebRTC map Send absolute timestamps to do-clock-signalling=true. RTSP maps it to NTP sender reports. Keep default while isolating rubber-band/desync.')
+$toolTip.SetToolTip($cmbTimingMode, 'Protocol-aware timing mode for WHIP and RTSP. Direct GST WebRTC now has a dedicated RFC7273 clock-signalling control under Direct GStreamer WebRTC.')
 
 $lblTimestampStatus = New-Object System.Windows.Forms.Label
 $lblTimestampStatus.Text = 'Timing: receiver/server timestamps'
@@ -1667,6 +1856,49 @@ $chkDirectWebRtcAudioBridgePacing.Size = New-Object System.Drawing.Size(300, 24)
 $chkDirectWebRtcAudioBridgePacing.Checked = $script:DefaultDirectWebRtcAudioBridgePacing
 $settingsGroup.Controls.Add($chkDirectWebRtcAudioBridgePacing)
 $toolTip.SetToolTip($chkDirectWebRtcAudioBridgePacing, 'Unified publisher only. sync=true on the audio bridge udpsink paces Opus RTP using the isolated audio pipeline clock instead of dumping packets immediately when its thread runs.')
+
+$cmbDirectWebRtcClockSignaling = New-Object System.Windows.Forms.ComboBox
+$cmbDirectWebRtcClockSignaling.Location = New-Object System.Drawing.Point(15, 548)
+$cmbDirectWebRtcClockSignaling.Size = New-Object System.Drawing.Size(235, 23)
+$cmbDirectWebRtcClockSignaling.DropDownStyle = 'DropDownList'
+$null = $cmbDirectWebRtcClockSignaling.Items.AddRange([string[]]@('Off','RFC7273 NTP/PTP signalling'))
+$cmbDirectWebRtcClockSignaling.SelectedItem = $script:DefaultDirectWebRtcClockSignaling
+$settingsGroup.Controls.Add($cmbDirectWebRtcClockSignaling)
+$toolTip.SetToolTip($cmbDirectWebRtcClockSignaling, 'Direct GST WebRTC only. RFC7273 emits do-clock-signalling=true so the RTP-to-NTP/PTP clock mapping is signalled. Off omits the property.')
+
+$chkDirectWebRtcControlDataChannel = New-Object System.Windows.Forms.CheckBox
+$chkDirectWebRtcControlDataChannel.Text = 'Control data channel for upstream events'
+$chkDirectWebRtcControlDataChannel.Location = New-Object System.Drawing.Point(15, 548)
+$chkDirectWebRtcControlDataChannel.Size = New-Object System.Drawing.Size(310, 24)
+$chkDirectWebRtcControlDataChannel.Checked = $script:DefaultDirectWebRtcControlDataChannel
+$settingsGroup.Controls.Add($chkDirectWebRtcControlDataChannel)
+$toolTip.SetToolTip($chkDirectWebRtcControlDataChannel, 'Unified publisher only. Emits enable-control-data-channel=true so arbitrary upstream events can be received through the WebRTC control channel. The localhost keyframe bridge still needs an explicit event relay.')
+
+$cmbDirectWebRtcBundlePolicy = New-Object System.Windows.Forms.ComboBox
+$cmbDirectWebRtcBundlePolicy.Location = New-Object System.Drawing.Point(15, 548)
+$cmbDirectWebRtcBundlePolicy.Size = New-Object System.Drawing.Size(145, 23)
+$cmbDirectWebRtcBundlePolicy.DropDownStyle = 'DropDownList'
+$null = $cmbDirectWebRtcBundlePolicy.Items.AddRange([string[]]@('Default','Max bundle'))
+$cmbDirectWebRtcBundlePolicy.SelectedItem = $script:DefaultDirectWebRtcBundlePolicy
+$settingsGroup.Controls.Add($cmbDirectWebRtcBundlePolicy)
+$toolTip.SetToolTip($cmbDirectWebRtcBundlePolicy, 'Unified publisher only. Max bundle configures both the browser RTCPeerConnection and the dynamically created internal webrtcbin for one bundled transport. Selecting it activates the embedded unified-publisher host.')
+
+$numDirectWebRtcInternalRtpMtu = New-Object System.Windows.Forms.NumericUpDown
+$numDirectWebRtcInternalRtpMtu.Location = New-Object System.Drawing.Point(15, 548)
+$numDirectWebRtcInternalRtpMtu.Size = New-Object System.Drawing.Size(85, 23)
+$numDirectWebRtcInternalRtpMtu.Minimum = 0
+$numDirectWebRtcInternalRtpMtu.Maximum = 65535
+$numDirectWebRtcInternalRtpMtu.Value = $script:DefaultDirectWebRtcInternalRtpMtu
+$settingsGroup.Controls.Add($numDirectWebRtcInternalRtpMtu)
+$toolTip.SetToolTip($numDirectWebRtcInternalRtpMtu, 'Unified publisher only. 0 leaves the final WebRTC RTP payloaders at plugin defaults. A nonzero value sets mtu on every dynamically created internal payloader through payloader-setup.')
+
+$chkDirectWebRtcInternalRepeatHeaders = New-Object System.Windows.Forms.CheckBox
+$chkDirectWebRtcInternalRepeatHeaders.Text = 'Internal payloader repeat headers'
+$chkDirectWebRtcInternalRepeatHeaders.Location = New-Object System.Drawing.Point(15, 548)
+$chkDirectWebRtcInternalRepeatHeaders.Size = New-Object System.Drawing.Size(245, 24)
+$chkDirectWebRtcInternalRepeatHeaders.Checked = $script:DefaultDirectWebRtcInternalRepeatHeaders
+$settingsGroup.Controls.Add($chkDirectWebRtcInternalRepeatHeaders)
+$toolTip.SetToolTip($chkDirectWebRtcInternalRepeatHeaders, 'Unified H.264/H.265 publisher only. Sets config-interval=-1 on the dynamically created final WebRTC video payloader so parameter sets repeat with each IDR. Off emits no internal override.')
 
 $txtDirectWebRtcStun = New-Object System.Windows.Forms.TextBox
 $txtDirectWebRtcStun.Location = New-Object System.Drawing.Point(15, 548)
@@ -1786,7 +2018,7 @@ $cmbWebRtcRecoveryMode = New-Object System.Windows.Forms.ComboBox
 $cmbWebRtcRecoveryMode.Location = New-Object System.Drawing.Point(15, 548)
 $cmbWebRtcRecoveryMode.Size = New-Object System.Drawing.Size(135, 23)
 $cmbWebRtcRecoveryMode.DropDownStyle = 'DropDownList'
-$null = $cmbWebRtcRecoveryMode.Items.AddRange([string[]]@('None','RTX only','FEC + RTX'))
+$null = $cmbWebRtcRecoveryMode.Items.AddRange([string[]]@('None','RTX only','FEC only','FEC + RTX'))
 $cmbWebRtcRecoveryMode.SelectedItem = $script:DefaultWebRtcRecoveryMode
 $settingsGroup.Controls.Add($cmbWebRtcRecoveryMode)
 $toolTip.SetToolTip($cmbWebRtcRecoveryMode, 'WebRTC recovery mode for WHIP and GST WebRTC. None is the cleanest sane default. RTX can help loss but can add bursts; FEC can add overhead and visible stutter on low-latency desktop streams.')
@@ -4286,6 +4518,13 @@ function Apply-ModernDashboardUi {
     Add-Field $r -Label 'Publisher queue ms (0=off)' -Control $numDirectWebRtcPublisherQueueMs -Width 75 | Out-Null
     Add-Field $r -Control $chkDirectWebRtcAudioBridgePacing -Width 310 | Out-Null
     $r = Add-Row $s
+    Add-Field $r -Label 'WebRTC clock signalling' -Control $cmbDirectWebRtcClockSignaling -Width 235 | Out-Null
+    Add-Field $r -Control $chkDirectWebRtcControlDataChannel -Width 315 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Label 'Bundle policy' -Control $cmbDirectWebRtcBundlePolicy -Width 145 | Out-Null
+    Add-Field $r -Label 'Internal RTP MTU (0=default)' -Control $numDirectWebRtcInternalRtpMtu -Width 85 | Out-Null
+    Add-Field $r -Control $chkDirectWebRtcInternalRepeatHeaders -Width 250 | Out-Null
+    $r = Add-Row $s
     Add-Field $r -Label 'Congestion' -Control $cmbDirectWebRtcCongestion -Width 110 | Out-Null
     Add-Field $r -Label 'Mitigation' -Control $cmbDirectWebRtcMitigation -Width 170 | Out-Null
     $r = Add-Row $s
@@ -4777,6 +5016,7 @@ function Apply-ModernDashboardUi {
         $cmbDirectWebRtcBundledWebMode, $txtDirectWebRtcBundledWebDirectory, $btnBrowseDirectWebRtcBundledWebDirectory, $btnDetectDirectWebRtcBundledWebDirectory,
         $cmbDirectWebRtcWorkingWebMode, $txtDirectWebRtcWebDirectory, $btnBrowseDirectWebRtcWebDirectory, $btnDetectDirectWebRtcWebDirectory,
         $numWidth, $numHeight, $numFps, $numVideoBitrate, $numGopSeconds, $chkUnifiedBridgeKeyframeGuard, $numUnifiedBridgeKeyframeIntervalMs,
+        $cmbDirectWebRtcClockSignaling, $chkDirectWebRtcControlDataChannel, $cmbDirectWebRtcBundlePolicy, $numDirectWebRtcInternalRtpMtu, $chkDirectWebRtcInternalRepeatHeaders,
         $cmbRateControl, $numMaxVideoBitrate, $numConstantQp,
         $cmbEncoder, $lblEncoderStatus, $cmbPreset, $cmbProfile,
         $cmbEncoderTune, $cmbMultipass, $cmbVideoPipelineClockMode, $cmbVideoTimestampMode, $cmbVideoSyncMode, $numVbvBuffer,
@@ -6089,6 +6329,11 @@ function Reset-WebRtcSaneDefaults {
     $chkPlayerStatsOverlay.Checked = $script:DefaultPlayerStatsOverlay
     $chkPlayerJbufDebug.Checked = $script:DefaultPlayerJbufDebug
     $chkPlayerUrlOverrides.Checked = $script:DefaultPlayerUrlOverrides
+    if ($cmbDirectWebRtcClockSignaling.Items.Contains($script:DefaultDirectWebRtcClockSignaling)) { $cmbDirectWebRtcClockSignaling.SelectedItem = $script:DefaultDirectWebRtcClockSignaling }
+    $chkDirectWebRtcControlDataChannel.Checked = $script:DefaultDirectWebRtcControlDataChannel
+    if ($cmbDirectWebRtcBundlePolicy.Items.Contains($script:DefaultDirectWebRtcBundlePolicy)) { $cmbDirectWebRtcBundlePolicy.SelectedItem = $script:DefaultDirectWebRtcBundlePolicy }
+    $numDirectWebRtcInternalRtpMtu.Value = $script:DefaultDirectWebRtcInternalRtpMtu
+    $chkDirectWebRtcInternalRepeatHeaders.Checked = $script:DefaultDirectWebRtcInternalRepeatHeaders
     if ($cmbPlayerAvRenderMode.Items.Contains($script:DefaultPlayerAvRenderMode)) { $cmbPlayerAvRenderMode.SelectedItem = $script:DefaultPlayerAvRenderMode }
     if ($cmbDirectWebRtcAvPipelineMode.Items.Contains($script:DefaultDirectWebRtcAvPipelineMode)) { $cmbDirectWebRtcAvPipelineMode.SelectedItem = $script:DefaultDirectWebRtcAvPipelineMode }
     if ($cmbSplitPlayerSyncMode.Items.Contains($script:DefaultSplitPlayerSyncMode)) { $cmbSplitPlayerSyncMode.SelectedItem = $script:DefaultSplitPlayerSyncMode }
@@ -6119,6 +6364,11 @@ function Reset-TransportDefaults {
     $numDirectWebRtcBridgeJitterMs.Value = $script:DefaultDirectWebRtcBridgeJitterMs
     $numDirectWebRtcPublisherQueueMs.Value = $script:DefaultDirectWebRtcPublisherQueueMs
     $chkDirectWebRtcAudioBridgePacing.Checked = $script:DefaultDirectWebRtcAudioBridgePacing
+    if ($cmbDirectWebRtcClockSignaling.Items.Contains($script:DefaultDirectWebRtcClockSignaling)) { $cmbDirectWebRtcClockSignaling.SelectedItem = $script:DefaultDirectWebRtcClockSignaling }
+    $chkDirectWebRtcControlDataChannel.Checked = $script:DefaultDirectWebRtcControlDataChannel
+    if ($cmbDirectWebRtcBundlePolicy.Items.Contains($script:DefaultDirectWebRtcBundlePolicy)) { $cmbDirectWebRtcBundlePolicy.SelectedItem = $script:DefaultDirectWebRtcBundlePolicy }
+    $numDirectWebRtcInternalRtpMtu.Value = $script:DefaultDirectWebRtcInternalRtpMtu
+    $chkDirectWebRtcInternalRepeatHeaders.Checked = $script:DefaultDirectWebRtcInternalRepeatHeaders
     $txtDirectWebRtcStun.Text = $script:DefaultDirectWebRtcStunServer
     $txtDirectWebRtcWebPath.Text = $script:DefaultDirectWebRtcWebPath
     if ($cmbDirectWebRtcBundledWebMode.Items.Contains($script:DefaultDirectWebRtcBundledWebMode)) { $cmbDirectWebRtcBundledWebMode.SelectedItem = $script:DefaultDirectWebRtcBundledWebMode }
@@ -7436,8 +7686,17 @@ function Test-SendAbsoluteTimestampsEnabled {
     return ((Get-TimingMode) -eq 'Send absolute timestamps / clock signalling')
 }
 
+function Test-DirectWebRtcClockSignalingEnabled {
+    return ((Get-ComboSelectedOrDefault $cmbDirectWebRtcClockSignaling $script:DefaultDirectWebRtcClockSignaling) -eq 'RFC7273 NTP/PTP signalling')
+}
+
 function Get-AbsoluteTimestampTransportOption {
     param([Parameter(Mandatory)][string]$Protocol)
+
+    if ($Protocol -eq 'GST WebRTC') {
+        if (Test-DirectWebRtcClockSignalingEnabled) { return 'do-clock-signalling=true' }
+        return ''
+    }
 
     if (-not (Test-SendAbsoluteTimestampsEnabled)) {
         return ''
@@ -7448,9 +7707,6 @@ function Get-AbsoluteTimestampTransportOption {
             # WHIP must honor Timing mode. When MediaMTX useAbsoluteTimestamp=true,
             # frames without absolute time are skipped; when it is false, receiver
             # timestamps are expected. Do not silently guard this off.
-            return 'do-clock-signalling=true'
-        }
-        'GST WebRTC' {
             return 'do-clock-signalling=true'
         }
         'RTSP' {
@@ -7470,13 +7726,17 @@ function Get-AbsoluteTimestampStatusText {
         return 'Transport disabled'
     }
 
+    if ($protocol -eq 'GST WebRTC') {
+        if (Test-DirectWebRtcClockSignalingEnabled) { return 'GST WebRTC: RFC7273 do-clock-signalling=true' }
+        return 'GST WebRTC: RFC7273 clock signalling off'
+    }
+
     if (-not (Test-SendAbsoluteTimestampsEnabled)) {
         return 'Timing: receiver/server timestamps'
     }
 
     switch ($protocol) {
         'WHIP' { return 'WHIP: do-clock-signalling=true; pair with MediaMTX useAbsoluteTimestamp' }
-        'GST WebRTC' { return 'GST WebRTC: do-clock-signalling=true' }
         'RTSP' { return 'RTSP: NTP sender reports' }
         default { return ($protocol + ': timing mode not used') }
     }
@@ -7485,13 +7745,14 @@ function Get-AbsoluteTimestampStatusText {
 function Update-TimestampUi {
     $protocol = [string]$cmbProtocol.SelectedItem
     $transportEnabled = Test-TransportEnabled
-    $supported = $transportEnabled -and ($protocol -in @('WHIP', 'GST WebRTC', 'RTSP'))
+    $supported = $transportEnabled -and ($protocol -in @('WHIP', 'RTSP'))
 
     if ($null -ne $cmbTimingMode) { $cmbTimingMode.Enabled = $supported }
     $chkSendAbsoluteTimestamps.Checked = Test-SendAbsoluteTimestampsEnabled
 
     $lblTimestampStatus.Text = Get-AbsoluteTimestampStatusText
-    $lblTimestampStatus.ForeColor = if ((Test-SendAbsoluteTimestampsEnabled) -and $supported) {
+    $directClockActive = ($protocol -eq 'GST WebRTC') -and (Test-DirectWebRtcClockSignalingEnabled)
+    $lblTimestampStatus.ForeColor = if ($directClockActive -or ((Test-SendAbsoluteTimestampsEnabled) -and $supported)) {
         [System.Drawing.Color]::DarkSlateBlue
     }
     else {
@@ -7963,6 +8224,11 @@ function Update-DirectWebRtcUi {
         $numDirectWebRtcBridgeJitterMs,
         $numDirectWebRtcPublisherQueueMs,
         $chkDirectWebRtcAudioBridgePacing,
+        $cmbDirectWebRtcClockSignaling,
+        $chkDirectWebRtcControlDataChannel,
+        $cmbDirectWebRtcBundlePolicy,
+        $numDirectWebRtcInternalRtpMtu,
+        $chkDirectWebRtcInternalRepeatHeaders,
         $txtDirectWebRtcWebPath,
         $cmbDirectWebRtcBundledWebMode,
         $txtDirectWebRtcBundledWebDirectory,
@@ -8010,6 +8276,11 @@ function Update-DirectWebRtcUi {
     if ($numDirectWebRtcBridgeJitterMs) { $numDirectWebRtcBridgeJitterMs.Enabled = $unifiedPublisherEnabled }
     if ($numDirectWebRtcPublisherQueueMs) { $numDirectWebRtcPublisherQueueMs.Enabled = $unifiedPublisherEnabled }
     if ($chkDirectWebRtcAudioBridgePacing) { $chkDirectWebRtcAudioBridgePacing.Enabled = $unifiedPublisherEnabled }
+    if ($cmbDirectWebRtcClockSignaling) { $cmbDirectWebRtcClockSignaling.Enabled = $directEnabled }
+    if ($chkDirectWebRtcControlDataChannel) { $chkDirectWebRtcControlDataChannel.Enabled = $unifiedPublisherEnabled }
+    if ($cmbDirectWebRtcBundlePolicy) { $cmbDirectWebRtcBundlePolicy.Enabled = $unifiedPublisherEnabled }
+    if ($numDirectWebRtcInternalRtpMtu) { $numDirectWebRtcInternalRtpMtu.Enabled = $unifiedPublisherEnabled }
+    if ($chkDirectWebRtcInternalRepeatHeaders) { $chkDirectWebRtcInternalRepeatHeaders.Enabled = $unifiedPublisherEnabled }
     Update-UnifiedBridgeKeyframeUi
 
     foreach ($control in @(
@@ -9318,6 +9589,10 @@ function Set-WebRtcRecoveryMode {
             $chkDirectWebRtcFec.Checked = $false
             $chkDirectWebRtcRetransmission.Checked = $false
         }
+        'FEC only' {
+            $chkDirectWebRtcFec.Checked = $true
+            $chkDirectWebRtcRetransmission.Checked = $false
+        }
         'FEC + RTX' {
             $chkDirectWebRtcFec.Checked = $true
             $chkDirectWebRtcRetransmission.Checked = $true
@@ -9333,6 +9608,7 @@ function Get-WebRtcRecoveryFlags {
     $mode = Get-ComboSelectedOrDefault $cmbWebRtcRecoveryMode $script:DefaultWebRtcRecoveryMode
     switch ($mode) {
         'None' { return [ordered]@{ Fec = 'false'; Retransmission = 'false'; Mode = 'None' } }
+        'FEC only' { return [ordered]@{ Fec = 'true'; Retransmission = 'false'; Mode = 'FEC only' } }
         'FEC + RTX' { return [ordered]@{ Fec = 'true'; Retransmission = 'true'; Mode = 'FEC + RTX' } }
         default { return [ordered]@{ Fec = 'false'; Retransmission = 'true'; Mode = 'RTX only' } }
     }
@@ -9481,6 +9757,11 @@ function Write-DirectWebRtcWebClientConfig {
             avPipelineMode = $effectiveAvPipelineMode
             directWebRtcAvPipelineMode = $effectiveAvPipelineMode
             unifiedPublisher = [bool](Test-DirectWebRtcUnifiedPublisher)
+            directWebRtcClockSignaling = [string](Get-ComboSelectedOrDefault $cmbDirectWebRtcClockSignaling $script:DefaultDirectWebRtcClockSignaling)
+            controlDataChannel = [bool]$chkDirectWebRtcControlDataChannel.Checked
+            bundlePolicy = if ((Get-ComboSelectedOrDefault $cmbDirectWebRtcBundlePolicy $script:DefaultDirectWebRtcBundlePolicy) -eq 'Max bundle') { 'max-bundle' } else { 'default' }
+            internalRtpMtu = [int]$numDirectWebRtcInternalRtpMtu.Value
+            internalRepeatHeaders = [bool]$chkDirectWebRtcInternalRepeatHeaders.Checked
             splitPlayerSyncMode = [string]$playerSettings.SplitPlayerSyncMode
             splitAudioWatchdogMode = [string]$playerSettings.SplitPlayerSyncMode
             splitAudioStallSeconds = [int]$playerSettings.SplitAudioStallSeconds
@@ -9689,6 +9970,7 @@ function Build-DirectWebRtcUnifiedPublisherArguments {
         "max-bitrate=$maxBitrate",
         'meta="meta,name=gstglass-av"'
     )
+    if ($chkDirectWebRtcControlDataChannel.Checked) { $sinkProps += 'enable-control-data-channel=true' }
 
     # Preserve RTP-derived cadence across the process boundary.  The f10 graph
     # forced udpsrc arrival timestamps and then fed webrtcsink with no buffering,
@@ -9725,6 +10007,8 @@ function Build-DirectWebRtcAudioOnlyArguments {
     $sharedSignaling = Test-DirectWebRtcSharedSignaling
     $stunServer = $txtDirectWebRtcStun.Text.Trim()
     $stunOption = if ([string]::IsNullOrWhiteSpace($stunServer)) { '' } else { ' stun-server=' + (Quote-GstValue $stunServer) }
+    $timestampOption = Get-AbsoluteTimestampTransportOption -Protocol $script:DirectWebRtcProtocolName
+    $timestampOption = if ([string]::IsNullOrWhiteSpace($timestampOption)) { '' } else { " $timestampOption" }
     $congestion = Get-ComboSelectedOrDefault $cmbDirectWebRtcCongestion 'gcc'
     $mitigation = Get-ComboSelectedOrDefault $cmbDirectWebRtcMitigation 'none'
     $recoveryFlags = Get-WebRtcRecoveryFlags
@@ -9775,7 +10059,7 @@ function Build-DirectWebRtcAudioOnlyArguments {
         $audioBranch = "$audioRaw ! $directOpus ! $(Get-AudioFinalQueue)$audioSyncSuffix ! aout.audio_0"
     }
 
-    $pipeline = "$(($sinkProps -join ' '))$stunOption $audioBranch"
+    $pipeline = "$(($sinkProps -join ' '))$timestampOption$stunOption $audioBranch"
     $pipeline = Wrap-GstPipelineWithClockSelect -Pipeline $pipeline -ClockMode (Get-SplitAudioPipelineClockMode)
 
     $flags = '-e'
@@ -10259,6 +10543,11 @@ function Save-Settings {
             DirectWebRtcBridgeJitterMs = [int]$numDirectWebRtcBridgeJitterMs.Value
             DirectWebRtcPublisherQueueMs = [int]$numDirectWebRtcPublisherQueueMs.Value
             DirectWebRtcAudioBridgePacing = [bool]$chkDirectWebRtcAudioBridgePacing.Checked
+            DirectWebRtcClockSignaling = [string]$cmbDirectWebRtcClockSignaling.SelectedItem
+            DirectWebRtcControlDataChannel = [bool]$chkDirectWebRtcControlDataChannel.Checked
+            DirectWebRtcBundlePolicy = [string]$cmbDirectWebRtcBundlePolicy.SelectedItem
+            DirectWebRtcInternalRtpMtu = [int]$numDirectWebRtcInternalRtpMtu.Value
+            DirectWebRtcInternalRepeatHeaders = [bool]$chkDirectWebRtcInternalRepeatHeaders.Checked
             DirectWebRtcStunServer = $txtDirectWebRtcStun.Text
             DirectWebRtcWebPath = $txtDirectWebRtcWebPath.Text
             DirectWebRtcBundledWebMode = [string]$cmbDirectWebRtcBundledWebMode.SelectedItem
@@ -10571,6 +10860,16 @@ function Load-Settings {
         if ($null -ne $settings.DirectWebRtcBridgeJitterMs) { $numDirectWebRtcBridgeJitterMs.Value = [decimal]([Math]::Min(2000, [Math]::Max(0, [int]$settings.DirectWebRtcBridgeJitterMs))) }
         if ($null -ne $settings.DirectWebRtcPublisherQueueMs) { $numDirectWebRtcPublisherQueueMs.Value = [decimal]([Math]::Min(2000, [Math]::Max(0, [int]$settings.DirectWebRtcPublisherQueueMs))) }
         if ($null -ne $settings.DirectWebRtcAudioBridgePacing) { $chkDirectWebRtcAudioBridgePacing.Checked = [bool]$settings.DirectWebRtcAudioBridgePacing }
+        if ($settings.DirectWebRtcClockSignaling -and $cmbDirectWebRtcClockSignaling.Items.Contains([string]$settings.DirectWebRtcClockSignaling)) {
+            $cmbDirectWebRtcClockSignaling.SelectedItem = [string]$settings.DirectWebRtcClockSignaling
+        }
+        elseif ([string]$settings.TimingMode -eq 'Send absolute timestamps / clock signalling') {
+            $cmbDirectWebRtcClockSignaling.SelectedItem = 'RFC7273 NTP/PTP signalling'
+        }
+        if ($null -ne $settings.DirectWebRtcControlDataChannel) { $chkDirectWebRtcControlDataChannel.Checked = [bool]$settings.DirectWebRtcControlDataChannel }
+        if ($settings.DirectWebRtcBundlePolicy -and $cmbDirectWebRtcBundlePolicy.Items.Contains([string]$settings.DirectWebRtcBundlePolicy)) { $cmbDirectWebRtcBundlePolicy.SelectedItem = [string]$settings.DirectWebRtcBundlePolicy }
+        if ($null -ne $settings.DirectWebRtcInternalRtpMtu) { $numDirectWebRtcInternalRtpMtu.Value = [decimal]([Math]::Min(65535, [Math]::Max(0, [int]$settings.DirectWebRtcInternalRtpMtu))) }
+        if ($null -ne $settings.DirectWebRtcInternalRepeatHeaders) { $chkDirectWebRtcInternalRepeatHeaders.Checked = [bool]$settings.DirectWebRtcInternalRepeatHeaders }
         if ($null -ne $settings.DirectWebRtcStunServer) { $txtDirectWebRtcStun.Text = [string]$settings.DirectWebRtcStunServer }
         if ($null -ne $settings.DirectWebRtcWebPath) { $txtDirectWebRtcWebPath.Text = [string]$settings.DirectWebRtcWebPath }
         if ($settings.DirectWebRtcBundledWebMode -and $cmbDirectWebRtcBundledWebMode.Items.Contains([string]$settings.DirectWebRtcBundledWebMode)) { $cmbDirectWebRtcBundledWebMode.SelectedItem = [string]$settings.DirectWebRtcBundledWebMode }
@@ -10587,6 +10886,7 @@ function Load-Settings {
             $legacyFec = if ($null -ne $settings.DirectWebRtcFec) { [bool]$settings.DirectWebRtcFec } else { $false }
             $legacyRtx = if ($null -ne $settings.DirectWebRtcRetransmission) { [bool]$settings.DirectWebRtcRetransmission } else { $true }
             if ($legacyFec -and $legacyRtx) { Set-WebRtcRecoveryMode 'FEC + RTX' }
+            elseif ($legacyFec) { Set-WebRtcRecoveryMode 'FEC only' }
             elseif ($legacyRtx) { Set-WebRtcRecoveryMode 'RTX only' }
             else { Set-WebRtcRecoveryMode 'None' }
         }
@@ -11476,7 +11776,7 @@ function Start-GstStream {
         if ([string]$cmbProtocol.SelectedItem -eq $script:DirectWebRtcProtocolName) {
             Append-Log "Direct WebRTC viewer: $(Get-DirectWebRtcViewerUrl)"
             Append-Log "Direct WebRTC video signalling WebSocket/TCP: $($txtDirectWebRtcSignalingHost.Text):$([int]$numDirectWebRtcSignalingPort.Value)"
-            Append-Log "Direct WebRTC smoothing: $([string]$cmbDirectWebRtcSmoothnessProfile.SelectedItem), recovery $([string]$cmbWebRtcRecoveryMode.SelectedItem), sender queue $([string]$cmbWebRtcSenderQueueMode.SelectedItem) / $([int]$numDirectWebRtcPacingMs.Value) ms cap, browser audio/video JBUF $([int]$numDirectWebRtcPlayerJitterMs.Value)/$([int]$numDirectWebRtcVideoJitterMs.Value) ms, timing $([string]$cmbTimingMode.SelectedItem), audio mode $([string]$cmbAudioTransportMode.SelectedItem)"
+            Append-Log "Direct WebRTC smoothing: $([string]$cmbDirectWebRtcSmoothnessProfile.SelectedItem), recovery $([string]$cmbWebRtcRecoveryMode.SelectedItem), sender queue $([string]$cmbWebRtcSenderQueueMode.SelectedItem) / $([int]$numDirectWebRtcPacingMs.Value) ms cap, browser audio/video JBUF $([int]$numDirectWebRtcPlayerJitterMs.Value)/$([int]$numDirectWebRtcVideoJitterMs.Value) ms, RFC7273 $([string]$cmbDirectWebRtcClockSignaling.SelectedItem), audio mode $([string]$cmbAudioTransportMode.SelectedItem)"
             Append-Log "Audio source selection: $(Get-AudioSourceSelectionSummary)"
             Append-Log "Direct WebRTC A/V pipeline topology: $([string](Get-DirectWebRtcAvPipelineMode))"
             if (Test-DirectWebRtcUnifiedPublisher) {
@@ -11485,6 +11785,8 @@ function Start-GstStream {
                 $publisherQueueText = if ([int]$numDirectWebRtcPublisherQueueMs.Value -gt 0) { [string]([int]$numDirectWebRtcPublisherQueueMs.Value) + ' ms non-leaky per track' } else { 'disabled / element omitted' }
                 $audioBridgePacingText = if ($chkDirectWebRtcAudioBridgePacing.Checked) { 'enabled (sync=true)' } else { 'disabled (sync=false)' }
                 Append-Log "Unified publisher RTP timing repair: receive JBUF $bridgeJitterText; publisher queue $publisherQueueText; audio RTP pacing $audioBridgePacingText; udpsrc do-timestamp override omitted. Player uses one PeerConnection and does not open the split-audio WebSocket."
+                $internalMtuText = if ([int]$numDirectWebRtcInternalRtpMtu.Value -gt 0) { [string]([int]$numDirectWebRtcInternalRtpMtu.Value) } else { 'plugin default' }
+                Append-Log "Unified producer advanced: RFC7273=$([bool](Test-DirectWebRtcClockSignalingEnabled)); control-data-channel=$($chkDirectWebRtcControlDataChannel.Checked); bundle=$([string]$cmbDirectWebRtcBundlePolicy.SelectedItem); internal RTP MTU=$internalMtuText; internal repeat headers=$($chkDirectWebRtcInternalRepeatHeaders.Checked)."
                 if ($chkUnifiedBridgeKeyframeGuard.Checked) {
                     $effectiveKeyframeFrames = [Math]::Max(1, [int][Math]::Ceiling(([int]$numFps.Value * [int]$numUnifiedBridgeKeyframeIntervalMs.Value) / 1000.0))
                     Append-Log "Unified publisher keyframe guard: periodic IDR every $([int]$numUnifiedBridgeKeyframeIntervalMs.Value) ms -> encoder GOP $effectiveKeyframeFrames frames at $([int]$numFps.Value) FPS. This is the fallback for PLI/FIR requests that cannot cross the RTP process boundary."
@@ -11559,8 +11861,20 @@ function Start-GstStream {
     else {
         Append-Log 'GStreamer debug: off.'
     }
-    Append-Log "Executable: $gstPath"
-    Append-Log "Arguments: $arguments"
+    $mainLaunchExecutable = $gstPath
+    $mainLaunchArguments = $arguments
+    if (Test-DirectWebRtcUnifiedPublisherHostRequired) {
+        $hostLaunch = Get-UnifiedPublisherHostLaunch -GstPath $gstPath -GstArguments $arguments
+        $mainLaunchExecutable = [string]$hostLaunch.Executable
+        $mainLaunchArguments = [string]$hostLaunch.Arguments
+        Append-Log "Unified publisher host: $mainLaunchExecutable"
+        Append-Log "Unified publisher host arguments: $mainLaunchArguments"
+        Append-Log "Equivalent gst-launch arguments: $arguments"
+    }
+    else {
+        Append-Log "Executable: $gstPath"
+        Append-Log "Arguments: $arguments"
+    }
     if (-not [string]::IsNullOrWhiteSpace($videoArguments)) {
         Append-Log "Video bridge executable: $gstPath"
         Append-Log "Video bridge arguments: $videoArguments"
@@ -11576,10 +11890,10 @@ function Start-GstStream {
             $tracerEnvState = Set-GstTracerEnvironment -Enable:([bool]$chkBufferLatenessTracer.Checked) -DebugSpec $gstDebugSpec -NoColor:([bool]$chkGstDebugNoColor.Checked)
             if ($chkBufferLatenessTracer.Checked) { Append-Log 'GStreamer buffer-lateness tracer enabled for this run.' }
             if ($processDiskLogging) {
-                $script:GstProcess = Start-Process -FilePath $gstPath -ArgumentList $arguments -RedirectStandardOutput $script:StdOutPath -RedirectStandardError $script:StdErrPath -WindowStyle Hidden -PassThru
+                $script:GstProcess = Start-Process -FilePath $mainLaunchExecutable -ArgumentList $mainLaunchArguments -RedirectStandardOutput $script:StdOutPath -RedirectStandardError $script:StdErrPath -WindowStyle Hidden -PassThru
             }
             else {
-                $script:GstProcess = Start-Process -FilePath $gstPath -ArgumentList $arguments -WindowStyle Hidden -PassThru
+                $script:GstProcess = Start-Process -FilePath $mainLaunchExecutable -ArgumentList $mainLaunchArguments -WindowStyle Hidden -PassThru
             }
         }
         finally {
@@ -12142,6 +12456,7 @@ $cmbProtocol.Add_SelectedIndexChanged({ Update-ProtocolUi; Update-CommandPreview
 $chkTransportEnabled.Add_CheckedChanged({ Update-TransportUi })
 $chkSendAbsoluteTimestamps.Add_CheckedChanged({ Update-TimestampUi; Update-CommandPreview })
 $cmbTimingMode.Add_SelectedIndexChanged({ Update-TimestampUi; Update-CommandPreview })
+$cmbDirectWebRtcClockSignaling.Add_SelectedIndexChanged({ Update-TimestampUi })
 $cmbEncoder.Add_SelectedIndexChanged({ Update-EncoderUi })
 $cmbAudioTransportMode.Add_SelectedIndexChanged({ Update-AudioCodecChoices; Update-CommandPreview })
 $cmbSplitAudioPipelineClockMode.Add_SelectedIndexChanged($previewHandler)
@@ -12315,6 +12630,11 @@ foreach ($control in @(
     $numDirectWebRtcBridgeJitterMs,
     $numDirectWebRtcPublisherQueueMs,
     $chkDirectWebRtcAudioBridgePacing,
+    $cmbDirectWebRtcClockSignaling,
+    $chkDirectWebRtcControlDataChannel,
+    $cmbDirectWebRtcBundlePolicy,
+    $numDirectWebRtcInternalRtpMtu,
+    $chkDirectWebRtcInternalRepeatHeaders,
     $txtDirectWebRtcStun,
     $txtDirectWebRtcWebPath,
     $cmbDirectWebRtcBundledWebMode,
