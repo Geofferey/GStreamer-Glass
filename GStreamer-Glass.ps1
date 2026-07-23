@@ -630,7 +630,7 @@ public static class GstProcessJob
 '@
 }
 
-$script:AppVersion = '3.7.52f60'
+$script:AppVersion = '3.7.52f61'
 $script:AppName = "GStreamer Glass v$($script:AppVersion)"
 $script:ConfigDirectory = Join-Path $env:APPDATA 'GStreamerBasicWhipStreamer'
 $script:ConfigPath = Join-Path $script:ConfigDirectory 'settings.json'
@@ -734,6 +734,12 @@ $script:SettingsTabPlayer = $null
 $script:SettingsTabRecording = $null
 $script:SettingsTabNetwork = $null
 $script:SettingsTabOptions = $null
+$script:SceneEditorCanvasHomeParent = $null
+$script:SceneEditorCanvasHomeDock = $null
+$script:SceneEditorCanvasHomeMargin = $null
+$script:SceneEditorCanvasHomeAnchor = $null
+$script:SceneEditorCanvasHomeBorderStyle = $null
+$script:SceneEditorCanvasHostedInPreview = $false
 $script:ResolvedRecordingPath = ''
 $script:CaptureWindowHwnd = [IntPtr]::Zero
 $script:CaptureWindowTitle = ''
@@ -4147,6 +4153,81 @@ function Update-SceneSelectionChrome {
     $sceneResizeHandle.BringToFront()
 }
 
+function Set-SceneEditorChromeVisible {
+    param([bool]$Visible)
+
+    if ($lblSceneWebcam) { $lblSceneWebcam.Visible = $Visible }
+    if ($sceneResizeHandle) { $sceneResizeHandle.Visible = $Visible }
+    if ($sceneWebcamElement) {
+        $sceneWebcamElement.BorderStyle = if ($Visible) { [System.Windows.Forms.BorderStyle]::FixedSingle } else { [System.Windows.Forms.BorderStyle]::None }
+        $sceneWebcamElement.Cursor = if ($Visible) { [System.Windows.Forms.Cursors]::SizeAll } else { [System.Windows.Forms.Cursors]::Default }
+    }
+    if ($sceneEditorCanvas) {
+        $sceneEditorCanvas.BorderStyle = if ($Visible) { [System.Windows.Forms.BorderStyle]::FixedSingle } else { [System.Windows.Forms.BorderStyle]::None }
+    }
+}
+
+function Save-SceneEditorCanvasHome {
+    if (-not $sceneEditorCanvas) { return }
+    if ($script:SceneEditorCanvasHomeParent) { return }
+    if ($previewPanel -and $sceneEditorCanvas.Parent -eq $previewPanel) { return }
+
+    $script:SceneEditorCanvasHomeParent = $sceneEditorCanvas.Parent
+    $script:SceneEditorCanvasHomeDock = $sceneEditorCanvas.Dock
+    $script:SceneEditorCanvasHomeMargin = $sceneEditorCanvas.Margin
+    $script:SceneEditorCanvasHomeAnchor = $sceneEditorCanvas.Anchor
+    $script:SceneEditorCanvasHomeBorderStyle = $sceneEditorCanvas.BorderStyle
+}
+
+function Restore-SceneEditorCanvasHome {
+    if (-not $sceneEditorCanvas) { return }
+    if (-not $script:SceneEditorCanvasHomeParent) { return }
+    if ($sceneEditorCanvas.Parent -eq $script:SceneEditorCanvasHomeParent -and -not $script:SceneEditorCanvasHostedInPreview) { return }
+
+    $sceneEditorCanvas.SuspendLayout()
+    try {
+        $sceneEditorCanvas.Parent = $script:SceneEditorCanvasHomeParent
+        if ($null -ne $script:SceneEditorCanvasHomeDock) { $sceneEditorCanvas.Dock = $script:SceneEditorCanvasHomeDock }
+        if ($null -ne $script:SceneEditorCanvasHomeMargin) { $sceneEditorCanvas.Margin = $script:SceneEditorCanvasHomeMargin }
+        if ($null -ne $script:SceneEditorCanvasHomeAnchor) { $sceneEditorCanvas.Anchor = $script:SceneEditorCanvasHomeAnchor }
+        if ($null -ne $script:SceneEditorCanvasHomeBorderStyle) { $sceneEditorCanvas.BorderStyle = $script:SceneEditorCanvasHomeBorderStyle }
+        $sceneEditorCanvas.Visible = $true
+        $script:SceneEditorCanvasHostedInPreview = $false
+        Set-SceneEditorChromeVisible $true
+    }
+    finally {
+        $sceneEditorCanvas.ResumeLayout($true)
+    }
+}
+
+function Show-DynamicScenePreviewInPreviewCard {
+    if (-not $script:DynamicScenePreviewActive) { return }
+    if (-not $previewPanel -or -not $sceneEditorCanvas) { return }
+    if ($chkStandardPreviewOffSceneTab -and $chkStandardPreviewOffSceneTab.Checked) { return }
+
+    Save-SceneEditorCanvasHome
+
+    $previewPlaceholder.Visible = $false
+    $sceneEditorCanvas.SuspendLayout()
+    try {
+        $sceneEditorCanvas.Parent = $previewPanel
+        $sceneEditorCanvas.Dock = 'Fill'
+        $sceneEditorCanvas.Margin = New-Object System.Windows.Forms.Padding(0)
+        $sceneEditorCanvas.Anchor = 'Top,Bottom,Left,Right'
+        $sceneEditorCanvas.BorderStyle = [System.Windows.Forms.BorderStyle]::None
+        $sceneEditorCanvas.Visible = $true
+        $script:SceneEditorCanvasHostedInPreview = $true
+        Set-SceneEditorChromeVisible $false
+        $sceneEditorCanvas.BringToFront()
+        Update-SceneCanvasFromValues
+    }
+    finally {
+        $sceneEditorCanvas.ResumeLayout($true)
+    }
+
+    Sync-DynamicScenePreviewLayout
+}
+
 function Update-SceneCanvasFromValues {
     if (-not $sceneEditorCanvas -or $sceneEditorCanvas.ClientSize.Width -le 0 -or $sceneEditorCanvas.ClientSize.Height -le 0) { return }
     $script:UpdatingSceneEditor = $true
@@ -4211,6 +4292,7 @@ function Set-SceneValuesFromElement {
 
 $scenePointerDown = {
     param($sender, $e)
+    if (-not $script:SceneWorkspaceActive) { return }
     if (-not $chkSceneEnabled.Checked -or $e.Button -ne [System.Windows.Forms.MouseButtons]::Left) { return }
     $script:ScenePointerActive = $true
     $script:ScenePointerStart = [System.Windows.Forms.Cursor]::Position
@@ -4426,7 +4508,11 @@ $chkStandardPreviewOffSceneTab.Add_CheckedChanged({
     if ($chkStandardPreviewOffSceneTab.Checked -and (-not $script:SceneWorkspaceActive) -and $script:DynamicScenePreviewActive) {
         Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Standard preview off Scenes enabled; switching dynamic scene previews back to the normal composed preview."
         Stop-DynamicScenePreview -Quiet
+        Restore-SceneEditorCanvasHome
         Sync-StandalonePreviewState -Quiet
+    }
+    elseif ((-not $chkStandardPreviewOffSceneTab.Checked) -and (-not $script:SceneWorkspaceActive) -and $script:DynamicScenePreviewActive) {
+        Show-DynamicScenePreviewInPreviewCard
     }
     Update-CommandPreview
 })
@@ -4475,8 +4561,15 @@ function Update-SceneWorkspaceMode {
     if (-not $script:DashboardLayout -or -not $script:SettingsTabs -or -not $script:SettingsTabScenes) { return }
 
     $sceneSelected = ($script:SettingsTabs.SelectedTab -eq $script:SettingsTabScenes)
+    if ($sceneSelected) {
+        Restore-SceneEditorCanvasHome
+    }
+
     if ($sceneSelected -eq $script:SceneWorkspaceActive) {
         if ($sceneSelected) { Resize-LiveSceneCanvas }
+        elseif ($script:DynamicScenePreviewActive -and $chkStandardPreviewOffSceneTab -and -not $chkStandardPreviewOffSceneTab.Checked) {
+            Show-DynamicScenePreviewInPreviewCard
+        }
         return
     }
 
@@ -4534,6 +4627,10 @@ function Update-SceneWorkspaceMode {
         Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Leaving Scenes tab; switching dynamic scene previews back to the normal composed preview."
         Stop-DynamicScenePreview -Quiet
         Sync-StandalonePreviewState -Quiet
+    }
+    elseif ($script:DynamicScenePreviewActive -and $chkStandardPreviewOffSceneTab -and -not $chkStandardPreviewOffSceneTab.Checked) {
+        Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Leaving Scenes tab; sharing dynamic scene previews in the normal Preview card."
+        Show-DynamicScenePreviewInPreviewCard
     }
 }
 
@@ -5310,6 +5407,7 @@ function Apply-ModernDashboardUi {
     Add-Field $r -Control $chkStandardPreviewOffSceneTab -Width 190 | Out-Null
     $r = Add-Row $s
     Add-Field $r -Control $sceneEditorCanvas -Width 550 | Out-Null
+    Save-SceneEditorCanvasHome
     $r = Add-Row $s
     Add-Field $r -Control $lblSceneEditorHint -Width 550 | Out-Null
 
@@ -12737,6 +12835,7 @@ function Stop-DynamicScenePreview {
     if ($sceneDesktopPreviewPanel) { $sceneDesktopPreviewPanel.Visible = $false }
     if ($sceneWebcamPreviewPanel) { $sceneWebcamPreviewPanel.Visible = $false }
     if ($lblSceneDesktop) { $lblSceneDesktop.Visible = $true }
+    if ($script:SceneEditorCanvasHostedInPreview) { Restore-SceneEditorCanvasHome }
     Update-SceneSelectionChrome
 
     if ($hadDynamic -and -not $Quiet) {
