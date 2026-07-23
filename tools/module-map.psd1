@@ -172,7 +172,6 @@
         'Get-DirectWebRtcSplitAudioSignalingPort'
         'Get-DirectWebRtcSignalingClientHost'
         'Get-DirectWebRtcSharedSignallerUri'
-        'Get-DirectWebRtcSplitAudioWebAddress'
         'Get-DirectWebRtcSplitAudioWsUrlForPlayer'
         'Get-DirectWebRtcSplitAudioWsUrlDescriptionForLog'
         'Get-BranchClockSyncElement'
@@ -195,12 +194,10 @@
         'Get-DirectWebRtcVideoBitrateEnvelope'
         'Build-DirectWebRtcUnifiedPublisherArguments'
         'Build-DirectWebRtcAudioOnlyArguments'
-        'Build-DirectWebRtcRawVideoBranch'
     )
 
     '18-ThreadingAndDebug.ps1' = @(
         'Get-CpuWorkerLimit'
-        'Get-CpuWorkerProperty'
         'Apply-ThreadBudget'
         'Update-GstThreadCountStatus'
         'Get-CaptureEncoderQueue'
@@ -227,7 +224,6 @@
         'Test-SendAbsoluteTimestampsEnabled'
         'Test-SplitClockSignalingOverridesActive'
         'Test-WebRtcClockSignalingForSink'
-        'Sync-TransportTimingControls'
         'Get-AbsoluteTimestampTransportOption'
         'Get-AbsoluteTimestampStatusText'
         'Update-TimestampUi'
@@ -283,7 +279,9 @@
     )
 
     '22-Encoding.ps1' = @(
+        'Get-EncoderDefinitionForCombo'
         'Get-SelectedEncoderDefinition'
+        'Add-EncoderFamilyOptions'
         'Get-SelectedAudioCodecDefinition'
         'Test-AudioCodecProtocolCompatibility'
         'Get-CompatibleAudioCodecNames'

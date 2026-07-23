@@ -1,6 +1,4 @@
-﻿# Module: 13-ProcessLifecycle.ps1 (auto-extracted by tools/Split-Monolith.ps1 -- edit here, then run tools/Build-Monolith.ps1)
-
-function Initialize-GstJob {
+﻿function Initialize-GstJob {
     if ($script:JobHandle -ne [IntPtr]::Zero) {
         return
     }

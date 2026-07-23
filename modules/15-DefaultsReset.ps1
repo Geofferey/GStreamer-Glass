@@ -1,6 +1,4 @@
-﻿# Module: 15-DefaultsReset.ps1 (auto-extracted by tools/Split-Monolith.ps1 -- edit here, then run tools/Build-Monolith.ps1)
-
-function Reset-WebRtcSaneDefaults {
+﻿function Reset-WebRtcSaneDefaults {
     $cmbDirectWebRtcCongestion.SelectedItem = 'disabled'
     $numDirectWebRtcStartBitrateKbps.Value = $script:DefaultDirectWebRtcStartBitrateKbps
     $cmbDirectWebRtcMitigation.SelectedItem = 'none'

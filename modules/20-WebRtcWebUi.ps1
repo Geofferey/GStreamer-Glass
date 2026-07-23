@@ -1,6 +1,4 @@
-﻿# Module: 20-WebRtcWebUi.ps1 (auto-extracted by tools/Split-Monolith.ps1 -- edit here, then run tools/Build-Monolith.ps1)
-
-function Test-DirectWebRtcProtocol {
+﻿function Test-DirectWebRtcProtocol {
     return (Test-TransportEnabled) -and ([string]$cmbProtocol.SelectedItem -eq $script:DirectWebRtcProtocolName)
 }
 

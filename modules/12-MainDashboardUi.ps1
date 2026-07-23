@@ -1,6 +1,4 @@
-﻿# Module: 12-MainDashboardUi.ps1 (auto-extracted by tools/Split-Monolith.ps1 -- edit here, then run tools/Build-Monolith.ps1)
-
-function Apply-ModernDashboardUi {
+﻿function Apply-ModernDashboardUi {
     $script:ColorBg       = [System.Drawing.ColorTranslator]::FromHtml('#0B1220')
     $script:ColorSurface  = [System.Drawing.ColorTranslator]::FromHtml('#111827')
     $script:ColorSurface2 = [System.Drawing.ColorTranslator]::FromHtml('#172033')

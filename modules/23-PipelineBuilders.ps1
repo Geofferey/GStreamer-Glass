@@ -1,6 +1,4 @@
-﻿# Module: 23-PipelineBuilders.ps1 (auto-extracted by tools/Split-Monolith.ps1 -- edit here, then run tools/Build-Monolith.ps1)
-
-function Get-EffectiveCaptureSettings {
+﻿function Get-EffectiveCaptureSettings {
     param([switch]$LocalOnly)
 
     $width = [int]$numWidth.Value
@@ -146,7 +144,7 @@ function Build-VideoBranch {
         }
 
         if ($hasPreview) {
-            $parts.Add((@('rawtee.','!','queue','max-size-buffers=1','max-size-bytes=0','max-size-time=0','leaky=downstream','!','d3d11videosink','name=localpreview',(Get-VideoPreviewSinkSyncOption),'force-aspect-ratio=true') -join ' '))
+            $parts.Add((@('rawtee.','!',(New-LiveQueueString -Buffers 1 -Leak 'downstream'),'!','d3d11videosink','name=localpreview',(Get-VideoPreviewSinkSyncOption),'force-aspect-ratio=true') -join ' '))
         }
 
         $parts.Add("rawtee. ! $encoder")
@@ -177,7 +175,7 @@ function Build-LocalOnlyVideoPipeline {
     }
 
     if ($hasPreview) {
-        $parts.Add((@('rawtee.','!','queue','max-size-buffers=1','max-size-bytes=0','max-size-time=0','leaky=downstream','!','d3d11videosink','name=localpreview',(Get-VideoPreviewSinkSyncOption),'force-aspect-ratio=true') -join ' '))
+        $parts.Add((@('rawtee.','!',(New-LiveQueueString -Buffers 1 -Leak 'downstream'),'!','d3d11videosink','name=localpreview',(Get-VideoPreviewSinkSyncOption),'force-aspect-ratio=true') -join ' '))
     }
 
     return ($parts -join ' ')

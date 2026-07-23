@@ -1,6 +1,4 @@
-﻿# Module: 90-MainWindow.ps1 (auto-extracted by tools/Split-Monolith.ps1 -- UI construction, event wiring, Application.Run)
-
-
+﻿
 
 
 
@@ -2749,6 +2747,8 @@ $sceneWebcamPreviewPanel.Add_Resize({
 
 
 
+$sceneResetUiRestartHandler = { Reset-DynamicScenePreviewFallback; Update-SceneUi; Restart-DynamicScenePreviewIfActive }
+$sceneResetRestartHandler = { Reset-DynamicScenePreviewFallback; Restart-DynamicScenePreviewIfActive }
 $btnRefreshWebcams.Add_Click({ Reset-DynamicScenePreviewFallback; Refresh-WebcamDevices; Update-SceneUi; Restart-DynamicScenePreviewIfActive })
 $btnRedrawScenePreview.Add_Click({ Invoke-ScenePreviewRedraw })
 $chkSceneEnabled.Add_CheckedChanged({ Reset-DynamicScenePreviewFallback; Update-SceneUi; Restart-DynamicScenePreviewIfActive; Sync-StandalonePreviewState -Quiet })
@@ -2823,9 +2823,9 @@ $chkStandardPreviewOffSceneTab.Add_CheckedChanged({
     }
     Update-CommandPreview
 })
-$cmbScenePreset.Add_SelectedIndexChanged({ Reset-DynamicScenePreviewFallback; Update-SceneUi; Restart-DynamicScenePreviewIfActive })
-$cmbSceneCompositor.Add_SelectedIndexChanged({ Reset-DynamicScenePreviewFallback; Update-SceneUi; Restart-DynamicScenePreviewIfActive })
-$cmbWebcamDevice.Add_SelectedIndexChanged({ Reset-DynamicScenePreviewFallback; Update-SceneUi; Restart-DynamicScenePreviewIfActive })
+$cmbScenePreset.Add_SelectedIndexChanged($sceneResetUiRestartHandler)
+$cmbSceneCompositor.Add_SelectedIndexChanged($sceneResetUiRestartHandler)
+$cmbWebcamDevice.Add_SelectedIndexChanged($sceneResetUiRestartHandler)
 $cmbWebcamLayout.Add_SelectedIndexChanged({ Set-WebcamLayoutPreset; Update-SceneUi })
 $numWebcamWidth.Add_ValueChanged({
     if ($script:UpdatingSceneEditor -or $script:LoadingSettings) { return }
@@ -2864,12 +2864,12 @@ $chkWebcamAspectLock.Add_CheckedChanged({
     Update-SceneUi
 })
 foreach ($control in @($numWebcamX,$numWebcamY,$numWebcamFps,$numWebcamOpacity,$numWebcamBorder,$numSceneInputQueueBuffers,$numSceneInputQueueCapMs)) { $control.Add_ValueChanged({ Update-SceneUi }) }
-$numWebcamFps.Add_ValueChanged({ Reset-DynamicScenePreviewFallback; Restart-DynamicScenePreviewIfActive })
-$numSceneInputQueueBuffers.Add_ValueChanged({ Reset-DynamicScenePreviewFallback; Restart-DynamicScenePreviewIfActive })
-$numSceneInputQueueCapMs.Add_ValueChanged({ Reset-DynamicScenePreviewFallback; Restart-DynamicScenePreviewIfActive })
+$numWebcamFps.Add_ValueChanged($sceneResetRestartHandler)
+$numSceneInputQueueBuffers.Add_ValueChanged($sceneResetRestartHandler)
+$numSceneInputQueueCapMs.Add_ValueChanged($sceneResetRestartHandler)
 $numWidth.Add_ValueChanged({ Resize-LiveSceneCanvas; Resize-DynamicScenePreviewCardCanvas; Update-SceneCanvasFromValues })
 $numHeight.Add_ValueChanged({ Resize-LiveSceneCanvas; Resize-DynamicScenePreviewCardCanvas; Update-SceneCanvasFromValues })
-$chkWebcamMirror.Add_CheckedChanged({ Reset-DynamicScenePreviewFallback; Update-SceneUi; Restart-DynamicScenePreviewIfActive })
+$chkWebcamMirror.Add_CheckedChanged($sceneResetUiRestartHandler)
 
 
 
@@ -3420,6 +3420,9 @@ $chkMinimizeToTray.Add_CheckedChanged({
 
 
 $previewHandler = { Update-CommandPreview }
+$encoderUiHandler = { Update-EncoderUi }
+$recordingUiHandler = { Update-RecordingUi }
+$audioTimingPreviewHandler = { Update-AudioTimingOptionUi; Update-CommandPreview }
 
 $chkCustomGstArgumentsEnabled.Add_CheckedChanged({
     if ($script:LoadingSettings) { return }
@@ -3482,30 +3485,28 @@ $txtDestination.Add_TextChanged({
 })
 $cmbProtocol.Add_SelectedIndexChanged({
     Update-ProtocolUi
-    Sync-TransportTimingControls -Source TimingMode
     Update-TimestampUi
     Update-CommandPreview
 })
 $chkTransportEnabled.Add_CheckedChanged({ Update-TransportUi })
 $chkSendAbsoluteTimestamps.Add_CheckedChanged({ Update-TimestampUi; Update-CommandPreview })
 $cmbTimingMode.Add_SelectedIndexChanged({
-    Sync-TransportTimingControls -Source TimingMode
     Update-TransportUi
 })
 $chkSplitClockSignalingOverrides.Add_CheckedChanged({ Update-TimestampUi; Update-CommandPreview })
 $cmbSplitVideoClockSignaling.Add_SelectedIndexChanged({ Update-TimestampUi; Update-CommandPreview })
 $cmbSplitAudioClockSignaling.Add_SelectedIndexChanged({ Update-TimestampUi; Update-CommandPreview })
-$cmbEncoder.Add_SelectedIndexChanged({ Update-EncoderUi })
+$cmbEncoder.Add_SelectedIndexChanged($encoderUiHandler)
 $cmbAudioTransportMode.Add_SelectedIndexChanged({ Update-AudioCodecChoices; Update-CommandPreview })
 $cmbSplitAudioPipelineClockMode.Add_SelectedIndexChanged($previewHandler)
 $cmbAudioClockMode.Add_SelectedIndexChanged($previewHandler)
 $cmbAudioTimingMode.Add_SelectedIndexChanged({ Update-AudioTimingOptionUi; Update-AudioCodecChoices; Update-CommandPreview })
 $cmbAudioSlaveMethod.Add_SelectedIndexChanged($previewHandler)
 $cmbAudioSyncMode.Add_SelectedIndexChanged($previewHandler)
-$chkWasapiLowLatencyOverride.Add_CheckedChanged({ Update-AudioTimingOptionUi; Update-CommandPreview })
-$chkAudioBufferOverride.Add_CheckedChanged({ Update-AudioTimingOptionUi; Update-CommandPreview })
-$chkAudioLatencyOverride.Add_CheckedChanged({ Update-AudioTimingOptionUi; Update-CommandPreview })
-$chkAudioSampleRateOverride.Add_CheckedChanged({ Update-AudioTimingOptionUi; Update-CommandPreview })
+$chkWasapiLowLatencyOverride.Add_CheckedChanged($audioTimingPreviewHandler)
+$chkAudioBufferOverride.Add_CheckedChanged($audioTimingPreviewHandler)
+$chkAudioLatencyOverride.Add_CheckedChanged($audioTimingPreviewHandler)
+$chkAudioSampleRateOverride.Add_CheckedChanged($audioTimingPreviewHandler)
 
 
 
@@ -3664,7 +3665,7 @@ $numWidth.Add_ValueChanged($previewHandler)
 $numHeight.Add_ValueChanged($previewHandler)
 $numFps.Add_ValueChanged($previewHandler)
 $numVideoBitrate.Add_ValueChanged($previewHandler)
-$cmbRateControl.Add_SelectedIndexChanged({ Update-EncoderUi })
+$cmbRateControl.Add_SelectedIndexChanged($encoderUiHandler)
 $numMaxVideoBitrate.Add_ValueChanged($previewHandler)
 $numConstantQp.Add_ValueChanged($previewHandler)
 $numGopSeconds.Add_ValueChanged($previewHandler)
@@ -3672,18 +3673,18 @@ $chkUnifiedBridgeKeyframeGuard.Add_CheckedChanged({ Update-UnifiedBridgeKeyframe
 $numUnifiedBridgeKeyframeIntervalMs.Add_ValueChanged($previewHandler)
 $cmbPreset.Add_SelectedIndexChanged($previewHandler)
 $cmbProfile.Add_SelectedIndexChanged($previewHandler)
-$cmbEncoderTune.Add_SelectedIndexChanged({ Update-EncoderUi })
+$cmbEncoderTune.Add_SelectedIndexChanged($encoderUiHandler)
 $cmbMultipass.Add_SelectedIndexChanged($previewHandler)
 $cmbVideoPipelineClockMode.Add_SelectedIndexChanged($previewHandler)
 $cmbVideoTimestampMode.Add_SelectedIndexChanged($previewHandler)
 $cmbVideoSyncMode.Add_SelectedIndexChanged($previewHandler)
 $numVbvBuffer.Add_ValueChanged($previewHandler)
-$numBFrames.Add_ValueChanged({ Update-EncoderUi })
-$chkLookAhead.Add_CheckedChanged({ Update-EncoderUi })
-$numLookAheadFrames.Add_ValueChanged({ Update-EncoderUi })
-$chkAdaptiveQuantization.Add_CheckedChanged({ Update-EncoderUi })
-$chkTemporalAq.Add_CheckedChanged({ Update-EncoderUi })
-$numAqStrength.Add_ValueChanged({ Update-EncoderUi })
+$numBFrames.Add_ValueChanged($encoderUiHandler)
+$chkLookAhead.Add_CheckedChanged($encoderUiHandler)
+$numLookAheadFrames.Add_ValueChanged($encoderUiHandler)
+$chkAdaptiveQuantization.Add_CheckedChanged($encoderUiHandler)
+$chkTemporalAq.Add_CheckedChanged($encoderUiHandler)
+$numAqStrength.Add_ValueChanged($encoderUiHandler)
 $txtCustomEncoderOptions.Add_TextChanged($previewHandler)
 $numSrtLatency.Add_ValueChanged($previewHandler)
 $cmbRtspTransport.Add_SelectedIndexChanged($previewHandler)
@@ -4044,29 +4045,29 @@ $btnToggleRecording.Add_Click({
 })
 $txtRecordingDirectory.Add_TextChanged($previewHandler)
 $txtRecordingTemplate.Add_TextChanged($previewHandler)
-$cmbRecordingEncoder.Add_SelectedIndexChanged({ Update-RecordingUi })
+$cmbRecordingEncoder.Add_SelectedIndexChanged($recordingUiHandler)
 $cmbRecordingPreset.Add_SelectedIndexChanged($previewHandler)
 $cmbRecordingProfile.Add_SelectedIndexChanged($previewHandler)
 $numRecordingWidth.Add_ValueChanged($previewHandler)
 $numRecordingHeight.Add_ValueChanged($previewHandler)
 $numRecordingFps.Add_ValueChanged($previewHandler)
 $numRecordingVideoBitrate.Add_ValueChanged($previewHandler)
-$cmbRecordingRateControl.Add_SelectedIndexChanged({ Update-RecordingUi })
+$cmbRecordingRateControl.Add_SelectedIndexChanged($recordingUiHandler)
 $numRecordingMaxVideoBitrate.Add_ValueChanged($previewHandler)
 $numRecordingConstantQp.Add_ValueChanged($previewHandler)
 $numRecordingGopSeconds.Add_ValueChanged($previewHandler)
-$numRecordingBFrames.Add_ValueChanged({ Update-RecordingUi })
-$cmbRecordingTune.Add_SelectedIndexChanged({ Update-RecordingUi })
+$numRecordingBFrames.Add_ValueChanged($recordingUiHandler)
+$cmbRecordingTune.Add_SelectedIndexChanged($recordingUiHandler)
 $cmbRecordingMultipass.Add_SelectedIndexChanged($previewHandler)
-$chkRecordingLookAhead.Add_CheckedChanged({ Update-RecordingUi })
+$chkRecordingLookAhead.Add_CheckedChanged($recordingUiHandler)
 $numRecordingLookAheadFrames.Add_ValueChanged($previewHandler)
-$chkRecordingSpatialAq.Add_CheckedChanged({ Update-RecordingUi })
-$chkRecordingTemporalAq.Add_CheckedChanged({ Update-RecordingUi })
+$chkRecordingSpatialAq.Add_CheckedChanged($recordingUiHandler)
+$chkRecordingTemporalAq.Add_CheckedChanged($recordingUiHandler)
 $numRecordingAqStrength.Add_ValueChanged($previewHandler)
 $numRecordingVbvBuffer.Add_ValueChanged($previewHandler)
 $txtRecordingCustomEncoderOptions.Add_TextChanged($previewHandler)
-$chkRecordingDesktopAudio.Add_CheckedChanged({ Update-RecordingUi })
-$chkRecordingMic.Add_CheckedChanged({ Update-RecordingUi })
+$chkRecordingDesktopAudio.Add_CheckedChanged($recordingUiHandler)
+$chkRecordingMic.Add_CheckedChanged($recordingUiHandler)
 $numRecordingAudioBitrate.Add_ValueChanged($previewHandler)
 
 $chkNetworkTuningEnabled.Add_CheckedChanged({ Update-NetworkUi })
@@ -4099,12 +4100,18 @@ $btnOpenNetworkRecovery.Add_Click({
         Append-Log "Could not open recovery folder: $($_.Exception.Message)"
     }
 })
-$btnResetTransport.Add_Click({ Reset-TransportDefaults; Save-Settings })
-$btnResetVideo.Add_Click({ Reset-VideoDefaults; Save-Settings })
-$btnResetAudio.Add_Click({ Reset-AudioDefaults; Save-Settings })
-$btnResetRecording.Add_Click({ Reset-RecordingDefaults; Save-Settings })
-$btnResetNetwork.Add_Click({ Reset-NetworkDefaults; Save-Settings })
-$btnResetOptions.Add_Click({ Reset-OptionsDefaults; Save-Settings })
+$resetDefaultsBindings = @(
+    @{ Button = $btnResetTransport; ResetFunction = 'Reset-TransportDefaults' }
+    @{ Button = $btnResetVideo;     ResetFunction = 'Reset-VideoDefaults' }
+    @{ Button = $btnResetAudio;     ResetFunction = 'Reset-AudioDefaults' }
+    @{ Button = $btnResetRecording; ResetFunction = 'Reset-RecordingDefaults' }
+    @{ Button = $btnResetNetwork;   ResetFunction = 'Reset-NetworkDefaults' }
+    @{ Button = $btnResetOptions;   ResetFunction = 'Reset-OptionsDefaults' }
+)
+foreach ($binding in $resetDefaultsBindings) {
+    $resetFunction = $binding.ResetFunction
+    $binding.Button.Add_Click({ & $resetFunction; Save-Settings }.GetNewClosure())
+}
 $btnExportLabConfig.Add_Click({ Export-LabConfiguration })
 $btnResetAll.Add_Click({
     $result = [System.Windows.Forms.MessageBox]::Show(
