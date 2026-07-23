@@ -1037,7 +1037,7 @@ public static class GstProcessJob
 '@
 }
 
-$script:AppVersion = '3.7.52f70'
+$script:AppVersion = '3.7.52f71'
 $script:AppName = "GStreamer Glass v$($script:AppVersion)"
 $script:ConfigDirectory = Join-Path $env:APPDATA 'GStreamerBasicWhipStreamer'
 $script:ConfigPath = Join-Path $script:ConfigDirectory 'settings.json'
@@ -4387,10 +4387,10 @@ $chkDynamicScenePreviews.Checked = $false
 $toolTip.SetToolTip($chkDynamicScenePreviews, 'Runs the real scene compositor in-process so placement, size, opacity, and z-order update live without restarting.')
 
 $chkLiveSceneEditing = New-Object System.Windows.Forms.CheckBox
-$chkLiveSceneEditing.Text = 'Edit scene while live'
+$chkLiveSceneEditing.Text = 'Edit scene while live (experimental)'
 $chkLiveSceneEditing.AutoSize = $true
-$chkLiveSceneEditing.Checked = $true
-$toolTip.SetToolTip($chkLiveSceneEditing, 'Runs compatible single-pipeline streams in-process so scene placement, size, and opacity change on the actual broadcast without restarting. Unsupported topologies automatically use the legacy launcher.')
+$chkLiveSceneEditing.Checked = $false
+$toolTip.SetToolTip($chkLiveSceneEditing, 'Explicit opt-in. Available only with Dynamic previews. Runs compatible single-pipeline streams in-process so placement, size, and opacity change on the actual broadcast without restarting. Unsupported topologies automatically use the legacy launcher.')
 
 $chkStandardPreviewOffSceneTab = New-Object System.Windows.Forms.CheckBox
 $chkStandardPreviewOffSceneTab.Text = 'Standard preview off Scenes'
@@ -6051,7 +6051,7 @@ function Apply-ModernDashboardUi {
     Add-Field $r -Control $chkDynamicScenePreviews -Width 150 | Out-Null
     Add-Field $r -Control $chkStandardPreviewOffSceneTab -Width 190 | Out-Null
     $r = Add-Row $s
-    Add-Field $r -Control $chkLiveSceneEditing -Width 190 | Out-Null
+    Add-Field $r -Control $chkLiveSceneEditing -Width 260 | Out-Null
     $r = Add-Row $s
     Add-Field $r -Control $sceneEditorCanvas -Width 550 | Out-Null
     Save-SceneEditorCanvasHome
