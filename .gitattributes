@@ -1,2 +1,4 @@
 *.ps1 -text
+*.psccfg -text
+*.config text
 *.png binary
