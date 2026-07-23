@@ -1138,7 +1138,7 @@ public static class GstProcessJob
 '@
 }
 
-$script:AppVersion = '3.7.52f80'
+$script:AppVersion = '3.7.52f81'
 $script:AppName = "GStreamer Glass v$($script:AppVersion)"
 $script:ConfigDirectory = Join-Path $env:APPDATA 'GStreamerBasicWhipStreamer'
 $script:ConfigPath = Join-Path $script:ConfigDirectory 'settings.json'
@@ -2044,6 +2044,63 @@ function Convert-GstLaunchArgumentsToPipelineDescription {
     $pipeline = $Arguments.Trim()
     while ($pipeline -match '^(?:-e|-v)\s+') { $pipeline = $pipeline -replace '^(?:-e|-v)\s+', '' }
     return $pipeline.Trim()
+}
+
+function Test-CustomGstArgumentsOverride {
+    if ($script:SuppressCustomGstArgumentsOverride) { return $false }
+    return [bool]($chkCustomGstArgumentsEnabled -and $chkCustomGstArgumentsEnabled.Checked)
+}
+
+function Assert-CustomGstArgumentsAreSafe {
+    param([Parameter(Mandatory)][string]$Arguments)
+
+    if ($Arguments -match '(?i)\bgst-launch-1\.0(?:\.exe)?\b') {
+        throw 'Custom args expects arguments only. Remove gst-launch-1.0.exe and paste only what follows it.'
+    }
+
+    if ($Arguments -match '\$\(') {
+        throw 'Custom args rejected: PowerShell command substitution "$(...)" is not allowed.'
+    }
+
+    if ($Arguments.IndexOf([string][char]96, [System.StringComparison]::Ordinal) -ge 0) {
+        throw 'Custom args rejected: PowerShell backtick escapes are not allowed.'
+    }
+
+    $inSingleQuote = $false
+    $inDoubleQuote = $false
+    for ($i = 0; $i -lt $Arguments.Length; $i++) {
+        $ch = $Arguments[$i]
+        if ($ch -eq "'" -and -not $inDoubleQuote) {
+            $inSingleQuote = -not $inSingleQuote
+            continue
+        }
+        if ($ch -eq '"' -and -not $inSingleQuote) {
+            $inDoubleQuote = -not $inDoubleQuote
+            continue
+        }
+        if (-not $inSingleQuote -and -not $inDoubleQuote -and ';|&<>'.IndexOf($ch) -ge 0) {
+            throw "Custom args rejected: shell operator '$ch' is not allowed outside quotes."
+        }
+    }
+
+    if ($inSingleQuote -or $inDoubleQuote) {
+        throw 'Custom args rejected: unmatched quote.'
+    }
+}
+
+function Get-CustomGstArguments {
+    $arguments = ''
+    if ($txtCustomGstArguments) {
+        $arguments = [string]$txtCustomGstArguments.Text
+    }
+
+    $arguments = ($arguments -replace "[`r`n`t]+", ' ').Trim()
+    if ([string]::IsNullOrWhiteSpace($arguments)) {
+        throw 'Custom gst-launch args override is enabled, but no arguments were provided.'
+    }
+
+    Assert-CustomGstArgumentsAreSafe -Arguments $arguments
+    return $arguments
 }
 
 function Get-PowerShellHostExecutable {
@@ -4374,6 +4431,11 @@ $tabCommand.Text = 'Generated Command'
 $tabCommand.Padding = New-Object System.Windows.Forms.Padding(6)
 $null = $lowerTabs.TabPages.Add($tabCommand)
 
+$tabCustomGstArgs = New-Object System.Windows.Forms.TabPage
+$tabCustomGstArgs.Text = 'Custom Args'
+$tabCustomGstArgs.Padding = New-Object System.Windows.Forms.Padding(6)
+$null = $lowerTabs.TabPages.Add($tabCustomGstArgs)
+
 # Appends no longer force a scroll while the log tab is hidden, so catch the
 # tail up whenever the log becomes visible again.
 $lowerTabs.Add_SelectedIndexChanged({
@@ -4393,6 +4455,48 @@ $txtCommand.AcceptsTab = $false
 $txtCommand.Font = New-Object System.Drawing.Font('Consolas', 9)
 $txtCommand.Dock = 'Fill'
 $tabCommand.Controls.Add($txtCommand)
+
+$customArgsTopPanel = New-Object System.Windows.Forms.Panel
+$customArgsTopPanel.Dock = 'Top'
+$customArgsTopPanel.Height = 76
+$tabCustomGstArgs.Controls.Add($customArgsTopPanel)
+
+$chkCustomGstArgumentsEnabled = New-Object System.Windows.Forms.CheckBox
+$chkCustomGstArgumentsEnabled.Text = 'Use custom gst-launch args override'
+$chkCustomGstArgumentsEnabled.AutoSize = $true
+$chkCustomGstArgumentsEnabled.Location = New-Object System.Drawing.Point(8, 8)
+$customArgsTopPanel.Controls.Add($chkCustomGstArgumentsEnabled)
+
+$lblCustomGstArgumentsHelp = New-Object System.Windows.Forms.Label
+$lblCustomGstArgumentsHelp.Text = 'Arguments only. Paste everything after gst-launch-1.0.exe. Shell wrappers/operators are rejected.'
+$lblCustomGstArgumentsHelp.AutoSize = $true
+$lblCustomGstArgumentsHelp.Location = New-Object System.Drawing.Point(8, 34)
+$customArgsTopPanel.Controls.Add($lblCustomGstArgumentsHelp)
+
+$btnUseGeneratedAsCustomGstArgs = New-Object System.Windows.Forms.Button
+$btnUseGeneratedAsCustomGstArgs.Text = 'Use Generated'
+$btnUseGeneratedAsCustomGstArgs.Size = New-Object System.Drawing.Size(112, 28)
+$btnUseGeneratedAsCustomGstArgs.Anchor = 'Top,Right'
+$btnUseGeneratedAsCustomGstArgs.Location = New-Object System.Drawing.Point(930, 8)
+$customArgsTopPanel.Controls.Add($btnUseGeneratedAsCustomGstArgs)
+
+$btnClearCustomGstArgs = New-Object System.Windows.Forms.Button
+$btnClearCustomGstArgs.Text = 'Clear'
+$btnClearCustomGstArgs.Size = New-Object System.Drawing.Size(80, 28)
+$btnClearCustomGstArgs.Anchor = 'Top,Right'
+$btnClearCustomGstArgs.Location = New-Object System.Drawing.Point(1050, 8)
+$customArgsTopPanel.Controls.Add($btnClearCustomGstArgs)
+
+$txtCustomGstArguments = New-Object System.Windows.Forms.TextBox
+$txtCustomGstArguments.Multiline = $true
+$txtCustomGstArguments.ScrollBars = 'Both'
+$txtCustomGstArguments.WordWrap = $false
+$txtCustomGstArguments.AcceptsReturn = $true
+$txtCustomGstArguments.AcceptsTab = $true
+$txtCustomGstArguments.Font = New-Object System.Drawing.Font('Consolas', 9)
+$txtCustomGstArguments.Dock = 'Fill'
+$tabCustomGstArgs.Controls.Add($txtCustomGstArguments)
+$customArgsTopPanel.BringToFront()
 
 $lowerTabs.SelectedTab = $tabLog
 
@@ -12732,11 +12836,16 @@ function Update-CommandPreview {
             $gstPath = 'gst-launch-1.0.exe'
         }
 
-        $mainArguments = Build-GstArguments
+        $customGstArgumentsEnabled = Test-CustomGstArgumentsOverride
+        $mainArguments = if ($customGstArgumentsEnabled) { Get-CustomGstArguments } else { Build-GstArguments }
         $previewMainArguments = Convert-GstArgumentsToPowerShellPreview -Arguments $mainArguments
         $previewText = '& ' + (Quote-GstValue $gstPath) + ' ' + $previewMainArguments
 
-        if ((Test-TransportEnabled) -and [string]$cmbProtocol.SelectedItem -eq $script:DirectWebRtcProtocolName -and (Test-DirectWebRtcSplitAvPipelines)) {
+        if ($customGstArgumentsEnabled) {
+            $previewText = "# CUSTOM GST-LAUNCH ARGS OVERRIDE ACTIVE`r`n# Start/Go Live will bypass the UI pipeline builder and run only these args.`r`n" + $previewText
+        }
+
+        if ((-not $customGstArgumentsEnabled) -and (Test-TransportEnabled) -and [string]$cmbProtocol.SelectedItem -eq $script:DirectWebRtcProtocolName -and (Test-DirectWebRtcSplitAvPipelines)) {
             if (Test-DirectWebRtcUnifiedPublisher) {
                 $videoArguments = Build-DirectWebRtcUnifiedVideoBridgeArguments
                 $audioArguments = Build-DirectWebRtcAudioOnlyArguments
@@ -12842,6 +12951,8 @@ function Save-Settings {
 
         $settings = [ordered]@{
             GstPath           = $txtGstPath.Text
+            CustomGstArgumentsEnabled = [bool]$chkCustomGstArgumentsEnabled.Checked
+            CustomGstArguments = [string]$txtCustomGstArguments.Text
             StartMediaMtx     = $chkStartMediaMtx.Checked
             MediaMtxPath      = $txtMediaMtxPath.Text
             TransportEnabled  = $chkTransportEnabled.Checked
@@ -13171,6 +13282,12 @@ function Load-Settings {
         }
         if ($settings.MediaMtxPath) {
             $txtMediaMtxPath.Text = [string]$settings.MediaMtxPath
+        }
+        if ($null -ne $settings.CustomGstArguments) {
+            $txtCustomGstArguments.Text = [string]$settings.CustomGstArguments
+        }
+        if ($null -ne $settings.CustomGstArgumentsEnabled) {
+            $chkCustomGstArgumentsEnabled.Checked = [bool]$settings.CustomGstArgumentsEnabled
         }
         if ($null -ne $settings.StartMediaMtx) {
             $chkStartMediaMtx.Checked = [bool]$settings.StartMediaMtx
@@ -13533,7 +13650,23 @@ function Validate-Configuration {
         return $false
     }
 
-    if (-not (Test-TransportEnabled) -and -not (Test-RecordingEnabled) -and -not $chkPreview.Checked) {
+    $customGstArgumentsOverride = Test-CustomGstArgumentsOverride
+    if ($customGstArgumentsOverride) {
+        try {
+            [void](Get-CustomGstArguments)
+        }
+        catch {
+            [System.Windows.Forms.MessageBox]::Show(
+                $_.Exception.Message,
+                $script:AppName,
+                'OK',
+                'Warning'
+            ) | Out-Null
+            return $false
+        }
+    }
+
+    if ((-not $customGstArgumentsOverride) -and -not (Test-TransportEnabled) -and -not (Test-RecordingEnabled) -and -not $chkPreview.Checked) {
         [System.Windows.Forms.MessageBox]::Show(
             'Enable transport, recording, or preview before starting.',
             $script:AppName,
@@ -13575,6 +13708,11 @@ function Validate-Configuration {
                 return $false
             }
         }
+    }
+
+    if ($customGstArgumentsOverride) {
+        $script:ResolvedRecordingPath = ''
+        return $true
     }
 
     if (Test-TransportEnabled) {
@@ -14589,6 +14727,7 @@ function Start-GstStream {
     $script:PipelineStartInProgress = $true
     Set-RunState $false
     try {
+    $script:SuppressCustomGstArgumentsOverride = [bool]$PreviewOnly
 
     if ($script:DynamicScenePreviewActive) {
         if ($PreviewOnly) { return }
@@ -14624,6 +14763,7 @@ function Start-GstStream {
     $script:RecordingOnlyMode = [bool]$RecordingOnly
     $script:RecordingPipelineActive = $false
     $script:ForceLocalPreviewMode = [bool]($PreviewOnly -or $RecordingOnly)
+    $customGstArgumentsOverride = Test-CustomGstArgumentsOverride
 
     if (-not (Validate-Configuration)) {
         $script:WaitingForFullscreen = $false
@@ -14638,7 +14778,7 @@ function Start-GstStream {
 
     Stop-StaleManagedProcesses
 
-    if (-not (Resolve-FullscreenCaptureTarget -Quiet)) {
+    if ((-not $customGstArgumentsOverride) -and -not (Resolve-FullscreenCaptureTarget -Quiet)) {
         $firstWait = -not $script:WaitingForFullscreen
         $script:WaitingForFullscreen = $true
         $script:StopRequested = $false
@@ -14681,9 +14821,9 @@ function Start-GstStream {
     $script:PreviewHwnd = [IntPtr]::Zero
     $script:PreviewParked = $false
     Reset-PreviewAppliedState
-    $controlledLiveRequested = [bool]((-not $RecordingOnly) -and (Test-ControlledLiveStreamRequested -PreviewOnly:$PreviewOnly))
+    $controlledLiveRequested = [bool]((-not $customGstArgumentsOverride) -and (-not $RecordingOnly) -and (Test-ControlledLiveStreamRequested -PreviewOnly:$PreviewOnly))
     $script:ForceLiveScenePreviewBranch = $controlledLiveRequested
-    try { $script:PipelineHasPreview = Test-PreviewEnabledForCurrentPipeline }
+    try { $script:PipelineHasPreview = [bool]((-not $customGstArgumentsOverride) -and (Test-PreviewEnabledForCurrentPipeline)) }
     finally { $script:ForceLiveScenePreviewBranch = $false }
     $script:PreviewOnlyMode = [bool]$PreviewOnly
     $previewPlaceholder.Visible = $true
@@ -14720,10 +14860,10 @@ function Start-GstStream {
 
     try {
         $script:ForceLiveScenePreviewBranch = $controlledLiveRequested
-        $arguments = Build-GstArguments
+        $arguments = if ($customGstArgumentsOverride) { Get-CustomGstArguments } else { Build-GstArguments }
         $videoArguments = ''
         $audioArguments = ''
-        if ((Test-TransportEnabled) -and [string]$cmbProtocol.SelectedItem -eq $script:DirectWebRtcProtocolName -and (Test-DirectWebRtcSplitAvPipelines)) {
+        if ((-not $customGstArgumentsOverride) -and (Test-TransportEnabled) -and [string]$cmbProtocol.SelectedItem -eq $script:DirectWebRtcProtocolName -and (Test-DirectWebRtcSplitAvPipelines)) {
             if (Test-DirectWebRtcUnifiedPublisher) {
                 $videoArguments = Build-DirectWebRtcUnifiedVideoBridgeArguments
             }
@@ -14747,7 +14887,7 @@ function Start-GstStream {
 
     $transportEnabled = Test-TransportEnabled
     $runIsPreviewOnly = [bool]$PreviewOnly
-    $runNeedsUnifiedPublisherHost = $transportEnabled -and (Test-DirectWebRtcUnifiedPublisherHostRequired)
+    $runNeedsUnifiedPublisherHost = (-not $customGstArgumentsOverride) -and $transportEnabled -and (Test-DirectWebRtcUnifiedPublisherHostRequired)
     $useControlledLiveStream = (
         $controlledLiveRequested -and
         -not $runNeedsUnifiedPublisherHost -and
@@ -14758,6 +14898,9 @@ function Start-GstStream {
     if ($script:PendingPipelineStop) { return }
     Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Starting full GStreamer pipeline..."
     Append-Log "Process disk logging: $(if ($processDiskLogging) { 'enabled' } else { 'disabled - UI log only' })"
+    if ($customGstArgumentsOverride) {
+        Append-Log 'Custom gst-launch args override: enabled. UI-generated capture, encoder, transport, preview, split-pipeline, and controlled-live pipeline templates are bypassed for this run.'
+    }
     Append-Log "Transport: $(if ($transportEnabled) { 'Enabled' } elseif ($runIsPreviewOnly) { 'Disabled - local preview only' } else { 'Disabled - local recording/preview only' })"
     if ($transportEnabled) {
         Append-Log "Protocol: $([string]$cmbProtocol.SelectedItem)"
@@ -15060,7 +15203,7 @@ function Start-GstStream {
         }
 
         Save-ActiveProcessState
-        $script:RecordingPipelineActive = [bool](Test-RecordingEnabled)
+        $script:RecordingPipelineActive = [bool]((-not $customGstArgumentsOverride) -and (Test-RecordingEnabled))
 
         $targetSuffix = if ((Test-FullscreenCaptureMode) -and $script:CaptureWindowTitle) { " - $($script:CaptureWindowTitle)" } else { '' }
         $mediaSuffix = if (
@@ -15072,7 +15215,10 @@ function Start-GstStream {
         else {
             ''
         }
-        if ($transportEnabled) {
+        if ($customGstArgumentsOverride) {
+            $statusLabel.Text = "Custom gst-launch pipeline - GST PID $($script:GstProcess.Id)$mediaSuffix"
+        }
+        elseif ($transportEnabled) {
             $videoSuffix = if ($script:GstVideoProcess -and -not $script:GstVideoProcess.HasExited) { " + Video PID $($script:GstVideoProcess.Id)" } else { '' }
             $audioSuffix = if ($script:GstAudioProcess -and -not $script:GstAudioProcess.HasExited) { " + Audio PID $($script:GstAudioProcess.Id)" } else { '' }
             $statusLabel.Text = "$([string]$cmbProtocol.SelectedItem) streaming - GST PID $($script:GstProcess.Id)$videoSuffix$audioSuffix$mediaSuffix$targetSuffix"
@@ -15107,6 +15253,7 @@ function Start-GstStream {
     }
     }
     finally {
+        $script:SuppressCustomGstArgumentsOverride = $false
         $script:PipelineStartInProgress = $false
         if ($script:PendingPipelineStop) {
             $script:PendingPipelineStop = $false
@@ -15667,6 +15814,54 @@ function Test-GStreamerElements {
 }
 
 $previewHandler = { Update-CommandPreview }
+
+$chkCustomGstArgumentsEnabled.Add_CheckedChanged({
+    if ($script:LoadingSettings) { return }
+    Save-Settings
+    Update-CommandPreview
+})
+$txtCustomGstArguments.Add_TextChanged({
+    if ($script:LoadingSettings) { return }
+    Save-Settings
+    Update-CommandPreview
+})
+$btnUseGeneratedAsCustomGstArgs.Add_Click({
+    $originalRecordingRequest = [bool]$script:RecordingPipelineRequested
+    try {
+        $pipelineRunning = $script:GstProcess -and -not $script:GstProcess.HasExited
+        if (-not $pipelineRunning) {
+            $script:RecordingPipelineRequested = [bool](
+                $chkRecordingEnabled -and
+                $chkRecordingEnabled.Checked -and
+                $chkRecordWithStream -and
+                $chkRecordWithStream.Checked -and
+                ((-not $chkTransportEnabled) -or $chkTransportEnabled.Checked)
+            )
+        }
+
+        $txtCustomGstArguments.Text = Build-GstArguments
+        $chkCustomGstArgumentsEnabled.Checked = $true
+        Save-Settings
+        Update-CommandPreview
+        $lowerTabs.SelectedTab = $tabCustomGstArgs
+    }
+    catch {
+        [System.Windows.Forms.MessageBox]::Show(
+            "Could not seed custom args from the generated command.`r`n`r`n$($_.Exception.Message)",
+            $script:AppName,
+            'OK',
+            'Warning'
+        ) | Out-Null
+    }
+    finally {
+        $script:RecordingPipelineRequested = $originalRecordingRequest
+    }
+})
+$btnClearCustomGstArgs.Add_Click({
+    $txtCustomGstArguments.Clear()
+    Save-Settings
+    Update-CommandPreview
+})
 
 function Update-PlayerConfigFromUi {
     try {
