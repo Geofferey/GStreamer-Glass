@@ -548,7 +548,7 @@ public static class GstProcessJob
 '@
 }
 
-$script:AppVersion = '3.6.8'
+$script:AppVersion = '3.6.9'
 $script:AppName = "GStreamer Glass v$($script:AppVersion)"
 $script:ConfigDirectory = Join-Path $env:APPDATA 'GStreamerBasicWhipStreamer'
 $script:ConfigPath = Join-Path $script:ConfigDirectory 'settings.json'
@@ -594,6 +594,7 @@ $script:MediaMtxStdErrPosition = [int64]0
 $script:PreviewHwnd = [IntPtr]::Zero
 $script:PreviewParkForm = $null
 $script:PreviewParked = $false
+$script:PipelineHasPreview = $false
 $script:CaptureWindowHwnd = [IntPtr]::Zero
 $script:CaptureWindowTitle = ''
 $script:NextFullscreenProbe = [datetime]::MinValue
@@ -1263,7 +1264,7 @@ $chkPreview.Location = New-Object System.Drawing.Point(235, 130)
 $chkPreview.Size = New-Object System.Drawing.Size(80, 23)
 $chkPreview.Checked = $false
 $settingsGroup.Controls.Add($chkPreview)
-$toolTip.SetToolTip($chkPreview, 'Includes the local preview branch when the stream starts. Changing this while streaming restarts the pipeline to add/remove preview cleanly.')
+$toolTip.SetToolTip($chkPreview, 'Includes preview when the stream starts. If the running pipeline has preview, this only hides/shows it. If not, enabling preview restarts the stream to add the branch.')
 
 $chkAutoRestart = New-Object System.Windows.Forms.CheckBox
 $chkAutoRestart.Text = 'Auto-restart on exit'
@@ -3501,7 +3502,7 @@ function Set-PreviewVisibility {
 }
 
 function Try-AttachPreview {
-    if (-not $chkPreview.Checked -or -not $script:GstProcess -or $script:GstProcess.HasExited) {
+    if (-not $script:PipelineHasPreview -or -not $script:GstProcess -or $script:GstProcess.HasExited) {
         return
     }
 
@@ -3720,8 +3721,9 @@ function Start-GstStream {
     $script:RestartAt = $null
     $script:PreviewHwnd = [IntPtr]::Zero
     $script:PreviewParked = $false
+    $script:PipelineHasPreview = [bool]$chkPreview.Checked
     $previewPlaceholder.Visible = $true
-    $previewPlaceholder.Text = if ($chkPreview.Checked) { 'Starting preview...' } else { 'Preview disabled for this pipeline' }
+    $previewPlaceholder.Text = if ($script:PipelineHasPreview) { 'Starting preview...' } else { 'Preview disabled for this pipeline' }
 
     $gstPath = $txtGstPath.Text.Trim()
     Prepare-GStreamerRuntime -GstPath $gstPath
@@ -3808,6 +3810,8 @@ function Stop-GstStream {
     }
 
     $script:PreviewHwnd = [IntPtr]::Zero
+    $script:PreviewParked = $false
+    $script:PipelineHasPreview = $false
     $previewPlaceholder.Visible = $true
     $previewPlaceholder.Text = 'Preview stopped'
 
@@ -4124,10 +4128,20 @@ $chkFullscreenApp.Add_CheckedChanged({
 })
 $chkPreview.Add_CheckedChanged({
     if ($script:GstProcess -and -not $script:GstProcess.HasExited) {
-        $previewState = if ($chkPreview.Checked) { 'enabled' } else { 'disabled' }
-        Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Preview $previewState; restarting stream to apply preview pipeline branch."
-        $lowerTabs.SelectedTab = $tabLog
-        Stop-GstStream -Restart
+        if ($script:PipelineHasPreview) {
+            Set-PreviewVisibility
+            $previewState = if ($chkPreview.Checked) { 'shown' } else { 'hidden' }
+            Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Preview $previewState without restarting stream."
+        }
+        elseif ($chkPreview.Checked) {
+            Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Preview enabled; restarting stream to add preview pipeline branch."
+            $lowerTabs.SelectedTab = $tabLog
+            Stop-GstStream -Restart
+        }
+        else {
+            $previewPlaceholder.Visible = $true
+            $previewPlaceholder.Text = 'Preview disabled for this pipeline'
+        }
     }
     else {
         $previewPlaceholder.Text = if ($chkPreview.Checked) {
