@@ -33,6 +33,33 @@ public static class GstExecutableBrowser
 {
     public static string SelectGstLaunch(string currentPath)
     {
+        return SelectExecutable(
+            currentPath,
+            "Select gst-launch-1.0.exe",
+            "gst-launch-1.0.exe",
+            "GStreamer launcher (gst-launch-1.0.exe)|gst-launch-1.0.exe|" +
+            "Executable files (*.exe)|*.exe|All files (*.*)|*.*",
+            "GStreamer executable browser");
+    }
+
+    public static string SelectMediaMtx(string currentPath)
+    {
+        return SelectExecutable(
+            currentPath,
+            "Select mediamtx.exe",
+            "mediamtx.exe",
+            "MediaMTX server (mediamtx.exe)|mediamtx.exe|" +
+            "Executable files (*.exe)|*.exe|All files (*.*)|*.*",
+            "MediaMTX executable browser");
+    }
+
+    private static string SelectExecutable(
+        string currentPath,
+        string title,
+        string preferredFileName,
+        string filter,
+        string threadName)
+    {
         string selectedPath = String.Empty;
         Exception dialogError = null;
 
@@ -42,23 +69,23 @@ public static class GstExecutableBrowser
             {
                 using (OpenFileDialog dialog = new OpenFileDialog())
                 {
-                    dialog.Title = "Select gst-launch-1.0.exe";
-                    dialog.Filter =
-                        "GStreamer launcher (gst-launch-1.0.exe)|gst-launch-1.0.exe|" +
-                        "Executable files (*.exe)|*.exe|All files (*.*)|*.*";
+                    dialog.Title = title;
+                    dialog.Filter = filter;
                     dialog.CheckFileExists = true;
                     dialog.CheckPathExists = true;
                     dialog.Multiselect = false;
                     dialog.RestoreDirectory = true;
                     dialog.DereferenceLinks = true;
                     dialog.ValidateNames = true;
-                    dialog.FileName = "gst-launch-1.0.exe";
+                    dialog.FileName = preferredFileName;
 
                     if (!String.IsNullOrWhiteSpace(currentPath))
                     {
                         try
                         {
-                            string expanded = Environment.ExpandEnvironmentVariables(currentPath.Trim());
+                            string expanded =
+                                Environment.ExpandEnvironmentVariables(currentPath.Trim());
+
                             if (File.Exists(expanded))
                             {
                                 dialog.InitialDirectory = Path.GetDirectoryName(expanded);
@@ -71,13 +98,16 @@ public static class GstExecutableBrowser
                             else
                             {
                                 string parent = Path.GetDirectoryName(expanded);
-                                if (!String.IsNullOrWhiteSpace(parent) && Directory.Exists(parent))
+                                if (!String.IsNullOrWhiteSpace(parent) &&
+                                    Directory.Exists(parent))
+                                {
                                     dialog.InitialDirectory = parent;
+                                }
                             }
                         }
                         catch
                         {
-                            // Invalid saved paths must not prevent the picker opening.
+                            // A stale saved path must not prevent the picker opening.
                         }
                     }
 
@@ -91,7 +121,7 @@ public static class GstExecutableBrowser
             }
         });
 
-        dialogThread.Name = "GStreamer executable browser";
+        dialogThread.Name = threadName;
         dialogThread.IsBackground = true;
         dialogThread.SetApartmentState(ApartmentState.STA);
         dialogThread.Start();
@@ -99,7 +129,7 @@ public static class GstExecutableBrowser
 
         if (dialogError != null)
             throw new InvalidOperationException(
-                "The GStreamer executable browser could not be opened.",
+                "The executable browser could not be opened.",
                 dialogError);
 
         return selectedPath;
@@ -491,8 +521,8 @@ public static class GstProcessJob
 '@
 }
 
-$script:AppVersion = '3.3.3'
-$script:AppName = "GStreamer Basic Streamer v$($script:AppVersion)"
+$script:AppVersion = '3.4.0'
+$script:AppName = "GStreamer Glass v$($script:AppVersion)"
 $script:ConfigDirectory = Join-Path $env:APPDATA 'GStreamerBasicWhipStreamer'
 $script:ConfigPath = Join-Path $script:ConfigDirectory 'settings.json'
 $script:LogDirectory = Join-Path $env:LOCALAPPDATA 'GStreamerBasicWhipStreamer\Logs'
@@ -522,12 +552,18 @@ $script:AppIconSource = 'Windows default application icon'
 
 $script:BasePathEnvironment = $env:PATH
 $script:GstProcess = $null
+$script:MediaMtxProcess = $null
+$script:MediaMtxPathInUse = ''
 $script:StopRequested = $false
 $script:RestartAt = $null
 $script:StdOutPath = $null
 $script:StdErrPath = $null
 $script:StdOutPosition = [int64]0
 $script:StdErrPosition = [int64]0
+$script:MediaMtxStdOutPath = $null
+$script:MediaMtxStdErrPath = $null
+$script:MediaMtxStdOutPosition = [int64]0
+$script:MediaMtxStdErrPosition = [int64]0
 $script:PreviewHwnd = [IntPtr]::Zero
 $script:CaptureWindowHwnd = [IntPtr]::Zero
 $script:CaptureWindowTitle = ''
@@ -730,6 +766,49 @@ function Find-GstLaunch {
     return $official
 }
 
+function Find-MediaMtx {
+    $candidates = New-Object System.Collections.Generic.List[string]
+
+    foreach ($candidate in @(
+        $(if ($script:ApplicationDirectory) {
+            Join-Path $script:ApplicationDirectory 'mediamtx.exe'
+        }),
+        $(try {
+            Join-Path (Get-Location).Path 'mediamtx.exe'
+        }
+        catch {
+            $null
+        }),
+        (Join-Path $env:SystemDrive 'mediamtx\mediamtx.exe'),
+        $(if ($env:ProgramFiles) {
+            Join-Path $env:ProgramFiles 'MediaMTX\mediamtx.exe'
+        }),
+        $(if (${env:ProgramFiles(x86)}) {
+            Join-Path ${env:ProgramFiles(x86)} 'MediaMTX\mediamtx.exe'
+        })
+    )) {
+        if (
+            -not [string]::IsNullOrWhiteSpace($candidate) -and
+            -not $candidates.Contains($candidate)
+        ) {
+            $candidates.Add($candidate)
+        }
+    }
+
+    $command = Get-Command 'mediamtx.exe' -ErrorAction SilentlyContinue
+    if ($command -and -not $candidates.Contains($command.Source)) {
+        $candidates.Insert(0, $command.Source)
+    }
+
+    foreach ($candidate in $candidates) {
+        if (Test-Path -LiteralPath $candidate) {
+            return [System.IO.Path]::GetFullPath($candidate)
+        }
+    }
+
+    return ''
+}
+
 function Get-PathHash {
     param([Parameter(Mandatory)][string]$Value)
 
@@ -893,8 +972,8 @@ $script:AppIcon = Get-ApplicationIcon
 $form = New-Object System.Windows.Forms.Form
 $form.Text = $script:AppName
 $form.StartPosition = 'CenterScreen'
-$form.Size = New-Object System.Drawing.Size(1220, 950)
-$form.MinimumSize = New-Object System.Drawing.Size(1110, 850)
+$form.Size = New-Object System.Drawing.Size(1220, 990)
+$form.MinimumSize = New-Object System.Drawing.Size(1110, 890)
 $form.AutoScaleMode = [System.Windows.Forms.AutoScaleMode]::Dpi
 $form.Font = New-Object System.Drawing.Font('Segoe UI', 9)
 $form.Icon = $script:AppIcon
@@ -925,7 +1004,7 @@ function Add-Label {
 $settingsGroup = New-Object System.Windows.Forms.GroupBox
 $settingsGroup.Text = 'Stream Settings'
 $settingsGroup.Location = New-Object System.Drawing.Point(10, 10)
-$settingsGroup.Size = New-Object System.Drawing.Size(735, 430)
+$settingsGroup.Size = New-Object System.Drawing.Size(735, 470)
 $form.Controls.Add($settingsGroup)
 
 $null = Add-Label $settingsGroup 'GStreamer executable' 15 25 130
@@ -1192,16 +1271,43 @@ $changesNote.Size = New-Object System.Drawing.Size(700, 22)
 $changesNote.ForeColor = [System.Drawing.Color]::DarkSlateBlue
 $settingsGroup.Controls.Add($changesNote)
 
+$chkStartMediaMtx = New-Object System.Windows.Forms.CheckBox
+$chkStartMediaMtx.Text = 'Start/stop MediaMTX with stream'
+$chkStartMediaMtx.Location = New-Object System.Drawing.Point(15, 430)
+$chkStartMediaMtx.Size = New-Object System.Drawing.Size(220, 25)
+$chkStartMediaMtx.Checked = $false
+$settingsGroup.Controls.Add($chkStartMediaMtx)
+$toolTip.SetToolTip(
+    $chkStartMediaMtx,
+    'Starts MediaMTX before GStreamer and stops it whenever the stream stops or restarts. Only the MediaMTX process started by this application is terminated.'
+)
+
+$txtMediaMtxPath = New-Object System.Windows.Forms.TextBox
+$txtMediaMtxPath.Location = New-Object System.Drawing.Point(240, 430)
+$txtMediaMtxPath.Size = New-Object System.Drawing.Size(400, 23)
+$txtMediaMtxPath.Text = Find-MediaMtx
+$settingsGroup.Controls.Add($txtMediaMtxPath)
+$toolTip.SetToolTip(
+    $txtMediaMtxPath,
+    'Path to mediamtx.exe. It is launched hidden with its working directory set to the executable folder so mediamtx.yml beside it is discovered normally.'
+)
+
+$btnBrowseMediaMtx = New-Object System.Windows.Forms.Button
+$btnBrowseMediaMtx.Text = 'Browse...'
+$btnBrowseMediaMtx.Location = New-Object System.Drawing.Point(650, 428)
+$btnBrowseMediaMtx.Size = New-Object System.Drawing.Size(68, 27)
+$settingsGroup.Controls.Add($btnBrowseMediaMtx)
+
 $previewGroup = New-Object System.Windows.Forms.GroupBox
 $previewGroup.Text = 'Local Preview (experimental)'
 $previewGroup.Location = New-Object System.Drawing.Point(755, 10)
-$previewGroup.Size = New-Object System.Drawing.Size(440, 430)
+$previewGroup.Size = New-Object System.Drawing.Size(440, 470)
 $previewGroup.Anchor = 'Top,Right'
 $form.Controls.Add($previewGroup)
 
 $previewPanel = New-Object System.Windows.Forms.Panel
 $previewPanel.Location = New-Object System.Drawing.Point(12, 24)
-$previewPanel.Size = New-Object System.Drawing.Size(416, 388)
+$previewPanel.Size = New-Object System.Drawing.Size(416, 428)
 $previewPanel.BackColor = [System.Drawing.Color]::Black
 $previewPanel.Anchor = 'Top,Bottom,Left,Right'
 $previewGroup.Controls.Add($previewPanel)
@@ -1216,7 +1322,7 @@ $previewPanel.Controls.Add($previewPlaceholder)
 
 $commandGroup = New-Object System.Windows.Forms.GroupBox
 $commandGroup.Text = 'Generated Command'
-$commandGroup.Location = New-Object System.Drawing.Point(10, 450)
+$commandGroup.Location = New-Object System.Drawing.Point(10, 490)
 $commandGroup.Size = New-Object System.Drawing.Size(1185, 120)
 $commandGroup.Anchor = 'Top,Left,Right'
 $form.Controls.Add($commandGroup)
@@ -1234,40 +1340,40 @@ $commandGroup.Controls.Add($txtCommand)
 
 $btnStart = New-Object System.Windows.Forms.Button
 $btnStart.Text = 'Start Stream'
-$btnStart.Location = New-Object System.Drawing.Point(10, 580)
+$btnStart.Location = New-Object System.Drawing.Point(10, 620)
 $btnStart.Size = New-Object System.Drawing.Size(120, 34)
 $btnStart.Font = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Bold)
 $form.Controls.Add($btnStart)
 
 $btnStop = New-Object System.Windows.Forms.Button
 $btnStop.Text = 'Stop'
-$btnStop.Location = New-Object System.Drawing.Point(140, 580)
+$btnStop.Location = New-Object System.Drawing.Point(140, 620)
 $btnStop.Size = New-Object System.Drawing.Size(90, 34)
 $btnStop.Enabled = $false
 $form.Controls.Add($btnStop)
 
 $btnRestart = New-Object System.Windows.Forms.Button
 $btnRestart.Text = 'Restart Pipeline'
-$btnRestart.Location = New-Object System.Drawing.Point(240, 580)
+$btnRestart.Location = New-Object System.Drawing.Point(240, 620)
 $btnRestart.Size = New-Object System.Drawing.Size(125, 34)
 $btnRestart.Enabled = $false
 $form.Controls.Add($btnRestart)
 
 $btnCopyCommand = New-Object System.Windows.Forms.Button
 $btnCopyCommand.Text = 'Copy Command'
-$btnCopyCommand.Location = New-Object System.Drawing.Point(375, 580)
+$btnCopyCommand.Location = New-Object System.Drawing.Point(375, 620)
 $btnCopyCommand.Size = New-Object System.Drawing.Size(115, 34)
 $form.Controls.Add($btnCopyCommand)
 
 $btnClearLog = New-Object System.Windows.Forms.Button
 $btnClearLog.Text = 'Clear Log'
-$btnClearLog.Location = New-Object System.Drawing.Point(500, 580)
+$btnClearLog.Location = New-Object System.Drawing.Point(500, 620)
 $btnClearLog.Size = New-Object System.Drawing.Size(90, 34)
 $form.Controls.Add($btnClearLog)
 
 $statusLabel = New-Object System.Windows.Forms.Label
 $statusLabel.Text = 'Stopped'
-$statusLabel.Location = New-Object System.Drawing.Point(720, 585)
+$statusLabel.Location = New-Object System.Drawing.Point(720, 625)
 $statusLabel.Size = New-Object System.Drawing.Size(475, 25)
 $statusLabel.TextAlign = 'MiddleRight'
 $statusLabel.Anchor = 'Top,Right'
@@ -1277,7 +1383,7 @@ $form.Controls.Add($statusLabel)
 $trayMenu = New-Object System.Windows.Forms.ContextMenuStrip
 
 $trayShowItem = New-Object System.Windows.Forms.ToolStripMenuItem
-$trayShowItem.Text = 'Show GStreamer Streamer'
+$trayShowItem.Text = 'Show GStreamer Glass'
 $trayShowItem.Font = New-Object System.Drawing.Font($trayShowItem.Font, [System.Drawing.FontStyle]::Bold)
 $null = $trayMenu.Items.Add($trayShowItem)
 
@@ -1309,7 +1415,7 @@ $notifyIcon.Visible = $true
 
 $logGroup = New-Object System.Windows.Forms.GroupBox
 $logGroup.Text = 'GStreamer Output'
-$logGroup.Location = New-Object System.Drawing.Point(10, 625)
+$logGroup.Location = New-Object System.Drawing.Point(10, 665)
 $logGroup.Size = New-Object System.Drawing.Size(1185, 275)
 $logGroup.Anchor = 'Top,Bottom,Left,Right'
 $form.Controls.Add($logGroup)
@@ -1332,7 +1438,7 @@ function Initialize-GstJob {
 
     try {
         $script:JobHandle = [GstProcessJob]::CreateKillOnCloseJob()
-        Append-Log 'Created kill-on-close Windows job for GStreamer processes.'
+        Append-Log 'Created kill-on-close Windows job for GStreamer and MediaMTX processes.'
     }
     catch {
         $script:JobHandle = [IntPtr]::Zero
@@ -1340,34 +1446,69 @@ function Initialize-GstJob {
     }
 }
 
-function Save-ActiveGstProcessState {
-    param(
-        [Parameter(Mandatory)][System.Diagnostics.Process]$Process,
-        [Parameter(Mandatory)][string]$GstPath
-    )
-
+function Save-ActiveProcessState {
     try {
+        $gstRunning =
+            $script:GstProcess -and
+            -not $script:GstProcess.HasExited
+
+        $mediaRunning =
+            $script:MediaMtxProcess -and
+            -not $script:MediaMtxProcess.HasExited
+
+        if (-not $gstRunning -and -not $mediaRunning) {
+            Remove-ActiveProcessState
+            return
+        }
+
         if (-not (Test-Path -LiteralPath $script:ConfigDirectory)) {
             $null = New-Item -ItemType Directory -Path $script:ConfigDirectory -Force
         }
 
         $state = [ordered]@{
-            ProcessId       = $Process.Id
-            ExecutablePath  = [System.IO.Path]::GetFullPath($GstPath)
-            StartTimeUtc    = $Process.StartTime.ToUniversalTime().ToString('o')
-            OwnerProcessId  = $PID
-            AppVersion      = $script:AppVersion
+            OwnerProcessId = $PID
+            AppVersion     = $script:AppVersion
         }
-        $state | ConvertTo-Json | Set-Content -LiteralPath $script:ProcessStatePath -Encoding UTF8
+
+        if ($gstRunning) {
+            $state.GstProcessId      = $script:GstProcess.Id
+            $state.GstExecutablePath = [System.IO.Path]::GetFullPath(
+                $txtGstPath.Text.Trim()
+            )
+            $state.GstStartTimeUtc   =
+                $script:GstProcess.StartTime.ToUniversalTime().ToString('o')
+
+            # Keep the older field names for backward compatibility with state
+            # files written by pre-v3.4 builds.
+            $state.ProcessId      = $state.GstProcessId
+            $state.ExecutablePath = $state.GstExecutablePath
+            $state.StartTimeUtc   = $state.GstStartTimeUtc
+        }
+
+        if ($mediaRunning) {
+            $state.MediaMtxProcessId      = $script:MediaMtxProcess.Id
+            $state.MediaMtxExecutablePath = [System.IO.Path]::GetFullPath(
+                $script:MediaMtxPathInUse
+            )
+            $state.MediaMtxStartTimeUtc   =
+                $script:MediaMtxProcess.StartTime.ToUniversalTime().ToString('o')
+        }
+
+        $state |
+            ConvertTo-Json |
+            Set-Content -LiteralPath $script:ProcessStatePath -Encoding UTF8
     }
     catch {
         Append-Log "WARNING: Could not save active-process state: $($_.Exception.Message)"
     }
 }
 
-function Remove-ActiveGstProcessState {
+function Remove-ActiveProcessState {
     try {
-        Remove-Item -LiteralPath $script:ProcessStatePath -Force -ErrorAction SilentlyContinue
+        Remove-Item `
+            -LiteralPath $script:ProcessStatePath `
+            -Force `
+            -ErrorAction SilentlyContinue
     }
     catch {}
 }
@@ -1381,7 +1522,12 @@ function Stop-ProcessTreeById {
 
     try {
         $arguments = "/PID $ProcessId /T /F"
-        $null = Start-Process -FilePath 'taskkill.exe' -ArgumentList $arguments -WindowStyle Hidden -Wait -PassThru
+        $null = Start-Process `
+            -FilePath 'taskkill.exe' `
+            -ArgumentList $arguments `
+            -WindowStyle Hidden `
+            -Wait `
+            -PassThru
     }
     catch {
         try {
@@ -1391,56 +1537,115 @@ function Stop-ProcessTreeById {
     }
 }
 
-function Stop-StaleGstProcess {
+function Stop-VerifiedStaleProcess {
+    param(
+        [int]$ProcessId,
+        [string]$ExecutablePath,
+        [string]$StartTimeUtc,
+        [string]$Label
+    )
+
+    if ($ProcessId -le 0) {
+        return
+    }
+
+    if (
+        ($script:GstProcess -and
+         -not $script:GstProcess.HasExited -and
+         $script:GstProcess.Id -eq $ProcessId) -or
+        ($script:MediaMtxProcess -and
+         -not $script:MediaMtxProcess.HasExited -and
+         $script:MediaMtxProcess.Id -eq $ProcessId)
+    ) {
+        return
+    }
+
+    $process = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
+    if (-not $process) {
+        return
+    }
+
+    $pathMatches = $false
+    $timeMatches = $false
+
+    try {
+        $actualPath = [System.IO.Path]::GetFullPath($process.Path)
+        $expectedPath = [System.IO.Path]::GetFullPath($ExecutablePath)
+        $pathMatches = $actualPath.Equals(
+            $expectedPath,
+            [System.StringComparison]::OrdinalIgnoreCase
+        )
+    }
+    catch {}
+
+    try {
+        $expectedStart = [datetime]::Parse($StartTimeUtc).ToUniversalTime()
+        $actualStart = $process.StartTime.ToUniversalTime()
+        $timeMatches =
+            [math]::Abs(($actualStart - $expectedStart).TotalSeconds) -le 5
+    }
+    catch {}
+
+    if ($pathMatches -and $timeMatches) {
+        Append-Log (
+            "Found orphaned $Label process PID $ProcessId from a previous " +
+            'wrapper instance; terminating its process tree.'
+        )
+        Stop-ProcessTreeById -ProcessId $ProcessId
+    }
+    else {
+        Append-Log (
+            "Ignored stale $Label process record for PID $ProcessId because " +
+            'its executable or start time no longer matches.'
+        )
+    }
+}
+
+function Stop-StaleManagedProcesses {
     if (-not (Test-Path -LiteralPath $script:ProcessStatePath)) {
         return
     }
 
     try {
-        $state = Get-Content -LiteralPath $script:ProcessStatePath -Raw | ConvertFrom-Json
-        $stalePid = [int]$state.ProcessId
-        if ($stalePid -le 0) {
-            return
+        $state =
+            Get-Content -LiteralPath $script:ProcessStatePath -Raw |
+            ConvertFrom-Json
+
+        $gstPid = 0
+        $gstPath = ''
+        $gstStart = ''
+
+        if ($null -ne $state.GstProcessId) {
+            $gstPid = [int]$state.GstProcessId
+            $gstPath = [string]$state.GstExecutablePath
+            $gstStart = [string]$state.GstStartTimeUtc
+        }
+        elseif ($null -ne $state.ProcessId) {
+            $gstPid = [int]$state.ProcessId
+            $gstPath = [string]$state.ExecutablePath
+            $gstStart = [string]$state.StartTimeUtc
         }
 
-        if ($script:GstProcess -and -not $script:GstProcess.HasExited -and $script:GstProcess.Id -eq $stalePid) {
-            return
-        }
+        Stop-VerifiedStaleProcess `
+            -ProcessId $gstPid `
+            -ExecutablePath $gstPath `
+            -StartTimeUtc $gstStart `
+            -Label 'GStreamer'
 
-        $process = Get-Process -Id $stalePid -ErrorAction SilentlyContinue
-        if (-not $process) {
-            return
-        }
-
-        $pathMatches = $false
-        $timeMatches = $false
-        try {
-            $actualPath = [System.IO.Path]::GetFullPath($process.Path)
-            $expectedPath = [System.IO.Path]::GetFullPath([string]$state.ExecutablePath)
-            $pathMatches = $actualPath.Equals($expectedPath, [System.StringComparison]::OrdinalIgnoreCase)
-        }
-        catch {}
-
-        try {
-            $expectedStart = [datetime]::Parse([string]$state.StartTimeUtc).ToUniversalTime()
-            $actualStart = $process.StartTime.ToUniversalTime()
-            $timeMatches = [math]::Abs(($actualStart - $expectedStart).TotalSeconds) -le 5
-        }
-        catch {}
-
-        if ($pathMatches -and $timeMatches) {
-            Append-Log "Found orphaned GStreamer process PID $stalePid from a previous wrapper instance; terminating its process tree."
-            Stop-ProcessTreeById -ProcessId $stalePid
-        }
-        else {
-            Append-Log "Ignored stale process record for PID $stalePid because its executable or start time no longer matches."
-        }
+        Stop-VerifiedStaleProcess `
+            -ProcessId ([int]$state.MediaMtxProcessId) `
+            -ExecutablePath ([string]$state.MediaMtxExecutablePath) `
+            -StartTimeUtc ([string]$state.MediaMtxStartTimeUtc) `
+            -Label 'MediaMTX'
     }
     catch {
-        Append-Log "WARNING: Could not inspect stale GStreamer process state: $($_.Exception.Message)"
+        Append-Log (
+            "WARNING: Could not inspect stale managed-process state: " +
+            $_.Exception.Message
+        )
     }
     finally {
-        Remove-ActiveGstProcessState
+        Remove-ActiveProcessState
     }
 }
 
@@ -1550,6 +1755,12 @@ function Set-RunState {
     $btnStop.Enabled = $Running
     $btnRestart.Enabled = $Running
     Update-TrayMenuState
+}
+
+function Update-MediaMtxUi {
+    $enabled = $chkStartMediaMtx.Checked
+    $txtMediaMtxPath.Enabled = $enabled
+    $btnBrowseMediaMtx.Enabled = $enabled
 }
 
 function Update-CaptureModeUi {
@@ -1936,6 +2147,8 @@ function Save-Settings {
 
         $settings = [ordered]@{
             GstPath           = $txtGstPath.Text
+            StartMediaMtx     = $chkStartMediaMtx.Checked
+            MediaMtxPath      = $txtMediaMtxPath.Text
             Protocol          = $protocol
             WhipUrl           = $script:ProtocolDestinations.WHIP
             SrtUrl            = $script:ProtocolDestinations.SRT
@@ -1981,6 +2194,12 @@ function Load-Settings {
         $script:SuppressProtocolChange = $true
 
         if ($settings.GstPath) { $txtGstPath.Text = [string]$settings.GstPath }
+        if ($settings.MediaMtxPath) {
+            $txtMediaMtxPath.Text = [string]$settings.MediaMtxPath
+        }
+        if ($null -ne $settings.StartMediaMtx) {
+            $chkStartMediaMtx.Checked = [bool]$settings.StartMediaMtx
+        }
         if ($settings.WhipUrl) { $script:ProtocolDestinations.WHIP = [string]$settings.WhipUrl }
         if ($settings.SrtUrl) { $script:ProtocolDestinations.SRT = [string]$settings.SrtUrl }
         if ($settings.RtmpUrl) { $script:ProtocolDestinations.RTMP = [string]$settings.RtmpUrl }
@@ -2017,6 +2236,7 @@ function Load-Settings {
     }
     finally {
         $script:SuppressProtocolChange = $false
+        Update-MediaMtxUi
         Update-ProtocolUi
     }
 }
@@ -2031,6 +2251,40 @@ function Validate-Configuration {
             'Warning'
         ) | Out-Null
         return $false
+    }
+
+    if ($chkStartMediaMtx.Checked) {
+        $mediaMtxPath = $txtMediaMtxPath.Text.Trim()
+        if (
+            [string]::IsNullOrWhiteSpace($mediaMtxPath) -or
+            -not (Test-Path -LiteralPath $mediaMtxPath)
+        ) {
+            [System.Windows.Forms.MessageBox]::Show(
+                'Select a valid mediamtx.exe path or disable MediaMTX management.',
+                $script:AppName,
+                'OK',
+                'Warning'
+            ) | Out-Null
+            return $false
+        }
+
+        if (
+            -not [System.IO.Path]::GetFileName($mediaMtxPath).Equals(
+                'mediamtx.exe',
+                [System.StringComparison]::OrdinalIgnoreCase
+            )
+        ) {
+            $result = [System.Windows.Forms.MessageBox]::Show(
+                "The selected MediaMTX executable is not named mediamtx.exe.`r`n`r`nContinue anyway?",
+                $script:AppName,
+                [System.Windows.Forms.MessageBoxButtons]::YesNo,
+                [System.Windows.Forms.MessageBoxIcon]::Question
+            )
+
+            if ($result -ne [System.Windows.Forms.DialogResult]::Yes) {
+                return $false
+            }
+        }
     }
 
     $protocol = [string]$cmbProtocol.SelectedItem
@@ -2076,6 +2330,157 @@ function Try-AttachPreview {
     }
 }
 
+function Read-MediaMtxStartupLogs {
+    $stdoutText = Read-NewLogText `
+        -Path $script:MediaMtxStdOutPath `
+        -Position ([ref]$script:MediaMtxStdOutPosition)
+
+    if ($stdoutText) {
+        Append-Log $stdoutText
+    }
+
+    $stderrText = Read-NewLogText `
+        -Path $script:MediaMtxStdErrPath `
+        -Position ([ref]$script:MediaMtxStdErrPosition)
+
+    if ($stderrText) {
+        Append-Log $stderrText
+    }
+}
+
+function Start-ManagedMediaMtx {
+    if (-not $chkStartMediaMtx.Checked) {
+        return $true
+    }
+
+    if ($script:MediaMtxProcess -and -not $script:MediaMtxProcess.HasExited) {
+        return $true
+    }
+
+    $mediaMtxPath = $txtMediaMtxPath.Text.Trim()
+    $script:MediaMtxPathInUse = [System.IO.Path]::GetFullPath($mediaMtxPath)
+
+    $stamp = Get-Date -Format 'yyyyMMdd-HHmmss-fff'
+    $script:MediaMtxStdOutPath =
+        Join-Path $script:LogDirectory "mediamtx-$stamp-out.log"
+    $script:MediaMtxStdErrPath =
+        Join-Path $script:LogDirectory "mediamtx-$stamp-err.log"
+    $script:MediaMtxStdOutPosition = [int64]0
+    $script:MediaMtxStdErrPosition = [int64]0
+
+    $workingDirectory = Split-Path -Parent $script:MediaMtxPathInUse
+
+    Append-Log (
+        "[$(Get-Date -Format 'HH:mm:ss')] Starting managed MediaMTX..."
+    )
+    Append-Log "MediaMTX executable: $($script:MediaMtxPathInUse)"
+    Append-Log "MediaMTX working directory: $workingDirectory"
+
+    try {
+        $script:MediaMtxProcess = Start-Process `
+            -FilePath $script:MediaMtxPathInUse `
+            -WorkingDirectory $workingDirectory `
+            -RedirectStandardOutput $script:MediaMtxStdOutPath `
+            -RedirectStandardError $script:MediaMtxStdErrPath `
+            -WindowStyle Hidden `
+            -PassThru
+
+        if ($script:JobHandle -ne [IntPtr]::Zero) {
+            try {
+                [GstProcessJob]::AssignProcess(
+                    $script:JobHandle,
+                    $script:MediaMtxProcess.Handle
+                )
+            }
+            catch {
+                Append-Log (
+                    'WARNING: MediaMTX could not be assigned to the ' +
+                    "kill-on-close job: $($_.Exception.Message)"
+                )
+            }
+        }
+
+        Save-ActiveProcessState
+
+        # Give MediaMTX enough time to bind listeners and fail visibly if its
+        # configuration or ports are invalid. Keep the WinForms UI responsive.
+        $deadline = (Get-Date).AddMilliseconds(900)
+        while ((Get-Date) -lt $deadline) {
+            [System.Windows.Forms.Application]::DoEvents()
+            Start-Sleep -Milliseconds 50
+            $script:MediaMtxProcess.Refresh()
+
+            if ($script:MediaMtxProcess.HasExited) {
+                break
+            }
+        }
+
+        Read-MediaMtxStartupLogs
+
+        if ($script:MediaMtxProcess.HasExited) {
+            $exitCode = $script:MediaMtxProcess.ExitCode
+            Append-Log "MediaMTX exited during startup with code $exitCode."
+            try { $script:MediaMtxProcess.Dispose() } catch {}
+            $script:MediaMtxProcess = $null
+            $script:MediaMtxPathInUse = ''
+            Remove-ActiveProcessState
+            return $false
+        }
+
+        Append-Log (
+            "MediaMTX is running — PID $($script:MediaMtxProcess.Id)."
+        )
+        return $true
+    }
+    catch {
+        Append-Log "MEDIAMTX START ERROR: $($_.Exception.Message)"
+        try {
+            if (
+                $script:MediaMtxProcess -and
+                -not $script:MediaMtxProcess.HasExited
+            ) {
+                Stop-ProcessTreeById -ProcessId $script:MediaMtxProcess.Id
+            }
+        }
+        catch {}
+
+        try { $script:MediaMtxProcess.Dispose() } catch {}
+        $script:MediaMtxProcess = $null
+        $script:MediaMtxPathInUse = ''
+        Remove-ActiveProcessState
+        return $false
+    }
+}
+
+function Stop-ManagedMediaMtx {
+    param([switch]$Quiet)
+
+    if ($script:MediaMtxProcess -and -not $script:MediaMtxProcess.HasExited) {
+        if (-not $Quiet) {
+            Append-Log (
+                "[$(Get-Date -Format 'HH:mm:ss')] Stopping managed MediaMTX " +
+                "process tree — PID $($script:MediaMtxProcess.Id)..."
+            )
+        }
+
+        Stop-ProcessTreeById -ProcessId $script:MediaMtxProcess.Id
+        try {
+            $script:MediaMtxProcess.WaitForExit(3000) | Out-Null
+        }
+        catch {}
+    }
+
+    try {
+        if ($script:MediaMtxProcess) {
+            $script:MediaMtxProcess.Dispose()
+        }
+    }
+    catch {}
+
+    $script:MediaMtxProcess = $null
+    $script:MediaMtxPathInUse = ''
+}
+
 function Start-GstStream {
     param([switch]$Automatic)
 
@@ -2090,7 +2495,7 @@ function Start-GstStream {
         return
     }
 
-    Stop-StaleGstProcess
+    Stop-StaleManagedProcesses
 
     if (-not (Resolve-FullscreenCaptureTarget -Quiet)) {
         $firstWait = -not $script:WaitingForFullscreen
@@ -2131,6 +2536,14 @@ function Start-GstStream {
     $gstPath = $txtGstPath.Text.Trim()
     Prepare-GStreamerRuntime -GstPath $gstPath
     Initialize-GstJob
+
+    if (-not (Start-ManagedMediaMtx)) {
+        $statusLabel.Text = 'MediaMTX start failed'
+        $statusLabel.ForeColor = [System.Drawing.Color]::DarkRed
+        Set-RunState $false
+        return
+    }
+
     $arguments = Build-GstArguments
 
     Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Starting full GStreamer pipeline..."
@@ -2153,16 +2566,26 @@ function Start-GstStream {
             }
         }
 
-        Save-ActiveGstProcessState -Process $script:GstProcess -GstPath $gstPath
+        Save-ActiveProcessState
 
         $targetSuffix = if ($chkFullscreenApp.Checked -and $script:CaptureWindowTitle) { " — $($script:CaptureWindowTitle)" } else { '' }
-        $statusLabel.Text = "$([string]$cmbProtocol.SelectedItem) streaming — PID $($script:GstProcess.Id)$targetSuffix"
+        $mediaSuffix = if (
+            $script:MediaMtxProcess -and
+            -not $script:MediaMtxProcess.HasExited
+        ) {
+            " + MediaMTX PID $($script:MediaMtxProcess.Id)"
+        }
+        else {
+            ''
+        }
+        $statusLabel.Text = "$([string]$cmbProtocol.SelectedItem) streaming — GST PID $($script:GstProcess.Id)$mediaSuffix$targetSuffix"
         $statusLabel.ForeColor = [System.Drawing.Color]::DarkGreen
         Set-RunState $true
     }
     catch {
         $script:GstProcess = $null
-        Remove-ActiveGstProcessState
+        Stop-ManagedMediaMtx -Quiet
+        Remove-ActiveProcessState
         $statusLabel.Text = 'Start failed'
         $statusLabel.ForeColor = [System.Drawing.Color]::DarkRed
         Set-RunState $false
@@ -2174,6 +2597,7 @@ function Stop-GstStream {
 
     $script:StopRequested = $true
     $script:WaitingForFullscreen = $false
+
     if ($Restart) {
         $script:RestartAt = (Get-Date).AddMilliseconds(800)
     }
@@ -2185,26 +2609,57 @@ function Stop-GstStream {
     $previewPlaceholder.Visible = $true
     $previewPlaceholder.Text = 'Preview stopped'
 
-    if ($script:GstProcess -and -not $script:GstProcess.HasExited) {
+    $hadGst =
+        $script:GstProcess -and
+        -not $script:GstProcess.HasExited
+
+    $hadMedia =
+        $script:MediaMtxProcess -and
+        -not $script:MediaMtxProcess.HasExited
+
+    if ($hadGst -or $hadMedia) {
         $statusLabel.Text = 'Stopping...'
         $statusLabel.ForeColor = [System.Drawing.Color]::DarkOrange
-        Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Stopping complete process tree..."
+    }
+
+    # Stop the publisher first so MediaMTX sees a clean publisher disconnect,
+    # then stop the managed server itself.
+    if ($hadGst) {
+        Append-Log (
+            "[$(Get-Date -Format 'HH:mm:ss')] Stopping complete GStreamer " +
+            "process tree — PID $($script:GstProcess.Id)..."
+        )
         Stop-ProcessTreeById -ProcessId $script:GstProcess.Id
 
-        try { $script:GstProcess.WaitForExit(3000) | Out-Null } catch {}
-        Remove-ActiveGstProcessState
+        try {
+            $script:GstProcess.WaitForExit(3000) | Out-Null
+        }
+        catch {}
     }
-    elseif ($Restart) {
-        $script:GstProcess = $null
+
+    try {
+        if ($script:GstProcess) {
+            $script:GstProcess.Dispose()
+        }
     }
-    else {
-        $script:GstProcess = $null
-        Remove-ActiveGstProcessState
+    catch {}
+    $script:GstProcess = $null
+
+    Stop-ManagedMediaMtx
+
+    Remove-ActiveProcessState
+
+    if (-not $Restart) {
         $statusLabel.Text = 'Stopped'
         $statusLabel.ForeColor = [System.Drawing.Color]::Black
         Set-RunState $false
+        $script:StopRequested = $false
+    }
+    else {
+        Set-RunState $false
     }
 }
+
 function Test-GStreamerElements {
     $gstPath = $txtGstPath.Text.Trim()
     if ([string]::IsNullOrWhiteSpace($gstPath) -or -not (Test-Path -LiteralPath $gstPath)) {
@@ -2332,6 +2787,9 @@ $numDesktopVolume.Add_ValueChanged($previewHandler)
 $chkMic.Add_CheckedChanged($previewHandler)
 $numMicVolume.Add_ValueChanged($previewHandler)
 $numAudioBitrate.Add_ValueChanged($previewHandler)
+$chkStartMediaMtx.Add_CheckedChanged({
+    Update-MediaMtxUi
+})
 
 $previewPanel.Add_Resize({
     if ($script:PreviewHwnd -ne [IntPtr]::Zero) {
@@ -2356,6 +2814,32 @@ $btnBrowseGst.Add_Click({
             [System.Windows.Forms.MessageBoxIcon]::Error
         ) | Out-Null
         Append-Log "Executable browser error: $($_.Exception.ToString())"
+    }
+})
+
+$btnBrowseMediaMtx.Add_Click({
+    try {
+        $selectedPath =
+            [GstExecutableBrowser]::SelectMediaMtx($txtMediaMtxPath.Text)
+
+        if (-not [string]::IsNullOrWhiteSpace($selectedPath)) {
+            $txtMediaMtxPath.Text = $selectedPath
+            Append-Log "Selected MediaMTX executable: $selectedPath"
+        }
+    }
+    catch {
+        $message =
+            "Could not open the MediaMTX executable browser.`r`n`r`n" +
+            $_.Exception.Message
+
+        [System.Windows.Forms.MessageBox]::Show(
+            $message,
+            $script:AppName,
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Error
+        ) | Out-Null
+
+        Append-Log "MediaMTX browser error: $($_.Exception.ToString())"
     }
 })
 
@@ -2412,7 +2896,49 @@ $pollTimer.Add_Tick({
     $stderrText = Read-NewLogText -Path $script:StdErrPath -Position ([ref]$script:StdErrPosition)
     if ($stderrText) { Append-Log $stderrText }
 
+    $mediaStdoutText = Read-NewLogText `
+        -Path $script:MediaMtxStdOutPath `
+        -Position ([ref]$script:MediaMtxStdOutPosition)
+    if ($mediaStdoutText) { Append-Log $mediaStdoutText }
+
+    $mediaStderrText = Read-NewLogText `
+        -Path $script:MediaMtxStdErrPath `
+        -Position ([ref]$script:MediaMtxStdErrPosition)
+    if ($mediaStderrText) { Append-Log $mediaStderrText }
+
     Try-AttachPreview
+
+    if (
+        $script:MediaMtxProcess -and
+        $script:MediaMtxProcess.HasExited
+    ) {
+        $mediaExitCode = $script:MediaMtxProcess.ExitCode
+        Append-Log (
+            "[$(Get-Date -Format 'HH:mm:ss')] Managed MediaMTX exited " +
+            "unexpectedly with code $mediaExitCode."
+        )
+
+        try { $script:MediaMtxProcess.Dispose() } catch {}
+        $script:MediaMtxProcess = $null
+        $script:MediaMtxPathInUse = ''
+
+        if ($script:GstProcess -and -not $script:GstProcess.HasExited) {
+            Append-Log (
+                'Stopping the stream because its managed MediaMTX server is no ' +
+                'longer running.'
+            )
+
+            if ($chkAutoRestart.Checked -or $chkFullscreenApp.Checked) {
+                Stop-GstStream -Restart
+            }
+            else {
+                Stop-GstStream
+            }
+        }
+        else {
+            Remove-ActiveProcessState
+        }
+    }
 
     if ($chkFullscreenApp.Checked -and $script:GstProcess -and -not $script:GstProcess.HasExited -and (Get-Date) -ge $script:NextFullscreenProbe) {
         $script:NextFullscreenProbe = (Get-Date).AddSeconds(1)
@@ -2443,7 +2969,8 @@ $pollTimer.Add_Tick({
 
         try { $script:GstProcess.Dispose() } catch {}
         $script:GstProcess = $null
-        Remove-ActiveGstProcessState
+        Stop-ManagedMediaMtx -Quiet
+        Remove-ActiveProcessState
         $script:PreviewHwnd = [IntPtr]::Zero
         $previewPlaceholder.Visible = $true
         $previewPlaceholder.Text = 'Preview stopped'
@@ -2485,11 +3012,12 @@ $pollTimer.Start()
 $form.Add_Shown({
     Load-Settings
     Initialize-GstJob
-    Stop-StaleGstProcess
+    Stop-StaleManagedProcesses
     if ($chkFullscreenApp.Checked) {
         $null = Resolve-FullscreenCaptureTarget -Quiet
     }
     Update-CaptureModeUi
+    Update-MediaMtxUi
     Update-ProtocolUi
     Update-CommandPreview
     Update-TrayMenuState
@@ -2518,7 +3046,12 @@ function Invoke-ApplicationCleanup {
     }
     catch {}
 
-    Remove-ActiveGstProcessState
+    try {
+        Stop-ManagedMediaMtx -Quiet
+    }
+    catch {}
+
+    Remove-ActiveProcessState
 
     if ($script:JobHandle -ne [IntPtr]::Zero) {
         try {
