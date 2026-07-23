@@ -630,7 +630,7 @@ public static class GstProcessJob
 '@
 }
 
-$script:AppVersion = '3.7.52f57'
+$script:AppVersion = '3.7.52f58'
 $script:AppName = "GStreamer Glass v$($script:AppVersion)"
 $script:ConfigDirectory = Join-Path $env:APPDATA 'GStreamerBasicWhipStreamer'
 $script:ConfigPath = Join-Path $script:ConfigDirectory 'settings.json'
@@ -10349,7 +10349,7 @@ function Build-SceneCaptureChain {
     if ($preset -eq 'Desktop only') { return (Build-DesktopCaptureChain -LocalOnly:$LocalOnly) }
 
     if ($preset -eq 'Webcam only') {
-        return "$webcamSource ! video/x-raw,framerate=$cameraFps/1 ! $cpuConvert$mirror ! videoscale ! video/x-raw,format=BGRA,width=$canvasWidth,height=$canvasHeight,framerate=$canvasFps/1 ! d3d11upload ! d3d11convert ! `"video/x-raw(memory:D3D11Memory),format=NV12,width=$canvasWidth,height=$canvasHeight,framerate=$canvasFps/1`""
+        return "$webcamSource ! video/x-raw,framerate=$cameraFps/1 ! $cpuConvert$mirror ! videoscale ! video/x-raw,format=BGRA,width=$canvasWidth,height=$canvasHeight ! videorate ! video/x-raw,format=BGRA,width=$canvasWidth,height=$canvasHeight,framerate=$canvasFps/1 ! d3d11upload ! d3d11convert ! `"video/x-raw(memory:D3D11Memory),format=NV12,width=$canvasWidth,height=$canvasHeight,framerate=$canvasFps/1`""
     }
 
     $desktop = Build-DesktopCaptureChain -LocalOnly:$LocalOnly
@@ -12539,14 +12539,10 @@ function Try-AttachPreview {
 
 function Test-UseDynamicScenePreview {
     try {
-        return (
-            $script:SceneWorkspaceActive -and
-            -not $script:SuppressDynamicScenePreview -and
-            $chkSceneEnabled -and $chkSceneEnabled.Checked -and
-            $chkPreview -and $chkPreview.Checked -and
-            (Test-StandalonePreviewAllowed) -and
-            -not ($script:GstProcess -and -not $script:GstProcess.HasExited)
-        )
+        # Recovery build: keep the experimental object-level scene preview inert.
+        # The scene tab uses the normal composed preview surface until the dynamic
+        # source-preview path can be reintroduced without touching stream startup.
+        return $false
     }
     catch {
         return $false
@@ -12747,9 +12743,8 @@ function Invoke-DynamicScenePreviewFallback {
         $previewPlaceholder.Visible = $true
     }
 
-    if ($chkPreview -and $chkPreview.Checked -and (Test-StandalonePreviewAllowed)) {
-        Start-GstStream -PreviewOnly
-    }
+    # Do not start any replacement pipeline from this fallback path. A failed
+    # preview should stay a preview failure, not become a stream/start action.
 }
 
 function Sync-DynamicScenePreviewLayout {
@@ -14752,6 +14747,7 @@ $pollTimer.Add_Tick({
     if ($script:GstProcess -and $script:GstProcess.HasExited) {
         $exitCode = $script:GstProcess.ExitCode
         $wasRequested = $script:StopRequested
+        $wasPreviewOnly = [bool]$script:PreviewOnlyMode
 
         if ($script:GstVideoProcess -and -not $script:GstVideoProcess.HasExited) { try { Stop-ProcessTreeById -ProcessId $script:GstVideoProcess.Id } catch {} }
         if ($script:GstAudioProcess -and -not $script:GstAudioProcess.HasExited) { try { Stop-ProcessTreeById -ProcessId $script:GstAudioProcess.Id } catch {} }
@@ -14789,7 +14785,7 @@ $pollTimer.Add_Tick({
         $script:ForceLocalPreviewMode = $false
         Reset-PreviewAppliedState
         $previewPlaceholder.Visible = $true
-        $previewPlaceholder.Text = 'Preview stopped'
+        $previewPlaceholder.Text = if ($wasPreviewOnly -and -not $wasRequested) { 'Preview failed' } else { 'Preview stopped' }
         Set-RunState $false
 
         if ($wasRequested) {
@@ -14799,6 +14795,13 @@ $pollTimer.Add_Tick({
             $null = $form.BeginInvoke([Action]{
                 try { Sync-StandalonePreviewState -Quiet } catch {}
             })
+        }
+        elseif ($wasPreviewOnly) {
+            $script:RestartAt = $null
+            $statusLabel.Text = "Preview exited - code $exitCode"
+            $statusLabel.ForeColor = [System.Drawing.Color]::DarkRed
+            $lowerTabs.SelectedTab = $tabLog
+            Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Standalone preview exited unexpectedly with code $exitCode; no stream restart will be scheduled for a preview-only failure."
         }
         else {
             $statusLabel.Text = "Pipeline exited - code $exitCode"
