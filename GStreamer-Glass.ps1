@@ -630,7 +630,7 @@ public static class GstProcessJob
 '@
 }
 
-$script:AppVersion = '3.7.52f48'
+$script:AppVersion = '3.7.52f49'
 $script:AppName = "GStreamer Glass v$($script:AppVersion)"
 $script:ConfigDirectory = Join-Path $env:APPDATA 'GStreamerBasicWhipStreamer'
 $script:ConfigPath = Join-Path $script:ConfigDirectory 'settings.json'
@@ -710,6 +710,10 @@ $script:PipelineHasPreview = $false
 # 2.5x/second forever, which can force needless swapchain work and visible hitching.
 $script:PreviewAppliedSize = [System.Drawing.Size]::Empty
 $script:PreviewAppliedVisible = $null
+$script:DashboardLayout = $null
+$script:SceneSettingsPane = $null
+$script:SceneWorkspaceActive = $false
+$script:ResizingSceneWorkspace = $false
 $script:SettingsTabs = $null
 $script:SettingsTabTransport = $null
 $script:SettingsTabVideo = $null
@@ -4040,8 +4044,9 @@ $sceneWebcamElement.Cursor = [System.Windows.Forms.Cursors]::SizeAll
 $sceneEditorCanvas.Controls.Add($sceneWebcamElement)
 
 $lblSceneWebcam = New-Object System.Windows.Forms.Label
-$lblSceneWebcam.Dock = 'Fill'
-$lblSceneWebcam.Text = "WEBCAM`r`nDrag to move"
+$lblSceneWebcam.Dock = 'Top'
+$lblSceneWebcam.Height = 24
+$lblSceneWebcam.Text = 'WEBCAM - drag to move'
 $lblSceneWebcam.TextAlign = 'MiddleCenter'
 $lblSceneWebcam.ForeColor = [System.Drawing.Color]::White
 $lblSceneWebcam.BackColor = [System.Drawing.ColorTranslator]::FromHtml('#17345C')
@@ -4056,8 +4061,34 @@ $sceneResizeHandle.Cursor = [System.Windows.Forms.Cursors]::SizeNWSE
 $sceneWebcamElement.Controls.Add($sceneResizeHandle)
 
 $lblSceneEditorHint = New-Object System.Windows.Forms.Label
-$lblSceneEditorHint.Text = 'Drag Webcam from Sources onto the canvas. Drag the layer to move; drag its blue corner to resize.'
+$lblSceneEditorHint.Text = 'Drag Webcam from Sources onto the canvas. Drag the webcam header to move; drag its blue corner to resize.'
 $lblSceneEditorHint.AutoSize = $true
+
+function Update-SceneSelectionChrome {
+    # The live scene preview already contains the composed webcam image. Keep the
+    # editor control as a header, outline, and resize handle so it remains fully
+    # interactive without painting an opaque rectangle over the video beneath it.
+    if (-not $sceneWebcamElement -or $sceneWebcamElement.Width -le 0 -or $sceneWebcamElement.Height -le 0) { return }
+
+    $oldRegion = $sceneWebcamElement.Region
+    $outer = New-Object System.Drawing.Rectangle(0, 0, $sceneWebcamElement.Width, $sceneWebcamElement.Height)
+    $region = New-Object System.Drawing.Region($outer)
+
+    if ($sceneWebcamElement.Width -gt 6 -and $sceneWebcamElement.Height -gt 30) {
+        $hole = New-Object System.Drawing.Rectangle(2, 24, $sceneWebcamElement.Width - 4, $sceneWebcamElement.Height - 27)
+        $region.Exclude($hole)
+    }
+
+    $sceneWebcamElement.Region = $region
+    if ($oldRegion) { try { $oldRegion.Dispose() } catch {} }
+    $lblSceneWebcam.Height = [Math]::Min(24, [Math]::Max(1, $sceneWebcamElement.Height))
+    $sceneResizeHandle.Location = New-Object System.Drawing.Point(
+        [Math]::Max(0, $sceneWebcamElement.Width - $sceneResizeHandle.Width - 1),
+        [Math]::Max(0, $sceneWebcamElement.Height - $sceneResizeHandle.Height - 1)
+    )
+    $lblSceneWebcam.BringToFront()
+    $sceneResizeHandle.BringToFront()
+}
 
 function Update-SceneCanvasFromValues {
     if (-not $sceneEditorCanvas -or $sceneEditorCanvas.ClientSize.Width -le 0 -or $sceneEditorCanvas.ClientSize.Height -le 0) { return }
@@ -4074,12 +4105,11 @@ function Update-SceneCanvasFromValues {
         $left = [Math]::Max(0, [Math]::Min($sceneEditorCanvas.ClientSize.Width - $width, $left))
         $top = [Math]::Max(0, [Math]::Min($sceneEditorCanvas.ClientSize.Height - $height, $top))
         $sceneWebcamElement.Bounds = New-Object System.Drawing.Rectangle($left, $top, $width, $height)
-        $sceneResizeHandle.Location = New-Object System.Drawing.Point([Math]::Max(0, $width - $sceneResizeHandle.Width - 1), [Math]::Max(0, $height - $sceneResizeHandle.Height - 1))
-        $sceneResizeHandle.BringToFront()
+        Update-SceneSelectionChrome
         $sceneWebcamElement.Visible = ([string]$cmbScenePreset.SelectedItem -ne 'Desktop only')
         $sceneWebcamElement.Enabled = $chkSceneEnabled.Checked
         $lblSceneDesktop.Text = "DESKTOP BACKGROUND`r`n$outputWidth x $outputHeight"
-        $lblSceneWebcam.Text = "WEBCAM`r`n$([int]$numWebcamWidth.Value) x $([int]$numWebcamHeight.Value)"
+        $lblSceneWebcam.Text = "WEBCAM  $([int]$numWebcamWidth.Value) x $([int]$numWebcamHeight.Value)"
         $sceneWebcamElement.BringToFront()
     }
     finally { $script:UpdatingSceneEditor = $false }
@@ -4125,13 +4155,13 @@ $scenePointerMove = {
         $newWidth = [Math]::Max(24, [Math]::Min($sceneEditorCanvas.ClientSize.Width - $start.Left, $start.Width + $dx))
         $newHeight = [Math]::Max(18, [Math]::Min($sceneEditorCanvas.ClientSize.Height - $start.Top, $start.Height + $dy))
         $sceneWebcamElement.Size = New-Object System.Drawing.Size($newWidth, $newHeight)
+        Update-SceneSelectionChrome
     }
     else {
         $newLeft = [Math]::Max(0, [Math]::Min($sceneEditorCanvas.ClientSize.Width - $start.Width, $start.Left + $dx))
         $newTop = [Math]::Max(0, [Math]::Min($sceneEditorCanvas.ClientSize.Height - $start.Height, $start.Top + $dy))
         $sceneWebcamElement.Location = New-Object System.Drawing.Point($newLeft, $newTop)
     }
-    $sceneResizeHandle.Location = New-Object System.Drawing.Point([Math]::Max(0, $sceneWebcamElement.Width - $sceneResizeHandle.Width - 1), [Math]::Max(0, $sceneWebcamElement.Height - $sceneResizeHandle.Height - 1))
 }
 
 $scenePointerUp = {
@@ -4247,9 +4277,95 @@ $cmbSceneCompositor.Add_SelectedIndexChanged({ Update-SceneUi })
 $cmbWebcamDevice.Add_SelectedIndexChanged({ Update-SceneUi })
 $cmbWebcamLayout.Add_SelectedIndexChanged({ Set-WebcamLayoutPreset; Update-SceneUi })
 foreach ($control in @($numWebcamWidth,$numWebcamHeight,$numWebcamX,$numWebcamY,$numWebcamFps,$numWebcamOpacity,$numWebcamBorder,$numSceneInputQueueBuffers,$numSceneInputQueueCapMs)) { $control.Add_ValueChanged({ Update-SceneUi }) }
-$numWidth.Add_ValueChanged({ Update-SceneCanvasFromValues })
-$numHeight.Add_ValueChanged({ Update-SceneCanvasFromValues })
+$numWidth.Add_ValueChanged({ Resize-LiveSceneCanvas; Update-SceneCanvasFromValues })
+$numHeight.Add_ValueChanged({ Resize-LiveSceneCanvas; Update-SceneCanvasFromValues })
 $chkWebcamMirror.Add_CheckedChanged({ Update-SceneUi })
+
+function Resize-LiveSceneCanvas {
+    if (-not $script:SceneWorkspaceActive -or -not $script:SceneSettingsPane -or $script:ResizingSceneWorkspace) { return }
+    if ($script:SceneSettingsPane.ClientSize.Width -le 0) { return }
+
+    $script:ResizingSceneWorkspace = $true
+    try {
+        $availableWidth = [Math]::Max(550, $script:SceneSettingsPane.ClientSize.Width - 52)
+        $outputWidth = [Math]::Max(1, [int]$numWidth.Value)
+        $outputHeight = [Math]::Max(1, [int]$numHeight.Value)
+        $aspect = [double]$outputWidth / $outputHeight
+
+        # Use the reclaimed dashboard width while keeping very large windows from
+        # producing a needlessly gigantic editor surface.
+        $canvasWidth = [Math]::Min(1280, $availableWidth)
+        $canvasHeight = [int][Math]::Round($canvasWidth / $aspect)
+        if ($canvasHeight -gt 720) {
+            $canvasHeight = 720
+            $canvasWidth = [int][Math]::Round($canvasHeight * $aspect)
+        }
+
+        $sceneSourcePalette.Width = $canvasWidth
+        $sceneEditorCanvas.Size = New-Object System.Drawing.Size($canvasWidth, $canvasHeight)
+        $lblSceneEditorHint.MaximumSize = New-Object System.Drawing.Size($canvasWidth, 0)
+        $txtScenePipeline.Width = $canvasWidth
+        Update-SceneCanvasFromValues
+    }
+    finally {
+        $script:ResizingSceneWorkspace = $false
+    }
+}
+
+function Update-SceneWorkspaceMode {
+    if (-not $script:DashboardLayout -or -not $script:SettingsTabs -or -not $script:SettingsTabScenes) { return }
+
+    $sceneSelected = ($script:SettingsTabs.SelectedTab -eq $script:SettingsTabScenes)
+    if ($sceneSelected -eq $script:SceneWorkspaceActive) {
+        if ($sceneSelected) { Resize-LiveSceneCanvas }
+        return
+    }
+
+    $script:SceneWorkspaceActive = $sceneSelected
+    $script:DashboardLayout.SuspendLayout()
+    $sceneEditorCanvas.SuspendLayout()
+    try {
+        if ($sceneSelected) {
+            # The normal preview card is redundant on the scene page. Reuse its
+            # exact live renderer surface as the editor background and let the
+            # settings card occupy the entire dashboard width.
+            $previewPanel.Parent = $sceneEditorCanvas
+            $previewPanel.Dock = 'Fill'
+            $previewPanel.Margin = New-Object System.Windows.Forms.Padding(0)
+            $previewPanel.SendToBack()
+            $lblSceneDesktop.Visible = $false
+            $sceneWebcamElement.BringToFront()
+
+            $previewGroup.Visible = $false
+            $script:DashboardLayout.SetColumn($settingsGroup, 0)
+            $script:DashboardLayout.SetRow($settingsGroup, 0)
+            $script:DashboardLayout.SetColumnSpan($settingsGroup, 2)
+            $settingsGroup.Text = '  SCENE WORKSPACE'
+        }
+        else {
+            $previewPanel.Parent = $previewGroup
+            $previewPanel.Dock = 'Fill'
+            $previewPanel.Margin = New-Object System.Windows.Forms.Padding(12, 24, 12, 12)
+            $previewPanel.SendToBack()
+            $lblSceneDesktop.Visible = $true
+
+            $script:DashboardLayout.SetColumnSpan($settingsGroup, 1)
+            $script:DashboardLayout.SetColumn($settingsGroup, 1)
+            $script:DashboardLayout.SetRow($settingsGroup, 0)
+            $previewGroup.Visible = $true
+            $settingsGroup.Text = '  STREAM SETTINGS'
+        }
+    }
+    finally {
+        $sceneEditorCanvas.ResumeLayout($true)
+        $script:DashboardLayout.ResumeLayout($true)
+    }
+
+    $script:DashboardLayout.PerformLayout()
+    if ($sceneSelected) { Resize-LiveSceneCanvas }
+    if (Get-Command Reset-PreviewAppliedState -ErrorAction SilentlyContinue) { Reset-PreviewAppliedState }
+    if (Get-Command Set-PreviewVisibility -ErrorAction SilentlyContinue) { Set-PreviewVisibility }
+}
 
 function Apply-ModernDashboardUi {
     $script:ColorBg       = [System.Drawing.ColorTranslator]::FromHtml('#0B1220')
@@ -4577,6 +4693,7 @@ function Apply-ModernDashboardUi {
         $null = $dashboardLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 100)))
         $null = $dashboardLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 58)))
         $mainLayout.Controls.Add($dashboardLayout, 0, 1)
+        $script:DashboardLayout = $dashboardLayout
 
         $previewGroup.Text = '  LIVE PREVIEW'
         $previewGroup.Dock = 'Fill'
@@ -4670,20 +4787,22 @@ function Apply-ModernDashboardUi {
     # Keep the sidebar highlight in sync with the active settings tab so the two
     # parallel navigations never disagree about where the user is.
     $settingsTabs.Add_SelectedIndexChanged({
-        if (-not $script:SidebarNavButtons) { return }
-        $map = @{
-            0 = 'Transport'; 1 = 'WebRtc'; 2 = 'Video'; 3 = 'Scenes'; 4 = 'Audio';
-            5 = 'Player'; 6 = 'Recording'; 7 = 'Network'; 8 = 'Options'
-        }
-        $activeKey = $map[$script:SettingsTabs.SelectedIndex]
-        foreach ($entry in $script:SidebarNavButtons.GetEnumerator()) {
-            $isActive = ($entry.Key -eq $activeKey)
-            $entry.Value.BackColor = if ($isActive) {
-                [System.Drawing.ColorTranslator]::FromHtml('#17345C')
-            } else {
-                [System.Drawing.ColorTranslator]::FromHtml('#0B1220')
+        if ($script:SidebarNavButtons) {
+            $map = @{
+                0 = 'Transport'; 1 = 'WebRtc'; 2 = 'Video'; 3 = 'Scenes'; 4 = 'Audio';
+                5 = 'Player'; 6 = 'Recording'; 7 = 'Network'; 8 = 'Options'
+            }
+            $activeKey = $map[$script:SettingsTabs.SelectedIndex]
+            foreach ($entry in $script:SidebarNavButtons.GetEnumerator()) {
+                $isActive = ($entry.Key -eq $activeKey)
+                $entry.Value.BackColor = if ($isActive) {
+                    [System.Drawing.ColorTranslator]::FromHtml('#17345C')
+                } else {
+                    [System.Drawing.ColorTranslator]::FromHtml('#0B1220')
+                }
             }
         }
+        Update-SceneWorkspaceMode
     })
 
     # ------------------------------------------------------------------
@@ -5011,6 +5130,7 @@ function Apply-ModernDashboardUi {
 
     # ---------------- Scenes (Concept) ----------------
     $paneScenes = New-SettingsPane $tabScenes
+    $script:SceneSettingsPane = $paneScenes
     $s = Add-Section $paneScenes 'Scene editor'
     $r = Add-Row $s
     Add-Field $r -Label 'Sources' -Control $sceneSourcePalette -Width 550 | Out-Null
@@ -5054,6 +5174,8 @@ function Apply-ModernDashboardUi {
     $s = Add-Section $paneScenes 'Generated scene capture chain'
     $r = Add-Row $s
     Add-Field $r -Control $txtScenePipeline -Width 550 | Out-Null
+    $paneScenes.Add_SizeChanged({ Resize-LiveSceneCanvas })
+    $tabScenes.Add_Enter({ Update-SceneWorkspaceMode })
 
     # ---------------- Audio ----------------
     $paneAudio = New-SettingsPane $tabAudio
