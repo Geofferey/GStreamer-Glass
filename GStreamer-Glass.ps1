@@ -630,7 +630,7 @@ public static class GstProcessJob
 '@
 }
 
-$script:AppVersion = '3.7.52f64'
+$script:AppVersion = '3.7.52f65'
 $script:AppName = "GStreamer Glass v$($script:AppVersion)"
 $script:ConfigDirectory = Join-Path $env:APPDATA 'GStreamerBasicWhipStreamer'
 $script:ConfigPath = Join-Path $script:ConfigDirectory 'settings.json'
@@ -15211,12 +15211,6 @@ $form.Add_FormClosing({
     Invoke-ApplicationCleanup
 })
 
-$form.Add_FormClosed({
-    # The application uses a tray-owned message loop so hiding the only form
-    # cannot end the process. Closing the form is the explicit loop terminator.
-    [System.Windows.Forms.Application]::ExitThread()
-})
-
 # Prepare the initial minimized-to-tray window state before Application.Run()
 # makes the form visible. Previously settings were loaded only from the Shown
 # event, so Start minimized could briefly paint the main window before hiding it.
@@ -15259,11 +15253,13 @@ catch {
 }
 
 try {
-    # Keep the UI thread alive independently of the main form's Visible state.
-    # This prevents start-minimized-to-tray from disposing the NotifyIcon and
-    # leaving a dead/ghost tray icon when the main form is hidden immediately.
-    $form.Show()
-    [System.Windows.Forms.Application]::Run()
+    # ApplicationContext owns the tray-capable message loop. Hiding MainForm
+    # leaves the loop alive, while closing MainForm exits it exactly once. Do
+    # not call ExitThread from FormClosed: that can recursively re-enter the
+    # WinForms shutdown path and terminate with StackOverflowException.
+    $applicationContext = New-Object System.Windows.Forms.ApplicationContext
+    $applicationContext.MainForm = $form
+    [System.Windows.Forms.Application]::Run($applicationContext)
 }
 finally {
     Invoke-ApplicationCleanup
