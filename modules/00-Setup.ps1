@@ -1138,7 +1138,7 @@ public static class GstProcessJob
 '@
 }
 
-$script:AppVersion = '3.8.1a'
+$script:AppVersion = '3.8.2a'
 $script:AppName = "GStreamer Glass v$($script:AppVersion)"
 $script:ConfigDirectory = Join-Path $env:APPDATA 'GStreamerBasicWhipStreamer'
 $script:ConfigPath = Join-Path $script:ConfigDirectory 'settings.json'

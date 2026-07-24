@@ -1616,12 +1616,12 @@ $chkDesktopAudio.Checked = $true
 $settingsGroup.Controls.Add($chkDesktopAudio)
 
 $chkAudioMixerMode = New-Object System.Windows.Forms.CheckBox
-$chkAudioMixerMode.Text = 'Route desktop through audiomixer'
+$chkAudioMixerMode.Text = 'Route through audio mix'
 $chkAudioMixerMode.Location = New-Object System.Drawing.Point(565, 316)
 $chkAudioMixerMode.Size = New-Object System.Drawing.Size(245, 23)
 $chkAudioMixerMode.Checked = $script:DefaultAudioMixerMode
 $settingsGroup.Controls.Add($chkAudioMixerMode)
-$toolTip.SetToolTip($chkAudioMixerMode, 'Recommended timing-normalization path. When enabled, desktop-only audio is routed through audiomixer before encoding. Uncheck to restore the legacy direct WASAPI-to-encoder path. Desktop + microphone always requires audiomixer to combine both sources.')
+$toolTip.SetToolTip($chkAudioMixerMode, 'Recommended timing-normalization path. When enabled, the active single audio source is routed through audio mix before encoding. Uncheck to restore the legacy direct WASAPI-to-encoder path. Desktop + microphone always requires audio mix to combine both sources.')
 
 $null = Add-Label $settingsGroup 'Volume %' 130 316 65
 $numDesktopVolume = New-Object System.Windows.Forms.NumericUpDown
