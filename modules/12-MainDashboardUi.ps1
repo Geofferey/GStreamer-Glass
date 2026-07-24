@@ -1168,6 +1168,7 @@
     Add-Field $r -Control $chkMinimizeToTray -Width 160 | Out-Null
     $r = Add-Row $s
     Add-Field $r -Control $chkStartMinimized -Width 170 | Out-Null
+    Add-Field $r -Control $chkPsDebug -Width 190 | Out-Null
 
     $s = Add-Section $paneOptions 'Runtime / threading'
     $r = Add-Row $s
@@ -1354,7 +1355,7 @@
         $txtGstPath, $btnBrowseGst, $btnDetectGst, $btnCheckGst,
         $chkPreview, $chkHidePreviewDuringStream, $chkAutoRestart, $chkVerbose, $chkDiskProcessLogging, $chkMinimizeToTray,
         $chkCustomGstArgumentsEnabled, $txtCustomGstArguments, $btnUseGeneratedAsCustomGstArgs, $btnClearCustomGstArgs,
-        $chkStartMinimized, $btnRedrawScenePreview
+        $chkStartMinimized, $chkPsDebug, $btnRedrawScenePreview
     )) {
         if ($realControl) {
             $realControl.Visible = $true
@@ -1384,7 +1385,7 @@
         $chkNetworkRecoveryTask,
         $chkPreview, $chkHidePreviewDuringStream, $chkAutoRestart, $chkVerbose, $chkDiskProcessLogging,
         $chkCustomGstArgumentsEnabled,
-        $chkMinimizeToTray, $chkStartMinimized
+        $chkMinimizeToTray, $chkStartMinimized, $chkPsDebug
     )) {
         # This list is hand-maintained and has occasionally picked up non-CheckBox
         # controls during UI feature patches. Guard the style calls so shutdown or

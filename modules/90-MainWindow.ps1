@@ -807,7 +807,15 @@ $chkDiskProcessLogging.Location = New-Object System.Drawing.Point(480, 158)
 $chkDiskProcessLogging.Size = New-Object System.Drawing.Size(190, 23)
 $chkDiskProcessLogging.Checked = $script:DefaultDiskProcessLogging
 $settingsGroup.Controls.Add($chkDiskProcessLogging)
-$toolTip.SetToolTip($chkDiskProcessLogging, 'Off by default. When off, gst-launch/MediaMTX stdout/stderr are not redirected to per-run log files. Verbose output, GST debug, or tracer options still explicitly enable diagnostic process logs for that run.')
+$toolTip.SetToolTip($chkDiskProcessLogging, 'Off by default. When off, gst-launch/MediaMTX stdout/stderr are not redirected to per-run log files. GST debug or tracer options still explicitly enable diagnostic process logs for that run. Verbose output does not -- it only adds gst-launch -v and never forces disk logging by itself.')
+
+$chkPsDebug = New-Object System.Windows.Forms.CheckBox
+$chkPsDebug.Text = 'PowerShell debugging'
+$chkPsDebug.Location = New-Object System.Drawing.Point(480, 186)
+$chkPsDebug.Size = New-Object System.Drawing.Size(170, 23)
+$chkPsDebug.Checked = $script:DefaultPsDebugEnabled
+$settingsGroup.Controls.Add($chkPsDebug)
+$toolTip.SetToolTip($chkPsDebug, 'Off by default. This is GStreamer Glass wrapper script diagnostics (not gst-launch/GST_DEBUG output): app lifecycle, settings load/save, and dialog tracing. Written to a psdebug-*.log file in the same log folder as everything else, and shown live in the Logs tab, regardless of Write process logs to disk.')
 
 $chkMinimizeToTray = New-Object System.Windows.Forms.CheckBox
 $chkMinimizeToTray.Text = 'Minimize to tray'
@@ -3727,6 +3735,7 @@ $chkAutoRestart.Add_CheckedChanged({
 })
 $chkVerbose.Add_CheckedChanged($previewHandler)
 $chkDiskProcessLogging.Add_CheckedChanged($previewHandler)
+$chkPsDebug.Add_CheckedChanged($previewHandler)
 $numWidth.Add_ValueChanged($previewHandler)
 $numHeight.Add_ValueChanged($previewHandler)
 $numFps.Add_ValueChanged($previewHandler)
@@ -4729,6 +4738,7 @@ $form.Add_Shown({
     Refresh-NetworkAdapters
     Refresh-WebcamDevices
     Load-Settings
+    Write-PsDebugTrace "GStreamer Glass v$($script:AppVersion) started."
     # Repair legacy configs that contain StartMinimized=true alongside
     # MinimizeToTray=false, then write the corrected invariant immediately.
     Enforce-StartMinimizedTrayInvariant -Persist

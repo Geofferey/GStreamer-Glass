@@ -211,10 +211,12 @@ function Get-GstDebugSpec {
 function Test-ProcessDiskLoggingEnabled {
     # Keep the default run path disk-quiet. Diagnostic output is captured only
     # when explicitly requested by the disk-log checkbox or by an explicit
-    # diagnostic mode that would otherwise emit useful stdout/stderr.
+    # diagnostic mode that would otherwise emit useful stdout/stderr. Verbose
+    # output is deliberately excluded here -- it is a separate, unrelated
+    # concern (gst-launch -v element/caps verbosity, not where output goes)
+    # and must not silently force disk logging on by itself.
     try {
         if ($chkDiskProcessLogging -and $chkDiskProcessLogging.Checked) { return $true }
-        if ($chkVerbose -and $chkVerbose.Checked) { return $true }
         if ($chkBufferLatenessTracer -and $chkBufferLatenessTracer.Checked) { return $true }
         $debugSpec = Get-GstDebugSpec
         if (-not [string]::IsNullOrWhiteSpace($debugSpec)) { return $true }
@@ -222,6 +224,39 @@ function Test-ProcessDiskLoggingEnabled {
     catch {}
 
     return $false
+}
+
+function Write-PsDebugTrace {
+    # GStreamer Glass wrapper-script diagnostics -- distinct from
+    # Test-ProcessDiskLoggingEnabled, which only governs gst-launch/MediaMTX
+    # process stdout/stderr capture. Gated on the PowerShell debugging
+    # checkbox alone; never implied by Verbose, disk logging, or GST debug.
+    #
+    # ps2exe compiles this app with noConsole=true, so there is no attached
+    # console for Write-Output/Write-Debug to appear in when running as the
+    # compiled .exe -- they are still emitted here (best-effort, visible if
+    # stdout is externally redirected), but the file + Logs tab below are the
+    # only channels guaranteed to work in both the .ps1 and compiled .exe.
+    param([Parameter(Mandatory)][string]$Message)
+
+    if (-not ($chkPsDebug -and $chkPsDebug.Checked)) { return }
+
+    $line = "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss.fff')] $Message"
+
+    Write-Output $line
+    Write-Debug $line
+
+    Append-Log "PSDEBUG: $Message"
+
+    try {
+        if (-not $script:PsDebugLogPath) {
+            Ensure-ProcessLogDirectory
+            $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+            $script:PsDebugLogPath = Join-Path $script:LogDirectory "psdebug-$stamp.log"
+        }
+        Add-Content -LiteralPath $script:PsDebugLogPath -Value $line -Encoding UTF8
+    }
+    catch {}
 }
 
 function Reset-ProcessLogPaths {

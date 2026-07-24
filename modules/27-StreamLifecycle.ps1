@@ -8,6 +8,7 @@
     if ($script:ControlledLiveStreamActive) { return }
     if ($script:PipelineStartInProgress) { return }
 
+    Write-PsDebugTrace "Start-GstStream: entering (Automatic=$Automatic PreviewOnly=$PreviewOnly RecordingOnly=$RecordingOnly)"
     $script:PipelineStartInProgress = $true
     Set-RunState $false
     try {
@@ -428,6 +429,7 @@
             Restore-GstTracerEnvironment $tracerEnvState
         }
 
+        Write-PsDebugTrace "Start-GstStream: main gst-launch process started (PID=$($script:GstProcess.Id))"
         Set-GstProcessPriority -Process $script:GstProcess
 
         if ($script:JobHandle -ne [IntPtr]::Zero) {
@@ -535,11 +537,13 @@
         $statusLabel.ForeColor = [System.Drawing.Color]::DarkRed
         Set-RunState $false
         Append-Log "START ERROR: $($_.Exception.Message)"
+        Write-PsDebugTrace "Start-GstStream: FAILED - $($_.Exception.Message)"
     }
     }
     finally {
         $script:SuppressCustomGstArgumentsOverride = $false
         $script:PipelineStartInProgress = $false
+        Write-PsDebugTrace "Start-GstStream: exiting"
         if ($script:PendingPipelineStop) {
             $script:PendingPipelineStop = $false
             $script:RestartAt = $null
@@ -646,6 +650,7 @@ function Stop-GstStream {
         [switch]$SuppressPreviewRestore
     )
 
+    Write-PsDebugTrace "Stop-GstStream: entering (Restart=$Restart AutomaticRestart=$AutomaticRestart)"
     if (Stop-ControlledLiveStream -Restart:$Restart -AutomaticRestart:$AutomaticRestart -SuppressPreviewRestore:$SuppressPreviewRestore) { return }
 
     if ($script:DynamicScenePreviewActive) {

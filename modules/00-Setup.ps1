@@ -59,7 +59,76 @@ public static class GstExecutableBrowser
             "MediaMTX executable browser");
     }
 
+    public static string SelectFile(string currentPath, string title, string preferredFileName, string filter)
+    {
+        return SelectExecutable(currentPath, title, preferredFileName, filter, "File browser");
+    }
+
+    public static string SelectSaveFile(string currentPath, string preferredFileName, string title, string filter, string defaultExt)
+    {
+        string selectedPath = String.Empty;
+        Exception dialogError = null;
+
+        Thread dialogThread = new Thread(() =>
+        {
+            try
+            {
+                using (SaveFileDialog dialog = new SaveFileDialog())
+                {
+                    dialog.Title = title;
+                    dialog.Filter = filter;
+                    dialog.DefaultExt = defaultExt;
+                    dialog.AddExtension = true;
+                    dialog.OverwritePrompt = true;
+                    dialog.RestoreDirectory = true;
+                    dialog.FileName = preferredFileName;
+
+                    if (!String.IsNullOrWhiteSpace(currentPath))
+                    {
+                        try
+                        {
+                            string expanded =
+                                Environment.ExpandEnvironmentVariables(currentPath.Trim());
+
+                            if (Directory.Exists(expanded))
+                                dialog.InitialDirectory = expanded;
+                        }
+                        catch
+                        {
+                            // A stale saved path must not prevent the picker opening.
+                        }
+                    }
+
+                    if (dialog.ShowDialog() == DialogResult.OK)
+                        selectedPath = dialog.FileName ?? String.Empty;
+                }
+            }
+            catch (Exception ex)
+            {
+                dialogError = ex;
+            }
+        });
+
+        dialogThread.Name = "Save file browser";
+        dialogThread.IsBackground = true;
+        dialogThread.SetApartmentState(ApartmentState.STA);
+        dialogThread.Start();
+        dialogThread.Join();
+
+        if (dialogError != null)
+            throw new InvalidOperationException(
+                "The save dialog could not be opened.",
+                dialogError);
+
+        return selectedPath;
+    }
+
     public static string SelectFolder(string currentPath, string description)
+    {
+        return SelectFolder(currentPath, description, true);
+    }
+
+    public static string SelectFolder(string currentPath, string description, bool showNewFolderButton)
     {
         string selectedPath = String.Empty;
         Exception dialogError = null;
@@ -73,7 +142,7 @@ public static class GstExecutableBrowser
                     dialog.Description = String.IsNullOrWhiteSpace(description)
                         ? "Select folder"
                         : description;
-                    dialog.ShowNewFolderButton = true;
+                    dialog.ShowNewFolderButton = showNewFolderButton;
 
                     if (!String.IsNullOrWhiteSpace(currentPath))
                     {
@@ -1207,6 +1276,7 @@ $script:StdOutAudioPosition = [int64]0
 $script:StdErrAudioPosition = [int64]0
 $script:MediaMtxStdOutPath = $null
 $script:MediaMtxStdErrPath = $null
+$script:PsDebugLogPath = $null
 $script:MediaMtxStdOutPosition = [int64]0
 $script:MediaMtxStdErrPosition = [int64]0
 $script:PreviewHwnd = [IntPtr]::Zero
@@ -1393,6 +1463,7 @@ $script:DefaultGstDebugMode = 'Off'
 $script:DefaultGstDebugSpec = '*:4'
 $script:DefaultGstDebugNoColor = $true
 $script:DefaultDiskProcessLogging = $false
+$script:DefaultPsDebugEnabled = $false
 
 $script:DirectWebRtcProtocolName = 'GST WebRTC'
 

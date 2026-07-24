@@ -3,6 +3,7 @@
     # partially restored state back over the complete settings file.
     if ($script:LoadingSettings) { return }
 
+    Write-PsDebugTrace "Save-Settings: writing $script:ConfigPath"
     try {
         if (-not (Test-Path -LiteralPath $script:ConfigDirectory)) {
             $null = New-Item -ItemType Directory -Path $script:ConfigDirectory -Force
@@ -175,6 +176,7 @@
             AutoRestart       = $chkAutoRestart.Checked
             Verbose           = $chkVerbose.Checked
             DiskProcessLogging = $chkDiskProcessLogging.Checked
+            PsDebugEnabled    = $chkPsDebug.Checked
             MinimizeToTray    = [bool]($chkMinimizeToTray.Checked -or $chkStartMinimized.Checked)
             StartMinimized    = $chkStartMinimized.Checked
             NetworkTuningEnabled = $chkNetworkTuningEnabled.Checked
@@ -280,38 +282,33 @@ function Export-LabConfiguration {
             $export[$property.Name] = $property.Value
         }
 
-        $dialog = New-Object System.Windows.Forms.SaveFileDialog
-        try {
-            $dialog.Title = 'Export GStreamer Glass lab configuration'
-            $dialog.Filter = 'GStreamer Glass lab config (*.gstglass.json)|*.gstglass.json|JSON files (*.json)|*.json|All files (*.*)|*.*'
-            $dialog.DefaultExt = 'gstglass.json'
-            $dialog.AddExtension = $true
-            $dialog.OverwritePrompt = $true
-            $dialog.RestoreDirectory = $true
-            $dialog.FileName = 'GStreamer-Glass-' + $script:AppVersion + '-LabConfig-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '.gstglass.json'
-
-            if ($dialog.ShowDialog($form) -ne [System.Windows.Forms.DialogResult]::OK) {
-                return
-            }
-
-            $export |
-                ConvertTo-Json -Depth 12 |
-                Set-Content -LiteralPath $dialog.FileName -Encoding UTF8
-
-            Append-Log "Lab configuration exported: $($dialog.FileName)"
-            $statusLabel.Text = 'Lab config exported'
-            $statusLabel.ForeColor = [System.Drawing.Color]::DarkGreen
-
-            [System.Windows.Forms.MessageBox]::Show(
-                "Exported the complete UI configuration and exact generated command.`r`n`r`n$($dialog.FileName)",
-                $script:AppName,
-                [System.Windows.Forms.MessageBoxButtons]::OK,
-                [System.Windows.Forms.MessageBoxIcon]::Information
-            ) | Out-Null
+        $defaultFileName = 'GStreamer-Glass-' + $script:AppVersion + '-LabConfig-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '.gstglass.json'
+        Write-PsDebugTrace "Export-LabConfiguration: opening save dialog (STA helper thread)"
+        $selectedFile = [GstExecutableBrowser]::SelectSaveFile(
+            '',
+            $defaultFileName,
+            'Export GStreamer Glass lab configuration',
+            'GStreamer Glass lab config (*.gstglass.json)|*.gstglass.json|JSON files (*.json)|*.json|All files (*.*)|*.*',
+            'gstglass.json')
+        Write-PsDebugTrace "Export-LabConfiguration: dialog returned '$selectedFile'"
+        if ([string]::IsNullOrWhiteSpace($selectedFile)) {
+            return
         }
-        finally {
-            $dialog.Dispose()
-        }
+
+        $export |
+            ConvertTo-Json -Depth 12 |
+            Set-Content -LiteralPath $selectedFile -Encoding UTF8
+
+        Append-Log "Lab configuration exported: $selectedFile"
+        $statusLabel.Text = 'Lab config exported'
+        $statusLabel.ForeColor = [System.Drawing.Color]::DarkGreen
+
+        [System.Windows.Forms.MessageBox]::Show(
+            "Exported the complete UI configuration and exact generated command.`r`n`r`n$selectedFile",
+            $script:AppName,
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Information
+        ) | Out-Null
     }
     catch {
         Append-Log "Could not export lab configuration: $($_.Exception.Message)"
@@ -335,9 +332,11 @@ function Load-Settings {
         $script:SuppressProtocolChange = $true
 
         Restore-SettingsFromObject -Settings $settings
+        Write-PsDebugTrace "Load-Settings: loaded $script:ConfigPath"
     }
     catch {
         Append-Log "Could not load settings: $($_.Exception.Message)"
+        Write-PsDebugTrace "Load-Settings: FAILED - $($_.Exception.Message)"
     }
     finally {
         $script:SuppressProtocolChange = $false
@@ -595,6 +594,7 @@ function Restore-SettingsFromObject {
         if ($null -ne $settings.AutoRestart) { $chkAutoRestart.Checked = [bool]$settings.AutoRestart }
         if ($null -ne $settings.Verbose) { $chkVerbose.Checked = [bool]$settings.Verbose }
         if ($null -ne $settings.DiskProcessLogging) { $chkDiskProcessLogging.Checked = [bool]$settings.DiskProcessLogging }
+        if ($null -ne $settings.PsDebugEnabled) { $chkPsDebug.Checked = [bool]$settings.PsDebugEnabled }
         if ($null -ne $settings.MinimizeToTray) { $chkMinimizeToTray.Checked = [bool]$settings.MinimizeToTray }
         if ($null -ne $settings.StartMinimized) { $chkStartMinimized.Checked = [bool]$settings.StartMinimized }
         if ($null -ne $settings.NetworkTuningEnabled) { $chkNetworkTuningEnabled.Checked = [bool]$settings.NetworkTuningEnabled }

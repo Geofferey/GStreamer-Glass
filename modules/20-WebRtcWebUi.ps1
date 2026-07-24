@@ -140,23 +140,11 @@ function Select-DirectWebRtcFolderPath {
         [bool]$AllowNewFolder = $true
     )
 
-    $dlg = New-Object System.Windows.Forms.FolderBrowserDialog
-    $dlg.Description = $Title
-    $dlg.ShowNewFolderButton = $AllowNewFolder
-
-    try {
-        $expanded = [Environment]::ExpandEnvironmentVariables([string]$InitialPath)
-        if (-not [string]::IsNullOrWhiteSpace($expanded) -and (Test-Path -LiteralPath $expanded)) {
-            $dlg.SelectedPath = ([System.IO.Path]::GetFullPath($expanded))
-        }
-    }
-    catch {}
-
-    if ($dlg.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
-        return $dlg.SelectedPath
-    }
-
-    return $null
+    Write-PsDebugTrace "Select-DirectWebRtcFolderPath: opening folder dialog (STA helper thread)"
+    $selectedPath = [GstExecutableBrowser]::SelectFolder($InitialPath, $Title, $AllowNewFolder)
+    Write-PsDebugTrace "Select-DirectWebRtcFolderPath: dialog returned '$selectedPath'"
+    if ([string]::IsNullOrWhiteSpace($selectedPath)) { return $null }
+    return $selectedPath
 }
 
 function Get-DirectWebRtcWebUiVersion {

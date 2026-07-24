@@ -217,6 +217,7 @@ function Reset-OptionsDefaults {
     $chkAutoRestart.Checked = $true
     $chkVerbose.Checked = $false
     $chkDiskProcessLogging.Checked = $script:DefaultDiskProcessLogging
+    $chkPsDebug.Checked = $script:DefaultPsDebugEnabled
     $chkMinimizeToTray.Checked = $true
     $chkStartMinimized.Checked = $false
     if ($cmbThreadingProfile.Items.Contains($script:DefaultThreadingProfile)) { $cmbThreadingProfile.SelectedItem = $script:DefaultThreadingProfile }

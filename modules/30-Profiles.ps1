@@ -381,14 +381,18 @@ function Remove-SelectedProfile {
 }
 
 function Import-ProfileFile {
-    $dialog = New-Object System.Windows.Forms.OpenFileDialog
-    $dialog.Filter = 'GStreamer Glass files (*.gstglass.json)|*.gstglass.json|JSON files (*.json)|*.json|All files (*.*)|*.*'
-    $dialog.Title = 'Import Profile'
-    if ($dialog.ShowDialog($form) -ne [System.Windows.Forms.DialogResult]::OK) { return }
+    Write-PsDebugTrace "Import-ProfileFile: opening file dialog (STA helper thread)"
+    $selectedFile = [GstExecutableBrowser]::SelectFile(
+        '',
+        'Import Profile',
+        '',
+        'GStreamer Glass files (*.gstglass.json)|*.gstglass.json|JSON files (*.json)|*.json|All files (*.*)|*.*')
+    Write-PsDebugTrace "Import-ProfileFile: dialog returned '$selectedFile'"
+    if ([string]::IsNullOrWhiteSpace($selectedFile)) { return }
 
     try {
-        $imported = Get-Content -LiteralPath $dialog.FileName -Raw | ConvertFrom-Json
-        $defaultName = [System.IO.Path]::GetFileNameWithoutExtension($dialog.FileName)
+        $imported = Get-Content -LiteralPath $selectedFile -Raw | ConvertFrom-Json
+        $defaultName = [System.IO.Path]::GetFileNameWithoutExtension($selectedFile)
         if ($imported._ProfileName) { $defaultName = [string]$imported._ProfileName }
 
         Add-Type -AssemblyName Microsoft.VisualBasic
@@ -407,7 +411,7 @@ function Import-ProfileFile {
             _AppVersion          = $script:AppVersion
             _SavedUtc            = [DateTime]::UtcNow.ToString('o')
             _ProfileName         = $name
-            _ProfileDescription  = if ($imported._ProfileDescription) { [string]$imported._ProfileDescription } else { "Imported from $([System.IO.Path]::GetFileName($dialog.FileName))" }
+            _ProfileDescription  = if ($imported._ProfileDescription) { [string]$imported._ProfileDescription } else { "Imported from $([System.IO.Path]::GetFileName($selectedFile))" }
             _CompatibleProtocols = $compatibleProtocols
             _IsBuiltIn           = $false
         }
@@ -433,16 +437,18 @@ function Export-SelectedProfile {
     if (-not $profile) { return }
 
     try {
-        $dialog = New-Object System.Windows.Forms.SaveFileDialog
-        $dialog.Filter = 'GStreamer Glass profile (*.gstglass.json)|*.gstglass.json|All files (*.*)|*.*'
-        $dialog.DefaultExt = 'gstglass.json'
-        $dialog.AddExtension = $true
-        $dialog.OverwritePrompt = $true
-        $dialog.FileName = (Get-SafeRecordingToken -Value $selected) + '.gstglass.json'
-        if ($dialog.ShowDialog($form) -ne [System.Windows.Forms.DialogResult]::OK) { return }
+        Write-PsDebugTrace "Export-SelectedProfile: opening save dialog (STA helper thread)"
+        $selectedFile = [GstExecutableBrowser]::SelectSaveFile(
+            '',
+            (Get-SafeRecordingToken -Value $selected) + '.gstglass.json',
+            'Export Profile',
+            'GStreamer Glass profile (*.gstglass.json)|*.gstglass.json|All files (*.*)|*.*',
+            'gstglass.json')
+        Write-PsDebugTrace "Export-SelectedProfile: dialog returned '$selectedFile'"
+        if ([string]::IsNullOrWhiteSpace($selectedFile)) { return }
 
-        $profile | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $dialog.FileName -Encoding UTF8
-        Append-Log "Profile exported: $selected -> $($dialog.FileName)"
+        $profile | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $selectedFile -Encoding UTF8
+        Append-Log "Profile exported: $selected -> $selectedFile"
     }
     catch {
         Append-Log "Could not export profile: $($_.Exception.Message)"
