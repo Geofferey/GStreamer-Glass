@@ -132,12 +132,15 @@ function Update-AudioCodecChoices {
 
     if ($cmbDesktopAudioDevice) { $cmbDesktopAudioDevice.Enabled = $chkDesktopAudio.Checked }
     if ($chkAudioMixerMode) {
-        $chkAudioMixerMode.Enabled = $chkDesktopAudio.Checked
-        if ($chkDesktopAudio.Checked -and $chkMic.Checked) {
-            $toolTip.SetToolTip($chkAudioMixerMode, 'Desktop + microphone requires audiomixer to combine both sources. This flag controls desktop-only mixer normalization versus the legacy direct path.')
+        $bothAudioSourcesSelected = $chkDesktopAudio.Checked -and $chkMic.Checked
+        if ($bothAudioSourcesSelected) {
+            $chkAudioMixerMode.Checked = $true
+            $chkAudioMixerMode.Enabled = $false
+            $toolTip.SetToolTip($chkAudioMixerMode, 'Desktop + microphone requires audio mix to combine both sources.')
         }
         else {
-            $toolTip.SetToolTip($chkAudioMixerMode, 'Recommended timing-normalization path. When enabled, desktop-only audio is routed through audiomixer before encoding. Uncheck to restore the legacy direct WASAPI-to-encoder path.')
+            $chkAudioMixerMode.Enabled = ($chkDesktopAudio.Checked -or $chkMic.Checked)
+            $toolTip.SetToolTip($chkAudioMixerMode, 'Recommended timing-normalization path. When enabled, the active single audio source is routed through audio mix before encoding. Uncheck to restore the legacy direct WASAPI-to-encoder path.')
         }
     }
     if ($cmbMicAudioDevice) { $cmbMicAudioDevice.Enabled = $chkMic.Checked }

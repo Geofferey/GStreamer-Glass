@@ -292,8 +292,9 @@
     if ((Test-DirectWebRtcSplitAvPipelines) -and -not (Test-DirectWebRtcSharedSignaling) -and ([int]$numDirectWebRtcSignalingPort.Value -eq [int]$numDirectWebRtcSplitAudioSignalingPort.Value)) {
         Append-Log 'WARNING: Separate split signalling is selected but video and audio ports are identical; the second server cannot bind the same TCP port.'
     }
-    $mixerSummary = if ($chkDesktopAudio.Checked -and ($chkMic.Checked -or $chkAudioMixerMode.Checked)) { 'audiomixer' } elseif ($chkDesktopAudio.Checked) { 'legacy direct desktop path' } else { 'not applicable' }
-    Append-Log "Desktop audio path: $mixerSummary (mixer flag=$($chkAudioMixerMode.Checked); microphone=$($chkMic.Checked))."
+    $bothAudioSourcesSelected = $chkDesktopAudio.Checked -and $chkMic.Checked
+    $mixerSummary = if ($bothAudioSourcesSelected -or (($chkDesktopAudio.Checked -or $chkMic.Checked) -and $chkAudioMixerMode.Checked)) { 'audio mix' } elseif ($chkDesktopAudio.Checked -or $chkMic.Checked) { 'legacy direct path' } else { 'not applicable' }
+    Append-Log "Audio path: $mixerSummary (mixer flag=$($chkAudioMixerMode.Checked); desktop=$($chkDesktopAudio.Checked); microphone=$($chkMic.Checked))."
     Append-Log "Video sync mode: $([string]$cmbVideoSyncMode.SelectedItem); Audio sync mode: $([string]$cmbAudioSyncMode.SelectedItem). Explicit modes insert clocksync before compatible send/mux sinks; local preview also honors Video sync mode."
     Append-Log "Audio timing UI: clock=$([string]$cmbAudioClockMode.SelectedItem); mode=$([string]$cmbAudioTimingMode.SelectedItem); slave=$([string]$cmbAudioSlaveMethod.SelectedItem); low-latency override=$($chkWasapiLowLatencyOverride.Checked); buffer override=$($chkAudioBufferOverride.Checked) [$([int]$numAudioBufferMs.Value) ms]; latency override=$($chkAudioLatencyOverride.Checked) [$([int]$numAudioLatencyMs.Value) ms]; sample-rate override=$($chkAudioSampleRateOverride.Checked) [$([int]$numAudioSampleRate.Value) Hz]."
     Append-Log "Effective WASAPI source: $(Get-EffectiveAudioTimingSummary)"
@@ -892,7 +893,7 @@ function Test-GStreamerElements {
             $elements.Add($element)
         }
 
-        if ($chkDesktopAudio.Checked -and $chkMic.Checked) {
+        if (($chkDesktopAudio.Checked -and $chkMic.Checked) -or (($chkDesktopAudio.Checked -or $chkMic.Checked) -and $chkAudioMixerMode.Checked)) {
             $elements.Add('audiomixer')
         }
     }

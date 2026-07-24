@@ -10,10 +10,12 @@
     $micVolume = Format-InvariantNumber ([double]$numMicVolume.Value / 100.0)
 
     # Mixer mode is deliberately forced whenever both sources are active because
-    # a single downstream encoder needs one combined raw-audio stream. The flag
-    # controls the important diagnostic case: desktop-only through audiomixer
-    # versus the legacy direct WASAPI -> encoder path.
-    $useMixer = $desktopEnabled -and ($micEnabled -or $chkAudioMixerMode.Checked)
+    # a single downstream encoder needs one combined raw-audio stream. Otherwise
+    # the flag is an optional diagnostic: whichever single source is active can
+    # still be manually routed through audiomixer instead of the legacy direct
+    # WASAPI -> encoder path.
+    $bothAudioSourcesEnabled = $desktopEnabled -and $micEnabled
+    $useMixer = $bothAudioSourcesEnabled -or (($desktopEnabled -or $micEnabled) -and $chkAudioMixerMode.Checked)
 
     if (-not $useMixer) {
         if ($desktopEnabled) {
