@@ -1016,6 +1016,62 @@ $btnExportLabConfig.Size = New-Object System.Drawing.Size(160, 30)
 $settingsGroup.Controls.Add($btnExportLabConfig)
 $toolTip.SetToolTip($btnExportLabConfig, 'Export the complete current settings snapshot plus the exact generated gst-launch command to a portable JSON file.')
 
+$cmbProfilePreset = New-Object System.Windows.Forms.ComboBox
+$cmbProfilePreset.Location = New-Object System.Drawing.Point(15, 548)
+$cmbProfilePreset.Size = New-Object System.Drawing.Size(260, 23)
+$cmbProfilePreset.DropDownStyle = 'DropDownList'
+$settingsGroup.Controls.Add($cmbProfilePreset)
+$toolTip.SetToolTip($cmbProfilePreset, 'Bundled and custom settings presets, filtered to whatever is compatible with the currently selected protocol.')
+
+$lblProfileDescription = New-Object System.Windows.Forms.Label
+$lblProfileDescription.Text = 'No profile selected.'
+$lblProfileDescription.Location = New-Object System.Drawing.Point(15, 548)
+$lblProfileDescription.Size = New-Object System.Drawing.Size(560, 40)
+$lblProfileDescription.ForeColor = [System.Drawing.Color]::DimGray
+$settingsGroup.Controls.Add($lblProfileDescription)
+
+$btnLoadProfile = New-Object System.Windows.Forms.Button
+$btnLoadProfile.Text = 'Load'
+$btnLoadProfile.Location = New-Object System.Drawing.Point(15, 548)
+$btnLoadProfile.Size = New-Object System.Drawing.Size(140, 30)
+$settingsGroup.Controls.Add($btnLoadProfile)
+$toolTip.SetToolTip($btnLoadProfile, 'Apply the selected profile. This replaces ALL current settings with the profile''s saved values (confirmation required).')
+
+$btnSaveProfile = New-Object System.Windows.Forms.Button
+$btnSaveProfile.Text = 'Save'
+$btnSaveProfile.Location = New-Object System.Drawing.Point(15, 548)
+$btnSaveProfile.Size = New-Object System.Drawing.Size(140, 30)
+$settingsGroup.Controls.Add($btnSaveProfile)
+$toolTip.SetToolTip($btnSaveProfile, 'Overwrite the selected custom profile with the current settings. Disabled for built-in profiles -- use Save As instead.')
+
+$btnSaveProfileAs = New-Object System.Windows.Forms.Button
+$btnSaveProfileAs.Text = 'Save As...'
+$btnSaveProfileAs.Location = New-Object System.Drawing.Point(15, 548)
+$btnSaveProfileAs.Size = New-Object System.Drawing.Size(140, 30)
+$settingsGroup.Controls.Add($btnSaveProfileAs)
+$toolTip.SetToolTip($btnSaveProfileAs, 'Save the current settings as a new named custom profile.')
+
+$btnDeleteProfile = New-Object System.Windows.Forms.Button
+$btnDeleteProfile.Text = 'Delete'
+$btnDeleteProfile.Location = New-Object System.Drawing.Point(15, 548)
+$btnDeleteProfile.Size = New-Object System.Drawing.Size(140, 30)
+$settingsGroup.Controls.Add($btnDeleteProfile)
+$toolTip.SetToolTip($btnDeleteProfile, 'Delete the selected custom profile. Disabled for built-in profiles.')
+
+$btnExportProfile = New-Object System.Windows.Forms.Button
+$btnExportProfile.Text = 'Export...'
+$btnExportProfile.Location = New-Object System.Drawing.Point(15, 548)
+$btnExportProfile.Size = New-Object System.Drawing.Size(140, 30)
+$settingsGroup.Controls.Add($btnExportProfile)
+$toolTip.SetToolTip($btnExportProfile, 'Export the selected profile (built-in or custom) to a portable JSON file.')
+
+$btnImportProfile = New-Object System.Windows.Forms.Button
+$btnImportProfile.Text = 'Import...'
+$btnImportProfile.Location = New-Object System.Drawing.Point(15, 548)
+$btnImportProfile.Size = New-Object System.Drawing.Size(140, 30)
+$settingsGroup.Controls.Add($btnImportProfile)
+$toolTip.SetToolTip($btnImportProfile, 'Import a previously exported .gstglass.json file as a new named custom profile.')
+
 $lblThreadingProfile = Add-Label $settingsGroup 'Threading profile' 15 548 120
 
 $cmbThreadingProfile = New-Object System.Windows.Forms.ComboBox
@@ -4113,6 +4169,13 @@ foreach ($binding in $resetDefaultsBindings) {
     $binding.Button.Add_Click({ & $resetFunction; Save-Settings }.GetNewClosure())
 }
 $btnExportLabConfig.Add_Click({ Export-LabConfiguration })
+$cmbProfilePreset.Add_SelectedIndexChanged({ Update-ProfileSelectionUi })
+$btnLoadProfile.Add_Click({ Invoke-LoadSelectedProfile })
+$btnSaveProfile.Add_Click({ Save-CurrentProfile })
+$btnSaveProfileAs.Add_Click({ Save-ProfileAs })
+$btnDeleteProfile.Add_Click({ Remove-SelectedProfile })
+$btnExportProfile.Add_Click({ Export-SelectedProfile })
+$btnImportProfile.Add_Click({ Import-ProfileFile })
 $btnResetAll.Add_Click({
     $result = [System.Windows.Forms.MessageBox]::Show(
         'Reset all GStreamer Glass app settings to defaults? This will not restore or delete Windows network snapshots.',
@@ -4671,6 +4734,7 @@ $form.Add_Shown({
     Update-RecordingUi
     Update-NetworkUi
     Update-SceneUi
+    Refresh-ProfileList
     Update-CommandPreview
     Update-TrayMenuState
     Check-PendingNetworkRecovery

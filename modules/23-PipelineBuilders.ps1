@@ -640,5 +640,6 @@ function Update-ProtocolUi {
     Update-AudioCodecChoices
     Update-AudioTimingOptionUi
     Update-EncoderUi
+    Refresh-ProfileList
 }
 
