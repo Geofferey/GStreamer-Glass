@@ -554,19 +554,34 @@ function Get-DirectWebRtcVideoBitrateEnvelope {
         $startBitrate
     }
 
-    $smoothProfile = Get-ComboSelectedOrDefault $cmbDirectWebRtcSmoothnessProfile $script:DefaultDirectWebRtcSmoothnessProfile
-    $minBitrate = switch ($smoothProfile) {
-        'Lowest latency' { [Math]::Max(1000, [int64]($startBitrate / 2)) }
-        'Balanced smooth' { [Math]::Max(1000, [int64]($startBitrate * 0.75)) }
-        'WAN smooth' { [Math]::Max(1000, [int64]($startBitrate * 0.60)) }
-        default { [Math]::Min(1000000, [Math]::Max(1000, [int64]($startBitrate / 4))) }
+    $configuredMinKbps = if ($numDirectWebRtcMinBitrateKbps) {
+        [Math]::Max(0, [int]$numDirectWebRtcMinBitrateKbps.Value)
+    }
+    else {
+        [int]$script:DefaultDirectWebRtcMinBitrateKbps
+    }
+
+    if ($configuredMinKbps -gt 0) {
+        # Explicit override: parsed exactly as typed, unclamped, for testing.
+        $minBitrate = [int64]$configuredMinKbps * 1000
+    }
+    else {
+        $smoothProfile = Get-ComboSelectedOrDefault $cmbDirectWebRtcSmoothnessProfile $script:DefaultDirectWebRtcSmoothnessProfile
+        $autoMinBitrate = switch ($smoothProfile) {
+            'Lowest latency' { [Math]::Max(1000, [int64]($startBitrate / 2)) }
+            'Balanced smooth' { [Math]::Max(1000, [int64]($startBitrate * 0.75)) }
+            'WAN smooth' { [Math]::Max(1000, [int64]($startBitrate * 0.60)) }
+            default { [Math]::Min(1000000, [Math]::Max(1000, [int64]($startBitrate / 4))) }
+        }
+        $minBitrate = [int64][Math]::Min($autoMinBitrate, $startBitrate)
     }
 
     return [pscustomobject]@{
-        MinBitrate = [int64][Math]::Min($minBitrate, $startBitrate)
+        MinBitrate = [int64]$minBitrate
         StartBitrate = [int64]$startBitrate
         MaxBitrate = [int64]$maxBitrate
         ConfiguredStartKbps = [int]$configuredStartKbps
+        ConfiguredMinKbps = [int]$configuredMinKbps
         EffectiveStartKbps = [int]$startKbps
     }
 }

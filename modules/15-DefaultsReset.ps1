@@ -1,6 +1,7 @@
 ﻿function Reset-WebRtcSaneDefaults {
     $cmbDirectWebRtcCongestion.SelectedItem = 'disabled'
     $numDirectWebRtcStartBitrateKbps.Value = $script:DefaultDirectWebRtcStartBitrateKbps
+    $numDirectWebRtcMinBitrateKbps.Value = $script:DefaultDirectWebRtcMinBitrateKbps
     $cmbDirectWebRtcMitigation.SelectedItem = 'none'
     if ($cmbWebRtcRecoveryMode.Items.Contains($script:DefaultWebRtcRecoveryMode)) { $cmbWebRtcRecoveryMode.SelectedItem = $script:DefaultWebRtcRecoveryMode }
     if ($cmbWebRtcSenderQueueMode.Items.Contains($script:DefaultWebRtcSenderQueueMode)) { $cmbWebRtcSenderQueueMode.SelectedItem = $script:DefaultWebRtcSenderQueueMode }

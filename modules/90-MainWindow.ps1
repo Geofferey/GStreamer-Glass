@@ -623,10 +623,19 @@ $numDirectWebRtcStartBitrateKbps.Size = New-Object System.Drawing.Size(95, 23)
 $numDirectWebRtcStartBitrateKbps.Minimum = 0
 $numDirectWebRtcStartBitrateKbps.Maximum = 1000000
 $numDirectWebRtcStartBitrateKbps.Increment = 500
-$numDirectWebRtcStartBitrateKbps.ThousandsSeparator = $true
 $numDirectWebRtcStartBitrateKbps.Value = $script:DefaultDirectWebRtcStartBitrateKbps
 $settingsGroup.Controls.Add($numDirectWebRtcStartBitrateKbps)
-$toolTip.SetToolTip($numDirectWebRtcStartBitrateKbps, 'Initial WebRTC sender estimate in kbps for video-containing WHIP/GST WebRTC pipelines. 0 follows Video bitrate. An explicit value is clamped to Video max bitrate when that max is nonzero.')
+$toolTip.SetToolTip($numDirectWebRtcStartBitrateKbps, 'WebRTC/Signaling layer only (webrtcsink start-bitrate) -- NOT the encoder. 0 = follow Encoder bitrate kbps. A nonzero value here overrides that exactly, unclamped, independently of the encoder''s actual bitrate.')
+
+$numDirectWebRtcMinBitrateKbps = New-Object System.Windows.Forms.NumericUpDown
+$numDirectWebRtcMinBitrateKbps.Location = New-Object System.Drawing.Point(15, 548)
+$numDirectWebRtcMinBitrateKbps.Size = New-Object System.Drawing.Size(95, 23)
+$numDirectWebRtcMinBitrateKbps.Minimum = 0
+$numDirectWebRtcMinBitrateKbps.Maximum = 1000000
+$numDirectWebRtcMinBitrateKbps.Increment = 500
+$numDirectWebRtcMinBitrateKbps.Value = $script:DefaultDirectWebRtcMinBitrateKbps
+$settingsGroup.Controls.Add($numDirectWebRtcMinBitrateKbps)
+$toolTip.SetToolTip($numDirectWebRtcMinBitrateKbps, 'WebRTC/Signaling layer only (webrtcsink min-bitrate) -- NOT the encoder. 0 = derive from the Smooth profile dropdown as before. A nonzero value here overrides the Smooth profile calculation exactly, unclamped, for testing.')
 
 $cmbDirectWebRtcMitigation = New-Object System.Windows.Forms.ComboBox
 $cmbDirectWebRtcMitigation.Location = New-Object System.Drawing.Point(15, 548)
@@ -1417,6 +1426,7 @@ $numVideoBitrate.Maximum = 100000
 $numVideoBitrate.Increment = 500
 $numVideoBitrate.Value = 12000
 $settingsGroup.Controls.Add($numVideoBitrate)
+$toolTip.SetToolTip($numVideoBitrate, 'The actual encoder bitrate= value, in kbps. Parsed unclamped into the pipeline on every run, for every protocol -- nothing else in the app adjusts, floors, or overrides this. If you override it for testing, that override is exactly what runs.')
 
 $null = Add-Label $settingsGroup 'GOP sec' 580 166 60
 $numGopSeconds = New-Object System.Windows.Forms.NumericUpDown
@@ -1465,7 +1475,7 @@ $numMaxVideoBitrate.Maximum = 300000
 $numMaxVideoBitrate.Increment = 500
 $numMaxVideoBitrate.Value = 0
 $settingsGroup.Controls.Add($numMaxVideoBitrate)
-$toolTip.SetToolTip($numMaxVideoBitrate, 'Maximum bitrate for VBR where the selected encoder supports it. 0 uses the encoder default; CBR usually ignores this.')
+$toolTip.SetToolTip($numMaxVideoBitrate, 'Dual role: (1) VBR max for the encoder itself where supported -- 0 uses the encoder default, CBR usually ignores this; (2) for WHIP/GST WebRTC, also feeds webrtcsink max-bitrate (WebRTC/Signaling layer), independently of Encoder bitrate kbps. Nothing reconciles the two automatically -- check Encoder bitrate kbps against this when tuning.')
 
 $null = Add-Label $settingsGroup 'CQ/QP' 15 520 60
 $numConstantQp = New-Object System.Windows.Forms.NumericUpDown
@@ -3723,6 +3733,7 @@ $numFps.Add_ValueChanged($previewHandler)
 $numVideoBitrate.Add_ValueChanged($previewHandler)
 $cmbRateControl.Add_SelectedIndexChanged($encoderUiHandler)
 $numMaxVideoBitrate.Add_ValueChanged($previewHandler)
+$numDirectWebRtcMinBitrateKbps.Add_ValueChanged($previewHandler)
 $numConstantQp.Add_ValueChanged($previewHandler)
 $numGopSeconds.Add_ValueChanged($previewHandler)
 $chkUnifiedBridgeKeyframeGuard.Add_CheckedChanged({ Update-UnifiedBridgeKeyframeUi; Update-CommandPreview })
@@ -3805,6 +3816,7 @@ foreach ($control in @(
     $txtDirectWebRtcWebDirectory,
     $cmbDirectWebRtcCongestion,
     $numDirectWebRtcStartBitrateKbps,
+    $numDirectWebRtcMinBitrateKbps,
     $cmbDirectWebRtcMitigation,
     $cmbWebRtcRecoveryMode,
     $cmbWebRtcSenderQueueMode,
