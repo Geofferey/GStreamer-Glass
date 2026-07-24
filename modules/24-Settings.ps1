@@ -57,6 +57,7 @@
             DirectWebRtcWebDirectory = $txtDirectWebRtcWebDirectory.Text
             DirectWebRtcCongestion = [string]$cmbDirectWebRtcCongestion.SelectedItem
             DirectWebRtcStartBitrateKbps = [int]$numDirectWebRtcStartBitrateKbps.Value
+            DirectWebRtcMinBitrateKbps = [int]$numDirectWebRtcMinBitrateKbps.Value
             DirectWebRtcMitigation = [string]$cmbDirectWebRtcMitigation.SelectedItem
             WebRtcRecoveryMode = [string]$cmbWebRtcRecoveryMode.SelectedItem
             WebRtcSenderQueueMode = [string]$cmbWebRtcSenderQueueMode.SelectedItem
@@ -433,6 +434,7 @@ function Restore-SettingsFromObject {
         elseif ($null -ne $settings.DirectWebRtcWebDirectory) { $txtDirectWebRtcWebDirectory.Text = [string]$settings.DirectWebRtcWebDirectory }
         if ($settings.DirectWebRtcCongestion -and $cmbDirectWebRtcCongestion.Items.Contains([string]$settings.DirectWebRtcCongestion)) { $cmbDirectWebRtcCongestion.SelectedItem = [string]$settings.DirectWebRtcCongestion }
         if ($null -ne $settings.DirectWebRtcStartBitrateKbps) { $numDirectWebRtcStartBitrateKbps.Value = [decimal]([Math]::Min([int]$numDirectWebRtcStartBitrateKbps.Maximum, [Math]::Max([int]$numDirectWebRtcStartBitrateKbps.Minimum, [int]$settings.DirectWebRtcStartBitrateKbps))) }
+        if ($null -ne $settings.DirectWebRtcMinBitrateKbps) { $numDirectWebRtcMinBitrateKbps.Value = [decimal]([Math]::Min([int]$numDirectWebRtcMinBitrateKbps.Maximum, [Math]::Max([int]$numDirectWebRtcMinBitrateKbps.Minimum, [int]$settings.DirectWebRtcMinBitrateKbps))) }
         if ($settings.DirectWebRtcMitigation -and $cmbDirectWebRtcMitigation.Items.Contains([string]$settings.DirectWebRtcMitigation)) { $cmbDirectWebRtcMitigation.SelectedItem = [string]$settings.DirectWebRtcMitigation }
         if ($settings.WebRtcRecoveryMode -and $cmbWebRtcRecoveryMode.Items.Contains([string]$settings.WebRtcRecoveryMode)) {
             Set-WebRtcRecoveryMode ([string]$settings.WebRtcRecoveryMode)

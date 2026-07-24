@@ -566,6 +566,7 @@ function Update-DirectWebRtcUi {
         $chkDirectWebRtcTurnEnabled,
         $cmbDirectWebRtcCongestion,
         $numDirectWebRtcStartBitrateKbps,
+        $numDirectWebRtcMinBitrateKbps,
         $cmbDirectWebRtcMitigation,
         $lblWebRtcRecoveryMode,
         $cmbWebRtcRecoveryMode,

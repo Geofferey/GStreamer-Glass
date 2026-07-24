@@ -812,9 +812,10 @@
     Add-Field $r -Label 'Height' -Control $numHeight -Width 90 | Out-Null
     Add-Field $r -Label 'FPS' -Control $numFps -Width 80 | Out-Null
     $r = Add-Row $s
-    Add-Field $r -Label 'Video kbps' -Control $numVideoBitrate -Width 110 | Out-Null
-    Add-Field $r -Label 'Max kbps' -Control $numMaxVideoBitrate -Width 100 | Out-Null
-    Add-Field $r -Label 'Start kbps (0=Video)' -Control $numDirectWebRtcStartBitrateKbps -Width 105 | Out-Null
+    Add-Field $r -Label 'Encoder bitrate kbps' -Control $numVideoBitrate -Width 110 | Out-Null
+    Add-Field $r -Label 'Max kbps (WebRTC cap)' -Control $numMaxVideoBitrate -Width 100 | Out-Null
+    Add-Field $r -Label 'WebRTC start kbps' -Control $numDirectWebRtcStartBitrateKbps -Width 105 | Out-Null
+    Add-Field $r -Label 'WebRTC min kbps' -Control $numDirectWebRtcMinBitrateKbps -Width 105 | Out-Null
     Add-Field $r -Label 'CQ/QP' -Control $numConstantQp -Width 70 | Out-Null
     $r = Add-Row $s
     Add-Field $r -Label 'Preset' -Control $cmbPreset -Width 120 | Out-Null
