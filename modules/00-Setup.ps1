@@ -1,4 +1,4 @@
-﻿#requires -Version 5.1
+#requires -Version 5.1
 <#
 .SYNOPSIS
     Basic Windows GUI wrapper for low-latency GStreamer desktop streaming.
@@ -1138,12 +1138,13 @@ public static class GstProcessJob
 '@
 }
 
-$script:AppVersion = '3.8.2a'
+$script:AppVersion = '3.8.3a'
 $script:AppName = "GStreamer Glass v$($script:AppVersion)"
 $script:ConfigDirectory = Join-Path $env:APPDATA 'GStreamerBasicWhipStreamer'
 $script:ConfigPath = Join-Path $script:ConfigDirectory 'settings.json'
 $script:LogDirectory = Join-Path $env:LOCALAPPDATA 'GStreamerBasicWhipStreamer\Logs'
 $script:ProcessStatePath = Join-Path $script:ConfigDirectory 'active-gstreamer-process.json'
+$script:ProfilesDirectory = Join-Path $script:ConfigDirectory 'Profiles'
 $script:NetworkRecoveryDirectory = Join-Path $env:ProgramData 'GStreamerGlass\Recovery'
 $script:NetworkSnapshotPath = Join-Path $script:NetworkRecoveryDirectory 'network-snapshot-latest.json'
 $script:NetworkAppliedStatePath = Join-Path $script:NetworkRecoveryDirectory 'applied-state.json'

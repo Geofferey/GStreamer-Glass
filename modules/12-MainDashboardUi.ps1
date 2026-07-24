@@ -27,6 +27,7 @@
         Recording = [char]::ConvertFromUtf32(0x23FA)   # record circle
         Network   = [char]::ConvertFromUtf32(0x25C9)   # fisheye (hub / node)
         Options   = [char]::ConvertFromUtf32(0x2699)   # gear
+        Profiles  = [char]::ConvertFromUtf32(0x2605)   # star (presets)
         Logs      = [char]::ConvertFromUtf32(0x25A4)   # square w/ horizontal fill (lines)
         Command   = [char]::ConvertFromUtf32(0x00BB)   # >> (prompt)
         Start     = [char]::ConvertFromUtf32(0x25B6)   # play triangle
@@ -254,6 +255,8 @@
         $sidebar.Controls.Add($script:SidebarNavButtons['Network'])
         $script:SidebarNavButtons['Options'] = New-SidebarButton "  $($script:Glyph.Options)   Options" 0 { if ($script:SettingsTabs -and $script:SettingsTabOptions) { $script:SettingsTabs.SelectedTab = $script:SettingsTabOptions } }
         $sidebar.Controls.Add($script:SidebarNavButtons['Options'])
+        $script:SidebarNavButtons['Profiles'] = New-SidebarButton "  $($script:Glyph.Profiles)   Profiles" 0 { if ($script:SettingsTabs -and $script:SettingsTabProfiles) { $script:SettingsTabs.SelectedTab = $script:SettingsTabProfiles } }
+        $sidebar.Controls.Add($script:SidebarNavButtons['Profiles'])
 
         $sidebar.Controls.Add((New-SidebarHeading 'Output'))
         $script:SidebarNavButtons['Logs'] = New-SidebarButton "  $($script:Glyph.Logs)   Logs" 0 { $lowerTabs.SelectedTab = $tabLog }
@@ -402,8 +405,11 @@
     $tabOptions = New-Object System.Windows.Forms.TabPage
     $tabOptions.Text = 'Options'
     $tabOptions.AutoScroll = $true
+    $tabProfiles = New-Object System.Windows.Forms.TabPage
+    $tabProfiles.Text = 'Profiles'
+    $tabProfiles.AutoScroll = $true
 
-    $settingsTabs.TabPages.AddRange(@($tabTransport, $tabWebRtc, $tabVideo, $tabScenes, $tabAudio, $tabPlayer, $tabRecording, $tabNetwork, $tabOptions))
+    $settingsTabs.TabPages.AddRange(@($tabTransport, $tabWebRtc, $tabVideo, $tabScenes, $tabAudio, $tabPlayer, $tabRecording, $tabNetwork, $tabOptions, $tabProfiles))
     $script:SettingsTabs = $settingsTabs
     $script:SettingsTabTransport = $tabTransport
     $script:SettingsTabWebRtc = $tabWebRtc
@@ -414,6 +420,7 @@
     $script:SettingsTabRecording = $tabRecording
     $script:SettingsTabNetwork = $tabNetwork
     $script:SettingsTabOptions = $tabOptions
+    $script:SettingsTabProfiles = $tabProfiles
 
     # Keep the sidebar highlight in sync with the active settings tab so the two
     # parallel navigations never disagree about where the user is.
@@ -421,7 +428,7 @@
         if ($script:SidebarNavButtons) {
             $map = @{
                 0 = 'Transport'; 1 = 'WebRtc'; 2 = 'Video'; 3 = 'Scenes'; 4 = 'Audio';
-                5 = 'Player'; 6 = 'Recording'; 7 = 'Network'; 8 = 'Options'
+                5 = 'Player'; 6 = 'Recording'; 7 = 'Network'; 8 = 'Options'; 9 = 'Profiles'
             }
             $activeKey = $map[$script:SettingsTabs.SelectedIndex]
             foreach ($entry in $script:SidebarNavButtons.GetEnumerator()) {
@@ -1197,7 +1204,24 @@
     Add-Field $r -Control $btnResetOptions -Width 160 | Out-Null
     Add-Field $r -Control $btnResetAll -Width 160 | Out-Null
 
-    foreach ($tp in @($tabTransport, $tabWebRtc, $tabVideo, $tabAudio, $tabPlayer, $tabRecording, $tabNetwork, $tabOptions)) {
+    $paneProfiles = New-SettingsPane $tabProfiles
+    $s = Add-Section $paneProfiles 'Profile'
+    $r = Add-Row $s
+    Add-Field $r -Label 'Profile' -Control $cmbProfilePreset -Width 260 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Control $lblProfileDescription -Width 560 | Out-Null
+
+    $s = Add-Section $paneProfiles 'Manage'
+    $r = Add-Row $s
+    Add-Field $r -Control $btnLoadProfile -Width 140 | Out-Null
+    Add-Field $r -Control $btnSaveProfile -Width 140 | Out-Null
+    Add-Field $r -Control $btnSaveProfileAs -Width 140 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Control $btnDeleteProfile -Width 140 | Out-Null
+    Add-Field $r -Control $btnExportProfile -Width 140 | Out-Null
+    Add-Field $r -Control $btnImportProfile -Width 140 | Out-Null
+
+    foreach ($tp in @($tabTransport, $tabWebRtc, $tabVideo, $tabAudio, $tabPlayer, $tabRecording, $tabNetwork, $tabOptions, $tabProfiles)) {
         $tp.BackColor = $script:ColorSurface
         $tp.ForeColor = $script:ColorText
     }

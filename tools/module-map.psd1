@@ -314,6 +314,7 @@
         'Save-Settings'
         'Export-LabConfiguration'
         'Load-Settings'
+        'Restore-SettingsFromObject'
         'Validate-Configuration'
     )
 
@@ -363,5 +364,23 @@
 
     '29-Cleanup.ps1' = @(
         'Invoke-ApplicationCleanup'
+    )
+
+    '30-Profiles.ps1' = @(
+        'Get-BuiltInProfiles'
+        'Ensure-ProfilesDirectory'
+        'Get-UserProfiles'
+        'Get-AllProfiles'
+        'Test-ProfileProtocolCompatibility'
+        'Get-CompatibleProfileNames'
+        'Refresh-ProfileList'
+        'Update-ProfileSelectionUi'
+        'Get-CurrentSettingsSnapshot'
+        'Save-ProfileAs'
+        'Save-CurrentProfile'
+        'Invoke-LoadSelectedProfile'
+        'Remove-SelectedProfile'
+        'Import-ProfileFile'
+        'Export-SelectedProfile'
     )
 }

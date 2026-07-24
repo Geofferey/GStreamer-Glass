@@ -333,6 +333,28 @@ function Load-Settings {
         $settings = Get-Content -LiteralPath $script:ConfigPath -Raw | ConvertFrom-Json
         $script:SuppressProtocolChange = $true
 
+        Restore-SettingsFromObject -Settings $settings
+    }
+    catch {
+        Append-Log "Could not load settings: $($_.Exception.Message)"
+    }
+    finally {
+        $script:SuppressProtocolChange = $false
+        $script:LoadingSettings = $false
+        Update-TransportUi
+        Update-DirectWebRtcUi
+        Update-EncoderUi
+        Update-RecordingUi
+        Update-NetworkUi
+        Update-SceneUi
+    }
+}
+
+function Restore-SettingsFromObject {
+    param([Parameter(Mandatory)]$Settings)
+    $settings = $Settings
+
+
         if ($settings.GstPath) {
             $loadedGstPath = [string]$settings.GstPath
             if (Test-GstLaunchPath $loadedGstPath) {
@@ -681,20 +703,6 @@ function Load-Settings {
         $cmbProtocol.SelectedItem = $protocol
         $script:LastProtocol = $protocol
         $txtDestination.Text = [string]$script:ProtocolDestinations[$protocol]
-    }
-    catch {
-        Append-Log "Could not load settings: $($_.Exception.Message)"
-    }
-    finally {
-        $script:SuppressProtocolChange = $false
-        $script:LoadingSettings = $false
-        Update-TransportUi
-        Update-DirectWebRtcUi
-        Update-EncoderUi
-        Update-RecordingUi
-        Update-NetworkUi
-        Update-SceneUi
-    }
 }
 
 function Validate-Configuration {
