@@ -561,6 +561,13 @@ function Update-SceneWorkspaceMode {
     if ($sceneSelected) { Resize-LiveSceneCanvas }
     Invoke-ScenePreviewRedraw -Quiet
     if ($sceneSelected) {
+        # A prior failed attempt latches $script:SuppressDynamicScenePreview so
+        # Test-DynamicScenePreviewWanted keeps saying no forever; the only place
+        # that clears it is inside Start-DynamicScenePreview itself, which is
+        # gated behind that same check and so never runs. Re-entering the Scenes
+        # tab is a deliberate signal to give the controlled compositor another
+        # try, so clear the latch here first.
+        Reset-DynamicScenePreviewFallback
         if ($script:PreviewOnlyMode -and $script:GstProcess -and -not $script:GstProcess.HasExited -and (Test-DynamicScenePreviewWanted)) {
             Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Scenes tab selected with Dynamic previews enabled; restarting local preview as dynamic scene previews."
             Stop-GstStream
