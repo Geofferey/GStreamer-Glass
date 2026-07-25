@@ -5,4 +5,4 @@
 /dist/
 /releases/
 /out/
-/modules/.original-backup.ps1
+/src/.original-backup.ps1

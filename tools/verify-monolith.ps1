@@ -8,7 +8,7 @@
 [CmdletBinding()]
 param(
     [string]$RebuiltPath = (Join-Path $PSScriptRoot '..\out\GStreamer-Glass.ps1'),
-    [string]$BaselinePath = (Join-Path $PSScriptRoot '..\modules\.original-backup.ps1')
+    [string]$BaselinePath = (Join-Path $PSScriptRoot '..\src\.original-backup.ps1')
 )
 
 $ErrorActionPreference = 'Stop'

@@ -5,13 +5,13 @@
     module-map.psd1, and writes all remaining top-level code (verbatim, in
     original relative order) into 00-Setup.ps1 / 90-MainWindow.ps1.
 
-    Run tools/Build-Monolith.ps1 afterward to reassemble GStreamer-Glass.ps1.
+    Run tools/build-monolith.ps1 afterward to reassemble GStreamer-Glass.ps1.
 #>
 
 [CmdletBinding()]
 param(
-    [string]$SourcePath = (Join-Path $PSScriptRoot '..\modules\.original-backup.ps1'),
-    [string]$ModulesDir = (Join-Path $PSScriptRoot '..\modules'),
+    [string]$SourcePath = (Join-Path $PSScriptRoot '..\src\.original-backup.ps1'),
+    [string]$SrcDir = (Join-Path $PSScriptRoot '..\src'),
     [string]$MapPath = (Join-Path $PSScriptRoot 'module-map.psd1')
 )
 
@@ -116,16 +116,16 @@ if ($staleMappings.Count -gt 0) {
     throw "The following manifest entries do not correspond to any function found in the source (typo or stale entry):`n$($staleMappings -join "`n")"
 }
 
-if (-not (Test-Path $ModulesDir)) { New-Item -ItemType Directory -Path $ModulesDir | Out-Null }
+if (-not (Test-Path $SrcDir)) { New-Item -ItemType Directory -Path $SrcDir | Out-Null }
 
-Write-Utf8Bom -Path (Join-Path $ModulesDir '00-Setup.ps1') -Text $setupBuilder.ToString()
+Write-Utf8Bom -Path (Join-Path $SrcDir '00-Setup.ps1') -Text $setupBuilder.ToString()
 
 foreach ($moduleFile in ($moduleMap.Keys | Sort-Object)) {
     $header = "# Module: $moduleFile (auto-extracted by tools/Split-Monolith.ps1 -- edit here, then run tools/Build-Monolith.ps1)`n`n"
-    Write-Utf8Bom -Path (Join-Path $ModulesDir $moduleFile) -Text ($header + $moduleBuffers[$moduleFile].ToString())
+    Write-Utf8Bom -Path (Join-Path $SrcDir $moduleFile) -Text ($header + $moduleBuffers[$moduleFile].ToString())
 }
 
 $mainWindowHeader = "# Module: 90-MainWindow.ps1 (auto-extracted by tools/Split-Monolith.ps1 -- UI construction, event wiring, Application.Run)`n`n"
-Write-Utf8Bom -Path (Join-Path $ModulesDir '90-MainWindow.ps1') -Text ($mainWindowHeader + $mainWindowBuilder.ToString())
+Write-Utf8Bom -Path (Join-Path $SrcDir '90-MainWindow.ps1') -Text ($mainWindowHeader + $mainWindowBuilder.ToString())
 
 Write-Output "Split complete: $($extractedNames.Count) functions across $($moduleMap.Keys.Count) domain modules, plus 00-Setup.ps1 and 90-MainWindow.ps1."

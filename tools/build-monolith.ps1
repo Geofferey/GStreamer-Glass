@@ -1,13 +1,13 @@
 <#
 .SYNOPSIS
-    Concatenates modules/*.ps1 back into a single GStreamer-Glass.ps1 written
+    Concatenates src/*.ps1 back into a single GStreamer-Glass.ps1 written
     to out/, in the order ps2exe needs: 00-Setup.ps1, then every domain
     module (numeric filename order), then 90-MainWindow.ps1 last.
 #>
 
 [CmdletBinding()]
 param(
-    [string]$ModulesDir = (Join-Path $PSScriptRoot '..\modules'),
+    [string]$SrcDir = (Join-Path $PSScriptRoot '..\src'),
     [string]$OutputPath = (Join-Path $PSScriptRoot '..\out\GStreamer-Glass.ps1')
 )
 
@@ -22,15 +22,15 @@ function Read-Utf8 {
     try { return $reader.ReadToEnd() } finally { $reader.Close() }
 }
 
-$modulesFull = (Resolve-Path $ModulesDir).Path
+$srcFull = (Resolve-Path $SrcDir).Path
 
-$setupPath = Join-Path $modulesFull '00-Setup.ps1'
-$mainWindowPath = Join-Path $modulesFull '90-MainWindow.ps1'
+$setupPath = Join-Path $srcFull '00-Setup.ps1'
+$mainWindowPath = Join-Path $srcFull '90-MainWindow.ps1'
 
-if (-not (Test-Path $setupPath)) { throw "Missing $setupPath -- run Split-Monolith.ps1 first." }
-if (-not (Test-Path $mainWindowPath)) { throw "Missing $mainWindowPath -- run Split-Monolith.ps1 first." }
+if (-not (Test-Path $setupPath)) { throw "Missing $setupPath -- run split-monolith.ps1 first." }
+if (-not (Test-Path $mainWindowPath)) { throw "Missing $mainWindowPath -- run split-monolith.ps1 first." }
 
-$domainModules = Get-ChildItem -Path $modulesFull -Filter '*.ps1' |
+$domainModules = Get-ChildItem -Path $srcFull -Filter '*.ps1' |
     Where-Object { $_.Name -ne '00-Setup.ps1' -and $_.Name -ne '90-MainWindow.ps1' -and -not $_.Name.StartsWith('.') } |
     Sort-Object Name
 
