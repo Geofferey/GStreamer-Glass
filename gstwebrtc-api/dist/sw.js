@@ -1,10 +1,10 @@
-const CACHE_NAME = 'gstglass-pwa-3.7.52f45';
+const CACHE_NAME = 'gstglass-pwa-3.7.52f46';
 const SHELL_KEY = new URL('./index.html', self.registration.scope).href;
 const APP_SHELL = [
   './index.html',
   './player.js',
-  './player.css?v=3.7.52f45-honest-video-sender-queue',
-  './manifest.webmanifest?v=3.7.52f45-honest-video-sender-queue',
+  './player.css?v=3.8',
+  './manifest.webmanifest?v=3.8',
   './icons/gstreamer-glass-192.png',
   './icons/gstreamer-glass-512.png',
   './icons/gstreamer-glass-maskable-192.png',

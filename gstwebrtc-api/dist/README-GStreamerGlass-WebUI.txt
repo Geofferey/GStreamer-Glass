@@ -1,5 +1,24 @@
 GStreamer Glass Direct WebRTC Web UI
-Version: 3.7.52f45-honest-video-sender-queue
+Version: 3.8
+
+Authenticated proxied signaling paths with direct fallback:
+- The normal/video signaling proxy is now the same-origin WebSocket path
+  `/live/GstSignal/video`; separate split audio uses `/live/GstSignal/audio`.
+- AUTO tries the authenticated IIS path first. If the WebSocket fails before
+  opening or remains CONNECTING past the configurable timeout, it tries the
+  existing direct signaling endpoint on 8189 or 8190.
+- LAN is direct signaling only. PROXY is authenticated path signaling only.
+- Split audio follows the route selected by the primary signaling socket and
+  independently falls back when separate signaling is enabled.
+- The active route is shown as `signaling proxy`, `signaling direct`, or
+  `signaling direct fallback` in diagnostics and the player status.
+- Defaults: signalingProxyBasePath=/live/GstSignal and
+  signalingConnectTimeoutMs=7000. URL overrides include proxySignalBase,
+  proxyVideoPath, proxyAudioPath, proxyWs, proxyAudioWs, and signalTimeoutMs.
+- HTTPS pages never downgrade to an explicit ws:// direct endpoint. Direct
+  fallback from HTTPS therefore requires WSS on the direct port; plaintext
+  direct fallback remains available when the player itself is loaded by HTTP.
+
 
 Android screen wake lock:
 - Holds an explicit Screen Wake Lock while the live video is playing, covering
@@ -16,8 +35,8 @@ Android screen wake lock:
   keeps working normally when the API is unavailable; only keep-awake is lost.
 
 Route-aware ICE candidate priority:
-- PROXY remains anchored to the WSS address derived from the domain/address in
-  the browser address bar (or the explicit proxyWs override).
+- PROXY remains anchored to the same-origin `/live/GstSignal/video` WSS path
+  (or the explicit proxyWs override).
 - PROXY assigns public srflx/prflx/relay candidates higher signaled priority
   than host candidates in both SDP and trickle ICE, encouraging the same public
   pair observed before LAN detection was introduced.
@@ -36,8 +55,8 @@ Original route-switch lifecycle restored:
   so selecting PROXY behaves like selecting it and refreshing the page.
 - ICE candidates remain unfiltered, matching the implementation that produced
   the observed public srflx-to-srflx pair.
-- Browser signaling remains proxy-safe WSS; private-IP ws:// probing is not
-  restored.
+- AUTO may use the direct endpoint only after the authenticated path fails;
+  PROXY never falls back and LAN deliberately uses the direct endpoint.
 
 PROXY mode on the same LAN:
 - Restores normal ICE host candidates because forcing the public/STUN path from
@@ -54,20 +73,20 @@ Safe AUTO / LAN / PROXY selector:
   the selected mode in the browser.
 - Switching mode recreates both the primary and split-audio PeerConnections,
   preventing an old LAN candidate pair from surviving a switch to PROXY.
-- All three modes keep browser signaling on the page/proxy WSS endpoint. None
-  opens ws:// to a private LAN address, so the selector does not reintroduce
-  mixed-content or Chromium Local Network Access issues.
-- AUTO uses normal ICE selection with STUN.
-- LAN disables STUN and uses host candidates for LAN-preferred ICE.
-- PROXY uses relay-only ICE when a TURN URL is configured. Without TURN, media
-  uses normal ICE and may remain direct LAN while signaling stays on proxy WSS.
+- AUTO prefers `/live/GstSignal/video|audio`, then falls back to the existing
+  direct signaling ports if the proxy handshake cannot open.
+- LAN uses direct signaling, disables STUN, and uses host candidates for
+  LAN-preferred ICE.
+- PROXY uses only the authenticated signaling paths and relay-only ICE when a
+  TURN URL is configured. Without TURN, media uses normal ICE and may remain
+  direct LAN while signaling stays on proxy WSS.
 - Optional URL/config controls: route=auto|lan|proxy, turnUrl, turnUsername,
   and turnCredential. DevTools also supports GstGlassPlayer.route('proxy').
 
 Proxy-safe signaling and direct LAN media:
-- Removes all automatic browser connections to ws:// private-IP signaling ports
-  and all Local Network Access probes.
-- An HTTPS viewer always opens wss:// to the page/proxy host. HAProxy can still
+- AUTO no longer opens a direct signaling socket unless the same-origin proxy
+  path fails; PROXY never opens one and LAN deliberately selects direct.
+- An HTTPS viewer uses WSS for both proxy and direct candidates. IIS can
   terminate TLS and forward ordinary ws:// to Glass on its backend network.
 - An insecure explicit ?ws= URL is ignored when the page itself is HTTPS.
 - WebRTC media continues to negotiate independently through ICE. A host address
@@ -218,3 +237,8 @@ f34 application controls
 - Removes hidden 40 ms and 80 ms fallbacks from Small cushion and Non-leaky modes.
 - Queue cap 0 now always emits max-size-time=0; presets must set any desired nonzero cap visibly.
 - Queue mode still controls buffer count and leak behavior only.
+
+3.7.52f46 - Authenticated signaling proxy with fallback
+- Adds same-origin video/audio WebSocket paths under /live/GstSignal.
+- Adds ordered proxy-to-direct fallback with a hard CONNECTING timeout.
+- Keeps explicit PROXY and LAN modes strict while AUTO performs fallback.

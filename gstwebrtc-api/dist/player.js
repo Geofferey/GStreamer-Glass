@@ -1,5 +1,5 @@
 (() => {
-  const FRONTEND_VERSION = '3.7.52f40-separate-mediastreams';
+  const FRONTEND_VERSION = '3.8';
   console.info(`[GStreamer Glass Live] frontend ${FRONTEND_VERSION}`);
   const playerRoot = document.getElementById('playerRoot');
   const video = document.getElementById('video');
@@ -63,6 +63,7 @@
     connectionModeOverride: '',
     signalingRoute: 'proxy',
     signalingUrl: '',
+    signalingCandidates: [],
     screenWakeLock: null,
     screenWakeLockPending: false,
     screenWakeLockStatus: 'idle',
@@ -107,7 +108,7 @@
     liveEdgeFaultActive: false,
     lastCompactStatus: '',
     videoZoom: { scale: 1, x: 0, y: 0, pointers: new Map(), pinchStart: null, panStart: null, gestureMoved: false, suppressTapUntil: 0 },
-    splitAudio: { ws: null, pc: null, sessionId: null, peerId: null, remotePeerId: null, pendingIce: [], producers: new Map(), ready: false, url: '', status: 'idle', reconnectTimer: null, connectTimer: null, keepAliveTimer: null, keepAliveCount: 0, lastKeepAliveAt: 0, lastError: '', lastTrackKind: '', lastInboundStats: null, lastHealthyAt: 0, lastRecoverAt: 0, recoveryCount: 0, stallTicks: 0, offsetHighTicks: 0, lastAvOffsetMs: NaN, syncHealth: 'free-run', connectStartedAt: 0, trackReceivedAt: 0, warmupUntil: 0, avOffsetBaselineMs: NaN, avOffsetBaselineSamples: 0, avOffsetBaselineLocked: false, avOffsetDeltaMs: NaN, avOffsetBaselineReason: 'none' },
+    splitAudio: { ws: null, pc: null, sessionId: null, peerId: null, remotePeerId: null, pendingIce: [], producers: new Map(), ready: false, url: '', route: '', candidates: [], attemptToken: 0, status: 'idle', reconnectTimer: null, connectTimer: null, keepAliveTimer: null, keepAliveCount: 0, lastKeepAliveAt: 0, lastError: '', lastTrackKind: '', lastInboundStats: null, lastHealthyAt: 0, lastRecoverAt: 0, recoveryCount: 0, stallTicks: 0, offsetHighTicks: 0, lastAvOffsetMs: NaN, syncHealth: 'free-run', connectStartedAt: 0, trackReceivedAt: 0, warmupUntil: 0, avOffsetBaselineMs: NaN, avOffsetBaselineSamples: 0, avOffsetBaselineLocked: false, avOffsetDeltaMs: NaN, avOffsetBaselineReason: 'none' },
     controller: { userPaused: false, userMuted: false, volume: 1, uiPinned: false, initialized: false, installPrompt: null, bar: null, playButton: null, muteButton: null, volumeInput: null, spacer: null, reconnectButton: null, routeButton: null, installButton: null, zoomButton: null, pinButton: null, fullscreenButton: null, status: null, lastAppliedAt: 0 }
   };
 
@@ -292,36 +293,110 @@
     else releaseScreenWakeLock(reason);
   }
 
-  function proxyWsUrl() {
-    const explicit = query('proxyWs') || query('proxySignal') || query('proxySignaling');
+  function normalizeProxySignalPath(raw, kind) {
+    const fallbackBase = String(configValue('signalingProxyBasePath', '/live/GstSignal') || '/live/GstSignal').trim();
+    let value = String(raw || fallbackBase).trim();
+    if (!value) value = '/live/GstSignal';
+    const suffix = String(kind || 'video').toLowerCase() === 'audio' ? 'audio' : 'video';
+    const absoluteInput = /^wss?:\/\//i.test(value);
+    let absolute = null;
+    try {
+      absolute = new URL(value, location.href);
+      value = absolute.pathname;
+    } catch (_) {}
+    value = `/${value.replace(/^\/+|\/+$/g, '')}`;
+    if (!new RegExp(`/${suffix}$`, 'i').test(value)) value += `/${suffix}`;
+    if (absoluteInput && absolute) {
+      absolute.pathname = value;
+      return trimWsUrl(absolute.toString());
+    }
+    return value;
+  }
+
+  function proxyWsUrl(kind = 'video') {
+    const audio = String(kind || '').toLowerCase() === 'audio';
+    const explicit = audio
+      ? (query('proxyAudioWs') || query('audioProxyWs') || configValue('audioProxyWsUrl', ''))
+      : (query('proxyWs') || query('proxySignal') || query('proxySignaling') || configValue('proxyWsUrl', ''));
     if (explicit) {
       const normalized = normalizeWsUrl(explicit) || explicit;
       try {
         const parsed = new URL(normalized, location.href);
         if (location.protocol === 'https:' && parsed.protocol === 'ws:') parsed.protocol = 'wss:';
         return trimWsUrl(parsed.toString());
-      } catch (_) { return normalized; }
+      } catch (_) { return trimWsUrl(normalized); }
     }
+
+    const explicitPath = audio
+      ? (query('proxyAudioPath') || query('audioProxyPath') || configValue('audioSignalingProxyPath', ''))
+      : (query('proxyVideoPath') || query('videoProxyPath') || configValue('videoSignalingProxyPath', ''));
+    const basePath = query('proxySignalBase') || query('signalProxyBase') || configValue('signalingProxyBasePath', '/live/GstSignal');
+    const path = normalizeProxySignalPath(explicitPath || basePath, audio ? 'audio' : 'video');
+    if (/^wss?:\/\//i.test(path)) return path;
+    const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
+    return `${scheme}://${location.host}${path}`;
+  }
+
+  function directVideoWsUrl() {
+    const exact = query('ws') || query('signaling') || query('signal') || String(configValue('directSignalingWsUrl', '') || '');
+    if (exact) {
+      const normalized = normalizeWsUrl(exact) || exact;
+      try {
+        const parsed = new URL(normalized, location.href);
+        if (location.protocol === 'https:' && parsed.protocol === 'ws:') {
+          log('ignoring insecure direct signaling URL on HTTPS page', normalized);
+          return '';
+        }
+        return trimWsUrl(parsed.toString());
+      } catch (_) { return trimWsUrl(normalized); }
+    }
+
     const host = query('signalHost') || query('host') || (location.hostname && location.hostname !== '0.0.0.0' ? location.hostname : '127.0.0.1');
     const port = query('signalPort') || query('videoSignalingPort') || query('port') || String(configValue('videoSignalingPort', configValue('signalingPort', 8189)));
-    const scheme = location.protocol === 'https:' ? 'wss' : (query('signalScheme') || query('scheme') || 'ws');
-    return `${scheme}://${host}:${port}`;
+    const requestedScheme = query('signalScheme') || query('scheme') || '';
+    const scheme = location.protocol === 'https:' ? 'wss' : (requestedScheme || 'ws');
+    return `${scheme}://${formatWsHost(host)}:${port}`;
+  }
+
+  function uniqueWsUrls(urls) {
+    const seen = new Set();
+    return urls.filter((url) => {
+      const normalized = trimWsUrl(url);
+      if (!normalized || seen.has(normalized)) return false;
+      seen.add(normalized);
+      return true;
+    });
+  }
+
+  function primarySignalingCandidates() {
+    const proxy = proxyWsUrl('video');
+    const direct = directVideoWsUrl();
+    const mode = connectionMode();
+    if (mode === 'proxy') return uniqueWsUrls([proxy]);
+    if (mode === 'lan') return uniqueWsUrls([direct]);
+    return uniqueWsUrls([proxy, direct]);
+  }
+
+  function signalingRouteForUrl(url, kind = 'video') {
+    const target = trimWsUrl(url);
+    if (kind === 'audio' && sharedSignalingEnabled() && target === trimWsUrl(primaryWsUrlForSplit())) return state.signalingRoute || 'proxy';
+    if (target && target === trimWsUrl(proxyWsUrl(kind))) return 'proxy';
+    const direct = kind === 'audio' ? directSplitAudioWsUrl() : directVideoWsUrl();
+    if (target && target === trimWsUrl(direct)) return 'direct';
+    return 'explicit';
+  }
+
+  function signalingConnectTimeoutMs() {
+    const raw = query('signalTimeoutMs') || query('signalingConnectTimeoutMs') || configValue('signalingConnectTimeoutMs', 7000);
+    const value = Number.parseInt(raw, 10);
+    return Number.isFinite(value) ? Math.min(30000, Math.max(1000, value)) : 7000;
   }
 
   function defaultWs() {
     try {
       if (state.ws && state.ws.url) return state.ws.url;
     } catch (_) {}
-    const exact = query('ws') || query('signaling') || query('signal');
-    if (exact) {
-      const normalized = normalizeWsUrl(exact) || exact;
-      try {
-        const parsed = new URL(normalized, location.href);
-        if (!(location.protocol === 'https:' && parsed.protocol === 'ws:')) return normalized;
-        log('ignoring insecure explicit signaling URL on HTTPS page', normalized);
-      } catch (_) {}
-    }
-    return proxyWsUrl();
+    return primarySignalingCandidates()[0] || directVideoWsUrl() || proxyWsUrl('video');
   }
 
   function normalizeConnectionMode(value) {
@@ -861,24 +936,20 @@
   }
 
   function primaryWsUrlForSplit() {
-    // Mirror the exact same source of truth as the normal/video WebRTC socket.
-    // This preserves ?ws=, ?signalHost=, ?signalPort=, ?signalScheme=, proxy paths,
-    // and any future primary-signalling override instead of reconstructing from location.
     try {
       if (state.ws && state.ws.url) return state.ws.url;
     } catch (_) {}
     return defaultWs();
   }
 
-  function buildSplitWsFromPrimary(port) {
-    if (!port) return '';
-    const primary = primaryWsUrlForSplit();
+  function buildWsWithPort(primary, port) {
+    if (!port || !primary) return '';
     try {
       const u = new URL(primary, location.href);
       u.port = String(port);
       return trimWsUrl(u.toString());
     } catch (err) {
-      log('split audio could not mirror primary WS URL; falling back to page host', primary, err);
+      log('could not apply split signaling port to URL', primary, port, err);
       return buildProxyAwareWsUrl(port);
     }
   }
@@ -892,12 +963,11 @@
     return text;
   }
 
-  function splitAudioWsUrl() {
-    if (sharedSignalingEnabled()) return trimWsUrl(primaryWsUrlForSplit());
+  function directSplitAudioWsUrl() {
+    if (sharedSignalingEnabled()) return trimWsUrl(directVideoWsUrl());
     const explicit = query('splitAudioWs') || query('audioWs') || String(configValue('splitAudioWsUrl', ''));
     const normalized = normalizeWsUrl(explicit);
     const cfgPort = splitAudioSignalingPort();
-    const mirrored = buildSplitWsFromPrimary(cfgPort);
 
     if (normalized) {
       try {
@@ -906,32 +976,40 @@
         const targetIsLoopback = isLoopbackHostName(u.hostname);
         const derivedPort = Number.parseInt(u.port || String(cfgPort || ''), 10);
 
-        // Old configs could write ws://127.0.0.1:8190. That works only when
-        // the browser is on the streamer. On proxied/FQDN pages, mirror the
-        // primary signalling socket and only swap 8189 -> 8190.
         if (targetIsLoopback && !pageIsLoopback) {
-          const rebuilt = buildSplitWsFromPrimary(derivedPort || cfgPort);
-          log('split audio ignoring loopback WS URL for proxied page', normalized, '=>', rebuilt);
+          const rebuilt = buildWsWithPort(directVideoWsUrl(), derivedPort || cfgPort);
+          log('split audio ignoring loopback direct WS URL for remote page', normalized, '=>', rebuilt);
           return rebuilt;
         }
 
-        // Never let a secure viewer open a browser-side ws:// socket, including
-        // private-IP split-audio overrides. Mirror the already-secure primary
-        // proxy URL instead. HAProxy may still forward this WSS connection to
-        // the ordinary WS backend listener.
         if (location.protocol === 'https:' && u.protocol === 'ws:') {
-          const rebuilt = buildSplitWsFromPrimary(derivedPort || cfgPort);
-          log('split audio ignoring insecure browser WS URL on HTTPS page', normalized, '=>', rebuilt);
-          return rebuilt;
+          log('split audio ignoring insecure direct WS URL on HTTPS page', normalized);
+          return '';
         }
 
-        return trimWsUrl(normalized);
+        return trimWsUrl(u.toString());
       } catch (err) {
-        log('split audio invalid explicit WS URL; mirroring primary WS URL', normalized, err);
+        log('split audio invalid explicit direct WS URL; deriving from primary direct URL', normalized, err);
       }
     }
 
-    return mirrored;
+    return buildWsWithPort(directVideoWsUrl(), cfgPort);
+  }
+
+  function splitAudioSignalingCandidates() {
+    if (sharedSignalingEnabled()) return uniqueWsUrls([primaryWsUrlForSplit()]);
+    const proxy = proxyWsUrl('audio');
+    const direct = directSplitAudioWsUrl();
+    const mode = connectionMode();
+    if (mode === 'proxy') return uniqueWsUrls([proxy]);
+    if (mode === 'lan') return uniqueWsUrls([direct]);
+    if (state.signalingRoute === 'direct') return uniqueWsUrls([direct, proxy]);
+    return uniqueWsUrls([proxy, direct]);
+  }
+
+  function splitAudioWsUrl() {
+    const sa = state.splitAudio || {};
+    return trimWsUrl(sa.url || splitAudioSignalingCandidates()[0] || '');
   }
 
   function splitAudioEnabled() {
@@ -950,14 +1028,15 @@
   function splitAudioStatusLine() {
     const sa = state.splitAudio || {};
     if (!splitAudioEnabled()) return 'off';
-    const url = splitAudioWsUrl() || 'no-url';
+    const url = sa.url || splitAudioWsUrl() || 'no-url';
     const pcState = sa.pc ? (sa.pc.iceConnectionState || sa.pc.connectionState || 'pc') : 'no-pc';
     const wsState = sa.ws ? ['connecting', 'open', 'closing', 'closed'][sa.ws.readyState] || String(sa.ws.readyState) : 'no-ws';
     const producerCount = sa.producers ? sa.producers.size : 0;
     const err = sa.lastError ? ` err ${sa.lastError}` : '';
     const track = sa.lastTrackKind ? ` track ${sa.lastTrackKind}` : '';
     const ka = sa.keepAliveTimer ? ` ka ${sa.keepAliveCount || 0}` : '';
-    return `${sa.status || 'idle'} ${wsState}/${pcState} producers ${producerCount} ${url}${track}${ka}${err}`;
+    const route = sa.route ? ` ${sa.route}` : '';
+    return `${sa.status || 'idle'}${route} ${wsState}/${pcState} producers ${producerCount} ${url}${track}${ka}${err}`;
   }
 
 
@@ -1554,7 +1633,9 @@
       scheme = parsed.protocol === 'wss:' ? 'WSS' : 'WS';
       host = parsed.host;
     } catch (_) {}
-    const route = state.signalingRoute === 'explicit' ? 'explicit' : 'proxy';
+    const route = state.signalingRoute === 'direct'
+      ? (connectionMode() === 'auto' ? 'direct fallback' : 'direct')
+      : (state.signalingRoute === 'explicit' ? 'explicit' : 'proxy');
     return `signaling ${route} ${scheme} ${host}`;
   }
 
@@ -2039,55 +2120,114 @@
   function connect() {
     clearTimeout(state.reconnectTimer);
     const token = ++state.signalingAttemptToken;
-    const url = defaultWs();
-    state.signalingRoute = trimWsUrl(url) === trimWsUrl(proxyWsUrl()) ? 'proxy' : 'explicit';
-    state.signalingUrl = url;
-    updatePlayerControls();
-    setStatus('Connecting via proxy…', url, 'warn');
+    const candidates = primarySignalingCandidates();
+    state.signalingCandidates = [...candidates];
+    let candidateIndex = 0;
 
-    let ws;
-    try {
-      ws = new WebSocket(url);
-      state.ws = ws;
-    } catch (err) {
-      state.ws = null;
-      setStatus('Proxy signaling blocked', err && err.message ? err.message : String(err), 'bad');
-      state.reconnectTimer = setTimeout(connect, 3000);
-      return;
-    }
-
-    ws.addEventListener('open', () => {
-      if (token !== state.signalingAttemptToken || state.ws !== ws) {
-        try { ws.close(); } catch (_) {}
-        return;
-      }
-      setStatus('Connected', 'Waiting for producer…', 'good');
-      startKeepAlive();
-      reconcileSplitAudio('primary-ws-open');
-      updatePlayerControls();
-    });
-
-    ws.addEventListener('close', () => {
-      if (token !== state.signalingAttemptToken || state.ws !== ws) return;
+    const scheduleFullRetry = (detail) => {
+      if (token !== state.signalingAttemptToken) return;
       state.ws = null;
       state.ready = false;
-      stopKeepAlive();
-      stopSession(false, { stopSplitAudio: true, reason: 'primary-ws-close' });
-      setStatus('Disconnected', 'Reconnecting proxy signaling socket…', 'bad');
+      setStatus('Signaling unavailable', detail || 'All signaling routes failed. Retrying…', 'bad');
       state.reconnectTimer = setTimeout(connect, 3000);
-    });
+    };
 
-    ws.addEventListener('error', () => {
-      if (token !== state.signalingAttemptToken || state.ws !== ws) return;
-      setStatus('Proxy signaling error', 'Check WSS/HAProxy/forwarding.', 'bad');
-    });
+    const tryNextCandidate = (previousFailure = '') => {
+      if (token !== state.signalingAttemptToken) return;
+      if (candidateIndex >= candidates.length) {
+        scheduleFullRetry(previousFailure || 'No usable signaling endpoint is configured.');
+        return;
+      }
 
-    ws.addEventListener('message', (ev) => {
-      if (token !== state.signalingAttemptToken || state.ws !== ws) return;
-      let msg;
-      try { msg = JSON.parse(ev.data); } catch (err) { log('bad message', err, ev.data); return; }
-      handleMessage(msg);
-    });
+      const url = candidates[candidateIndex++];
+      const route = signalingRouteForUrl(url, 'video');
+      state.signalingRoute = route;
+      state.signalingUrl = url;
+      updatePlayerControls();
+
+      const routeLabel = route === 'proxy' ? 'proxy' : (route === 'direct' && connectionMode() === 'auto' ? 'direct fallback' : route);
+      const prefix = candidateIndex > 1 && previousFailure ? `${previousFailure} ` : '';
+      setStatus(`Connecting via ${routeLabel}…`, `${prefix}${url}`, 'warn');
+
+      let ws;
+      let opened = false;
+      let advanced = false;
+      let timer = null;
+
+      const advance = (reason) => {
+        if (advanced || opened || token !== state.signalingAttemptToken) return;
+        advanced = true;
+        if (timer) clearTimeout(timer);
+        if (state.ws === ws) state.ws = null;
+        try { if (ws && ws.readyState < WebSocket.CLOSING) ws.close(); } catch (_) {}
+        if (candidateIndex < candidates.length) {
+          const next = candidates[candidateIndex];
+          log('primary signaling route failed; trying fallback', url, '=>', next, reason);
+          setTimeout(() => tryNextCandidate(`${routeLabel} failed; trying fallback.`), 0);
+        } else {
+          log('primary signaling routes exhausted', candidates, reason);
+          scheduleFullRetry(`${routeLabel} failed: ${reason}`);
+        }
+      };
+
+      try {
+        ws = new WebSocket(url);
+        state.ws = ws;
+      } catch (err) {
+        advance(err && err.message ? err.message : String(err));
+        return;
+      }
+
+      timer = setTimeout(() => {
+        advance(`connect timeout after ${signalingConnectTimeoutMs()}ms`);
+      }, signalingConnectTimeoutMs());
+
+      ws.addEventListener('open', () => {
+        if (token !== state.signalingAttemptToken || state.ws !== ws) {
+          try { ws.close(); } catch (_) {}
+          return;
+        }
+        opened = true;
+        if (timer) clearTimeout(timer);
+        const connectedDetail = route === 'direct' && connectionMode() === 'auto'
+          ? `Direct signaling fallback active: ${url}`
+          : 'Waiting for producer…';
+        setStatus(route === 'direct' && connectionMode() === 'auto' ? 'Connected (direct fallback)' : 'Connected', connectedDetail, 'good');
+        startKeepAlive();
+        reconcileSplitAudio('primary-ws-open');
+        updatePlayerControls();
+      });
+
+      ws.addEventListener('close', (ev) => {
+        if (timer) clearTimeout(timer);
+        if (token !== state.signalingAttemptToken || state.ws !== ws) return;
+        if (!opened) {
+          advance(`closed before open (${ev.code || 0}${ev.reason ? `: ${ev.reason}` : ''})`);
+          return;
+        }
+        state.ws = null;
+        state.ready = false;
+        stopKeepAlive();
+        stopSession(false, { stopSplitAudio: true, reason: 'primary-ws-close' });
+        setStatus('Disconnected', `Reconnecting signaling; last route was ${routeLabel}.`, 'bad');
+        state.reconnectTimer = setTimeout(connect, 3000);
+      });
+
+      ws.addEventListener('error', (ev) => {
+        if (token !== state.signalingAttemptToken || state.ws !== ws) return;
+        log('primary signaling error', route, url, ev);
+        if (opened) setStatus('Signaling error', `${routeLabel}: ${url}`, 'bad');
+      });
+
+      ws.addEventListener('message', (ev) => {
+        if (token !== state.signalingAttemptToken || state.ws !== ws) return;
+        let msg;
+        try { msg = JSON.parse(ev.data); } catch (err) { log('bad message', err, ev.data); return; }
+        handleMessage(msg);
+      });
+    };
+
+    tryNextCandidate();
   }
 
   function mediaStreamHasTrack(stream, track) {
@@ -3190,6 +3330,7 @@
 
   function splitDisconnectAudio(reason = 'disabled') {
     const sa = state.splitAudio;
+    sa.attemptToken += 1;
     if (sa.reconnectTimer) { clearTimeout(sa.reconnectTimer); sa.reconnectTimer = null; }
     if (sa.connectTimer) { clearTimeout(sa.connectTimer); sa.connectTimer = null; }
     splitStopKeepAlive();
@@ -3199,6 +3340,8 @@
     if (sa.ws) { try { sa.ws.close(); } catch (_) {} }
     sa.ws = null;
     sa.url = '';
+    sa.route = '';
+    sa.candidates = [];
     sa.producers.clear();
     clearSplitAudioMedia(reason);
     updatePlayerControls();
@@ -3226,18 +3369,19 @@
   function splitConnectAudio(reason = 'connect') {
     if (!splitAudioEnabled()) return false;
     const sa = state.splitAudio;
-    const url = splitAudioWsUrl();
-    if (!url) {
+    const candidates = splitAudioSignalingCandidates();
+    if (!candidates.length) {
       sa.status = 'no-url';
-      sa.lastError = 'missing split audio WS URL/port';
-      log('split audio disabled: missing WS URL/port', window.GST_GLASS_CONFIG || {});
+      sa.lastError = 'missing split audio signaling URL/port';
+      log('split audio disabled: missing signaling candidates', window.GST_GLASS_CONFIG || {});
       updatePlayerControls();
       return false;
     }
 
     if (sa.ws && (sa.ws.readyState === WebSocket.OPEN || sa.ws.readyState === WebSocket.CONNECTING)) {
-      if (sa.url === url) return true;
-      log('split audio reconnecting for URL change', sa.url, '=>', url);
+      const primaryDirectRequiresDirectAudio = connectionMode() === 'auto' && state.signalingRoute === 'direct' && sa.route !== 'direct';
+      if (candidates.includes(sa.url) && !primaryDirectRequiresDirectAudio) return true;
+      log('split audio reconnecting for candidate change', sa.url, '=>', candidates);
       splitStopKeepAlive();
       try { sa.ws.close(); } catch (_) {}
       sa.ws = null;
@@ -3245,70 +3389,129 @@
     }
 
     if (sa.reconnectTimer) { clearTimeout(sa.reconnectTimer); sa.reconnectTimer = null; }
+    if (sa.connectTimer) { clearTimeout(sa.connectTimer); sa.connectTimer = null; }
     splitStopKeepAlive();
-    sa.url = url;
-    sa.status = 'connecting';
-    sa.lastError = '';
-    sa.connectStartedAt = performance.now();
-    sa.trackReceivedAt = 0;
-    sa.lastInboundStats = null;
-    beginWatchdogWarmup(`split-connect:${reason}`);
-    log('split audio connecting', url, reason);
-    updatePlayerControls();
-    try {
-      sa.ws = new WebSocket(url);
-      if (sa.connectTimer) { clearTimeout(sa.connectTimer); sa.connectTimer = null; }
-      sa.connectTimer = setTimeout(() => {
-        if (sa.ws && sa.ws.readyState === WebSocket.CONNECTING) {
-          sa.status = 'connect-timeout';
-          sa.lastError = `WebSocket still CONNECTING after 7000ms; URL=${url}; primary=${primaryWsUrlForSplit()}`;
-          log('split audio WebSocket connect timeout', url, 'primary', primaryWsUrlForSplit());
-        }
-      }, 7000);
-    } catch (err) {
-      sa.status = 'error';
-      sa.lastError = err && err.message ? err.message : String(err);
-      log('split audio WebSocket create failed', url, err);
-      return false;
-    }
+    const token = ++sa.attemptToken;
+    sa.candidates = [...candidates];
+    let candidateIndex = 0;
 
-    sa.ws.addEventListener('open', () => {
-      if (sa.connectTimer) { clearTimeout(sa.connectTimer); sa.connectTimer = null; }
+    const retryAllLater = (detail) => {
+      if (token !== sa.attemptToken) return;
+      sa.ws = null;
       sa.ready = false;
-      sa.status = 'ws-open';
-      sa.lastError = '';
-      beginWatchdogWarmup('split-ws-open');
-      log('split audio signaling connected', url);
+      sa.status = 'reconnecting';
+      sa.lastError = detail || 'all split audio signaling routes failed';
       updatePlayerControls();
-      splitStartKeepAlive('ws-open');
-      setTimeout(() => splitRequestProducerList('open+250ms'), 250);
-      setTimeout(() => splitRequestProducerList('open+1000ms'), 1000);
-    });
-    sa.ws.addEventListener('close', (ev) => {
-      if (sa.connectTimer) { clearTimeout(sa.connectTimer); sa.connectTimer = null; }
-      const shouldReconnect = splitAudioEnabled() && sa.url === url;
-      sa.ready = false;
-      sa.status = shouldReconnect ? 'reconnecting' : 'closed';
-      sa.lastError = ev && ev.reason ? ev.reason : '';
-      splitStopKeepAlive();
-      splitStopSession(false);
-      log('split audio signaling closed', url, ev.code, ev.reason || '', shouldReconnect ? 'retrying' : 'not retrying');
+      sa.reconnectTimer = setTimeout(() => splitConnectAudio('retry'), 1500);
+    };
+
+    const tryNextCandidate = (previousFailure = '') => {
+      if (token !== sa.attemptToken || !splitAudioEnabled()) return;
+      if (candidateIndex >= candidates.length) {
+        retryAllLater(previousFailure);
+        return;
+      }
+
+      const url = candidates[candidateIndex++];
+      const route = signalingRouteForUrl(url, 'audio');
+      sa.url = url;
+      sa.route = route;
+      sa.status = 'connecting';
+      sa.lastError = previousFailure;
+      sa.connectStartedAt = performance.now();
+      sa.trackReceivedAt = 0;
+      sa.lastInboundStats = null;
+      beginWatchdogWarmup(`split-connect:${reason}`);
+      log('split audio connecting', route, url, reason);
       updatePlayerControls();
-      if (shouldReconnect) sa.reconnectTimer = setTimeout(() => splitConnectAudio('retry'), 1500);
-    });
-    sa.ws.addEventListener('error', (ev) => {
-      if (sa.connectTimer) { clearTimeout(sa.connectTimer); sa.connectTimer = null; }
-      sa.status = 'error';
-      sa.lastError = 'WebSocket error';
-      log('split audio signaling error', url, ev);
-      updatePlayerControls();
-    });
-    sa.ws.addEventListener('message', (ev) => {
-      let msg;
-      try { msg = JSON.parse(ev.data); } catch (err) { log('split audio bad message', err, ev.data); return; }
-      if (jbufDebugEnabled()) log('split audio msg', msg.type, msg);
-      splitHandleMessage(msg);
-    });
+
+      let ws;
+      let opened = false;
+      let advanced = false;
+
+      const advance = (failure) => {
+        if (advanced || opened || token !== sa.attemptToken) return;
+        advanced = true;
+        if (sa.connectTimer) { clearTimeout(sa.connectTimer); sa.connectTimer = null; }
+        if (sa.ws === ws) sa.ws = null;
+        try { if (ws && ws.readyState < WebSocket.CLOSING) ws.close(); } catch (_) {}
+        if (candidateIndex < candidates.length) {
+          log('split audio signaling route failed; trying fallback', url, '=>', candidates[candidateIndex], failure);
+          setTimeout(() => tryNextCandidate(`${route} failed; trying fallback`), 0);
+        } else {
+          log('split audio signaling routes exhausted', candidates, failure);
+          retryAllLater(`${route} failed: ${failure}`);
+        }
+      };
+
+      try {
+        ws = new WebSocket(url);
+        sa.ws = ws;
+      } catch (err) {
+        advance(err && err.message ? err.message : String(err));
+        return;
+      }
+
+      sa.connectTimer = setTimeout(() => {
+        advance(`connect timeout after ${signalingConnectTimeoutMs()}ms`);
+      }, signalingConnectTimeoutMs());
+
+      ws.addEventListener('open', () => {
+        if (token !== sa.attemptToken || sa.ws !== ws) {
+          try { ws.close(); } catch (_) {}
+          return;
+        }
+        opened = true;
+        if (sa.connectTimer) { clearTimeout(sa.connectTimer); sa.connectTimer = null; }
+        sa.ready = false;
+        sa.status = route === 'direct' && connectionMode() === 'auto' ? 'ws-open-direct-fallback' : 'ws-open';
+        sa.lastError = '';
+        beginWatchdogWarmup('split-ws-open');
+        log('split audio signaling connected', route, url);
+        updatePlayerControls();
+        splitStartKeepAlive('ws-open');
+        setTimeout(() => splitRequestProducerList('open+250ms'), 250);
+        setTimeout(() => splitRequestProducerList('open+1000ms'), 1000);
+      });
+
+      ws.addEventListener('close', (ev) => {
+        if (sa.connectTimer) { clearTimeout(sa.connectTimer); sa.connectTimer = null; }
+        if (token !== sa.attemptToken || sa.ws !== ws) return;
+        if (!opened) {
+          advance(`closed before open (${ev.code || 0}${ev.reason ? `: ${ev.reason}` : ''})`);
+          return;
+        }
+        const shouldReconnect = splitAudioEnabled() && sa.url === url;
+        sa.ready = false;
+        sa.status = shouldReconnect ? 'reconnecting' : 'closed';
+        sa.lastError = ev && ev.reason ? ev.reason : '';
+        splitStopKeepAlive();
+        splitStopSession(false);
+        log('split audio signaling closed', route, url, ev.code, ev.reason || '', shouldReconnect ? 'retrying' : 'not retrying');
+        updatePlayerControls();
+        if (shouldReconnect) sa.reconnectTimer = setTimeout(() => splitConnectAudio('retry'), 1500);
+      });
+
+      ws.addEventListener('error', (ev) => {
+        if (token !== sa.attemptToken || sa.ws !== ws) return;
+        log('split audio signaling error', route, url, ev);
+        if (opened) {
+          sa.status = 'error';
+          sa.lastError = 'WebSocket error';
+          updatePlayerControls();
+        }
+      });
+
+      ws.addEventListener('message', (ev) => {
+        if (token !== sa.attemptToken || sa.ws !== ws) return;
+        let msg;
+        try { msg = JSON.parse(ev.data); } catch (err) { log('split audio bad message', err, ev.data); return; }
+        if (jbufDebugEnabled()) log('split audio msg', msg.type, msg);
+        splitHandleMessage(msg);
+      });
+    };
+
+    tryNextCandidate();
     return true;
   }
 
@@ -3334,6 +3537,8 @@
       separateHtmlMediaElements: playerSeparateHtmlMediaElements(),
       avPipelineMode: avPipelineMode(),
       splitAudioWsUrl: splitAudioWsUrl(),
+      splitAudioSignalingCandidates: splitAudioSignalingCandidates(),
+      splitAudioSignalingRoute: state.splitAudio.route || '',
       splitAudioSignalingPort: splitAudioSignalingPort(),
       sharedSignaling: sharedSignalingEnabled(),
       splitPlayerSyncMode: splitPlayerSyncMode(),
@@ -3363,6 +3568,8 @@
       enabled: splitAudioEnabled(),
       mode: avPipelineMode(),
       url: splitAudioWsUrl(),
+      candidates: splitAudioSignalingCandidates(),
+      route: state.splitAudio.route || '',
       primaryUrl: primaryWsUrlForSplit(),
       port: splitAudioSignalingPort(),
       sharedSignaling: sharedSignalingEnabled(),
@@ -3427,7 +3634,7 @@
     unmute: () => { state.controller.userMuted = false; applyLogicalMediaState('console-unmute'); },
     volume: (value) => { const n = Number(value); if (Number.isFinite(n)) state.controller.volume = Math.max(0, Math.min(n, 1)); applyLogicalMediaState('console-volume'); },
     route: (mode) => setConnectionMode(mode, 'console'),
-    state: () => ({ paused: state.controller.userPaused, muted: state.controller.userMuted, volume: state.controller.volume, connectionMode: connectionMode(), mediaRoutePolicy: mediaRoutePolicyLine(), signalingRoute: state.signalingRoute, signalingUrl: state.signalingUrl, signalingTransport: signalingTransportStatusLine(), screenWakeLock: screenWakeLockLine(), splitAudio: splitAudioStatusLine(), splitSync: splitSyncStatusLine(), videoPaused: video.paused, audioPaused: audio.paused, videoMuted: video.muted, audioMuted: audio.muted })
+    state: () => ({ paused: state.controller.userPaused, muted: state.controller.userMuted, volume: state.controller.volume, connectionMode: connectionMode(), mediaRoutePolicy: mediaRoutePolicyLine(), signalingRoute: state.signalingRoute, signalingUrl: state.signalingUrl, signalingCandidates: [...state.signalingCandidates], signalingTransport: signalingTransportStatusLine(), screenWakeLock: screenWakeLockLine(), splitAudio: splitAudioStatusLine(), splitSync: splitSyncStatusLine(), videoPaused: video.paused, audioPaused: audio.paused, videoMuted: video.muted, audioMuted: audio.muted })
   };
 
   startConfigReloadTimer();

@@ -9,10 +9,10 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="Glass Live">
   <title>GStreamer Glass Live</title>
-  <link rel="manifest" href="./manifest.webmanifest?v=3.7.52f45-honest-video-sender-queue">
+  <link rel="manifest" href="./manifest.webmanifest?v=3.8" crossorigin="use-credentials">
   <link rel="icon" type="image/png" sizes="192x192" href="./icons/gstreamer-glass-192.png">
   <link rel="apple-touch-icon" href="./icons/gstreamer-glass-192.png">
-  <link rel="stylesheet" href="./player.css?v=3.7.52f45-honest-video-sender-queue">
+  <link rel="stylesheet" href="./player.css?v=3.8">
 </head>
 <body>
   <main id="playerRoot" class="playerRoot">
@@ -44,7 +44,7 @@
 
       function loadFrontend() {
         const frontendScript = document.createElement('script');
-        frontendScript.src = `./player.js?v=3.7.52f45-honest-video-sender-queue&t=${Date.now()}`;
+        frontendScript.src = `./player.js?v=3.8&t=${Date.now()}`;
         document.body.appendChild(frontendScript);
       }
     })();
