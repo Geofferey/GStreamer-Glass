@@ -1,5 +1,5 @@
 (() => {
-  const FRONTEND_VERSION = '3.8-stop-gate-clean-5';
+  const FRONTEND_VERSION = '3.8-stop-gate-clean-6';
   console.info(`[GStreamer Glass Live] frontend ${FRONTEND_VERSION}`);
   const playerRoot = document.getElementById('playerRoot');
   const video = document.getElementById('video');
@@ -63,6 +63,7 @@
     streamTransitionToken: null,
     restartPending: false,
     manualResumeRequired: false,
+    stopResumeLocked: false,
     keepAliveTimer: null,
     keepAliveCount: 0,
     lastKeepAliveAt: 0,
@@ -212,6 +213,19 @@
     try { if (socket) socket.close(1000, reason); } catch (_) {}
   }
 
+  function finishRestart() {
+    state.restartPending = false;
+    if (state.stopResumeLocked) {
+      state.manualResumeRequired = true;
+      stopSignaling('manual-resume-required');
+      setStatus('Available', 'Press Play to connect.', 'good');
+      return;
+    }
+    state.manualResumeRequired = false;
+    state.reconnectAttempts = 0;
+    connect();
+  }
+
   async function fetchStreamStopMarker() {
     const requestToken = ++state.streamStateRequestToken;
     const abortController = typeof AbortController === 'function' ? new AbortController() : null;
@@ -236,29 +250,25 @@
 
       if (data.restarting) {
         state.restartPending = true;
-        state.manualResumeRequired = false;
+        state.manualResumeRequired = state.stopResumeLocked;
         stopSignaling('restarting');
         setStatus('Restarting', 'Waiting for the stream to return.', 'warn');
       } else if (state.intentionalStopMarker) {
         state.restartPending = false;
         state.manualResumeRequired = true;
+        state.stopResumeLocked = true;
         stopSignaling('intentional-stop');
         setStatus('Stream stopped', 'The broadcaster intentionally stopped the stream.', 'warn');
       } else if (transitionChanged && transition === 'stop') {
         state.restartPending = false;
         state.manualResumeRequired = true;
+        state.stopResumeLocked = true;
         stopSignaling('manual-resume-required');
         setStatus('Available', 'Press Play to connect.', 'good');
       } else if (transitionChanged && transition === 'restart') {
-        state.restartPending = false;
-        state.manualResumeRequired = false;
-        state.reconnectAttempts = 0;
-        connect();
+        finishRestart();
       } else if (state.restartPending) {
-        state.restartPending = false;
-        state.manualResumeRequired = false;
-        state.reconnectAttempts = 0;
-        connect();
+        finishRestart();
       } else if (state.manualResumeRequired) {
         stopSignaling('manual-resume-required');
         setStatus('Available', 'Press Play to connect.', 'good');
@@ -2104,6 +2114,7 @@
   function toggleLogicalPause() {
     if (state.manualResumeRequired && state.streamStateKnown && !state.intentionalStopMarker) {
       state.manualResumeRequired = false;
+      state.stopResumeLocked = false;
       state.reconnectAttempts = 0;
       state.splitAudio.reconnectAttempts = 0;
       noteUserGesture(false);
