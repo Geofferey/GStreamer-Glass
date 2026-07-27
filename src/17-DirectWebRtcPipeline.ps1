@@ -417,6 +417,46 @@ function Write-DirectWebRtcWebClientConfig {
     }
 }
 
+function Set-DirectWebRtcStreamStopMarker {
+    param(
+        [Parameter(Mandatory)][bool]$IntentionalStop,
+        [switch]$Restarting
+    )
+
+    try {
+        $webDir = Get-DirectWebRtcWebDirectory
+        if ([string]::IsNullOrWhiteSpace($webDir)) { return }
+        $statePath = Join-Path $webDir 'gstglass-stream-state.json'
+        $transition = ''
+        $transitionToken = ''
+        if (Test-Path -LiteralPath $statePath -PathType Leaf) {
+            try {
+                $existingState = Get-Content -LiteralPath $statePath -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+                $transitionProperty = $existingState.PSObject.Properties['transition']
+                $transitionTokenProperty = $existingState.PSObject.Properties['transitionToken']
+                if ($transitionProperty) { $transition = [string]$transitionProperty.Value }
+                if ($transitionTokenProperty) { $transitionToken = [string]$transitionTokenProperty.Value }
+            }
+            catch {}
+        }
+        if ($IntentionalStop -or $Restarting) {
+            $transition = if ($IntentionalStop) { 'stop' } else { 'restart' }
+            $transitionToken = [Guid]::NewGuid().ToString('N')
+        }
+        $data = [ordered]@{
+            intentionalStop = $IntentionalStop
+            restarting      = [bool]$Restarting
+            transition      = $transition
+            transitionToken = $transitionToken
+            writtenUtc      = [DateTime]::UtcNow.ToString('o')
+        }
+        Set-Content -LiteralPath $statePath -Value ($data | ConvertTo-Json -Compress) -Encoding UTF8
+    }
+    catch {
+        Append-Log "Stream stop-state marker could not be written: $($_.Exception.Message)"
+    }
+}
+
 function Build-DirectWebRtcEncodedVideoBranch {
     # webrtcsink accepts encoded video/x-h264/h265/av1 on its video pad. The
     # raw-feed experiment could not discover a usable encoder for D3D11 frames
@@ -742,4 +782,3 @@ function Build-DirectWebRtcAudioOnlyArguments {
     if ($chkVerbose.Checked) { $flags += ' -v' }
     return "$flags $pipeline"
 }
-

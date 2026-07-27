@@ -144,6 +144,9 @@ function Start-GstStream {
     }
 
     Write-DirectWebRtcWebClientConfig
+    if (-not $PreviewOnly) {
+        Set-DirectWebRtcStreamStopMarker -IntentionalStop $false
+    }
 
     try {
         $script:ForceLiveScenePreviewBranch = $controlledLiveRequested
@@ -649,10 +652,24 @@ function Stop-GstStream {
     param(
         [switch]$Restart,
         [switch]$AutomaticRestart,
-        [switch]$SuppressPreviewRestore
+        [switch]$SuppressPreviewRestore,
+        [switch]$Intentional,
+        [switch]$ViewerRestart
     )
 
-    Write-PsDebugTrace "Stop-GstStream: entering (Restart=$Restart AutomaticRestart=$AutomaticRestart)"
+    Write-PsDebugTrace "Stop-GstStream: entering (Restart=$Restart AutomaticRestart=$AutomaticRestart Intentional=$Intentional ViewerRestart=$ViewerRestart)"
+    if ($ViewerRestart) {
+        Set-DirectWebRtcStreamStopMarker -IntentionalStop $false -Restarting
+    }
+    elseif (
+        $Intentional -and
+        -not $script:PreviewOnlyMode -and
+        $chkSendEosOnStop -and
+        $chkSendEosOnStop.Checked
+    ) {
+        Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Marking the stream intentionally stopped before pipeline teardown."
+        Set-DirectWebRtcStreamStopMarker -IntentionalStop $true
+    }
     if (Stop-ControlledLiveStream -Restart:$Restart -AutomaticRestart:$AutomaticRestart -SuppressPreviewRestore:$SuppressPreviewRestore) { return }
 
     if ($script:DynamicScenePreviewActive) {
@@ -1104,4 +1121,3 @@ function Test-GStreamerElements {
         ) | Out-Null
     }
 }
-

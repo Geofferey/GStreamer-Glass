@@ -1428,6 +1428,7 @@ $script:DefaultJbufMaxMs = 30
 $script:DefaultPlayerStatsOverlay = $true
 $script:DefaultPlayerJbufDebug = $false
 $script:DefaultPlayerUrlOverrides = $false
+$script:DefaultSendEosOnStop = $false
 $script:DefaultLiveEdgeGreenMs = 50
 $script:DefaultLiveEdgeYellowMs = 120
 $script:DefaultLiveEdgeAverageSec = 5

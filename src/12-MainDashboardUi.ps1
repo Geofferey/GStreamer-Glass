@@ -1043,6 +1043,10 @@ function Apply-ModernDashboardUi {
     Add-Field $r -Control $btnOpenDirectWebRtcViewer -Width 130 | Out-Null
     Add-Field $r -Control $btnCopyDirectWebRtcViewer -Width 105 | Out-Null
 
+    $s = Add-Section $panePlayer 'Stop behavior'
+    $r = Add-Row $s
+    Add-Field $r -Control $chkSendEosOnStop -Width 240 | Out-Null
+
     # ---------------- Recording ----------------
     $paneRecording = New-SettingsPane $tabRecording
 

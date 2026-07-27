@@ -1,5 +1,5 @@
 (() => {
-  const FRONTEND_VERSION = '3.8';
+  const FRONTEND_VERSION = '3.8-stop-gate-clean-5';
   console.info(`[GStreamer Glass Live] frontend ${FRONTEND_VERSION}`);
   const playerRoot = document.getElementById('playerRoot');
   const video = document.getElementById('video');
@@ -56,6 +56,13 @@
     producers: new Map(),
     started: false,
     reconnectTimer: null,
+    reconnectAttempts: 0,
+    intentionalStopMarker: false,
+    streamStateKnown: false,
+    streamStateRequestToken: 0,
+    streamTransitionToken: null,
+    restartPending: false,
+    manualResumeRequired: false,
     keepAliveTimer: null,
     keepAliveCount: 0,
     lastKeepAliveAt: 0,
@@ -108,7 +115,7 @@
     liveEdgeFaultActive: false,
     lastCompactStatus: '',
     videoZoom: { scale: 1, x: 0, y: 0, pointers: new Map(), pinchStart: null, panStart: null, gestureMoved: false, suppressTapUntil: 0 },
-    splitAudio: { ws: null, pc: null, sessionId: null, peerId: null, remotePeerId: null, pendingIce: [], producers: new Map(), ready: false, url: '', route: '', candidates: [], attemptToken: 0, status: 'idle', reconnectTimer: null, connectTimer: null, keepAliveTimer: null, keepAliveCount: 0, lastKeepAliveAt: 0, lastError: '', lastTrackKind: '', lastInboundStats: null, lastHealthyAt: 0, lastRecoverAt: 0, recoveryCount: 0, stallTicks: 0, offsetHighTicks: 0, lastAvOffsetMs: NaN, syncHealth: 'free-run', connectStartedAt: 0, trackReceivedAt: 0, warmupUntil: 0, avOffsetBaselineMs: NaN, avOffsetBaselineSamples: 0, avOffsetBaselineLocked: false, avOffsetDeltaMs: NaN, avOffsetBaselineReason: 'none' },
+    splitAudio: { ws: null, pc: null, sessionId: null, peerId: null, remotePeerId: null, pendingIce: [], producers: new Map(), ready: false, url: '', route: '', candidates: [], attemptToken: 0, status: 'idle', reconnectTimer: null, reconnectAttempts: 0, connectTimer: null, keepAliveTimer: null, keepAliveCount: 0, lastKeepAliveAt: 0, lastError: '', lastTrackKind: '', lastInboundStats: null, lastHealthyAt: 0, lastRecoverAt: 0, recoveryCount: 0, stallTicks: 0, offsetHighTicks: 0, lastAvOffsetMs: NaN, syncHealth: 'free-run', connectStartedAt: 0, trackReceivedAt: 0, warmupUntil: 0, avOffsetBaselineMs: NaN, avOffsetBaselineSamples: 0, avOffsetBaselineLocked: false, avOffsetDeltaMs: NaN, avOffsetBaselineReason: 'none' },
     controller: { userPaused: false, userMuted: false, volume: 1, uiPinned: false, initialized: false, installPrompt: null, bar: null, playButton: null, muteButton: null, volumeInput: null, spacer: null, reconnectButton: null, routeButton: null, installButton: null, zoomButton: null, pinButton: null, fullscreenButton: null, status: null, lastAppliedAt: 0 }
   };
 
@@ -178,11 +185,109 @@
     }
   }
 
+  function signalingAllowedByStreamState() {
+    return state.streamStateKnown &&
+      !state.intentionalStopMarker &&
+      !state.manualResumeRequired;
+  }
+
+  function stopSignaling(reason = 'stream-state') {
+    const active = !!(
+      state.ws ||
+      state.pc ||
+      state.reconnectTimer ||
+      state.splitAudio.ws ||
+      state.splitAudio.pc ||
+      state.splitAudio.reconnectTimer
+    );
+    clearTimeout(state.reconnectTimer);
+    state.reconnectTimer = null;
+    if (!active) return;
+    state.signalingAttemptToken += 1;
+    const socket = state.ws;
+    state.ws = null;
+    state.ready = false;
+    stopKeepAlive();
+    stopSession(false, { stopSplitAudio: true, reason });
+    try { if (socket) socket.close(1000, reason); } catch (_) {}
+  }
+
+  async function fetchStreamStopMarker() {
+    const requestToken = ++state.streamStateRequestToken;
+    const abortController = typeof AbortController === 'function' ? new AbortController() : null;
+    const abortTimer = abortController ? setTimeout(() => abortController.abort(), 750) : null;
+    try {
+      const res = await fetch(`./gstglass-stream-state.json?reload=${Date.now()}`, {
+        cache: 'no-store',
+        ...(abortController ? { signal: abortController.signal } : {})
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      if (abortTimer) clearTimeout(abortTimer);
+      if (requestToken !== state.streamStateRequestToken) return;
+      const transition = String(data.transition || '');
+      const transitionToken = String(data.transitionToken || '');
+      const transitionChanged = state.streamTransitionToken !== null &&
+        !!transitionToken &&
+        transitionToken !== state.streamTransitionToken;
+      state.streamTransitionToken = transitionToken;
+      state.streamStateKnown = true;
+      state.intentionalStopMarker = !!data.intentionalStop;
+
+      if (data.restarting) {
+        state.restartPending = true;
+        state.manualResumeRequired = false;
+        stopSignaling('restarting');
+        setStatus('Restarting', 'Waiting for the stream to return.', 'warn');
+      } else if (state.intentionalStopMarker) {
+        state.restartPending = false;
+        state.manualResumeRequired = true;
+        stopSignaling('intentional-stop');
+        setStatus('Stream stopped', 'The broadcaster intentionally stopped the stream.', 'warn');
+      } else if (transitionChanged && transition === 'stop') {
+        state.restartPending = false;
+        state.manualResumeRequired = true;
+        stopSignaling('manual-resume-required');
+        setStatus('Available', 'Press Play to connect.', 'good');
+      } else if (transitionChanged && transition === 'restart') {
+        state.restartPending = false;
+        state.manualResumeRequired = false;
+        state.reconnectAttempts = 0;
+        connect();
+      } else if (state.restartPending) {
+        state.restartPending = false;
+        state.manualResumeRequired = false;
+        state.reconnectAttempts = 0;
+        connect();
+      } else if (state.manualResumeRequired) {
+        stopSignaling('manual-resume-required');
+        setStatus('Available', 'Press Play to connect.', 'good');
+      } else if (!state.ws && !state.reconnectTimer) {
+        state.reconnectAttempts = 0;
+        connect();
+      }
+      updatePlayerControls();
+    } catch (_) {
+      if (abortTimer) clearTimeout(abortTimer);
+      if (requestToken !== state.streamStateRequestToken) return;
+      state.streamStateKnown = false;
+      state.intentionalStopMarker = true;
+      state.manualResumeRequired = true;
+      stopSignaling('state-unavailable');
+      setStatus('Stream stopped', 'State file unavailable; waiting without signaling.', 'warn');
+      updatePlayerControls();
+    }
+  }
+
   function startConfigReloadTimer() {
     state.lastConfigSignature = configSignature(window.GST_GLASS_CONFIG || {});
     if (state.configReloadTimer) clearInterval(state.configReloadTimer);
-    state.configReloadTimer = setInterval(() => reloadRuntimeConfig('poll'), 1000);
+    state.configReloadTimer = setInterval(() => {
+      reloadRuntimeConfig('poll');
+      fetchStreamStopMarker();
+    }, 1000);
     setTimeout(() => reloadRuntimeConfig('startup'), 250);
+    setTimeout(() => fetchStreamStopMarker(), 250);
   }
 
   function stopConfigReloadTimer() {
@@ -1667,7 +1772,7 @@
     stopKeepAlive();
     stopSession(false, { stopSplitAudio: true, reason });
     try { if (oldSocket) oldSocket.close(1000, reason); } catch (_) {}
-    connect();
+    if (signalingAllowedByStreamState()) connect();
   }
 
   function setConnectionMode(mode, reason = 'control') {
@@ -1876,8 +1981,9 @@
     document.body.classList.toggle('uiPinned', !!ctl.uiPinned);
     if (ctl.bar) ctl.bar.hidden = !active;
     if (ctl.playButton) {
-      ctl.playButton.textContent = ctl.userPaused ? '▶' : '❚❚';
-      ctl.playButton.title = ctl.userPaused ? 'Play' : 'Pause';
+      const showPlay = ctl.userPaused || state.manualResumeRequired;
+      ctl.playButton.textContent = showPlay ? '▶' : '❚❚';
+      ctl.playButton.title = showPlay ? 'Play' : 'Pause';
       ctl.playButton.setAttribute('aria-label', ctl.playButton.title);
     }
     if (ctl.muteButton) {
@@ -1996,6 +2102,17 @@
   }
 
   function toggleLogicalPause() {
+    if (state.manualResumeRequired && state.streamStateKnown && !state.intentionalStopMarker) {
+      state.manualResumeRequired = false;
+      state.reconnectAttempts = 0;
+      state.splitAudio.reconnectAttempts = 0;
+      noteUserGesture(false);
+      setStatus('Connecting', 'Starting signaling after user request…', 'warn');
+      connect();
+      reconcileSplitAudio('manual-play');
+      updatePlayerControls();
+      return;
+    }
     state.controller.userPaused = !state.controller.userPaused;
     if (!state.controller.userPaused) noteUserGesture(false);
     applyLogicalMediaState('pause-toggle');
@@ -2117,7 +2234,25 @@
     else if (sharedSignalingEnabled()) setStatus('Waiting for video', 'Shared signaling connected; waiting for the named video producer.', 'warn');
   }
 
+  const RECONNECT_DELAYS_MS = [3000, 6000, 12000, 24000, 30000];
+
+  function scheduleReconnect() {
+    if (!signalingAllowedByStreamState()) return;
+    clearTimeout(state.reconnectTimer);
+    state.reconnectTimer = null;
+    if (state.reconnectAttempts < RECONNECT_DELAYS_MS.length) {
+      const delay = RECONNECT_DELAYS_MS[state.reconnectAttempts];
+      state.reconnectAttempts += 1;
+      state.reconnectTimer = setTimeout(connect, delay);
+    } else {
+      state.manualResumeRequired = true;
+      setStatus('Available', 'Automatic reconnect stopped. Press Play to try again.', 'good');
+      updatePlayerControls();
+    }
+  }
+
   function connect() {
+    if (!signalingAllowedByStreamState()) return false;
     clearTimeout(state.reconnectTimer);
     const token = ++state.signalingAttemptToken;
     const candidates = primarySignalingCandidates();
@@ -2129,7 +2264,7 @@
       state.ws = null;
       state.ready = false;
       setStatus('Signaling unavailable', detail || 'All signaling routes failed. Retrying…', 'bad');
-      state.reconnectTimer = setTimeout(connect, 3000);
+      scheduleReconnect();
     };
 
     const tryNextCandidate = (previousFailure = '') => {
@@ -2189,6 +2324,7 @@
         }
         opened = true;
         if (timer) clearTimeout(timer);
+        state.reconnectAttempts = 0;
         const connectedDetail = route === 'direct' && connectionMode() === 'auto'
           ? `Direct signaling fallback active: ${url}`
           : 'Waiting for producer…';
@@ -2209,8 +2345,12 @@
         state.ready = false;
         stopKeepAlive();
         stopSession(false, { stopSplitAudio: true, reason: 'primary-ws-close' });
-        setStatus('Disconnected', `Reconnecting signaling; last route was ${routeLabel}.`, 'bad');
-        state.reconnectTimer = setTimeout(connect, 3000);
+        // An established signaling path disappearing invalidates the cached
+        // running state. Do not touch any signaling URL again until a fresh
+        // state-file read explicitly permits it.
+        state.streamStateKnown = false;
+        setStatus('Checking stream state', 'Signaling closed; waiting for state.json.', 'warn');
+        fetchStreamStopMarker();
       });
 
       ws.addEventListener('error', (ev) => {
@@ -2327,6 +2467,7 @@
   }
 
   async function startConsumer(peerId) {
+    if (!signalingAllowedByStreamState()) return false;
     if (!state.ws || state.ws.readyState !== WebSocket.OPEN) return connect();
     stopSession(false, { preserveSplitAudio: true });
     state.remotePeerId = peerId;
@@ -3011,6 +3152,12 @@
       ev.stopPropagation();
       return;
     }
+    if (state.manualResumeRequired) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      toggleLogicalPause();
+      return;
+    }
     noteUserGesture(true);
   }
   video.addEventListener('click', handleVideoActivation);
@@ -3366,7 +3513,22 @@
     return splitConnectAudio(reason);
   }
 
+  function scheduleSplitReconnect() {
+    const sa = state.splitAudio;
+    if (!signalingAllowedByStreamState()) return;
+    clearTimeout(sa.reconnectTimer);
+    sa.reconnectTimer = null;
+    if (sa.reconnectAttempts < RECONNECT_DELAYS_MS.length) {
+      const delay = RECONNECT_DELAYS_MS[sa.reconnectAttempts];
+      sa.reconnectAttempts += 1;
+      sa.reconnectTimer = setTimeout(() => splitConnectAudio('retry'), delay);
+    } else {
+      sa.status = 'reconnect-stopped';
+    }
+  }
+
   function splitConnectAudio(reason = 'connect') {
+    if (!signalingAllowedByStreamState()) return false;
     if (!splitAudioEnabled()) return false;
     const sa = state.splitAudio;
     const candidates = splitAudioSignalingCandidates();
@@ -3402,7 +3564,7 @@
       sa.status = 'reconnecting';
       sa.lastError = detail || 'all split audio signaling routes failed';
       updatePlayerControls();
-      sa.reconnectTimer = setTimeout(() => splitConnectAudio('retry'), 1500);
+      scheduleSplitReconnect();
     };
 
     const tryNextCandidate = (previousFailure = '') => {
@@ -3464,6 +3626,7 @@
         opened = true;
         if (sa.connectTimer) { clearTimeout(sa.connectTimer); sa.connectTimer = null; }
         sa.ready = false;
+        sa.reconnectAttempts = 0;
         sa.status = route === 'direct' && connectionMode() === 'auto' ? 'ws-open-direct-fallback' : 'ws-open';
         sa.lastError = '';
         beginWatchdogWarmup('split-ws-open');
@@ -3489,7 +3652,7 @@
         splitStopSession(false);
         log('split audio signaling closed', route, url, ev.code, ev.reason || '', shouldReconnect ? 'retrying' : 'not retrying');
         updatePlayerControls();
-        if (shouldReconnect) sa.reconnectTimer = setTimeout(() => splitConnectAudio('retry'), 1500);
+        if (shouldReconnect) scheduleSplitReconnect();
       });
 
       ws.addEventListener('error', (ev) => {
@@ -3628,7 +3791,10 @@
   };
 
   window.GstGlassPlayer = {
-    play: () => { state.controller.userPaused = false; applyLogicalMediaState('console-play'); },
+    play: () => {
+      if (state.manualResumeRequired) toggleLogicalPause();
+      else { state.controller.userPaused = false; applyLogicalMediaState('console-play'); }
+    },
     pause: () => { state.controller.userPaused = true; applyLogicalMediaState('console-pause'); },
     mute: () => { state.controller.userMuted = true; applyLogicalMediaState('console-mute'); },
     unmute: () => { state.controller.userMuted = false; applyLogicalMediaState('console-unmute'); },
@@ -3645,8 +3811,7 @@
   }
 
   updatePlayerControls();
-  connect();
-  reconcileSplitAudio('startup');
+  setStatus('Checking stream state', 'Waiting for stream state before connecting.', 'warn');
 })();
 
 // audio jbuf video jbuf GstGlassJbuf AV render decoupled media elements split av pipelines split audio player controller dual watchdog warmup split offset baseline PWA install service worker pinch zoom pan proxy WSS direct ICE

@@ -185,6 +185,7 @@
         'Apply-DirectWebRtcSmoothnessProfile'
         'Get-DirectWebRtcPacingQueue'
         'Write-DirectWebRtcWebClientConfig'
+        'Set-DirectWebRtcStreamStopMarker'
         'Build-DirectWebRtcEncodedVideoBranch'
         'Get-DirectWebRtcWebServerPathSegment'
         'Get-DirectWebRtcUnifiedRtpVideoDefinition'

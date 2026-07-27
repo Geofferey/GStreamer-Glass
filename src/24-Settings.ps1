@@ -85,6 +85,7 @@ function Save-Settings {
             LiveEdgeYellowMs = [int]$numLiveEdgeYellowMs.Value
             LiveEdgeAverageSec = [int]$numLiveEdgeAverageSec.Value
             PlayerUrlOverrides = [bool]$chkPlayerUrlOverrides.Checked
+            SendEosOnStop = [bool]$chkSendEosOnStop.Checked
             PlayerSeparateHtmlMediaElements = [bool]$chkPlayerSeparateHtmlMediaElements.Checked
             SeparateHtmlMediaElements = [bool]$chkPlayerSeparateHtmlMediaElements.Checked
             PlayerAvRenderMode = if ($chkPlayerSeparateHtmlMediaElements.Checked) { 'Decoupled video/audio elements' } else { 'Synced single media element' }
@@ -468,6 +469,7 @@ function Restore-SettingsFromObject {
         if ($null -ne $settings.LiveEdgeAverageSec) { $numLiveEdgeAverageSec.Value = [decimal]([Math]::Min([int]$numLiveEdgeAverageSec.Maximum, [Math]::Max([int]$numLiveEdgeAverageSec.Minimum, [int]$settings.LiveEdgeAverageSec))) }
         if ($numLiveEdgeYellowMs.Value -le $numLiveEdgeGreenMs.Value) { $numLiveEdgeYellowMs.Value = [decimal]([Math]::Min([int]$numLiveEdgeYellowMs.Maximum, [int]$numLiveEdgeGreenMs.Value + 1)) }
         if ($null -ne $settings.PlayerUrlOverrides) { $chkPlayerUrlOverrides.Checked = [bool]$settings.PlayerUrlOverrides }
+        if ($null -ne $settings.SendEosOnStop) { $chkSendEosOnStop.Checked = [bool]$settings.SendEosOnStop }
         if ($null -ne $settings.PlayerSeparateHtmlMediaElements) {
             $chkPlayerSeparateHtmlMediaElements.Checked = [bool]$settings.PlayerSeparateHtmlMediaElements
         }

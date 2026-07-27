@@ -595,4 +595,3 @@ function Update-DirectWebRtcUi {
 
     Update-DirectWebRtcWebUiStatus
 }
-

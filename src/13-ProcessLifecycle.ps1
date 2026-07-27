@@ -597,7 +597,7 @@ function Request-StreamStop {
     $script:RestartRecordingOnlyMode = $false
     $script:WaitingForFullscreen = $false
     Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Stop requested by user; cancelling pending starts/restarts and stopping all managed pipeline processes."
-    Stop-GstStream
+    Stop-GstStream -Intentional
 }
 
 function Invoke-StreamToggle {
@@ -716,4 +716,3 @@ function Test-IsAdministrator {
         return $false
     }
 }
-

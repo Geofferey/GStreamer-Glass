@@ -22,6 +22,7 @@ function Reset-WebRtcSaneDefaults {
     $numLiveEdgeGreenMs.Value = $script:DefaultLiveEdgeGreenMs
     $numLiveEdgeYellowMs.Value = $script:DefaultLiveEdgeYellowMs
     $chkPlayerUrlOverrides.Checked = $script:DefaultPlayerUrlOverrides
+    $chkSendEosOnStop.Checked = $script:DefaultSendEosOnStop
     if ($cmbTimingMode.Items.Contains($script:DefaultTimingMode)) { $cmbTimingMode.SelectedItem = $script:DefaultTimingMode }
     $chkSplitClockSignalingOverrides.Checked = $script:DefaultSplitClockSignalingOverrides
     if ($cmbSplitVideoClockSignaling.Items.Contains($script:DefaultSplitVideoClockSignaling)) { $cmbSplitVideoClockSignaling.SelectedItem = $script:DefaultSplitVideoClockSignaling }
@@ -245,4 +246,3 @@ function Reset-AllAppDefaults {
     Append-Log 'All GStreamer Glass app settings reset to defaults. Windows network snapshots were not touched.'
     Update-DirectWebRtcWebUiStatus
 }
-

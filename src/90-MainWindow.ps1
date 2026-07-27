@@ -1325,6 +1325,14 @@ $chkPlayerUrlOverrides.Checked = $script:DefaultPlayerUrlOverrides
 $settingsGroup.Controls.Add($chkPlayerUrlOverrides)
 $toolTip.SetToolTip($chkPlayerUrlOverrides, 'Debug escape hatch. Off = clean /live/ URL uses gstglass-config.js. On = append current Player tab values as query overrides.')
 
+$chkSendEosOnStop = New-Object System.Windows.Forms.CheckBox
+$chkSendEosOnStop.Text = 'Send EOS on stop'
+$chkSendEosOnStop.Location = New-Object System.Drawing.Point(15, 548)
+$chkSendEosOnStop.Size = New-Object System.Drawing.Size(220, 24)
+$chkSendEosOnStop.Checked = $script:DefaultSendEosOnStop
+$settingsGroup.Controls.Add($chkSendEosOnStop)
+$toolTip.SetToolTip($chkSendEosOnStop, 'Stop only: mark the stream intentionally stopped for viewers before tearing down the pipeline, so the web player shows Available and waits for Play instead of auto-reconnecting. Restart and Restart pipeline are unaffected by this setting.')
+
 $chkPlayerSeparateHtmlMediaElements = New-Object System.Windows.Forms.CheckBox
 $chkPlayerSeparateHtmlMediaElements.Text = 'Separate video and audio HTML media elements'
 $chkPlayerSeparateHtmlMediaElements.Location = New-Object System.Drawing.Point(15, 548)
@@ -4320,7 +4328,7 @@ $btnStop.Add_Click({
 
 $btnRestart.Add_Click({
     $lowerTabs.SelectedTab = $tabLog
-    Stop-GstStream -Restart
+    Stop-GstStream -Restart -ViewerRestart
 })
 $btnCopyCommand.Add_Click({
     try {
@@ -4378,7 +4386,7 @@ $trayStopItem.Add_Click({
 
 $trayRestartItem.Add_Click({
     $lowerTabs.SelectedTab = $tabLog
-    Stop-GstStream -Restart
+    Stop-GstStream -Restart -ViewerRestart
 })
 $trayExitItem.Add_Click({
     try {
