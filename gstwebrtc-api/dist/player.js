@@ -1,5 +1,5 @@
 (() => {
-  const FRONTEND_VERSION = '3.8-stop-gate-clean-6';
+  const FRONTEND_VERSION = '3.8-stop-gate-clean-7';
   console.info(`[GStreamer Glass Live] frontend ${FRONTEND_VERSION}`);
   const playerRoot = document.getElementById('playerRoot');
   const video = document.getElementById('video');
@@ -282,7 +282,7 @@
       if (requestToken !== state.streamStateRequestToken) return;
       state.streamStateKnown = false;
       state.intentionalStopMarker = true;
-      state.manualResumeRequired = true;
+      state.manualResumeRequired = state.stopResumeLocked;
       stopSignaling('state-unavailable');
       setStatus('Stream stopped', 'State file unavailable; waiting without signaling.', 'warn');
       updatePlayerControls();
