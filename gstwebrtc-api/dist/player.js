@@ -1,5 +1,5 @@
 (() => {
-  const FRONTEND_VERSION = '3.8-stop-gate-clean-8';
+  const FRONTEND_VERSION = '3.8-proxy-ice-filter-13';
   console.info(`[GStreamer Glass Live] frontend ${FRONTEND_VERSION}`);
   const playerRoot = document.getElementById('playerRoot');
   const video = document.getElementById('video');
@@ -64,6 +64,10 @@
     restartPending: false,
     manualResumeRequired: false,
     stopResumeLocked: false,
+    proxyPairRetryCount: 0,
+    proxyPairRetrying: false,
+    proxyPairLocalTicks: 0,
+    ownPublicIp: '',
     keepAliveTimer: null,
     keepAliveCount: 0,
     lastKeepAliveAt: 0,
@@ -116,7 +120,7 @@
     liveEdgeFaultActive: false,
     lastCompactStatus: '',
     videoZoom: { scale: 1, x: 0, y: 0, pointers: new Map(), pinchStart: null, panStart: null, gestureMoved: false, suppressTapUntil: 0 },
-    splitAudio: { ws: null, pc: null, sessionId: null, peerId: null, remotePeerId: null, pendingIce: [], producers: new Map(), ready: false, url: '', route: '', candidates: [], attemptToken: 0, status: 'idle', reconnectTimer: null, reconnectAttempts: 0, connectTimer: null, keepAliveTimer: null, keepAliveCount: 0, lastKeepAliveAt: 0, lastError: '', lastTrackKind: '', lastInboundStats: null, lastHealthyAt: 0, lastRecoverAt: 0, recoveryCount: 0, stallTicks: 0, offsetHighTicks: 0, lastAvOffsetMs: NaN, syncHealth: 'free-run', connectStartedAt: 0, trackReceivedAt: 0, warmupUntil: 0, avOffsetBaselineMs: NaN, avOffsetBaselineSamples: 0, avOffsetBaselineLocked: false, avOffsetDeltaMs: NaN, avOffsetBaselineReason: 'none' },
+    splitAudio: { ws: null, pc: null, sessionId: null, peerId: null, remotePeerId: null, pendingIce: [], producers: new Map(), ready: false, url: '', route: '', candidates: [], attemptToken: 0, status: 'idle', reconnectTimer: null, reconnectAttempts: 0, proxyPairRetryCount: 0, proxyPairRetrying: false, proxyPairLocalTicks: 0, lastRouteLine: '', connectTimer: null, keepAliveTimer: null, keepAliveCount: 0, lastKeepAliveAt: 0, lastError: '', lastTrackKind: '', lastInboundStats: null, lastHealthyAt: 0, lastRecoverAt: 0, recoveryCount: 0, stallTicks: 0, offsetHighTicks: 0, lastAvOffsetMs: NaN, syncHealth: 'free-run', connectStartedAt: 0, trackReceivedAt: 0, warmupUntil: 0, avOffsetBaselineMs: NaN, avOffsetBaselineSamples: 0, avOffsetBaselineLocked: false, avOffsetDeltaMs: NaN, avOffsetBaselineReason: 'none' },
     controller: { userPaused: false, userMuted: false, volume: 1, uiPinned: false, initialized: false, installPrompt: null, bar: null, playButton: null, muteButton: null, volumeInput: null, spacer: null, reconnectButton: null, routeButton: null, installButton: null, zoomButton: null, pinButton: null, fullscreenButton: null, status: null, lastAppliedAt: 0 }
   };
 
@@ -544,19 +548,43 @@
     return 'media automatic ICE';
   }
 
-  function routeIcePriority(type, originalPriority) {
+  function isPrivateIceAddress(address) {
+    // Beyond classic RFC1918/link-local/ULA, also catch address ranges that
+    // are real but never internet-routable to the far side -- an ICE
+    // candidate sitting in one of these is exactly as unreachable externally
+    // as a 10.x/192.168.x host candidate, it's just a different reservation:
+    //   100.64.0.0/10  RFC 6598 Shared Address Space (carrier-grade NAT,
+    //                  very common on cellular networks)
+    //   192.0.0.0/24   IETF Protocol Assignments, incl. 464XLAT client-side
+    //                  translation addresses (RFC 7335)
+    const text = String(address || '');
+    if (/^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|169\.254\.|127\.|fc|fd|fe80:|::1$)/i.test(text)) return true;
+    if (/^192\.0\.0\./.test(text)) return true;
+    const cgnat = text.match(/^100\.(\d{1,3})\./);
+    if (cgnat && Number(cgnat[1]) >= 64 && Number(cgnat[1]) <= 127) return true;
+    return false;
+  }
+
+  function routeIcePriority(type, originalPriority, address) {
     const mode = connectionMode();
     const candidateType = String(type || '').toLowerCase();
     const original = Number.parseInt(originalPriority, 10);
     const componentBits = Number.isFinite(original) ? original & 0xff : 1;
+    // A prflx candidate discovered on a private address (common on
+    // multi-homed machines/virtual adapters, where a connectivity check
+    // arrives on a different local interface than the one a candidate was
+    // advertised for) is just as much a local-only path as host -- it must
+    // not rank anywhere near a genuine externally-reachable srflx candidate.
+    const isPrivatePrflx = candidateType === 'prflx' && isPrivateIceAddress(address);
     if (mode === 'proxy') {
       if (candidateType === 'relay') return 2130706176 + componentBits;
-      if (candidateType === 'srflx' || candidateType === 'prflx') return 2122317568 + componentBits;
-      if (candidateType === 'host') return 256 + componentBits;
+      if (candidateType === 'srflx') return 2122317568 + componentBits;
+      if (candidateType === 'prflx' && !isPrivatePrflx) return 2122317312 + componentBits;
+      if (candidateType === 'host' || isPrivatePrflx) return 256 + componentBits;
     }
     if (mode === 'lan') {
-      if (candidateType === 'host') return 2130706176 + componentBits;
-      if (candidateType === 'srflx' || candidateType === 'prflx' || candidateType === 'relay') return 256 + componentBits;
+      if (candidateType === 'host' || isPrivatePrflx) return 2130706176 + componentBits;
+      if (candidateType === 'srflx' || (candidateType === 'prflx' && !isPrivatePrflx) || candidateType === 'relay') return 256 + componentBits;
     }
     return Number.isFinite(original) ? original : originalPriority;
   }
@@ -570,37 +598,118 @@
     const parts = raw.trim().split(/\s+/);
     const typIndex = parts.findIndex((part) => String(part).toLowerCase() === 'typ');
     if (parts.length < 8 || typIndex < 0 || !parts[typIndex + 1]) return text;
-    parts[3] = String(routeIcePriority(parts[typIndex + 1], parts[3]));
+    parts[3] = String(routeIcePriority(parts[typIndex + 1], parts[3], parts[4]));
     return `${hasAttributePrefix ? 'a=' : ''}${parts.join(' ')}`;
   }
 
+  // Our own outbound candidates are only ever reprioritized, never dropped --
+  // a dropped host candidate there removes the only fallback path in
+  // topologies (CGNAT, symmetric NAT) where the external/srflx pair genuinely
+  // isn't reachable, turning "suboptimal pair" into "ICE fails completely."
+  //
+  // The remote side (scope containing "remote", i.e. what the *producer*
+  // advertises to us) is different: rejecting its private-address candidates
+  // outright, not just deprioritizing them, is what actually closes the
+  // peer-reflexive-discovery loophole -- if our own ICE agent never learns a
+  // private remote address exists, it never attempts a connectivity check
+  // toward it, so the producer never sees an unexpected check to discover us
+  // by. This only became safe to do once webrtcsink reliably gathers its own
+  // srflx candidate (confirmed in testing after the STUN fix) -- rejecting the
+  // producer's host candidate back when it had no srflx of its own at all
+  // left zero usable remote candidates and broke every connection outright.
   function applyIceRoutePolicyToCandidate(candidate, scope = 'primary') {
     if (!candidate || connectionMode() === 'auto') return candidate;
     const init = typeof candidate.toJSON === 'function' ? candidate.toJSON() : candidate;
     if (!init || typeof init !== 'object' || !init.candidate) return candidate;
+    if (scope.includes('remote') && connectionMode() === 'proxy') {
+      const raw = String(init.candidate).replace(/^a=/i, '').trim();
+      const parts = raw.split(/\s+/);
+      const address = parts[4] || '';
+      if (isPrivateIceAddress(address)) {
+        if (jbufDebugEnabled()) log(`${scope} rejected private remote ICE candidate (${address})`);
+        return null;
+      }
+    }
     const rewritten = rewriteIceCandidatePriority(init.candidate);
     if (rewritten === init.candidate) return init;
     if (jbufDebugEnabled()) log(`${scope} applied ${connectionMode()} ICE candidate priority`);
     return { ...init, candidate: rewritten };
   }
 
-  function applyIceRoutePolicyToDescription(description, scope = 'primary') {
+  function isHostIceCandidateLine(candidateLine) {
+    const text = String(candidateLine || '');
+    const raw = /^a=/i.test(text) ? text.slice(2) : text;
+    if (!/^candidate:/i.test(raw)) return false;
+    const parts = raw.trim().split(/\s+/);
+    const typIndex = parts.findIndex((part) => String(part).toLowerCase() === 'typ');
+    if (typIndex < 0 || !parts[typIndex + 1]) return false;
+    return String(parts[typIndex + 1]).toLowerCase() === 'host';
+  }
+
+  // Our own srflx candidate *is* our public IP as discovered via STUN -- no
+  // separate lookup/dummy RTCPeerConnection/external "what's my IP" service
+  // needed, it's already flowing through the normal candidate-gathering path.
+  function noteOwnPublicIpFromCandidate(candidateLine) {
+    const text = String(candidateLine || '');
+    const raw = /^a=/i.test(text) ? text.slice(2) : text;
+    if (!/^candidate:/i.test(raw)) return;
+    const parts = raw.trim().split(/\s+/);
+    const typIndex = parts.findIndex((part) => String(part).toLowerCase() === 'typ');
+    if (typIndex < 0 || !parts[typIndex + 1]) return;
+    if (String(parts[typIndex + 1]).toLowerCase() !== 'srflx') return;
+    const address = parts[4] || '';
+    if (!address || address === state.ownPublicIp) return;
+    state.ownPublicIp = address;
+    log(`own public IP (via srflx): ${address}`);
+  }
+
+  // isOutbound=true for our own local/answer SDP: withhold only what *we*
+  // advertise about ourselves in PROXY mode (type-based, host only).
+  // isOutbound=false for what we accept from the remote: reject any embedded
+  // candidate whose address is private (address-based, not just type=host --
+  // catches private-address prflx too), same reasoning as the trickled-ICE
+  // path in applyIceRoutePolicyToCandidate above. Most producers trickle
+  // candidates separately rather than embedding them in the SDP, so this
+  // mainly matters for producers that don't.
+  function applyIceRoutePolicyToDescription(description, scope = 'primary', isOutbound = false) {
     if (!description || connectionMode() === 'auto' || !description.sdp) return description;
     let changed = 0;
-    const sdp = String(description.sdp).split(/\r?\n/).map((line) => {
+    let withheld = 0;
+    let rejected = 0;
+    const mode = connectionMode();
+    const withholdOwnHost = isOutbound && mode === 'proxy';
+    const rejectRemotePrivate = !isOutbound && mode === 'proxy';
+    const sdp = String(description.sdp).split(/\r?\n/).filter((line) => {
+      if (!/^a=candidate:/i.test(line)) return true;
+      if (withholdOwnHost && isHostIceCandidateLine(line)) { withheld += 1; return false; }
+      if (rejectRemotePrivate) {
+        const parts = line.replace(/^a=/i, '').trim().split(/\s+/);
+        const address = parts[4] || '';
+        if (isPrivateIceAddress(address)) { rejected += 1; return false; }
+      }
+      return true;
+    }).map((line) => {
       if (!/^a=candidate:/i.test(line)) return line;
       const rewritten = rewriteIceCandidatePriority(line);
       if (rewritten !== line) changed += 1;
       return rewritten;
     }).join('\r\n');
-    if (changed && jbufDebugEnabled()) log(`${scope} reprioritized ${changed} embedded ICE candidate(s) for ${connectionMode()}`);
+    if ((changed || withheld || rejected) && jbufDebugEnabled()) log(`${scope} reprioritized ${changed}, withheld ${withheld}, rejected ${rejected} embedded ICE candidate(s) for ${mode}`);
     return { type: description.type, sdp };
   }
 
   function stunUrl() {
     const value = query('stun');
     if (value === '0' || value === 'none' || value === 'off') return '';
-    return value || 'stun:stun.l.google.com:19302';
+    if (value) return value;
+    // Mirror Glass's own configured STUN server (including an explicit blank,
+    // i.e. "no STUN") instead of silently defaulting to Google's whenever the
+    // config doesn't say otherwise -- configValue() only falls through to the
+    // Google default when the key is truly absent (old cached config), not
+    // when it's present-but-empty.
+    const configured = configValue('stunUrl', undefined);
+    if (configured !== undefined) return configured;
+    return 'stun:stun.l.google.com:19302';
   }
 
   function keepAliveMs() {
@@ -2205,6 +2314,17 @@
       iceServers.push(relay);
     }
     const config = { iceServers };
+    // webrtcsink doesn't gather its own srflx candidate (confirmed repeatedly
+    // in testing -- it only ever offers host candidates for itself), so on a
+    // genuine WAN/remote client its private host address is the *only*
+    // non-relay option it has to offer, and that's unreachable from outside
+    // its own LAN. Relay is therefore not a preference here, it's the only
+    // path that can work at all for a remote viewer in PROXY mode -- confirmed
+    // by testing: removing this forcing broke external connectivity on WAN.
+    // (Known remaining gap: this can still fail on networks where the relay
+    // allocation itself doesn't work, e.g. some mobile carriers -- that's a
+    // TURN-server/reachability question, not something to fix by removing
+    // this policy again.)
     if (mode === 'proxy' && relayUrl) config.iceTransportPolicy = 'relay';
     return config;
   }
@@ -2480,6 +2600,10 @@
   async function startConsumer(peerId) {
     if (!signalingAllowedByStreamState()) return false;
     if (!state.ws || state.ws.readyState !== WebSocket.OPEN) return connect();
+    // Only a genuinely fresh start (not our own retry-for-external-candidate
+    // call, which sets proxyPairRetrying before invoking this) gets a new
+    // retry budget -- otherwise every retry would reset its own cap to zero.
+    if (!state.proxyPairRetrying) state.proxyPairRetryCount = 0;
     stopSession(false, { preserveSplitAudio: true });
     state.remotePeerId = peerId;
     state.pendingIce = [];
@@ -2505,6 +2629,8 @@
 
     pc.addEventListener('icecandidate', (ev) => {
       if (!ev.candidate) return;
+      noteOwnPublicIpFromCandidate(ev.candidate.candidate);
+      if (connectionMode() === 'proxy' && isHostIceCandidateLine(ev.candidate.candidate)) return;
       const candidate = applyIceRoutePolicyToCandidate(ev.candidate, 'primary local');
       if (state.sessionId) send({ type: 'peer', sessionId: state.sessionId, ice: candidate }, true);
       else state.pendingIce.push(candidate);
@@ -2545,7 +2671,7 @@
     if (desc.type === 'offer') {
       const answer = await state.pc.createAnswer();
       await state.pc.setLocalDescription(answer);
-      const local = applyIceRoutePolicyToDescription(state.pc.localDescription, 'primary outbound');
+      const local = applyIceRoutePolicyToDescription(state.pc.localDescription, 'primary outbound', true);
       send({
         type: 'peer',
         sessionId: state.sessionId,
@@ -2557,6 +2683,10 @@
   async function handleRemoteIce(ice) {
     if (!state.pc || !ice) return;
     const routedIce = applyIceRoutePolicyToCandidate(ice, 'primary remote');
+    // null means "rejected private candidate", not "end of candidates" --
+    // addIceCandidate(null) is a real, distinct signal to the ICE agent and
+    // must only fire for an actual end-of-candidates marker.
+    if (routedIce === null) return;
     try { await state.pc.addIceCandidate(routedIce && routedIce.candidate ? routedIce : null); }
     catch (err) { log('addIceCandidate failed', err); }
   }
@@ -2636,9 +2766,18 @@
     const candidates = [local, remote].filter(Boolean);
     const types = candidates.map((candidate) => String(candidate.candidateType || '').toLowerCase());
     if (types.includes('relay')) return 'TURN RELAY';
-    const addresses = candidates.map((candidate) => String(candidate.address || candidate.ip || candidate.ipAddress || ''));
-    const privateAddress = addresses.some((address) => /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|169\.254\.|fc|fd|fe80:)/i.test(address));
-    if (types.length && types.every((type) => type === 'host') && privateAddress) {
+    // A peer-reflexive candidate discovered on a private address (multi-homed
+    // machine/virtual adapter: a check arrives on a different local interface
+    // than the one a candidate was advertised for) is a local-only path just
+    // like host, not a real external one -- checking strictly for type
+    // 'host' let this slip through as if the pair were a genuine external
+    // connection. Match routeIcePriority's treatment of the same case.
+    const isLocalOnly = (candidate) => {
+      const type = String(candidate.candidateType || '').toLowerCase();
+      const address = String(candidate.address || candidate.ip || candidate.ipAddress || '');
+      return type === 'host' || (type === 'prflx' && isPrivateIceAddress(address));
+    };
+    if (candidates.length && candidates.every(isLocalOnly)) {
       return connectionMode() === 'proxy' ? 'PROXY FALLBACK: DIRECT LAN MEDIA' : 'DIRECT LAN';
     }
     return 'DIRECT P2P';
@@ -2651,6 +2790,61 @@
       return pair.totalRoundTripTime / pair.responsesReceived;
     }
     return NaN;
+  }
+
+  const PROXY_PAIR_RETRY_LIMIT = 4;
+  // Stats tick is ~1s (see startStatsTimer); require this many consecutive
+  // ticks on a local pair before rerolling, instead of bailing on the very
+  // first tick after connecting.
+  const PROXY_PAIR_GRACE_TICKS = 5;
+
+  // We can't force webrtcsink's own ICE agent to nominate a particular pair,
+  // so this is a verify-and-retry backstop instead of trying to influence the
+  // nomination in advance: candidatePairPathKind() already detects "we ended
+  // up on a private LAN pair anyway" (it's what produces the PROXY FALLBACK:
+  // DIRECT LAN MEDIA status text) -- here that detection actually does
+  // something instead of only being cosmetic. A fresh session re-runs the
+  // whole gathering/nomination race, giving another roll of the dice at
+  // landing on an external pair, bounded so a topology where the external
+  // path is genuinely unreachable still ends up connected (just local).
+  function retryPrimaryForExternalCandidate() {
+    if (state.proxyPairRetrying) return;
+    const peerId = state.remotePeerId;
+    if (!peerId) return;
+    if (state.proxyPairRetryCount >= PROXY_PAIR_RETRY_LIMIT) return;
+    state.proxyPairRetryCount += 1;
+    state.proxyPairRetrying = true;
+    state.proxyPairLocalTicks = 0;
+    const attempt = state.proxyPairRetryCount;
+    log(`proxy mode nominated a private LAN pair; retrying for an external candidate (${attempt}/${PROXY_PAIR_RETRY_LIMIT})`);
+    setStatus('Retrying for external route', `Nominated pair was local; attempt ${attempt}/${PROXY_PAIR_RETRY_LIMIT}`, 'warn');
+    stopSession(false, { preserveSplitAudio: true });
+    setTimeout(() => {
+      // startConsumer's own reset guard checks this flag synchronously at
+      // entry -- it must still be true when startConsumer is invoked, or the
+      // retry counter gets wiped back to 0 on every single attempt and the
+      // cap never actually engages (clearing it first was the bug).
+      startConsumer(peerId);
+      state.proxyPairRetrying = false;
+    }, 300);
+  }
+
+  function retrySplitAudioForExternalCandidate() {
+    const sa = state.splitAudio;
+    if (sa.proxyPairRetrying) return;
+    const peerId = sa.remotePeerId;
+    if (!peerId) return;
+    if (sa.proxyPairRetryCount >= PROXY_PAIR_RETRY_LIMIT) return;
+    sa.proxyPairRetryCount += 1;
+    sa.proxyPairRetrying = true;
+    sa.proxyPairLocalTicks = 0;
+    const attempt = sa.proxyPairRetryCount;
+    log(`proxy mode nominated a private LAN pair for split audio; retrying for an external candidate (${attempt}/${PROXY_PAIR_RETRY_LIMIT})`);
+    splitStopSession(false);
+    setTimeout(() => {
+      splitStartConsumer(peerId);
+      sa.proxyPairRetrying = false;
+    }, 300);
   }
 
   function measuredInboundBitrate(scopedReports) {
@@ -2930,10 +3124,27 @@
           const proto = candidatePairProtocol(stats, selected);
           const mediaRoute = candidatePairRoute(stats, selected);
           const pathKind = candidatePairPathKind(stats, selected);
+          if (connectionMode() === 'proxy' && pathKind === 'PROXY FALLBACK: DIRECT LAN MEDIA') {
+            state.proxyPairLocalTicks += 1;
+            // Give the ICE agent a few more seconds on the LAN pair before
+            // giving up on it -- a slower external/relay check can still
+            // complete and take over as the selected pair on its own,
+            // without needing a full reconnect roll of the dice.
+            if (state.proxyPairLocalTicks >= PROXY_PAIR_GRACE_TICKS) retryPrimaryForExternalCandidate();
+          } else if (pathKind) {
+            state.proxyPairRetryCount = 0;
+            state.proxyPairLocalTicks = 0;
+          }
           const formattedProto = proto || mediaRoute || pathKind ? `ICE media: ${[pathKind, proto, mediaRoute].filter(Boolean).join(' · ')}` : '';
           if (formattedProto && formattedProto !== state.lastIceProtocol) {
             state.lastIceProtocol = formattedProto;
             setStatus('Live', state.lastIceProtocol, 'good');
+            // Explicit, always-on (not gated behind jbufDebugEnabled) so the
+            // actual local/remote IPs of the nominated pair always show up in
+            // the console -- this is exactly what's needed to tell "using a
+            // real external candidate" apart from "fell back to something
+            // else" without having to read the on-screen status text.
+            log(`primary nominated pair: ${mediaRoute || '(unknown)'}${pathKind ? ` · ${pathKind}` : ''}`);
           }
           protoLine = state.lastIceProtocol || protoLine;
           const rtt = candidatePairRtt(selected);
@@ -3008,6 +3219,22 @@
             if (splitInboundAudio) {
               inboundAudio = splitInboundAudio;
               audioJbufLine = getInboundJbufLine('audio', inboundAudio);
+            }
+            const splitSelected = selectedCandidatePair(audioStats);
+            if (splitSelected) {
+              const splitPathKind = candidatePairPathKind(audioStats, splitSelected);
+              const splitRouteLine = candidatePairRoute(audioStats, splitSelected);
+              if (splitRouteLine && splitRouteLine !== state.splitAudio.lastRouteLine) {
+                state.splitAudio.lastRouteLine = splitRouteLine;
+                log(`split audio nominated pair: ${splitRouteLine}${splitPathKind ? ` · ${splitPathKind}` : ''}`);
+              }
+              if (connectionMode() === 'proxy' && splitPathKind === 'PROXY FALLBACK: DIRECT LAN MEDIA') {
+                state.splitAudio.proxyPairLocalTicks += 1;
+                if (state.splitAudio.proxyPairLocalTicks >= PROXY_PAIR_GRACE_TICKS) retrySplitAudioForExternalCandidate();
+              } else if (splitPathKind) {
+                state.splitAudio.proxyPairRetryCount = 0;
+                state.splitAudio.proxyPairLocalTicks = 0;
+              }
             }
           } catch (err) {
             state.splitAudio.lastError = err && err.message ? err.message : String(err);
@@ -3376,6 +3603,7 @@
   async function splitStartConsumer(peerId) {
     const sa = state.splitAudio;
     if (!sa.ws || sa.ws.readyState !== WebSocket.OPEN) return;
+    if (!sa.proxyPairRetrying) sa.proxyPairRetryCount = 0;
     splitStopSession(false);
     sa.status = 'starting-consumer';
     sa.remotePeerId = peerId;
@@ -3386,6 +3614,8 @@
 
     pc.addEventListener('icecandidate', (ev) => {
       if (!ev.candidate) return;
+      noteOwnPublicIpFromCandidate(ev.candidate.candidate);
+      if (connectionMode() === 'proxy' && isHostIceCandidateLine(ev.candidate.candidate)) return;
       const candidate = applyIceRoutePolicyToCandidate(ev.candidate, 'split audio local');
       if (sa.sessionId) splitSend({ type: 'peer', sessionId: sa.sessionId, ice: candidate }, true);
       else sa.pendingIce.push(candidate);
@@ -3424,7 +3654,7 @@
     if (desc.type === 'offer') {
       const answer = await sa.pc.createAnswer();
       await sa.pc.setLocalDescription(answer);
-      const local = applyIceRoutePolicyToDescription(sa.pc.localDescription, 'split audio outbound');
+      const local = applyIceRoutePolicyToDescription(sa.pc.localDescription, 'split audio outbound', true);
       splitSend({ type: 'peer', sessionId: sa.sessionId, sdp: local.toJSON ? local.toJSON() : { type: local.type, sdp: local.sdp } }, true);
     }
   }
@@ -3433,6 +3663,7 @@
     const sa = state.splitAudio;
     if (!sa.pc || !ice) return;
     const routedIce = applyIceRoutePolicyToCandidate(ice, 'split audio remote');
+    if (routedIce === null) return;
     try { await sa.pc.addIceCandidate(routedIce && routedIce.candidate ? routedIce : null); } catch (err) { log('split audio addIceCandidate failed', err); }
   }
 
@@ -3811,7 +4042,7 @@
     unmute: () => { state.controller.userMuted = false; applyLogicalMediaState('console-unmute'); },
     volume: (value) => { const n = Number(value); if (Number.isFinite(n)) state.controller.volume = Math.max(0, Math.min(n, 1)); applyLogicalMediaState('console-volume'); },
     route: (mode) => setConnectionMode(mode, 'console'),
-    state: () => ({ paused: state.controller.userPaused, muted: state.controller.userMuted, volume: state.controller.volume, connectionMode: connectionMode(), mediaRoutePolicy: mediaRoutePolicyLine(), signalingRoute: state.signalingRoute, signalingUrl: state.signalingUrl, signalingCandidates: [...state.signalingCandidates], signalingTransport: signalingTransportStatusLine(), screenWakeLock: screenWakeLockLine(), splitAudio: splitAudioStatusLine(), splitSync: splitSyncStatusLine(), videoPaused: video.paused, audioPaused: audio.paused, videoMuted: video.muted, audioMuted: audio.muted })
+    state: () => ({ paused: state.controller.userPaused, muted: state.controller.userMuted, volume: state.controller.volume, connectionMode: connectionMode(), mediaRoutePolicy: mediaRoutePolicyLine(), signalingRoute: state.signalingRoute, signalingUrl: state.signalingUrl, signalingCandidates: [...state.signalingCandidates], signalingTransport: signalingTransportStatusLine(), screenWakeLock: screenWakeLockLine(), splitAudio: splitAudioStatusLine(), splitSync: splitSyncStatusLine(), videoPaused: video.paused, audioPaused: audio.paused, videoMuted: video.muted, audioMuted: audio.muted, ownPublicIp: state.ownPublicIp })
   };
 
   startConfigReloadTimer();
