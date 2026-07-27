@@ -2,3 +2,6 @@
 *.psccfg -text
 *.config text
 *.png binary
+
+# The WebPlayer is maintained source even though its deployable path is named dist.
+gstwebrtc-api/dist/** linguist-generated=false linguist-vendored=false
