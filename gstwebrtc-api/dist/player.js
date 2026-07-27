@@ -1,5 +1,5 @@
 (() => {
-  const FRONTEND_VERSION = '3.8-proxy-ice-filter-13';
+  const FRONTEND_VERSION = '3.8-proxy-ice-filter-14';
   console.info(`[GStreamer Glass Live] frontend ${FRONTEND_VERSION}`);
   const playerRoot = document.getElementById('playerRoot');
   const video = document.getElementById('video');
@@ -53,6 +53,7 @@
     sessionId: null,
     remotePeerId: null,
     pendingIce: [],
+    pendingRemoteIce: [],
     producers: new Map(),
     started: false,
     reconnectTimer: null,
@@ -120,7 +121,7 @@
     liveEdgeFaultActive: false,
     lastCompactStatus: '',
     videoZoom: { scale: 1, x: 0, y: 0, pointers: new Map(), pinchStart: null, panStart: null, gestureMoved: false, suppressTapUntil: 0 },
-    splitAudio: { ws: null, pc: null, sessionId: null, peerId: null, remotePeerId: null, pendingIce: [], producers: new Map(), ready: false, url: '', route: '', candidates: [], attemptToken: 0, status: 'idle', reconnectTimer: null, reconnectAttempts: 0, proxyPairRetryCount: 0, proxyPairRetrying: false, proxyPairLocalTicks: 0, lastRouteLine: '', connectTimer: null, keepAliveTimer: null, keepAliveCount: 0, lastKeepAliveAt: 0, lastError: '', lastTrackKind: '', lastInboundStats: null, lastHealthyAt: 0, lastRecoverAt: 0, recoveryCount: 0, stallTicks: 0, offsetHighTicks: 0, lastAvOffsetMs: NaN, syncHealth: 'free-run', connectStartedAt: 0, trackReceivedAt: 0, warmupUntil: 0, avOffsetBaselineMs: NaN, avOffsetBaselineSamples: 0, avOffsetBaselineLocked: false, avOffsetDeltaMs: NaN, avOffsetBaselineReason: 'none' },
+    splitAudio: { ws: null, pc: null, sessionId: null, peerId: null, remotePeerId: null, pendingIce: [], pendingRemoteIce: [], producers: new Map(), ready: false, url: '', route: '', candidates: [], attemptToken: 0, status: 'idle', reconnectTimer: null, reconnectAttempts: 0, proxyPairRetryCount: 0, proxyPairRetrying: false, proxyPairLocalTicks: 0, lastRouteLine: '', connectTimer: null, keepAliveTimer: null, keepAliveCount: 0, lastKeepAliveAt: 0, lastError: '', lastTrackKind: '', lastInboundStats: null, lastHealthyAt: 0, lastRecoverAt: 0, recoveryCount: 0, stallTicks: 0, offsetHighTicks: 0, lastAvOffsetMs: NaN, syncHealth: 'free-run', connectStartedAt: 0, trackReceivedAt: 0, warmupUntil: 0, avOffsetBaselineMs: NaN, avOffsetBaselineSamples: 0, avOffsetBaselineLocked: false, avOffsetDeltaMs: NaN, avOffsetBaselineReason: 'none' },
     controller: { userPaused: false, userMuted: false, volume: 1, uiPinned: false, initialized: false, installPrompt: null, bar: null, playButton: null, muteButton: null, volumeInput: null, spacer: null, reconnectButton: null, routeButton: null, installButton: null, zoomButton: null, pinButton: null, fullscreenButton: null, status: null, lastAppliedAt: 0 }
   };
 
@@ -2607,6 +2608,7 @@
     stopSession(false, { preserveSplitAudio: true });
     state.remotePeerId = peerId;
     state.pendingIce = [];
+    state.pendingRemoteIce = [];
     state.started = true;
     beginJbufWatchdogWarmup('primary-start-consumer');
     setStatus('Starting stream…', `Producer ${shortId(peerId)}`, 'warn');
@@ -2664,14 +2666,20 @@
 
   async function handleRemoteSdp(sdp) {
     if (!state.pc) throw new Error('received SDP without active peer connection');
+    const pc = state.pc;
     const rawDesc = typeof sdp === 'string' ? { type: 'offer', sdp } : sdp;
     const routedDesc = applyIceRoutePolicyToDescription(rawDesc, 'primary remote');
     const desc = rewriteRemoteMediaStreamIds(routedDesc, 'primary remote');
-    await state.pc.setRemoteDescription(desc);
+    await pc.setRemoteDescription(desc);
+    if (state.pc !== pc) return;
+    while (state.pendingRemoteIce.length) {
+      try { await pc.addIceCandidate(state.pendingRemoteIce.shift()); }
+      catch (err) { log('queued addIceCandidate failed', err); }
+    }
     if (desc.type === 'offer') {
-      const answer = await state.pc.createAnswer();
-      await state.pc.setLocalDescription(answer);
-      const local = applyIceRoutePolicyToDescription(state.pc.localDescription, 'primary outbound', true);
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      const local = applyIceRoutePolicyToDescription(pc.localDescription, 'primary outbound', true);
       send({
         type: 'peer',
         sessionId: state.sessionId,
@@ -2687,6 +2695,10 @@
     // addIceCandidate(null) is a real, distinct signal to the ICE agent and
     // must only fire for an actual end-of-candidates marker.
     if (routedIce === null) return;
+    if (!state.pc.remoteDescription) {
+      state.pendingRemoteIce.push(routedIce);
+      return;
+    }
     try { await state.pc.addIceCandidate(routedIce && routedIce.candidate ? routedIce : null); }
     catch (err) { log('addIceCandidate failed', err); }
   }
@@ -3295,6 +3307,7 @@
     state.sessionId = null;
     state.remotePeerId = null;
     state.pendingIce = [];
+    state.pendingRemoteIce = [];
     state.started = false;
     state.lastIceProtocol = '';
     state.receivers.clear();
@@ -3608,6 +3621,7 @@
     sa.status = 'starting-consumer';
     sa.remotePeerId = peerId;
     sa.pendingIce = [];
+    sa.pendingRemoteIce = [];
     const pc = new RTCPeerConnection(makeRtcConfig());
     sa.pc = pc;
     window.audioPc = pc;
@@ -3648,13 +3662,19 @@
   async function splitHandleRemoteSdp(sdp) {
     const sa = state.splitAudio;
     if (!sa.pc) throw new Error('split audio SDP without active peer connection');
+    const pc = sa.pc;
     const rawDesc = typeof sdp === 'string' ? { type: 'offer', sdp } : sdp;
     const desc = applyIceRoutePolicyToDescription(rawDesc, 'split audio remote');
-    await sa.pc.setRemoteDescription(desc);
+    await pc.setRemoteDescription(desc);
+    if (sa.pc !== pc) return;
+    while (sa.pendingRemoteIce.length) {
+      try { await pc.addIceCandidate(sa.pendingRemoteIce.shift()); }
+      catch (err) { log('queued split audio addIceCandidate failed', err); }
+    }
     if (desc.type === 'offer') {
-      const answer = await sa.pc.createAnswer();
-      await sa.pc.setLocalDescription(answer);
-      const local = applyIceRoutePolicyToDescription(sa.pc.localDescription, 'split audio outbound', true);
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      const local = applyIceRoutePolicyToDescription(pc.localDescription, 'split audio outbound', true);
       splitSend({ type: 'peer', sessionId: sa.sessionId, sdp: local.toJSON ? local.toJSON() : { type: local.type, sdp: local.sdp } }, true);
     }
   }
@@ -3664,6 +3684,10 @@
     if (!sa.pc || !ice) return;
     const routedIce = applyIceRoutePolicyToCandidate(ice, 'split audio remote');
     if (routedIce === null) return;
+    if (!sa.pc.remoteDescription) {
+      sa.pendingRemoteIce.push(routedIce);
+      return;
+    }
     try { await sa.pc.addIceCandidate(routedIce && routedIce.candidate ? routedIce : null); } catch (err) { log('split audio addIceCandidate failed', err); }
   }
 
@@ -3678,6 +3702,7 @@
     sa.sessionId = null;
     sa.remotePeerId = null;
     sa.pendingIce = [];
+    sa.pendingRemoteIce = [];
     sa.lastTrackKind = '';
     sa.lastInboundStats = null;
     sa.stallTicks = 0;
