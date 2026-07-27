@@ -1,20 +1,25 @@
 <#
 .SYNOPSIS
-    One-shot build: reassembles out/GStreamer-Glass.ps1 from src/*.ps1, then
-    compiles out/GStreamer Glass.exe from it with ps12exe.
+    One-shot build: reassembles out/GStreamer-Glass.ps1 from src/*.ps1,
+    compiles out/GStreamer Glass.exe with ps12exe, then runs build-setup.iss
+    through the Inno Setup command-line compiler.
 
 .DESCRIPTION
-    Requires the ps12exe module (Install-Module ps12exe -Scope CurrentUser).
-    The exe's file-version resource is read straight from $script:AppVersion
-    in src/00-Setup.ps1 so it can never drift from what the app reports at
-    runtime -- there is nothing else to keep in sync by hand.
+    Requires:
+      - ps12exe (Install-Module ps12exe -Scope CurrentUser)
+      - Inno Setup 6 or 7
+
+    The application version is read from $script:AppVersion in
+    src/00-Setup.ps1. PowerShell passes only that version to Inno Setup;
+    build-setup.iss remains the sole owner of installer configuration.
 #>
 
 [CmdletBinding()]
 param(
     [string]$SrcDir = (Join-Path $PSScriptRoot 'src'),
     [string]$OutDir = (Join-Path $PSScriptRoot 'out'),
-    [string]$IconPath = (Join-Path $PSScriptRoot 'icons\Glass2Glass-Streamer.ico')
+    [string]$IconPath = (Join-Path $PSScriptRoot 'icons\Glass2Glass-Streamer.ico'),
+    [string]$IssPath = (Join-Path $PSScriptRoot 'build.iss')
 )
 
 $ErrorActionPreference = 'Stop'
@@ -63,3 +68,36 @@ ps12exe `
     -supportOS
 
 Write-Output "Built '$exePath' (v$rawVersion, file version $exeVersion)"
+
+# Step 4: run the standalone Inno Setup script from the command line.
+# Installer files, paths, architecture, shortcuts, and output naming remain
+# entirely managed by build-setup.iss.
+if (-not (Test-Path -LiteralPath $IssPath -PathType Leaf)) {
+    throw "Inno Setup script not found: $IssPath"
+}
+
+$isccCommand = Get-Command ISCC.exe -ErrorAction SilentlyContinue
+$iscc = if ($isccCommand) {
+    $isccCommand.Source
+}
+else {
+    @(
+        (Join-Path $env:ProgramFiles 'Inno Setup 7\ISCC.exe')
+        (Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 7\ISCC.exe')
+        (Join-Path $env:ProgramFiles 'Inno Setup 6\ISCC.exe')
+        (Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe')
+    ) | Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Leaf) } | Select-Object -First 1
+}
+
+if (-not $iscc) {
+    throw 'ISCC.exe was not found. Install Inno Setup 6/7 or add its directory to PATH.'
+}
+
+& $iscc "/DMyAppVersion=$rawVersion" $IssPath
+
+if ($LASTEXITCODE -ne 0) {
+    throw "Inno Setup compilation failed with exit code $LASTEXITCODE."
+}
+
+Write-Output "Installer build completed from '$IssPath' (v$rawVersion)"
+
