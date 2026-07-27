@@ -1,5 +1,5 @@
 (() => {
-  const FRONTEND_VERSION = '3.8-stop-gate-clean-7';
+  const FRONTEND_VERSION = '3.8-stop-gate-clean-8';
   console.info(`[GStreamer Glass Live] frontend ${FRONTEND_VERSION}`);
   const playerRoot = document.getElementById('playerRoot');
   const video = document.getElementById('video');
@@ -488,7 +488,7 @@
     const direct = directVideoWsUrl();
     const mode = connectionMode();
     if (mode === 'proxy') return uniqueWsUrls([proxy]);
-    if (mode === 'lan') return uniqueWsUrls([direct]);
+    if (mode === 'lan') return uniqueWsUrls([proxy, direct]);
     return uniqueWsUrls([proxy, direct]);
   }
 
@@ -1117,7 +1117,7 @@
     const direct = directSplitAudioWsUrl();
     const mode = connectionMode();
     if (mode === 'proxy') return uniqueWsUrls([proxy]);
-    if (mode === 'lan') return uniqueWsUrls([direct]);
+    if (mode === 'lan') return uniqueWsUrls([proxy, direct]);
     if (state.signalingRoute === 'direct') return uniqueWsUrls([direct, proxy]);
     return uniqueWsUrls([proxy, direct]);
   }
