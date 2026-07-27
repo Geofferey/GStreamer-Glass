@@ -1,7 +1,11 @@
 ; GStreamer Glass installer
 
 #define MyAppName "GStreamer Glass"
-#define MyAppVersion "3.8"
+; build.ps1 passes the real version via /DMyAppVersion=...; this is only a
+; fallback so `ISCC build.iss` still compiles standalone.
+#ifndef MyAppVersion
+  #define MyAppVersion "0.0.0"
+#endif
 #define ProjectRoot "C:\Users\geofferey\Downloads\GStreamer-Glass"
 #define BuildDir ProjectRoot + "\out"
 #define InstallerDir ProjectRoot + "\out"

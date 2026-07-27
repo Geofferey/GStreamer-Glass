@@ -1,7 +1,9 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+
 <#
 .SYNOPSIS
     One-shot build: reassembles out/GStreamer-Glass.ps1 from src/*.ps1,
-    compiles out/GStreamer Glass.exe with ps12exe, then runs build-setup.iss
+    compiles out/GStreamer Glass.exe with ps12exe, then runs build.iss
     through the Inno Setup command-line compiler.
 
 .DESCRIPTION
@@ -11,7 +13,7 @@
 
     The application version is read from $script:AppVersion in
     src/00-Setup.ps1. PowerShell passes only that version to Inno Setup;
-    build-setup.iss remains the sole owner of installer configuration.
+    build.iss remains the sole owner of installer configuration.
 #>
 
 [CmdletBinding()]
@@ -71,7 +73,7 @@ Write-Output "Built '$exePath' (v$rawVersion, file version $exeVersion)"
 
 # Step 4: run the standalone Inno Setup script from the command line.
 # Installer files, paths, architecture, shortcuts, and output naming remain
-# entirely managed by build-setup.iss.
+# entirely managed by build.iss.
 if (-not (Test-Path -LiteralPath $IssPath -PathType Leaf)) {
     throw "Inno Setup script not found: $IssPath"
 }
