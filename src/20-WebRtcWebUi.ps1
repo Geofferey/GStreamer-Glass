@@ -565,7 +565,9 @@ function Update-DirectWebRtcUi {
         $lblDirectWebRtcSmoothnessProfile,
         $cmbDirectWebRtcSmoothnessProfile,
         $lblDirectWebRtcPacingMs,
-        $numDirectWebRtcPacingMs
+        $numDirectWebRtcPacingMs,
+        $numDirectWebRtcMinRtpPort,
+        $numDirectWebRtcMaxRtpPort
     )) {
         if ($control) { $control.Enabled = $webRtcTransportEnabled }
     }

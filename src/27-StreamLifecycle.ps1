@@ -418,12 +418,18 @@ function Start-GstStream {
         }
     }
 
+    $useWebRtcPortRangeWorker = (-not $useControlledLiveStream) -and (-not $runNeedsUnifiedPublisherHost) -and (Test-DirectWebRtcPortRangeWorkerRequired)
+
     try {
         $tracerEnvState = $null
         try {
             $tracerEnvState = Set-GstTracerEnvironment -Enable:([bool]$chkBufferLatenessTracer.Checked) -DebugSpec $gstDebugSpec -NoColor:([bool]$chkGstDebugNoColor.Checked)
             if ($chkBufferLatenessTracer.Checked) { Append-Log 'GStreamer buffer-lateness tracer enabled for this run.' }
-            if ($processDiskLogging) {
+            if ($useWebRtcPortRangeWorker) {
+                Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Min/Max RTP port set: running webrtcsink in a dedicated native host process instead of the external gst-launch process."
+                $script:GstProcess = Start-WebRtcPortRangeWorker -Pipeline $mainLaunchArguments -MinRtpPort ([int]$numDirectWebRtcMinRtpPort.Value) -MaxRtpPort ([int]$numDirectWebRtcMaxRtpPort.Value)
+            }
+            elseif ($processDiskLogging) {
                 $script:GstProcess = Start-Process -FilePath $mainLaunchExecutable -ArgumentList $mainLaunchArguments -RedirectStandardOutput $script:StdOutPath -RedirectStandardError $script:StdErrPath -WindowStyle Hidden -PassThru
             }
             else {
@@ -771,6 +777,7 @@ function Stop-GstStream {
         }
     }
     catch {}
+    Close-WebRtcPortRangeWorkerPipe
     $script:GstProcess = $null
     $script:GstVideoProcess = $null
     $script:GstAudioProcess = $null

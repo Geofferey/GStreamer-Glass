@@ -721,6 +721,9 @@ function Apply-ModernDashboardUi {
     Add-Field $r -Control $chkDirectWebRtcTurnEnabled -Width 165 | Out-Null
     Add-Field $r -Label 'TURN URI' -Control $txtDirectWebRtcTurn -Width 360 | Out-Null
     $r = Add-Row $s
+    Add-Field $r -Label 'Min RTP port (0=unrestricted)' -Control $numDirectWebRtcMinRtpPort -Width 85 | Out-Null
+    Add-Field $r -Label 'Max RTP port (0=unrestricted)' -Control $numDirectWebRtcMaxRtpPort -Width 85 | Out-Null
+    $r = Add-Row $s
     Add-Field $r -Label 'Bundle policy' -Control $cmbDirectWebRtcBundlePolicy -Width 145 | Out-Null
     Add-Field $r -Label 'Internal RTP MTU (0=default)' -Control $numDirectWebRtcInternalRtpMtu -Width 85 | Out-Null
     Add-Field $r -Control $chkDirectWebRtcInternalRepeatHeaders -Width 250 | Out-Null

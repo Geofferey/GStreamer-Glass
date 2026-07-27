@@ -22,7 +22,9 @@
 
 param(
     [switch]$ControlledLiveWorker,
-    [string]$ControlledLiveWorkerPipe
+    [string]$ControlledLiveWorkerPipe,
+    [switch]$WebRtcPortRangeWorker,
+    [string]$WebRtcPortRangeWorkerPipe
 )
 
 Add-Type -AssemblyName System.Windows.Forms
@@ -1006,6 +1008,281 @@ public static class GstControlledScenePreview
 '@
 }
 
+if (-not ('GstWebRtcConsumerPortRange' -as [type])) {
+    # Constrains webrtcsink's ICE candidate UDP port range to a known, fixed
+    # span so it can actually be port-forwarded/hairpinned on a router -- a
+    # random ephemeral port every session can't be. webrtcsink itself has no
+    # such property (verified via gst-inspect and a full plugin registry
+    # search), but the per-consumer webrtcbin it creates internally does, via
+    # its "ice-agent" object's min-rtp-port/max-rtp-port properties (verified
+    # via runtime g_object_class_list_properties introspection, since that
+    # object isn't a registered element type gst-inspect can see statically).
+    # Reaching that per-consumer object requires hooking webrtcsink's real
+    # "consumer-added" signal (NOT a "webrtcbin-ready" signal -- that one does
+    # not exist on this element) and setting the properties there, before
+    # that consumer's own ICE gathering begins. This can only be done from
+    # inside the same process that owns the pipeline, so it runs in the
+    # disposable -WebRtcPortRangeWorker process, mirroring exactly how the
+    # controlled live scene worker already hosts GStreamer out-of-process.
+    Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+
+public static class GstWebRtcConsumerPortRange
+{
+    private const string Gst = "gstreamer-1.0-0.dll";
+    private const string GObject = "gobject-2.0-0.dll";
+    private const string GLib = "glib-2.0-0.dll";
+
+    private const int GST_STATE_NULL = 1;
+    private const int GST_STATE_PLAYING = 4;
+    private const int GST_STATE_CHANGE_FAILURE = 0;
+    private const uint GST_MESSAGE_EOS = 1u << 0;
+    private const uint GST_MESSAGE_ERROR = 1u << 1;
+    private static readonly UIntPtr G_TYPE_UINT = new UIntPtr(7u << 2);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct GValue
+    {
+        public UIntPtr g_type;
+        public UIntPtr data0;
+        public UIntPtr data1;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct GError
+    {
+        public uint domain;
+        public int code;
+        public IntPtr message;
+    }
+
+    [DllImport(Gst, CallingConvention = CallingConvention.Cdecl)]
+    private static extern void gst_init(IntPtr argc, IntPtr argv);
+
+    [DllImport(Gst, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
+    private static extern IntPtr gst_parse_launch(string pipeline_description, out IntPtr error);
+
+    [DllImport(Gst, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
+    private static extern IntPtr gst_bin_get_by_name(IntPtr bin, string name);
+
+    [DllImport(Gst, CallingConvention = CallingConvention.Cdecl)]
+    private static extern int gst_element_set_state(IntPtr element, int state);
+
+    [DllImport(Gst, CallingConvention = CallingConvention.Cdecl)]
+    private static extern int gst_element_get_state(IntPtr element, out int state, out int pending, ulong timeout);
+
+    [DllImport(Gst, CallingConvention = CallingConvention.Cdecl)]
+    private static extern IntPtr gst_element_get_bus(IntPtr element);
+
+    [DllImport(Gst, CallingConvention = CallingConvention.Cdecl)]
+    private static extern IntPtr gst_bus_timed_pop_filtered(IntPtr bus, ulong timeout, uint types);
+
+    [DllImport(Gst, CallingConvention = CallingConvention.Cdecl)]
+    private static extern void gst_message_parse_error(IntPtr message, out IntPtr error, out IntPtr debug);
+
+    [DllImport(Gst, CallingConvention = CallingConvention.Cdecl)]
+    private static extern void gst_mini_object_unref(IntPtr mini_object);
+
+    [DllImport(Gst, CallingConvention = CallingConvention.Cdecl)]
+    private static extern void gst_object_unref(IntPtr obj);
+
+    [DllImport(GObject, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
+    private static extern void g_object_get(IntPtr obj, string first_property_name, out IntPtr value, IntPtr terminator);
+
+    [DllImport(GObject, CallingConvention = CallingConvention.Cdecl)]
+    private static extern void g_object_unref(IntPtr obj);
+
+    [DllImport(GObject, CallingConvention = CallingConvention.Cdecl)]
+    private static extern IntPtr g_value_init(ref GValue value, UIntPtr g_type);
+
+    [DllImport(GObject, CallingConvention = CallingConvention.Cdecl)]
+    private static extern void g_value_unset(ref GValue value);
+
+    [DllImport(GObject, CallingConvention = CallingConvention.Cdecl)]
+    private static extern void g_value_set_uint(ref GValue value, uint number);
+
+    [DllImport(GObject, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
+    private static extern void g_object_set_property(IntPtr obj, string property_name, ref GValue value);
+
+    private delegate void ConsumerAddedDelegate(IntPtr webrtcsink, IntPtr peerId, IntPtr consumerElement, IntPtr userData);
+
+    [DllImport(GObject, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
+    private static extern ulong g_signal_connect_data(IntPtr instance, string detailed_signal, ConsumerAddedDelegate c_handler, IntPtr data, IntPtr destroy_data, int connect_flags);
+
+    [DllImport(GLib, CallingConvention = CallingConvention.Cdecl)]
+    private static extern void g_error_free(IntPtr error);
+
+    [DllImport(GLib, CallingConvention = CallingConvention.Cdecl)]
+    private static extern void g_free(IntPtr memory);
+
+    private static readonly object Gate = new object();
+    private static bool initialized;
+    private static IntPtr pipeline;
+    private static IntPtr bus;
+    private static IntPtr sink;
+    private static uint minPort;
+    private static uint maxPort;
+    private static int consumersConfigured;
+    // A live reference to the delegate must be kept for as long as native code
+    // might call back through it -- otherwise the GC can collect it while
+    // g_signal_connect_data's stored function pointer still points at it, and
+    // the next signal emission calls freed/reused memory.
+    private static ConsumerAddedDelegate consumerAddedCallback;
+
+    public static bool IsRunning
+    {
+        get { lock (Gate) { return pipeline != IntPtr.Zero; } }
+    }
+
+    public static int ConsumersConfigured
+    {
+        get { lock (Gate) { return consumersConfigured; } }
+    }
+
+    private static string ReadGError(IntPtr error)
+    {
+        if (error == IntPtr.Zero) return "Unknown GStreamer error";
+        GError value = (GError)Marshal.PtrToStructure(error, typeof(GError));
+        return value.message == IntPtr.Zero ? "Unknown GStreamer error" : Marshal.PtrToStringAnsi(value.message);
+    }
+
+    private static void SetUintProperty(IntPtr obj, string name, uint number)
+    {
+        GValue value = new GValue();
+        g_value_init(ref value, G_TYPE_UINT);
+        try { g_value_set_uint(ref value, number); g_object_set_property(obj, name, ref value); }
+        finally { g_value_unset(ref value); }
+    }
+
+    private static void OnConsumerAdded(IntPtr webrtcsink, IntPtr peerId, IntPtr consumerElement, IntPtr userData)
+    {
+        try
+        {
+            if (consumerElement == IntPtr.Zero) return;
+            IntPtr iceAgent;
+            g_object_get(consumerElement, "ice-agent", out iceAgent, IntPtr.Zero);
+            if (iceAgent == IntPtr.Zero) return;
+            try
+            {
+                SetUintProperty(iceAgent, "min-rtp-port", minPort);
+                SetUintProperty(iceAgent, "max-rtp-port", maxPort);
+                System.Threading.Interlocked.Increment(ref consumersConfigured);
+            }
+            finally
+            {
+                g_object_unref(iceAgent);
+            }
+        }
+        catch { }
+    }
+
+    public static void Start(string pipelineDescription, uint minRtpPort, uint maxRtpPort, string sinkName)
+    {
+        lock (Gate)
+        {
+            StopUnsafe();
+            if (!initialized) { gst_init(IntPtr.Zero, IntPtr.Zero); initialized = true; }
+            minPort = minRtpPort;
+            maxPort = maxRtpPort;
+            consumersConfigured = 0;
+
+            IntPtr parseError;
+            pipeline = gst_parse_launch(pipelineDescription, out parseError);
+            if (parseError != IntPtr.Zero)
+            {
+                string message = ReadGError(parseError);
+                g_error_free(parseError);
+                StopUnsafe();
+                throw new InvalidOperationException("Pipeline parse failed: " + message);
+            }
+            if (pipeline == IntPtr.Zero)
+                throw new InvalidOperationException("gst_parse_launch returned no pipeline.");
+
+            sink = gst_bin_get_by_name(pipeline, sinkName);
+            bus = gst_element_get_bus(pipeline);
+            if (sink == IntPtr.Zero || bus == IntPtr.Zero)
+            {
+                StopUnsafe();
+                throw new InvalidOperationException(
+                    "The webrtcsink element '" + sinkName + "' or pipeline bus was not found.");
+            }
+
+            consumerAddedCallback = new ConsumerAddedDelegate(OnConsumerAdded);
+            g_signal_connect_data(sink, "consumer-added", consumerAddedCallback, IntPtr.Zero, IntPtr.Zero, 0);
+
+            int result = gst_element_set_state(pipeline, GST_STATE_PLAYING);
+            if (result == GST_STATE_CHANGE_FAILURE)
+            {
+                StopUnsafe();
+                throw new InvalidOperationException("Failed to set the pipeline to PLAYING.");
+            }
+        }
+    }
+
+    public static string PollTerminalMessage()
+    {
+        lock (Gate)
+        {
+            if (bus == IntPtr.Zero) return null;
+            IntPtr errorMessage = gst_bus_timed_pop_filtered(bus, 0, GST_MESSAGE_ERROR);
+            if (errorMessage != IntPtr.Zero)
+            {
+                try
+                {
+                    IntPtr error;
+                    IntPtr debug;
+                    gst_message_parse_error(errorMessage, out error, out debug);
+                    try
+                    {
+                        string text = ReadGError(error);
+                        string detail = debug == IntPtr.Zero ? null : Marshal.PtrToStringAnsi(debug);
+                        return String.IsNullOrEmpty(detail) ? text : text + Environment.NewLine + detail;
+                    }
+                    finally
+                    {
+                        if (error != IntPtr.Zero) g_error_free(error);
+                        if (debug != IntPtr.Zero) g_free(debug);
+                    }
+                }
+                finally { gst_mini_object_unref(errorMessage); }
+            }
+
+            IntPtr eosMessage = gst_bus_timed_pop_filtered(bus, 0, GST_MESSAGE_EOS);
+            if (eosMessage == IntPtr.Zero) return null;
+            gst_mini_object_unref(eosMessage);
+            return "Pipeline reached end of stream.";
+        }
+    }
+
+    public static void Stop()
+    {
+        lock (Gate) { StopUnsafe(); }
+    }
+
+    private static void StopUnsafe()
+    {
+        if (pipeline != IntPtr.Zero)
+        {
+            gst_element_set_state(pipeline, GST_STATE_NULL);
+            try
+            {
+                int current;
+                int pending;
+                gst_element_get_state(pipeline, out current, out pending, 2000000000UL);
+            }
+            catch { }
+        }
+        if (bus != IntPtr.Zero) gst_object_unref(bus);
+        if (sink != IntPtr.Zero) gst_object_unref(sink);
+        if (pipeline != IntPtr.Zero) gst_object_unref(pipeline);
+        bus = sink = pipeline = IntPtr.Zero;
+        consumerAddedCallback = null;
+    }
+}
+'@
+}
+
 if ($ControlledLiveWorker) {
     # The live-edit broadcast deliberately lives in a disposable process. The
     # GUI sends compositor mutations over this pipe, while Stop/Restart kills
@@ -1092,6 +1369,79 @@ if ($ControlledLiveWorker) {
     }
     finally {
         try { [GstControlledScenePreview]::Stop() } catch {}
+        try { if ($pipeWriter) { $pipeWriter.Dispose() } } catch {}
+        try { if ($pipeReader) { $pipeReader.Dispose() } } catch {}
+        try { if ($pipeServer) { $pipeServer.Dispose() } } catch {}
+    }
+    exit 0
+}
+
+if ($WebRtcPortRangeWorker) {
+    # Disposable process, same reasoning as the controlled live worker above:
+    # a hard process boundary is what reliably closes every signalling socket
+    # and frees the pipeline, and Stop-GstStream already tree-kills whatever
+    # process is assigned to $script:GstProcess -- reusing that exact same
+    # mechanism here means no changes were needed to the stop path at all.
+    if ([string]::IsNullOrWhiteSpace($WebRtcPortRangeWorkerPipe)) { exit 64 }
+
+    $pipeServer = $null
+    $pipeReader = $null
+    $pipeWriter = $null
+    try {
+        $pipeServer = New-Object System.IO.Pipes.NamedPipeServerStream(
+            $WebRtcPortRangeWorkerPipe,
+            [System.IO.Pipes.PipeDirection]::InOut,
+            1,
+            [System.IO.Pipes.PipeTransmissionMode]::Byte,
+            [System.IO.Pipes.PipeOptions]::None
+        )
+        $pipeServer.WaitForConnection()
+        $utf8 = New-Object System.Text.UTF8Encoding($false)
+        $pipeReader = New-Object System.IO.StreamReader($pipeServer, $utf8, $false, 4096, $true)
+        $pipeWriter = New-Object System.IO.StreamWriter($pipeServer, $utf8, 4096, $true)
+        $pipeWriter.AutoFlush = $true
+
+        $startLine = $pipeReader.ReadLine()
+        if ([string]::IsNullOrWhiteSpace($startLine)) { throw 'No start command was received.' }
+        $start = $startLine | ConvertFrom-Json
+        if ([string]$start.Type -ne 'Start') { throw 'The first worker command was not Start.' }
+
+        [GstWebRtcConsumerPortRange]::Start(
+            [string]$start.Pipeline,
+            [uint32]$start.MinRtpPort,
+            [uint32]$start.MaxRtpPort,
+            'out'
+        )
+        $pipeWriter.WriteLine((@{ Status = 'Ready'; Error = '' } | ConvertTo-Json -Compress))
+
+        $readTask = $pipeReader.ReadLineAsync()
+        while ($true) {
+            if ($readTask.Wait(200)) {
+                $line = $readTask.Result
+                if ($null -eq $line) { break }
+                if (-not [string]::IsNullOrWhiteSpace($line)) {
+                    $command = $line | ConvertFrom-Json
+                    if ([string]$command.Type -eq 'Stop') { break }
+                }
+                $readTask = $pipeReader.ReadLineAsync()
+            }
+
+            $terminal = [GstWebRtcConsumerPortRange]::PollTerminalMessage()
+            if ($terminal) { throw $terminal }
+        }
+    }
+    catch {
+        try {
+            if ($pipeWriter -and $pipeServer -and $pipeServer.IsConnected) {
+                $pipeWriter.WriteLine((@{ Status = 'Error'; Error = $_.Exception.Message } | ConvertTo-Json -Compress))
+            }
+        }
+        catch {}
+        [Console]::Error.WriteLine("WebRTC port range worker error: $($_.Exception)")
+        exit 70
+    }
+    finally {
+        try { [GstWebRtcConsumerPortRange]::Stop() } catch {}
         try { if ($pipeWriter) { $pipeWriter.Dispose() } } catch {}
         try { if ($pipeReader) { $pipeReader.Dispose() } } catch {}
         try { if ($pipeServer) { $pipeServer.Dispose() } } catch {}
@@ -1410,6 +1760,8 @@ $script:DefaultUnifiedBridgeKeyframeIntervalMs = 500
 $script:DefaultDirectWebRtcStunServer = 'stun://stun.l.google.com:19302'
 $script:DefaultDirectWebRtcTurnEnabled = $false
 $script:DefaultDirectWebRtcTurnServer = 'turn://openrelay.metered.ca:80'
+$script:DefaultDirectWebRtcMinRtpPort = 0
+$script:DefaultDirectWebRtcMaxRtpPort = 0
 $script:DefaultDirectWebRtcSmoothnessProfile = 'Sane defaults'
 $script:DefaultDirectWebRtcStartBitrateKbps = 0
 $script:DefaultDirectWebRtcMinBitrateKbps = 0

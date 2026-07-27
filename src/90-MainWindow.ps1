@@ -542,6 +542,24 @@ $txtDirectWebRtcTurn.Text = $script:DefaultDirectWebRtcTurnServer
 $settingsGroup.Controls.Add($txtDirectWebRtcTurn)
 $toolTip.SetToolTip($txtDirectWebRtcTurn, 'TURN URI for Direct GST WebRTC and WHIP, for example turn://username:password@host:3478 or turns://username:password@host:5349. The public default address still requires valid credentials before it can relay media.')
 
+$numDirectWebRtcMinRtpPort = New-Object System.Windows.Forms.NumericUpDown
+$numDirectWebRtcMinRtpPort.Location = New-Object System.Drawing.Point(15, 548)
+$numDirectWebRtcMinRtpPort.Size = New-Object System.Drawing.Size(85, 23)
+$numDirectWebRtcMinRtpPort.Minimum = 0
+$numDirectWebRtcMinRtpPort.Maximum = 65535
+$numDirectWebRtcMinRtpPort.Value = $script:DefaultDirectWebRtcMinRtpPort
+$settingsGroup.Controls.Add($numDirectWebRtcMinRtpPort)
+$toolTip.SetToolTip($numDirectWebRtcMinRtpPort, 'GST WebRTC protocol only. Lower bound of the ICE candidate UDP port range. Setting both min and max (nonzero) runs the pipeline in a dedicated native host process so the range can be enforced on each consumer''s ICE agent -- a real, verified property, just not reachable via a plain gst-launch property string. 0/0 uses the normal external gst-launch process with an unrestricted ephemeral range.')
+
+$numDirectWebRtcMaxRtpPort = New-Object System.Windows.Forms.NumericUpDown
+$numDirectWebRtcMaxRtpPort.Location = New-Object System.Drawing.Point(15, 548)
+$numDirectWebRtcMaxRtpPort.Size = New-Object System.Drawing.Size(85, 23)
+$numDirectWebRtcMaxRtpPort.Minimum = 0
+$numDirectWebRtcMaxRtpPort.Maximum = 65535
+$numDirectWebRtcMaxRtpPort.Value = $script:DefaultDirectWebRtcMaxRtpPort
+$settingsGroup.Controls.Add($numDirectWebRtcMaxRtpPort)
+$toolTip.SetToolTip($numDirectWebRtcMaxRtpPort, 'GST WebRTC protocol only. Upper bound of the ICE candidate UDP port range. See the Min RTP port tooltip for how this is enforced.')
+
 $txtDirectWebRtcWebPath = New-Object System.Windows.Forms.TextBox
 $txtDirectWebRtcWebPath.Location = New-Object System.Drawing.Point(15, 548)
 $txtDirectWebRtcWebPath.Size = New-Object System.Drawing.Size(120, 23)
@@ -3828,6 +3846,8 @@ foreach ($control in @(
     $txtDirectWebRtcStun,
     $chkDirectWebRtcTurnEnabled,
     $txtDirectWebRtcTurn,
+    $numDirectWebRtcMinRtpPort,
+    $numDirectWebRtcMaxRtpPort,
     $txtDirectWebRtcWebPath,
     $cmbDirectWebRtcBundledWebMode,
     $txtDirectWebRtcBundledWebDirectory,

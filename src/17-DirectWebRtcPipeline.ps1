@@ -1,5 +1,164 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
+function Test-DirectWebRtcPortRangeWorkerRequired {
+    # Only the unified GST WebRTC / webrtcsink pipeline goes through this --
+    # constraining the ICE port range requires reaching into the per-consumer
+    # webrtcbin's ice-agent object, which only exists for that protocol path.
+    if ([string]$script:DirectWebRtcProtocolName -ne 'GST WebRTC') { return $false }
+    if (-not $numDirectWebRtcMinRtpPort -or -not $numDirectWebRtcMaxRtpPort) { return $false }
+    $minPort = [int]$numDirectWebRtcMinRtpPort.Value
+    $maxPort = [int]$numDirectWebRtcMaxRtpPort.Value
+    return ($minPort -gt 0 -and $maxPort -gt 0 -and $maxPort -ge $minPort)
+}
+
+function ConvertTo-GstParseLaunchPipelineOnly {
+    param([Parameter(Mandatory)][string]$Arguments)
+    # Strips leading gst-launch-1.0 CLI flags (-e, -v, ...) that Build-GstArguments
+    # prepends -- those are gst-launch-the-program's own switches, not pipeline
+    # syntax, and gst_parse_launch (a bare pipeline-description parser) rejects them.
+    $pipelineOnly = $Arguments -replace '^(\s*-\S+)+\s*', ''
+
+    # Every "..." in the built arguments is quoted only to survive Windows
+    # ArgumentList/argv tokenization when launched as a separate gst-launch-1.0.exe
+    # process. gst-launch-1.0.exe's own argv parsing strips those quotes before
+    # ever assembling its internal pipeline string, so two different things are
+    # hiding behind identical-looking quote marks here: real property values
+    # (video-caps="...", stun-server="...") where gst_parse_launch's grammar
+    # expects and requires the quotes, versus bare caps-filter shorthand
+    # (! "video/x-raw,..." !) and escaped bin-grouping parens ("(" / ")") where
+    # gst_parse_launch's grammar does NOT accept quotes at all -- passing them
+    # through verbatim is a guaranteed "syntax error". The two cases are
+    # reliably distinguishable only by what precedes the opening quote (an `=`
+    # means a real property value; anything else means strip it), and a
+    # context-free regex can't apply that rule correctly once more than one
+    # quoted segment exists in the string -- it mismatches across pair
+    # boundaries and corrupts everything from the first stripped segment
+    # onward. This walks the string quote-by-quote instead, pairing them up in
+    # the order they actually appear.
+    $sb = New-Object System.Text.StringBuilder
+    $i = 0
+    $len = $pipelineOnly.Length
+    while ($i -lt $len) {
+        $ch = $pipelineOnly[$i]
+        if ($ch -eq '"') {
+            $isPropertyValue = ($i -gt 0) -and ($pipelineOnly[$i - 1] -eq '=')
+            $close = $pipelineOnly.IndexOf('"', $i + 1)
+            if ($close -lt 0) { [void]$sb.Append($pipelineOnly.Substring($i)); break }
+            $inner = $pipelineOnly.Substring($i + 1, $close - $i - 1)
+            if ($isPropertyValue) { [void]$sb.Append('"').Append($inner).Append('"') }
+            else { [void]$sb.Append($inner) }
+            $i = $close + 1
+        }
+        else {
+            [void]$sb.Append($ch)
+            $i++
+        }
+    }
+    return $sb.ToString()
+}
+
+function Start-WebRtcPortRangeWorker {
+    param(
+        [Parameter(Mandatory)][string]$Pipeline,
+        [Parameter(Mandatory)][int]$MinRtpPort,
+        [Parameter(Mandatory)][int]$MaxRtpPort
+    )
+
+    $pipelineOnly = ConvertTo-GstParseLaunchPipelineOnly -Arguments $Pipeline
+    $pipeName = "gstglass-webrtcportrange-$PID-$([Guid]::NewGuid().ToString('N'))"
+    $process = $null
+    $pipe = $null
+    $reader = $null
+    $writer = $null
+
+    try {
+        $currentProcess = [System.Diagnostics.Process]::GetCurrentProcess()
+        $currentExe = $currentProcess.MainModule.FileName
+        $currentName = [System.IO.Path]::GetFileNameWithoutExtension($currentExe)
+        if ($currentName -match '^(powershell|pwsh|powershell_ise)$') {
+            if ([string]::IsNullOrWhiteSpace($PSCommandPath) -or -not (Test-Path -LiteralPath $PSCommandPath)) {
+                throw 'The current script path is unavailable; the WebRTC port-range worker cannot be launched.'
+            }
+            $escapedScript = $PSCommandPath.Replace('"', '\"')
+            $workerArguments = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$escapedScript`" -WebRtcPortRangeWorker -WebRtcPortRangeWorkerPipe `"$pipeName`""
+        }
+        else {
+            # PS2EXE/PS12EXE builds relaunch their own executable with the same
+            # hidden worker switch handled near the top of the assembled script.
+            $workerArguments = "-WebRtcPortRangeWorker -WebRtcPortRangeWorkerPipe `"$pipeName`""
+        }
+
+        $startParams = @{
+            FilePath     = $currentExe
+            ArgumentList = $workerArguments
+            WindowStyle  = 'Hidden'
+            PassThru     = $true
+        }
+        if (Test-ProcessDiskLoggingEnabled) {
+            $startParams.RedirectStandardOutput = $script:StdOutPath
+            $startParams.RedirectStandardError = $script:StdErrPath
+        }
+        $process = Start-Process @startParams
+        Set-GstProcessPriority -Process $process
+        if ($script:JobHandle -ne [IntPtr]::Zero) {
+            try { [GstProcessJob]::AssignProcess($script:JobHandle, $process.Handle) }
+            catch { Append-Log "WARNING: WebRTC port-range worker could not be assigned to the kill-on-close job: $($_.Exception.Message)" }
+        }
+
+        $pipe = New-Object System.IO.Pipes.NamedPipeClientStream(
+            '.',
+            $pipeName,
+            [System.IO.Pipes.PipeDirection]::InOut,
+            [System.IO.Pipes.PipeOptions]::None
+        )
+        $connectTask = $pipe.ConnectAsync(12000)
+        if (-not (Wait-UiResponsiveTask -Task $connectTask -TimeoutMs 12500)) {
+            throw 'The WebRTC port-range worker pipe did not connect within 12 seconds.'
+        }
+        $utf8 = New-Object System.Text.UTF8Encoding($false)
+        $reader = New-Object System.IO.StreamReader($pipe, $utf8, $false, 4096, $true)
+        $writer = New-Object System.IO.StreamWriter($pipe, $utf8, 4096, $true)
+        $writer.AutoFlush = $true
+        $writer.WriteLine((@{
+            Type       = 'Start'
+            Pipeline   = $pipelineOnly
+            MinRtpPort = $MinRtpPort
+            MaxRtpPort = $MaxRtpPort
+        } | ConvertTo-Json -Compress))
+
+        $replyTask = $reader.ReadLineAsync()
+        if (-not (Wait-UiResponsiveTask -Task $replyTask -TimeoutMs 15000)) {
+            throw 'The WebRTC port-range worker did not acknowledge startup within 15 seconds.'
+        }
+        $replyLine = $replyTask.Result
+        if ([string]::IsNullOrWhiteSpace($replyLine)) { throw 'The WebRTC port-range worker exited before acknowledging startup.' }
+        $reply = $replyLine | ConvertFrom-Json
+        if ([string]$reply.Status -ne 'Ready') { throw "WebRTC port-range worker start failed: $([string]$reply.Error)" }
+
+        $script:WebRtcPortRangeWorkerPipeHandle = $pipe
+        $script:WebRtcPortRangeWorkerReader = $reader
+        $script:WebRtcPortRangeWorkerWriter = $writer
+        Append-Log "[$(Get-Date -Format 'HH:mm:ss')] WebRTC port-range worker started: PID $($process.Id), range $MinRtpPort-$MaxRtpPort."
+        return $process
+    }
+    catch {
+        try { if ($writer) { $writer.Dispose() } } catch {}
+        try { if ($reader) { $reader.Dispose() } } catch {}
+        try { if ($pipe) { $pipe.Dispose() } } catch {}
+        try { if ($process -and -not $process.HasExited) { Stop-ProcessTreeById -ProcessId $process.Id } } catch {}
+        throw
+    }
+}
+
+function Close-WebRtcPortRangeWorkerPipe {
+    try { if ($script:WebRtcPortRangeWorkerWriter) { $script:WebRtcPortRangeWorkerWriter.Dispose() } } catch {}
+    try { if ($script:WebRtcPortRangeWorkerReader) { $script:WebRtcPortRangeWorkerReader.Dispose() } } catch {}
+    try { if ($script:WebRtcPortRangeWorkerPipeHandle) { $script:WebRtcPortRangeWorkerPipeHandle.Dispose() } } catch {}
+    $script:WebRtcPortRangeWorkerWriter = $null
+    $script:WebRtcPortRangeWorkerReader = $null
+    $script:WebRtcPortRangeWorkerPipeHandle = $null
+}
+
 function Get-DirectWebRtcAvPipelineMode {
     if ($null -eq $cmbDirectWebRtcAvPipelineMode) { return $script:DefaultDirectWebRtcAvPipelineMode }
     return (Get-ComboSelectedOrDefault $cmbDirectWebRtcAvPipelineMode $script:DefaultDirectWebRtcAvPipelineMode)
@@ -310,6 +469,8 @@ function Write-DirectWebRtcWebClientConfig {
         $effectiveMediaStreamGrouping = if (Test-DirectWebRtcSeparateMediaStreams) { [string](Get-DirectWebRtcMediaStreamGrouping) } else { $script:DefaultDirectWebRtcMediaStreamGrouping }
         $videoMediaStreamId = [string](Get-DirectWebRtcMediaStreamId -Kind video)
         $audioMediaStreamId = [string](Get-DirectWebRtcMediaStreamId -Kind audio)
+        $playerTurn = Get-DirectWebRtcTurnUrlForPlayer
+        $playerStun = Get-DirectWebRtcStunUrlForPlayer
 
         $data = [ordered]@{
             version = $script:AppVersion
@@ -347,6 +508,10 @@ function Write-DirectWebRtcWebClientConfig {
             liveEdgeAverageSec = [int]$playerSettings.LiveEdgeAverageSec
             screenWakeLock = $true
             connectionMode = 'auto'
+            stunUrl = $playerStun
+            turnUrl = $playerTurn.Url
+            turnUsername = $playerTurn.Username
+            turnCredential = $playerTurn.Credential
             playerSeparateHtmlMediaElements = [bool]$playerSettings.SeparateHtmlMediaElements
             separateHtmlMediaElements = [bool]$playerSettings.SeparateHtmlMediaElements
             playerAvRenderMode = [string]$playerSettings.AvRenderMode
@@ -565,8 +730,44 @@ function Get-DirectWebRtcTurnOption {
     # singular webrtcbin convenience property turn-server.  Build a one-item
     # array value and let Quote-GstValue preserve the embedded URI quotes for
     # gst-launch on Windows: turn-servers=<"turn://user:pass@host:port">.
-    $turnArray = '<"' + $turnServer.Replace('"', '\"') + '">' 
+    $turnArray = '<"' + $turnServer.Replace('"', '\"') + '">'
     return ' turn-servers=' + (Quote-GstValue $turnArray)
+}
+
+function Get-DirectWebRtcStunUrlForPlayer {
+    # Same gap as TURN: the GStreamer-side field uses stun://host:port and can
+    # be left blank for no STUN, while the browser's RTCIceServer needs a bare
+    # "stun:host:port" (single colon). Reuse the same configured STUN server
+    # here instead of leaving the player hardcoded to Google's public default.
+    $stunServer = $txtDirectWebRtcStun.Text.Trim()
+    if ([string]::IsNullOrWhiteSpace($stunServer)) { return '' }
+
+    if ($stunServer -notmatch '^(?<scheme>stuns?):\/\/(?<hostport>.+)$') { return $stunServer }
+    return "$($Matches.scheme):$($Matches.hostport)"
+}
+
+function Get-DirectWebRtcTurnUrlForPlayer {
+    # The GStreamer-side field (see Get-DirectWebRtcTurnOption above) embeds
+    # credentials directly in the URI, e.g. turn://user:pass@host:3478 -- that
+    # is how webrtcsink's turn-servers property wants it, but the browser's
+    # RTCIceServer needs a bare "turn:host:port" (single colon, RFC 7065) plus
+    # separate username/credential fields. Reuse the same configured TURN
+    # server for the player so it can also gather relay candidates, instead of
+    # requiring a second, redundant TURN field just for the browser side.
+    $result = [ordered]@{ Url = ''; Username = ''; Credential = '' }
+    if (-not $chkDirectWebRtcTurnEnabled.Checked) { return $result }
+
+    $turnServer = $txtDirectWebRtcTurn.Text.Trim()
+    if ([string]::IsNullOrWhiteSpace($turnServer)) { return $result }
+
+    if ($turnServer -notmatch '^(?<scheme>turns?):\/\/(?:(?<user>[^:@/]+):(?<pass>[^@/]*)@)?(?<hostport>.+)$') {
+        return $result
+    }
+
+    $result.Url = "$($Matches.scheme):$($Matches.hostport)"
+    $result.Username = [string]$Matches.user
+    $result.Credential = [string]$Matches.pass
+    return $result
 }
 
 function Get-DirectWebRtcVideoBitrateEnvelope {
