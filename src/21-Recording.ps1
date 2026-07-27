@@ -1,4 +1,6 @@
-﻿function Test-RecordingEnabled {
+# SPDX-License-Identifier: AGPL-3.0-only
+
+function Test-RecordingEnabled {
     return (
         $chkRecordingEnabled -and
         $chkRecordingEnabled.Checked -and

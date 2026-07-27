@@ -1,4 +1,6 @@
-﻿function New-SceneNumeric {
+# SPDX-License-Identifier: AGPL-3.0-only
+
+function New-SceneNumeric {
     param([int]$Minimum, [int]$Maximum, [int]$Value, [int]$Increment = 1)
     $control = New-Object System.Windows.Forms.NumericUpDown
     $control.Minimum = $Minimum

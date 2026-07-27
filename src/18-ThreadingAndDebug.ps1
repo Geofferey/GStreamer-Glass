@@ -1,4 +1,6 @@
-﻿function Get-CpuWorkerLimit {
+# SPDX-License-Identifier: AGPL-3.0-only
+
+function Get-CpuWorkerLimit {
     if (-not $numCpuWorkerLimit) { return 0 }
     return [Math]::Max(0, [int]$numCpuWorkerLimit.Value)
 }

@@ -1,4 +1,6 @@
-﻿function Update-PlayerConfigFromUi {
+# SPDX-License-Identifier: AGPL-3.0-only
+
+function Update-PlayerConfigFromUi {
     try {
         Write-DirectWebRtcWebClientConfig -Quiet
     }

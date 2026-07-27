@@ -1,4 +1,6 @@
-﻿function Get-EncoderDefinitionForCombo {
+# SPDX-License-Identifier: AGPL-3.0-only
+
+function Get-EncoderDefinitionForCombo {
     param([Parameter(Mandatory)]$Combo)
     $name = [string]$Combo.SelectedItem
     if (

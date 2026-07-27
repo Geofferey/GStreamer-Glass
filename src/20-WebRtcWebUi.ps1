@@ -1,4 +1,6 @@
-﻿function Test-DirectWebRtcProtocol {
+# SPDX-License-Identifier: AGPL-3.0-only
+
+function Test-DirectWebRtcProtocol {
     return (Test-TransportEnabled) -and ([string]$cmbProtocol.SelectedItem -eq $script:DirectWebRtcProtocolName)
 }
 

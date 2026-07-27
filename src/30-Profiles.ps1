@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+
 function Get-BuiltInProfiles {
     # Bundled preset numeric choices (GOP length, encoder preset/tune, bitrate) are informed
     # engineering judgment based on each protocol's typical latency/quality tradeoff, not an

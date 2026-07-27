@@ -1,4 +1,6 @@
-﻿function Invoke-ApplicationCleanup {
+# SPDX-License-Identifier: AGPL-3.0-only
+
+function Invoke-ApplicationCleanup {
     if ($script:ExitCleanupStarted) {
         return
     }

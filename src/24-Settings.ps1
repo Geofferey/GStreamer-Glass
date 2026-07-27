@@ -1,4 +1,6 @@
-﻿function Save-Settings {
+# SPDX-License-Identifier: AGPL-3.0-only
+
+function Save-Settings {
     # UI events fire while Load-Settings assigns controls. Never persist that
     # partially restored state back over the complete settings file.
     if ($script:LoadingSettings) { return }

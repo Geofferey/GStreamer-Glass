@@ -1,4 +1,6 @@
-﻿function Ensure-PreviewParkingWindow {
+# SPDX-License-Identifier: AGPL-3.0-only
+
+function Ensure-PreviewParkingWindow {
     if ($script:PreviewParkForm -and -not $script:PreviewParkForm.IsDisposed) {
         return $script:PreviewParkForm
     }

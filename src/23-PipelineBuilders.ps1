@@ -1,4 +1,6 @@
-﻿function Get-EffectiveCaptureSettings {
+# SPDX-License-Identifier: AGPL-3.0-only
+
+function Get-EffectiveCaptureSettings {
     param([switch]$LocalOnly)
 
     $width = [int]$numWidth.Value

@@ -1,4 +1,6 @@
-﻿function Initialize-GstJob {
+# SPDX-License-Identifier: AGPL-3.0-only
+
+function Initialize-GstJob {
     if ($script:JobHandle -ne [IntPtr]::Zero) {
         return
     }

@@ -1,4 +1,6 @@
-﻿function Apply-ModernDashboardUi {
+# SPDX-License-Identifier: AGPL-3.0-only
+
+function Apply-ModernDashboardUi {
     $script:ColorBg       = [System.Drawing.ColorTranslator]::FromHtml('#0B1220')
     $script:ColorSurface  = [System.Drawing.ColorTranslator]::FromHtml('#111827')
     $script:ColorSurface2 = [System.Drawing.ColorTranslator]::FromHtml('#172033')

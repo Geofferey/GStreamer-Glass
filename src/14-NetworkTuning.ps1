@@ -1,4 +1,6 @@
-﻿function Ensure-NetworkRecoveryDirectory {
+# SPDX-License-Identifier: AGPL-3.0-only
+
+function Ensure-NetworkRecoveryDirectory {
     if (-not (Test-Path -LiteralPath $script:NetworkRecoveryDirectory)) {
         $null = New-Item -ItemType Directory -Path $script:NetworkRecoveryDirectory -Force
     }

@@ -1,4 +1,6 @@
-﻿function Start-GstStream {
+# SPDX-License-Identifier: AGPL-3.0-only
+
+function Start-GstStream {
     param(
         [switch]$Automatic,
         [switch]$PreviewOnly,

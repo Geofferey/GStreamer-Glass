@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+
 <#
 .SYNOPSIS
     AST-based one-time/repeatable splitter: buckets every top-level function

@@ -1,4 +1,6 @@
-﻿function Read-MediaMtxStartupLogs {
+# SPDX-License-Identifier: AGPL-3.0-only
+
+function Read-MediaMtxStartupLogs {
     $stdoutText = Read-NewLogText `
         -Path $script:MediaMtxStdOutPath `
         -Position ([ref]$script:MediaMtxStdOutPosition)

@@ -1,4 +1,6 @@
-﻿function Get-ApplicationIcon {
+# SPDX-License-Identifier: AGPL-3.0-only
+
+function Get-ApplicationIcon {
     # In a compiled PS12EXE/PS2EXE build, prefer the icon embedded in the EXE.
     # While running as a .ps1, prefer Glass2Glass-Streamer.ico beside the script.
     $currentExePath = $null

@@ -1,4 +1,6 @@
-﻿function Build-RawAudioChain {
+# SPDX-License-Identifier: AGPL-3.0-only
+
+function Build-RawAudioChain {
     $desktopEnabled = $chkDesktopAudio.Checked
     $micEnabled = $chkMic.Checked
 

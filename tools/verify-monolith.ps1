@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+
 <#
 .SYNOPSIS
     Parses the rebuilt GStreamer-Glass.ps1 with the PowerShell AST parser

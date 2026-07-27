@@ -1,4 +1,6 @@
-﻿function Reset-WebRtcSaneDefaults {
+# SPDX-License-Identifier: AGPL-3.0-only
+
+function Reset-WebRtcSaneDefaults {
     $cmbDirectWebRtcCongestion.SelectedItem = 'disabled'
     $numDirectWebRtcStartBitrateKbps.Value = $script:DefaultDirectWebRtcStartBitrateKbps
     $numDirectWebRtcMinBitrateKbps.Value = $script:DefaultDirectWebRtcMinBitrateKbps

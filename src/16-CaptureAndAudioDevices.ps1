@@ -1,4 +1,6 @@
-﻿function Update-TransportUi {
+# SPDX-License-Identifier: AGPL-3.0-only
+
+function Update-TransportUi {
     $enabled = Test-TransportEnabled
     foreach ($control in @($cmbProtocol, $txtDestination, $lblDestination, $cmbTimingMode, $chkStartMediaMtx)) {
         if ($control) { $control.Enabled = $enabled }

@@ -1,3 +1,5 @@
+; SPDX-License-Identifier: AGPL-3.0-only
+
 ; GStreamer Glass installer
 
 #define MyAppName "GStreamer Glass"

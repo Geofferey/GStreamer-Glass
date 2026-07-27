@@ -1,4 +1,6 @@
 #requires -Version 5.1
+# SPDX-License-Identifier: AGPL-3.0-only
+
 <#
 .SYNOPSIS
     Basic Windows GUI wrapper for low-latency GStreamer desktop streaming.

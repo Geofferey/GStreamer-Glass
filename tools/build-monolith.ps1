@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+
 <#
 .SYNOPSIS
     Concatenates src/*.ps1 back into a single GStreamer-Glass.ps1 written

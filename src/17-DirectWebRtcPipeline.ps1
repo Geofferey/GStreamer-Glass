@@ -1,4 +1,6 @@
-﻿function Get-DirectWebRtcAvPipelineMode {
+# SPDX-License-Identifier: AGPL-3.0-only
+
+function Get-DirectWebRtcAvPipelineMode {
     if ($null -eq $cmbDirectWebRtcAvPipelineMode) { return $script:DefaultDirectWebRtcAvPipelineMode }
     return (Get-ComboSelectedOrDefault $cmbDirectWebRtcAvPipelineMode $script:DefaultDirectWebRtcAvPipelineMode)
 }
