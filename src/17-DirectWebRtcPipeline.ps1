@@ -4,7 +4,9 @@ function Test-DirectWebRtcPortRangeWorkerRequired {
     # Only the unified GST WebRTC / webrtcsink pipeline goes through this --
     # constraining the ICE port range requires reaching into the per-consumer
     # webrtcbin's ice-agent object, which only exists for that protocol path.
-    if ([string]$script:DirectWebRtcProtocolName -ne 'GST WebRTC') { return $false }
+    if (-not (Test-TransportEnabled)) { return $false }
+    if ([string]$cmbProtocol.SelectedItem -ne $script:DirectWebRtcProtocolName) { return $false }
+    if (Test-CustomGstArgumentsOverride) { return $false }
     if (-not $numDirectWebRtcMinRtpPort -or -not $numDirectWebRtcMaxRtpPort) { return $false }
     $minPort = [int]$numDirectWebRtcMinRtpPort.Value
     $maxPort = [int]$numDirectWebRtcMaxRtpPort.Value
@@ -42,11 +44,27 @@ function ConvertTo-GstParseLaunchPipelineOnly {
         $ch = $pipelineOnly[$i]
         if ($ch -eq '"') {
             $isPropertyValue = ($i -gt 0) -and ($pipelineOnly[$i - 1] -eq '=')
-            $close = $pipelineOnly.IndexOf('"', $i + 1)
-            if ($close -lt 0) { [void]$sb.Append($pipelineOnly.Substring($i)); break }
+            $close = $i + 1
+            while ($close -lt $len) {
+                if ($pipelineOnly[$close] -eq '"') {
+                    $slashes = 0
+                    $scan = $close
+                    while ($scan -gt 0 -and $pipelineOnly[$scan - 1] -eq '\') {
+                        $slashes++
+                        $scan--
+                    }
+                    if (($slashes % 2) -eq 0) { break }
+                }
+                $close++
+            }
+            if ($close -ge $len) { [void]$sb.Append($pipelineOnly.Substring($i)); break }
             $inner = $pipelineOnly.Substring($i + 1, $close - $i - 1)
-            if ($isPropertyValue) { [void]$sb.Append('"').Append($inner).Append('"') }
-            else { [void]$sb.Append($inner) }
+            $decodedInner = $inner.Replace('\"', '"')
+            if ($isPropertyValue -and $decodedInner.StartsWith('<') -and $decodedInner.EndsWith('>')) {
+                [void]$sb.Append($decodedInner)
+            }
+            elseif ($isPropertyValue) { [void]$sb.Append('"').Append($inner).Append('"') }
+            else { [void]$sb.Append($decodedInner) }
             $i = $close + 1
         }
         else {

@@ -4640,6 +4640,7 @@ $pollTimer.Add_Tick({
             $script:ControlledLivePreviewSurfaceHwnd = [IntPtr]::Zero
             $script:ControlledLivePreviewAppliedSize = [System.Drawing.Size]::Empty
         }
+        Close-WebRtcPortRangeWorkerPipe
 
         if ($script:GstVideoProcess -and -not $script:GstVideoProcess.HasExited) { try { Stop-ProcessTreeById -ProcessId $script:GstVideoProcess.Id } catch {} }
         if ($script:GstAudioProcess -and -not $script:GstAudioProcess.HasExited) { try { Stop-ProcessTreeById -ProcessId $script:GstAudioProcess.Id } catch {} }

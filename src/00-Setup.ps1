@@ -1090,6 +1090,9 @@ public static class GstWebRtcConsumerPortRange
     [DllImport(GObject, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
     private static extern void g_object_get(IntPtr obj, string first_property_name, out IntPtr value, IntPtr terminator);
 
+    [DllImport(GObject, EntryPoint = "g_object_get", CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
+    private static extern void g_object_get_uint(IntPtr obj, string first_property_name, out uint value, IntPtr terminator);
+
     [DllImport(GObject, CallingConvention = CallingConvention.Cdecl)]
     private static extern void g_object_unref(IntPtr obj);
 
@@ -1124,6 +1127,7 @@ public static class GstWebRtcConsumerPortRange
     private static uint minPort;
     private static uint maxPort;
     private static int consumersConfigured;
+    private static string consumerError;
     // A live reference to the delegate must be kept for as long as native code
     // might call back through it -- otherwise the GC can collect it while
     // g_signal_connect_data's stored function pointer still points at it, and
@@ -1159,14 +1163,22 @@ public static class GstWebRtcConsumerPortRange
     {
         try
         {
-            if (consumerElement == IntPtr.Zero) return;
+            if (consumerElement == IntPtr.Zero)
+                throw new InvalidOperationException("The WebRTC consumer element was not provided.");
             IntPtr iceAgent;
             g_object_get(consumerElement, "ice-agent", out iceAgent, IntPtr.Zero);
-            if (iceAgent == IntPtr.Zero) return;
+            if (iceAgent == IntPtr.Zero)
+                throw new InvalidOperationException("The WebRTC consumer has no ICE agent.");
             try
             {
                 SetUintProperty(iceAgent, "min-rtp-port", minPort);
                 SetUintProperty(iceAgent, "max-rtp-port", maxPort);
+                uint actualMin;
+                uint actualMax;
+                g_object_get_uint(iceAgent, "min-rtp-port", out actualMin, IntPtr.Zero);
+                g_object_get_uint(iceAgent, "max-rtp-port", out actualMax, IntPtr.Zero);
+                if (actualMin != minPort || actualMax != maxPort)
+                    throw new InvalidOperationException("The ICE agent rejected the requested RTP port range.");
                 System.Threading.Interlocked.Increment(ref consumersConfigured);
             }
             finally
@@ -1174,7 +1186,11 @@ public static class GstWebRtcConsumerPortRange
                 g_object_unref(iceAgent);
             }
         }
-        catch { }
+        catch (Exception ex)
+        {
+            System.Threading.Interlocked.CompareExchange(
+                ref consumerError, "Failed to apply WebRTC ICE port range: " + ex.Message, null);
+        }
     }
 
     public static void Start(string pipelineDescription, uint minRtpPort, uint maxRtpPort, string sinkName)
@@ -1186,6 +1202,7 @@ public static class GstWebRtcConsumerPortRange
             minPort = minRtpPort;
             maxPort = maxRtpPort;
             consumersConfigured = 0;
+            System.Threading.Interlocked.Exchange(ref consumerError, null);
 
             IntPtr parseError;
             pipeline = gst_parse_launch(pipelineDescription, out parseError);
@@ -1224,6 +1241,8 @@ public static class GstWebRtcConsumerPortRange
     {
         lock (Gate)
         {
+            string callbackError = System.Threading.Interlocked.Exchange(ref consumerError, null);
+            if (!String.IsNullOrEmpty(callbackError)) return callbackError;
             if (bus == IntPtr.Zero) return null;
             IntPtr errorMessage = gst_bus_timed_pop_filtered(bus, 0, GST_MESSAGE_ERROR);
             if (errorMessage != IntPtr.Zero)
@@ -2000,5 +2019,4 @@ $script:ProtocolAudioCodecs = [ordered]@{
 }
 
 $script:SuppressAudioCodecChange = $false
-
 

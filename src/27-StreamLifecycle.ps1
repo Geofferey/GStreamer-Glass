@@ -418,9 +418,18 @@ function Start-GstStream {
         }
     }
 
-    $useWebRtcPortRangeWorker = (-not $useControlledLiveStream) -and (-not $runNeedsUnifiedPublisherHost) -and (Test-DirectWebRtcPortRangeWorkerRequired)
+    $portRangeWorkerRequested = Test-DirectWebRtcPortRangeWorkerRequired
+    $useWebRtcPortRangeWorker = (-not $useControlledLiveStream) -and (-not $runNeedsUnifiedPublisherHost) -and $portRangeWorkerRequested
 
     try {
+        $unsupportedPortRangeTopology = (
+            $useControlledLiveStream -or
+            $runNeedsUnifiedPublisherHost -or
+            ((Test-DirectWebRtcSplitAvPipelines) -and -not (Test-DirectWebRtcUnifiedPublisher))
+        )
+        if ($portRangeWorkerRequested -and $unsupportedPortRangeTopology) {
+            throw 'The Min/Max RTP port range cannot be enforced with live scene editing, separate A/V publishers, or advanced unified publisher host options enabled.'
+        }
         $tracerEnvState = $null
         try {
             $tracerEnvState = Set-GstTracerEnvironment -Enable:([bool]$chkBufferLatenessTracer.Checked) -DebugSpec $gstDebugSpec -NoColor:([bool]$chkGstDebugNoColor.Checked)
@@ -531,9 +540,19 @@ function Start-GstStream {
         Set-RunState $true
     }
     catch {
+        foreach ($failedProcess in @($script:GstProcess, $script:GstVideoProcess, $script:GstAudioProcess)) {
+            if (-not $failedProcess) { continue }
+            try {
+                if (-not $failedProcess.HasExited) {
+                    Stop-ProcessTreeById -ProcessId $failedProcess.Id
+                    $failedProcess.WaitForExit(3000) | Out-Null
+                }
+            }
+            catch {}
+            try { $failedProcess.Dispose() } catch {}
+        }
+        Close-WebRtcPortRangeWorkerPipe
         $script:GstProcess = $null
-        if ($script:GstVideoProcess -and -not $script:GstVideoProcess.HasExited) { try { Stop-ProcessTreeById -ProcessId $script:GstVideoProcess.Id } catch {} }
-        if ($script:GstAudioProcess -and -not $script:GstAudioProcess.HasExited) { try { Stop-ProcessTreeById -ProcessId $script:GstAudioProcess.Id } catch {} }
         $script:GstVideoProcess = $null
         $script:GstAudioProcess = $null
         $script:PreviewOnlyMode = $false

@@ -44,6 +44,7 @@ function Invoke-ApplicationCleanup {
     catch {}
 
     Close-ControlledLiveWorkerPipe
+    Close-WebRtcPortRangeWorkerPipe
 
     try {
         Stop-ManagedMediaMtx -Quiet
@@ -93,4 +94,3 @@ function Invoke-ApplicationCleanup {
     }
     catch {}
 }
-
