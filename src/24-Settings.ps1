@@ -55,6 +55,12 @@ function Save-Settings {
             DirectWebRtcMinRtpPort = [int]$numDirectWebRtcMinRtpPort.Value
             DirectWebRtcMaxRtpPort = [int]$numDirectWebRtcMaxRtpPort.Value
             UpnpEnabled = [bool]$chkUpnpEnabled.Checked
+            UpnpMapSignaling = [bool]$chkUpnpMapSignaling.Checked
+            UpnpMapRtp = [bool]$chkUpnpMapRtp.Checked
+            UpnpMapWebServer = [bool]$chkUpnpMapWebServer.Checked
+            UpnpSignalingExternalPort = [int]$numUpnpSignalingExternalPort.Value
+            UpnpSplitAudioExternalPort = [int]$numUpnpSplitAudioExternalPort.Value
+            UpnpWebServerExternalPort = [int]$numUpnpWebServerExternalPort.Value
             DirectWebRtcWebPath = $txtDirectWebRtcWebPath.Text
             DirectWebRtcBundledWebMode = [string]$cmbDirectWebRtcBundledWebMode.SelectedItem
             DirectWebRtcBundledWebDirectory = $txtDirectWebRtcBundledWebDirectory.Text
@@ -434,6 +440,12 @@ function Restore-SettingsFromObject {
         if ($null -ne $settings.DirectWebRtcMinRtpPort) { $numDirectWebRtcMinRtpPort.Value = [decimal]([Math]::Min(65535, [Math]::Max(0, [int]$settings.DirectWebRtcMinRtpPort))) }
         if ($null -ne $settings.DirectWebRtcMaxRtpPort) { $numDirectWebRtcMaxRtpPort.Value = [decimal]([Math]::Min(65535, [Math]::Max(0, [int]$settings.DirectWebRtcMaxRtpPort))) }
         if ($null -ne $settings.UpnpEnabled) { $chkUpnpEnabled.Checked = [bool]$settings.UpnpEnabled }
+        if ($null -ne $settings.UpnpMapSignaling) { $chkUpnpMapSignaling.Checked = [bool]$settings.UpnpMapSignaling }
+        if ($null -ne $settings.UpnpMapRtp) { $chkUpnpMapRtp.Checked = [bool]$settings.UpnpMapRtp }
+        if ($null -ne $settings.UpnpMapWebServer) { $chkUpnpMapWebServer.Checked = [bool]$settings.UpnpMapWebServer }
+        if ($null -ne $settings.UpnpSignalingExternalPort) { $numUpnpSignalingExternalPort.Value = [decimal]([Math]::Min(65535, [Math]::Max(0, [int]$settings.UpnpSignalingExternalPort))) }
+        if ($null -ne $settings.UpnpSplitAudioExternalPort) { $numUpnpSplitAudioExternalPort.Value = [decimal]([Math]::Min(65535, [Math]::Max(0, [int]$settings.UpnpSplitAudioExternalPort))) }
+        if ($null -ne $settings.UpnpWebServerExternalPort) { $numUpnpWebServerExternalPort.Value = [decimal]([Math]::Min(65535, [Math]::Max(0, [int]$settings.UpnpWebServerExternalPort))) }
         if ($null -ne $settings.DirectWebRtcWebPath) { $txtDirectWebRtcWebPath.Text = [string]$settings.DirectWebRtcWebPath }
         if ($settings.DirectWebRtcBundledWebMode -and $cmbDirectWebRtcBundledWebMode.Items.Contains([string]$settings.DirectWebRtcBundledWebMode)) { $cmbDirectWebRtcBundledWebMode.SelectedItem = [string]$settings.DirectWebRtcBundledWebMode }
         if ($null -ne $settings.DirectWebRtcBundledWebDirectory) { $txtDirectWebRtcBundledWebDirectory.Text = [string]$settings.DirectWebRtcBundledWebDirectory }

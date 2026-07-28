@@ -78,6 +78,12 @@ function Reset-TransportDefaults {
     $numDirectWebRtcMinRtpPort.Value = $script:DefaultDirectWebRtcMinRtpPort
     $numDirectWebRtcMaxRtpPort.Value = $script:DefaultDirectWebRtcMaxRtpPort
     $chkUpnpEnabled.Checked = $script:DefaultUpnpEnabled
+    $chkUpnpMapSignaling.Checked = $script:DefaultUpnpMapSignaling
+    $chkUpnpMapRtp.Checked = $script:DefaultUpnpMapRtp
+    $chkUpnpMapWebServer.Checked = $script:DefaultUpnpMapWebServer
+    $numUpnpSignalingExternalPort.Value = $script:DefaultUpnpSignalingExternalPort
+    $numUpnpSplitAudioExternalPort.Value = $script:DefaultUpnpSplitAudioExternalPort
+    $numUpnpWebServerExternalPort.Value = $script:DefaultUpnpWebServerExternalPort
     $txtDirectWebRtcWebPath.Text = $script:DefaultDirectWebRtcWebPath
     if ($cmbDirectWebRtcBundledWebMode.Items.Contains($script:DefaultDirectWebRtcBundledWebMode)) { $cmbDirectWebRtcBundledWebMode.SelectedItem = $script:DefaultDirectWebRtcBundledWebMode }
     $txtDirectWebRtcBundledWebDirectory.Text = $script:DefaultDirectWebRtcBundledWebDirectory

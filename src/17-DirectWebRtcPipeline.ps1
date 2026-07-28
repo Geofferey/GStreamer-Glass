@@ -565,8 +565,10 @@ function Write-DirectWebRtcWebClientConfig {
             splitAvBaselineLearnTicks = 5
             signalingPort = $videoSignalingPort
             videoSignalingPort = $videoSignalingPort
+            externalSignalingPort = if ((Test-UpnpSignalingMappedExternally)) { [int]$numUpnpSignalingExternalPort.Value } else { 0 }
             splitAudioWsUrl = if ((Test-DirectWebRtcSplitAvPipelines) -and -not (Test-DirectWebRtcUnifiedPublisher)) { [string](Get-DirectWebRtcSplitAudioWsUrlForPlayer) } else { '' }
             splitAudioSignalingPort = if ((Test-DirectWebRtcSplitAvPipelines) -and -not (Test-DirectWebRtcUnifiedPublisher)) { [int](Get-DirectWebRtcSplitAudioSignalingPort) } else { 0 }
+            splitAudioExternalSignalingPort = if ((Test-UpnpSignalingMappedExternally) -and (Test-DirectWebRtcSplitAvPipelines) -and -not (Test-DirectWebRtcUnifiedPublisher)) { [int]$numUpnpSplitAudioExternalPort.Value } else { 0 }
             sharedSignaling = $effectiveSharedSignaling
             splitSharedSignaling = $effectiveSharedSignaling
             videoProducerName = 'gstglass-video'

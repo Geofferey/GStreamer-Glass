@@ -22,25 +22,53 @@ $script:ActiveUpnpMappings = @()
 $script:MaxUpnpRtpRangePorts = 256
 $script:UpnpRtpRangeSkippedByCap = $false
 
+$script:UpnpNatDevice = $null
+
+# UPnP discovery is asynchronous under the hood (SSDP + a SOAP round-trip to
+# the router); StaticPortMappingCollection can transiently come back empty
+# on the very first access after creating the COM object even when the
+# router is fine, especially right after this is called back-to-back (once
+# at stream start, again at stream stop). Cache the device once discovery
+# succeeds so Add and Remove reuse the same known-good object instead of
+# redoing discovery from scratch every time, and retry briefly before
+# giving up on a fresh discovery.
 function Get-UpnpNatDevice {
+    param([switch]$Quiet)
+
+    if ($null -ne $script:UpnpNatDevice) {
+        try {
+            if ($null -ne $script:UpnpNatDevice.StaticPortMappingCollection) { return $script:UpnpNatDevice }
+        }
+        catch {}
+        $script:UpnpNatDevice = $null
+    }
+
     try {
         $nat = New-Object -ComObject HNetCfg.NATUPnP
     }
     catch {
-        Append-Log "UPnP: NATUPnP COM class unavailable ($($_.Exception.Message)); skipping port forwarding."
+        if (-not $Quiet) { Append-Log "UPnP: NATUPnP COM class unavailable ($($_.Exception.Message)); skipping port forwarding." }
         return $null
     }
-    try {
-        if (-not $nat.StaticPortMappingCollection) {
-            Append-Log 'UPnP: no Internet Gateway Device responded; skipping port forwarding.'
-            return $null
+
+    for ($attempt = 1; $attempt -le 3; $attempt++) {
+        try {
+            if ($null -ne $nat.StaticPortMappingCollection) {
+                $script:UpnpNatDevice = $nat
+                return $nat
+            }
         }
+        catch {
+            if ($attempt -eq 3) {
+                if (-not $Quiet) { Append-Log "UPnP: could not reach the router's UPnP mapping table ($($_.Exception.Message)); skipping port forwarding." }
+                return $null
+            }
+        }
+        Start-Sleep -Milliseconds (500 * $attempt)
     }
-    catch {
-        Append-Log "UPnP: could not reach the router's UPnP mapping table ($($_.Exception.Message)); skipping port forwarding."
-        return $null
-    }
-    return $nat
+
+    if (-not $Quiet) { Append-Log 'UPnP: no Internet Gateway Device responded after retrying; skipping port forwarding.' }
+    return $null
 }
 
 function Get-UpnpLocalIPv4Address {
@@ -70,50 +98,71 @@ function Get-UpnpLocalIPv4Address {
     return $null
 }
 
+# Shared by the config generator (17-DirectWebRtcPipeline.ps1) and the debug
+# query-string builder (20-WebRtcWebUi.ps1) so the player learns about an
+# external signalling port exactly when one is actually configured -- based
+# on the UI's configured intent, not on whether Add-UpnpPortMappings has run
+# or succeeded yet, since config generation and port mapping are not ordered
+# relative to each other.
+function Test-UpnpSignalingMappedExternally {
+    return [bool]($chkUpnpEnabled -and $chkUpnpEnabled.Checked -and
+        $chkUpnpMapSignaling -and $chkUpnpMapSignaling.Checked -and
+        $numUpnpSignalingExternalPort -and [int]$numUpnpSignalingExternalPort.Value -gt 0)
+}
+
 function Get-UpnpRequiredMappings {
     if ([string]$cmbProtocol.SelectedItem -ne $script:DirectWebRtcProtocolName) { return @() }
 
     $mappings = @()
 
-    $mappings += [pscustomobject]@{
-        ExternalPort = [int]$numDirectWebRtcSignalingPort.Value
-        InternalPort = [int]$numDirectWebRtcSignalingPort.Value
-        Protocol     = 'TCP'
-        Description  = "${script:UpnpMappingTag}Video signalling"
+    if ($chkUpnpMapSignaling -and $chkUpnpMapSignaling.Checked) {
+        $internalPort = [int]$numDirectWebRtcSignalingPort.Value
+        $externalOverride = if ($numUpnpSignalingExternalPort) { [int]$numUpnpSignalingExternalPort.Value } else { 0 }
+        $mappings += [pscustomobject]@{
+            ExternalPort = if ($externalOverride -gt 0) { $externalOverride } else { $internalPort }
+            InternalPort = $internalPort
+            Protocol     = 'TCP'
+            Description  = "${script:UpnpMappingTag}Video signalling"
+        }
+
+        if ((Test-DirectWebRtcSplitAvPipelines) -and -not (Test-DirectWebRtcSharedSignaling)) {
+            $splitInternalPort = [int](Get-DirectWebRtcSplitAudioSignalingPort)
+            $splitExternalOverride = if ($numUpnpSplitAudioExternalPort) { [int]$numUpnpSplitAudioExternalPort.Value } else { 0 }
+            $mappings += [pscustomobject]@{
+                ExternalPort = if ($splitExternalOverride -gt 0) { $splitExternalOverride } else { $splitInternalPort }
+                InternalPort = $splitInternalPort
+                Protocol     = 'TCP'
+                Description  = "${script:UpnpMappingTag}Audio signalling"
+            }
+        }
     }
 
     # web-server-host-addr (default http://0.0.0.0:8889/) is webrtcsink's own
     # HTTP server that serves the viewer HTML/JS bundle -- a separate port
     # from the WS signalling port above, and the first thing a remote
     # browser has to reach before it can even open the signalling socket.
-    try {
-        $webUri = [System.Uri](Normalize-DirectWebRtcWebAddress $txtDestination.Text)
-        $webPort = $webUri.Port
-        if ($webPort -gt 0 -and -not ($mappings | Where-Object { $_.ExternalPort -eq $webPort -and $_.Protocol -eq 'TCP' })) {
-            $mappings += [pscustomobject]@{
-                ExternalPort = $webPort
-                InternalPort = $webPort
-                Protocol     = 'TCP'
-                Description  = "${script:UpnpMappingTag}Web viewer"
+    if ($chkUpnpMapWebServer -and $chkUpnpMapWebServer.Checked) {
+        try {
+            $webUri = [System.Uri](Normalize-DirectWebRtcWebAddress $txtDestination.Text)
+            $webPort = $webUri.Port
+            $webExternalOverride = if ($numUpnpWebServerExternalPort) { [int]$numUpnpWebServerExternalPort.Value } else { 0 }
+            $webExternalPort = if ($webExternalOverride -gt 0) { $webExternalOverride } else { $webPort }
+            if ($webPort -gt 0 -and -not ($mappings | Where-Object { $_.ExternalPort -eq $webExternalPort -and $_.Protocol -eq 'TCP' })) {
+                $mappings += [pscustomobject]@{
+                    ExternalPort = $webExternalPort
+                    InternalPort = $webPort
+                    Protocol     = 'TCP'
+                    Description  = "${script:UpnpMappingTag}Web viewer"
+                }
             }
         }
-    }
-    catch {
-        Append-Log "UPnP: could not determine the web viewer port from '$($txtDestination.Text)'; not mapped."
-    }
-
-    if ((Test-DirectWebRtcSplitAvPipelines) -and -not (Test-DirectWebRtcSharedSignaling)) {
-        $splitPort = [int](Get-DirectWebRtcSplitAudioSignalingPort)
-        $mappings += [pscustomobject]@{
-            ExternalPort = $splitPort
-            InternalPort = $splitPort
-            Protocol     = 'TCP'
-            Description  = "${script:UpnpMappingTag}Audio signalling"
+        catch {
+            Append-Log "UPnP: could not determine the web viewer port from '$($txtDestination.Text)'; not mapped."
         }
     }
 
     $script:UpnpRtpRangeSkippedByCap = $false
-    if (Test-DirectWebRtcPortRangeWorkerRequired) {
+    if (($chkUpnpMapRtp -and $chkUpnpMapRtp.Checked) -and (Test-DirectWebRtcPortRangeWorkerRequired)) {
         $minPort = [int]$numDirectWebRtcMinRtpPort.Value
         $maxPort = [int]$numDirectWebRtcMaxRtpPort.Value
         $rangeSize = $maxPort - $minPort + 1
@@ -152,10 +201,17 @@ function Add-UpnpPortMappings {
     # Reconciliation: drop any of our own previously-tagged mappings that a
     # crash left behind or that no longer match the current requirement set,
     # before adding the current ones. Never touches mappings we didn't tag.
+    # Enumerating the router's table is one round-trip per entry on some
+    # routers, so a large backlog of never-cleaned-up entries (e.g. from a
+    # wide RTP range that failed to tear down repeatedly) can make this slow
+    # or make the router stop responding to fresh UPnP requests entirely --
+    # log clearly instead of swallowing that possibility silently.
     try {
         $collection = $nat.StaticPortMappingCollection
         $stale = @()
+        $seenCount = 0
         foreach ($existing in $collection) {
+            $seenCount++
             if ($existing.Description -like "$($script:UpnpMappingTag)*") {
                 $stillNeeded = $required | Where-Object {
                     $_.ExternalPort -eq $existing.ExternalPort -and $_.Protocol -eq $existing.Protocol
@@ -163,11 +219,18 @@ function Add-UpnpPortMappings {
                 if (-not $stillNeeded) { $stale += $existing }
             }
         }
-        foreach ($entry in $stale) {
-            try { $collection.Remove($entry.ExternalPort, $entry.Protocol) } catch {}
+        if ($stale.Count -gt 0) {
+            $removedCount = 0
+            foreach ($entry in $stale) {
+                try { $collection.Remove($entry.ExternalPort, $entry.Protocol); $removedCount++ }
+                catch { Append-Log "UPnP: reconciliation could not remove stale $($entry.Protocol) $($entry.ExternalPort): $($_.Exception.Message)" }
+            }
+            Append-Log "UPnP: reconciliation removed $removedCount of $($stale.Count) stale mapping(s) from a router table of $seenCount entries."
         }
     }
-    catch {}
+    catch {
+        Append-Log "UPnP: reconciliation against the router's mapping table failed ($($_.Exception.Message)); proceeding without it. If the router table has a large backlog of stale entries, clearing them from the router's admin UI (or power-cycling the router) may be needed to restore UPnP responsiveness."
+    }
 
     $script:ActiveUpnpMappings = @()
     $failCount = 0
@@ -192,10 +255,12 @@ function Add-UpnpPortMappings {
             $lblUpnpStatus.ForeColor = [System.Drawing.Color]::DarkOrange
         }
         else {
-            $tcpPorts = @($script:ActiveUpnpMappings | Where-Object { $_.Protocol -eq 'TCP' } | ForEach-Object { $_.ExternalPort } | Sort-Object)
+            $tcpLabels = @($script:ActiveUpnpMappings | Where-Object { $_.Protocol -eq 'TCP' } | Sort-Object ExternalPort | ForEach-Object {
+                if ($_.ExternalPort -eq $_.InternalPort) { "$($_.ExternalPort)" } else { "$($_.ExternalPort)->$($_.InternalPort)" }
+            })
             $udpPorts = @($script:ActiveUpnpMappings | Where-Object { $_.Protocol -eq 'UDP' } | ForEach-Object { $_.ExternalPort } | Sort-Object)
             $portParts = @()
-            if ($tcpPorts.Count -gt 0) { $portParts += "TCP $($tcpPorts -join ',')" }
+            if ($tcpLabels.Count -gt 0) { $portParts += "TCP $($tcpLabels -join ',')" }
             if ($udpPorts.Count -gt 1) { $portParts += "UDP $($udpPorts[0])-$($udpPorts[-1]) ($($udpPorts.Count) ports)" }
             elseif ($udpPorts.Count -eq 1) { $portParts += "UDP $($udpPorts[0])" }
             $ports = $portParts -join '; '
@@ -211,8 +276,7 @@ function Remove-UpnpPortMappings {
 
     if ($script:ActiveUpnpMappings.Count -eq 0) { return }
 
-    $nat = $null
-    try { $nat = New-Object -ComObject HNetCfg.NATUPnP } catch {}
+    $nat = Get-UpnpNatDevice -Quiet:$Quiet
 
     foreach ($mapping in $script:ActiveUpnpMappings) {
         try {

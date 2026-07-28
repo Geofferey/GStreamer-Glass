@@ -566,7 +566,7 @@ $chkUpnpEnabled.Location = New-Object System.Drawing.Point(15, 548)
 $chkUpnpEnabled.Size = New-Object System.Drawing.Size(300, 24)
 $chkUpnpEnabled.Checked = $script:DefaultUpnpEnabled
 $settingsGroup.Controls.Add($chkUpnpEnabled)
-$toolTip.SetToolTip($chkUpnpEnabled, 'Off by default. When enabled, asks the router for a UPnP IGD port mapping for the web viewer port (Destination address, e.g. 8889), the signalling port(s) above, and, if set, the Min/Max RTP port range, so the stream is reachable from outside the LAN without manual router configuration. Best-effort only: if the router does not support UPnP the stream still starts normally over the existing STUN/TURN path. Mappings are removed when the stream stops. RTP ranges wider than 256 ports are skipped (each port needs its own mapping call to the router); a wide range also adds a few seconds to stream start while each port is mapped.')
+$toolTip.SetToolTip($chkUpnpEnabled, 'Off by default. When enabled, asks the router for a UPnP IGD port mapping for whichever categories below are checked, so the stream is reachable from outside the LAN without manual router configuration. Best-effort only: if the router does not support UPnP the stream still starts normally over the existing STUN/TURN path. Mappings are removed when the stream stops.')
 
 $lblUpnpStatus = New-Object System.Windows.Forms.Label
 $lblUpnpStatus.Text = 'UPnP: disabled'
@@ -575,6 +575,57 @@ $lblUpnpStatus.Size = New-Object System.Drawing.Size(400, 23)
 $lblUpnpStatus.TextAlign = 'MiddleLeft'
 $lblUpnpStatus.ForeColor = [System.Drawing.Color]::DimGray
 $settingsGroup.Controls.Add($lblUpnpStatus)
+
+$chkUpnpMapSignaling = New-Object System.Windows.Forms.CheckBox
+$chkUpnpMapSignaling.Text = 'Map signalling port(s)'
+$chkUpnpMapSignaling.Location = New-Object System.Drawing.Point(15, 548)
+$chkUpnpMapSignaling.Size = New-Object System.Drawing.Size(180, 24)
+$chkUpnpMapSignaling.Checked = $script:DefaultUpnpMapSignaling
+$settingsGroup.Controls.Add($chkUpnpMapSignaling)
+$toolTip.SetToolTip($chkUpnpMapSignaling, 'Include the video (and, if active, split-audio) signalling WebSocket port(s) in the UPnP mapping.')
+
+$numUpnpSignalingExternalPort = New-Object System.Windows.Forms.NumericUpDown
+$numUpnpSignalingExternalPort.Location = New-Object System.Drawing.Point(15, 548)
+$numUpnpSignalingExternalPort.Size = New-Object System.Drawing.Size(90, 23)
+$numUpnpSignalingExternalPort.Minimum = 0
+$numUpnpSignalingExternalPort.Maximum = 65535
+$numUpnpSignalingExternalPort.Value = $script:DefaultUpnpSignalingExternalPort
+$settingsGroup.Controls.Add($numUpnpSignalingExternalPort)
+$toolTip.SetToolTip($numUpnpSignalingExternalPort, 'External (WAN-side) port the router maps to the video signalling port above, e.g. 18189 -> 8189. 0 = map the same port number on both sides.')
+
+$numUpnpSplitAudioExternalPort = New-Object System.Windows.Forms.NumericUpDown
+$numUpnpSplitAudioExternalPort.Location = New-Object System.Drawing.Point(15, 548)
+$numUpnpSplitAudioExternalPort.Size = New-Object System.Drawing.Size(90, 23)
+$numUpnpSplitAudioExternalPort.Minimum = 0
+$numUpnpSplitAudioExternalPort.Maximum = 65535
+$numUpnpSplitAudioExternalPort.Value = $script:DefaultUpnpSplitAudioExternalPort
+$settingsGroup.Controls.Add($numUpnpSplitAudioExternalPort)
+$toolTip.SetToolTip($numUpnpSplitAudioExternalPort, 'External (WAN-side) port the router maps to the split-audio signalling port, when active. 0 = map the same port number on both sides.')
+
+$chkUpnpMapRtp = New-Object System.Windows.Forms.CheckBox
+$chkUpnpMapRtp.Text = 'Map RTP port range'
+$chkUpnpMapRtp.Location = New-Object System.Drawing.Point(15, 548)
+$chkUpnpMapRtp.Size = New-Object System.Drawing.Size(180, 24)
+$chkUpnpMapRtp.Checked = $script:DefaultUpnpMapRtp
+$settingsGroup.Controls.Add($chkUpnpMapRtp)
+$toolTip.SetToolTip($chkUpnpMapRtp, 'Include the Min/Max RTP UDP port range in the UPnP mapping, when set. RTP ports are always mapped 1:1 (external port number == internal port number) -- remapping media ports is not offered, since the ICE agent itself only knows the internal port.')
+
+$chkUpnpMapWebServer = New-Object System.Windows.Forms.CheckBox
+$chkUpnpMapWebServer.Text = 'Map web viewer port'
+$chkUpnpMapWebServer.Location = New-Object System.Drawing.Point(15, 548)
+$chkUpnpMapWebServer.Size = New-Object System.Drawing.Size(180, 24)
+$chkUpnpMapWebServer.Checked = $script:DefaultUpnpMapWebServer
+$settingsGroup.Controls.Add($chkUpnpMapWebServer)
+$toolTip.SetToolTip($chkUpnpMapWebServer, 'Include the web viewer HTTP port (from the Destination address, e.g. 8889) in the UPnP mapping.')
+
+$numUpnpWebServerExternalPort = New-Object System.Windows.Forms.NumericUpDown
+$numUpnpWebServerExternalPort.Location = New-Object System.Drawing.Point(15, 548)
+$numUpnpWebServerExternalPort.Size = New-Object System.Drawing.Size(90, 23)
+$numUpnpWebServerExternalPort.Minimum = 0
+$numUpnpWebServerExternalPort.Maximum = 65535
+$numUpnpWebServerExternalPort.Value = $script:DefaultUpnpWebServerExternalPort
+$settingsGroup.Controls.Add($numUpnpWebServerExternalPort)
+$toolTip.SetToolTip($numUpnpWebServerExternalPort, 'External (WAN-side) port the router maps to the web viewer port, e.g. 18889 -> 8889. 0 = map the same port number on both sides. A remote viewer must be given a URL using this external port explicitly; the page itself does not need to know about the remap.')
 
 $txtDirectWebRtcWebPath = New-Object System.Windows.Forms.TextBox
 $txtDirectWebRtcWebPath.Location = New-Object System.Drawing.Point(15, 548)
@@ -3871,6 +3922,12 @@ foreach ($control in @(
     $numDirectWebRtcMinRtpPort,
     $numDirectWebRtcMaxRtpPort,
     $chkUpnpEnabled,
+    $chkUpnpMapSignaling,
+    $numUpnpSignalingExternalPort,
+    $numUpnpSplitAudioExternalPort,
+    $chkUpnpMapRtp,
+    $chkUpnpMapWebServer,
+    $numUpnpWebServerExternalPort,
     $txtDirectWebRtcWebPath,
     $cmbDirectWebRtcBundledWebMode,
     $txtDirectWebRtcBundledWebDirectory,

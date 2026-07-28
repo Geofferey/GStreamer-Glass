@@ -728,6 +728,15 @@ function Apply-ModernDashboardUi {
     $r = Add-Row $s
     Add-Field $r -Control $lblUpnpStatus -Width 400 | Out-Null
     $r = Add-Row $s
+    Add-Field $r -Control $chkUpnpMapSignaling -Width 180 | Out-Null
+    Add-Field $r -Label 'External (0=same)' -Control $numUpnpSignalingExternalPort -Width 90 | Out-Null
+    Add-Field $r -Label 'Audio external (0=same)' -Control $numUpnpSplitAudioExternalPort -Width 90 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Control $chkUpnpMapWebServer -Width 180 | Out-Null
+    Add-Field $r -Label 'External (0=same)' -Control $numUpnpWebServerExternalPort -Width 90 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Control $chkUpnpMapRtp -Width 180 | Out-Null
+    $r = Add-Row $s
     Add-Field $r -Label 'Bundle policy' -Control $cmbDirectWebRtcBundlePolicy -Width 145 | Out-Null
     Add-Field $r -Label 'Internal RTP MTU (0=default)' -Control $numDirectWebRtcInternalRtpMtu -Width 85 | Out-Null
     Add-Field $r -Control $chkDirectWebRtcInternalRepeatHeaders -Width 250 | Out-Null

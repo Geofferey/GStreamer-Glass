@@ -419,10 +419,15 @@ function Add-DirectWebRtcViewerQuery {
     $splitAudioPort = if ((Test-DirectWebRtcSplitAvPipelines) -and -not (Test-DirectWebRtcUnifiedPublisher)) { [int](Get-DirectWebRtcSplitAudioSignalingPort) } else { 0 }
     $sharedSignaling = if (Test-DirectWebRtcSharedSignaling) { 1 } else { 0 }
     $splitAudioPart = if ($splitAudioPort -gt 0) { "&splitAudioPort=$splitAudioPort&splitAudioSignalingPort=$splitAudioPort&sharedSignaling=$sharedSignaling&splitSharedSignaling=$sharedSignaling" } else { '' }
+    $externalSignalingMapped = Test-UpnpSignalingMappedExternally
+    $externalSignalingPort = if ($externalSignalingMapped) { [int]$numUpnpSignalingExternalPort.Value } else { 0 }
+    $externalSignalingPart = if ($externalSignalingPort -gt 0) { "&externalSignalingPort=$externalSignalingPort" } else { '' }
+    $externalSplitAudioPort = if ($externalSignalingMapped -and $splitAudioPort -gt 0) { [int]$numUpnpSplitAudioExternalPort.Value } else { 0 }
+    $externalSplitAudioPart = if ($externalSplitAudioPort -gt 0) { "&splitAudioExternalSignalingPort=$externalSplitAudioPort" } else { '' }
     $stamp = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
     $joiner = if ($Url -match '\?') { '&' } else { '?' }
 
-    return ($Url + $joiner + "signalPort=$videoSignalPort&videoSignalingPort=$videoSignalPort&audioJbufMs=$audioJitterMs&videoJbufMs=$videoJitterMs&jitterMs=$fallbackJitterMs&browserJitterTargetMs=$fallbackJitterMs&jbufMaxMs=$maxMs&jbufWatchdog=$watchdog&jbufDebug=$debug&liveEdgeGreenMs=$liveEdgeGreenMs&liveEdgeYellowMs=$liveEdgeYellowMs&liveEdgeAverageSec=$liveEdgeAverageSec&watchdogWarmupSeconds=$warmupSeconds&jbufWatchdogWarmupSeconds=$warmupSeconds&splitAudioWarmupSeconds=$warmupSeconds&separateHtmlMediaElements=$separateHtmlMediaElements&playerSeparateHtmlMediaElements=$separateHtmlMediaElements&avRenderMode=$avRenderMode&playerAvRenderMode=$avRenderMode&avPipelineMode=$avPipelineMode&mediaStreamGrouping=$mediaStreamGrouping&videoMsid=$videoMediaStreamId&audioMsid=$audioMediaStreamId$splitAudioPart&cb=$stamp")
+    return ($Url + $joiner + "signalPort=$videoSignalPort&videoSignalingPort=$videoSignalPort&audioJbufMs=$audioJitterMs&videoJbufMs=$videoJitterMs&jitterMs=$fallbackJitterMs&browserJitterTargetMs=$fallbackJitterMs&jbufMaxMs=$maxMs&jbufWatchdog=$watchdog&jbufDebug=$debug&liveEdgeGreenMs=$liveEdgeGreenMs&liveEdgeYellowMs=$liveEdgeYellowMs&liveEdgeAverageSec=$liveEdgeAverageSec&watchdogWarmupSeconds=$warmupSeconds&jbufWatchdogWarmupSeconds=$warmupSeconds&splitAudioWarmupSeconds=$warmupSeconds&separateHtmlMediaElements=$separateHtmlMediaElements&playerSeparateHtmlMediaElements=$separateHtmlMediaElements&avRenderMode=$avRenderMode&playerAvRenderMode=$avRenderMode&avPipelineMode=$avPipelineMode&mediaStreamGrouping=$mediaStreamGrouping&videoMsid=$videoMediaStreamId&audioMsid=$audioMediaStreamId$splitAudioPart$externalSignalingPart$externalSplitAudioPart&cb=$stamp")
 }
 
 function Get-DirectWebRtcViewerUrl {
@@ -517,7 +522,15 @@ function Update-DirectWebRtcUi {
         $numSplitAudioWarmupSeconds,
         $numSplitAvOffsetWarnMs,
         $btnOpenDirectWebRtcViewer,
-        $btnCopyDirectWebRtcViewer
+        $btnCopyDirectWebRtcViewer,
+        $chkUpnpEnabled,
+        $lblUpnpStatus,
+        $chkUpnpMapSignaling,
+        $chkUpnpMapRtp,
+        $chkUpnpMapWebServer,
+        $numUpnpSignalingExternalPort,
+        $numUpnpWebServerExternalPort,
+        $numUpnpSplitAudioExternalPort
     )) {
         if ($control) { $control.Enabled = $directEnabled }
     }
@@ -539,6 +552,16 @@ function Update-DirectWebRtcUi {
     if ($txtDirectWebRtcVideoMediaStreamId) { $txtDirectWebRtcVideoMediaStreamId.Enabled = $separateMediaStreamsEnabled }
     if ($txtDirectWebRtcAudioMediaStreamId) { $txtDirectWebRtcAudioMediaStreamId.Enabled = $separateMediaStreamsEnabled }
     if ($numDirectWebRtcSplitAudioSignalingPort) { $numDirectWebRtcSplitAudioSignalingPort.Enabled = $splitModeEnabled -and -not $unifiedPublisherEnabled -and -not (Test-DirectWebRtcSharedSignaling) }
+    $upnpMasterEnabled = $directEnabled -and $chkUpnpEnabled -and $chkUpnpEnabled.Checked
+    foreach ($control in @($chkUpnpMapSignaling, $chkUpnpMapRtp, $chkUpnpMapWebServer)) {
+        if ($control) { $control.Enabled = $upnpMasterEnabled }
+    }
+    if ($numUpnpSignalingExternalPort) { $numUpnpSignalingExternalPort.Enabled = $upnpMasterEnabled -and $chkUpnpMapSignaling.Checked }
+    if ($numUpnpWebServerExternalPort) { $numUpnpWebServerExternalPort.Enabled = $upnpMasterEnabled -and $chkUpnpMapWebServer.Checked }
+    if ($numUpnpSplitAudioExternalPort) {
+        $numUpnpSplitAudioExternalPort.Enabled = $upnpMasterEnabled -and $chkUpnpMapSignaling.Checked -and
+            $splitModeEnabled -and -not $unifiedPublisherEnabled -and -not (Test-DirectWebRtcSharedSignaling)
+    }
     if ($numDirectWebRtcBridgeVideoPort) { $numDirectWebRtcBridgeVideoPort.Enabled = $unifiedPublisherEnabled }
     if ($numDirectWebRtcBridgeAudioPort) { $numDirectWebRtcBridgeAudioPort.Enabled = $unifiedPublisherEnabled }
     if ($numDirectWebRtcBridgeJitterMs) { $numDirectWebRtcBridgeJitterMs.Enabled = $unifiedPublisherEnabled }
