@@ -139,7 +139,6 @@ function Resize-DynamicScenePreviewCardCanvas {
 function Show-DynamicScenePreviewInPreviewCard {
     if (-not $script:DynamicScenePreviewActive) { return }
     if (-not $previewPanel -or -not $sceneEditorCanvas) { return }
-    if ($chkStandardPreviewOffSceneTab -and $chkStandardPreviewOffSceneTab.Checked) { return }
 
     Save-SceneEditorCanvasHome
 
@@ -401,7 +400,6 @@ function Update-LiveSceneEditingGate {
     # state. The user must be able to opt in before either preview or stream is
     # started, and an editor-layout synchronization must never leave it stale.
     $chkLiveSceneEditing.Enabled = (
-        $chkDynamicScenePreviews -and $chkDynamicScenePreviews.Checked -and
         $chkSceneEnabled -and $chkSceneEnabled.Checked -and
         [string]$cmbScenePreset.SelectedItem -eq 'Desktop + webcam'
     )
@@ -513,7 +511,7 @@ function Update-SceneWorkspaceMode {
 
     if ($sceneSelected -eq $script:SceneWorkspaceActive) {
         if ($sceneSelected) { Resize-LiveSceneCanvas }
-        elseif ($script:DynamicScenePreviewActive -and $chkStandardPreviewOffSceneTab -and -not $chkStandardPreviewOffSceneTab.Checked) {
+        elseif ($script:DynamicScenePreviewActive) {
             Show-DynamicScenePreviewInPreviewCard
         }
         return
@@ -576,12 +574,7 @@ function Update-SceneWorkspaceMode {
         }
         Sync-StandalonePreviewState -Quiet
     }
-    elseif ($script:DynamicScenePreviewActive -and $chkStandardPreviewOffSceneTab -and $chkStandardPreviewOffSceneTab.Checked) {
-        Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Leaving Scenes tab; switching dynamic scene previews back to the normal composed preview."
-        Stop-DynamicScenePreview -Quiet
-        Sync-StandalonePreviewState -Quiet
-    }
-    elseif ($script:DynamicScenePreviewActive -and $chkStandardPreviewOffSceneTab -and -not $chkStandardPreviewOffSceneTab.Checked) {
+    elseif ($script:DynamicScenePreviewActive) {
         Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Leaving Scenes tab; sharing dynamic scene previews in the normal Preview card."
         Show-DynamicScenePreviewInPreviewCard
     }

@@ -2625,23 +2625,11 @@ $btnRedrawScenePreview = New-Object System.Windows.Forms.Button
 $btnRedrawScenePreview.Text = 'Redraw preview'
 $toolTip.SetToolTip($btnRedrawScenePreview, 'Refreshes the embedded scene preview surface without restarting the GStreamer pipeline.')
 
-$chkDynamicScenePreviews = New-Object System.Windows.Forms.CheckBox
-$chkDynamicScenePreviews.Text = 'Dynamic previews'
-$chkDynamicScenePreviews.AutoSize = $true
-$chkDynamicScenePreviews.Checked = $false
-$toolTip.SetToolTip($chkDynamicScenePreviews, 'Runs the real scene compositor in-process so placement, size, opacity, and z-order update live without restarting.')
-
 $chkLiveSceneEditing = New-Object System.Windows.Forms.CheckBox
 $chkLiveSceneEditing.Text = 'Edit scene while live (experimental)'
 $chkLiveSceneEditing.AutoSize = $true
 $chkLiveSceneEditing.Checked = $false
 $toolTip.SetToolTip($chkLiveSceneEditing, 'Explicit opt-in. Available only with Dynamic previews. Runs compatible single-pipeline streams in a controlled worker process so placement, size, and opacity change on the actual broadcast without restarting. Stop/Restart terminates that worker exactly like the legacy launcher.')
-
-$chkStandardPreviewOffSceneTab = New-Object System.Windows.Forms.CheckBox
-$chkStandardPreviewOffSceneTab.Text = 'Standard preview off Scenes'
-$chkStandardPreviewOffSceneTab.AutoSize = $true
-$chkStandardPreviewOffSceneTab.Checked = $true
-$toolTip.SetToolTip($chkStandardPreviewOffSceneTab, 'When Dynamic previews is enabled, switch back to the normal composed preview when leaving the Scenes tab.')
 
 $cmbWebcamLayout = New-Object System.Windows.Forms.ComboBox
 $cmbWebcamLayout.DropDownStyle = 'DropDownList'
@@ -2935,39 +2923,6 @@ $sceneResetRestartHandler = { Reset-DynamicScenePreviewFallback; Restart-Dynamic
 $btnRefreshWebcams.Add_Click({ Reset-DynamicScenePreviewFallback; Refresh-WebcamDevices; Update-SceneUi; Restart-DynamicScenePreviewIfActive })
 $btnRedrawScenePreview.Add_Click({ Invoke-ScenePreviewRedraw })
 $chkSceneEnabled.Add_CheckedChanged({ Reset-DynamicScenePreviewFallback; Update-SceneUi; Restart-DynamicScenePreviewIfActive; Sync-StandalonePreviewState -Quiet })
-$chkDynamicScenePreviews.Add_CheckedChanged({
-    Reset-DynamicScenePreviewFallback
-    $script:SuppressControlledLiveStream = $false
-
-    # Re-evaluate the opt-in gate immediately from checkbox state. It must not
-    # depend on the controlled preview having finished its asynchronous handoff.
-    Update-LiveSceneEditingGate
-
-    if ($script:LoadingSettings) {
-        Update-SceneUi
-        Update-CommandPreview
-        return
-    }
-    if (-not $chkDynamicScenePreviews.Checked -and $script:ControlledLiveStreamActive) {
-        Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Dynamic scene control disabled; restarting the stream with the legacy launcher."
-        Stop-GstStream -Restart
-        Update-SceneUi
-        Update-CommandPreview
-        return
-    }
-    if (-not $chkDynamicScenePreviews.Checked -and $script:DynamicScenePreviewActive) {
-        Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Dynamic scene previews disabled; falling back to the normal composed preview."
-        Stop-DynamicScenePreview -Quiet
-    }
-    elseif ($chkDynamicScenePreviews.Checked -and $script:PreviewOnlyMode -and $script:GstProcess -and -not $script:GstProcess.HasExited -and (Test-DynamicScenePreviewWanted)) {
-        Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Dynamic scene previews enabled; restarting local preview with the controlled compositor."
-        Stop-GstStream
-    }
-    Update-SceneUi
-    Update-SceneCanvasFromValues
-    Sync-StandalonePreviewState -Quiet
-    Update-CommandPreview
-})
 $chkLiveSceneEditing.Add_CheckedChanged({
     $script:SuppressControlledLiveStream = $false
     if ($script:LoadingSettings) {
@@ -2987,23 +2942,6 @@ $chkLiveSceneEditing.Add_CheckedChanged({
         Stop-GstStream -Restart
     }
     Update-SceneUi
-    Update-CommandPreview
-})
-$chkStandardPreviewOffSceneTab.Add_CheckedChanged({
-    if ($chkStandardPreviewOffSceneTab.Checked -and (-not $script:SceneWorkspaceActive) -and $script:DynamicScenePreviewActive) {
-        Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Standard preview off Scenes enabled; switching dynamic scene previews back to the normal composed preview."
-        Stop-DynamicScenePreview -Quiet
-        Restore-SceneEditorCanvasHome
-        Sync-StandalonePreviewState -Quiet
-    }
-    elseif ((-not $chkStandardPreviewOffSceneTab.Checked) -and (-not $script:SceneWorkspaceActive) -and $script:DynamicScenePreviewActive) {
-        Show-DynamicScenePreviewInPreviewCard
-    }
-    elseif ((-not $chkStandardPreviewOffSceneTab.Checked) -and $script:PreviewOnlyMode -and $script:GstProcess -and -not $script:GstProcess.HasExited -and (Test-DynamicScenePreviewWanted)) {
-        Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Dynamic preview sharing enabled off Scenes; switching the local preview to the controlled compositor."
-        Stop-GstStream
-        Sync-StandalonePreviewState -Quiet
-    }
     Update-CommandPreview
 })
 $cmbScenePreset.Add_SelectedIndexChanged($sceneResetUiRestartHandler)

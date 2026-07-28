@@ -892,8 +892,6 @@ function Apply-ModernDashboardUi {
     Add-Field $r -Label 'Sources' -Control $sceneSourcePalette -Width 550 | Out-Null
     $r = Add-Row $s
     Add-Field $r -Control $btnRedrawScenePreview -Width 130 | Out-Null
-    Add-Field $r -Control $chkDynamicScenePreviews -Width 150 | Out-Null
-    Add-Field $r -Control $chkStandardPreviewOffSceneTab -Width 190 | Out-Null
     $r = Add-Row $s
     Add-Field $r -Control $chkLiveSceneEditing -Width 260 | Out-Null
     $r = Add-Row $s

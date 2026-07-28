@@ -184,9 +184,7 @@ function Save-Settings {
             RecordingAudioBitrateKbps = [int]$numRecordingAudioBitrate.Value
             Preview           = $chkPreview.Checked
             HidePreviewDuringStream = $chkHidePreviewDuringStream.Checked
-            DynamicScenePreviews = $chkDynamicScenePreviews.Checked
             LiveSceneEditing   = $chkLiveSceneEditing.Checked
-            StandardPreviewOffSceneTab = $chkStandardPreviewOffSceneTab.Checked
             AutoRestart       = $chkAutoRestart.Checked
             Verbose           = $chkVerbose.Checked
             DiskProcessLogging = $chkDiskProcessLogging.Checked
@@ -614,9 +612,7 @@ function Restore-SettingsFromObject {
         if ($settings.RecordingAudioBitrateKbps) { $numRecordingAudioBitrate.Value = [decimal]$settings.RecordingAudioBitrateKbps }
         if ($null -ne $settings.Preview) { $chkPreview.Checked = [bool]$settings.Preview }
         if ($null -ne $settings.HidePreviewDuringStream) { $chkHidePreviewDuringStream.Checked = [bool]$settings.HidePreviewDuringStream }
-        if ($null -ne $settings.DynamicScenePreviews) { $chkDynamicScenePreviews.Checked = [bool]$settings.DynamicScenePreviews }
         if ($null -ne $settings.LiveSceneEditing) { $chkLiveSceneEditing.Checked = [bool]$settings.LiveSceneEditing }
-        if ($null -ne $settings.StandardPreviewOffSceneTab) { $chkStandardPreviewOffSceneTab.Checked = [bool]$settings.StandardPreviewOffSceneTab }
         if ($null -ne $settings.AutoRestart) { $chkAutoRestart.Checked = [bool]$settings.AutoRestart }
         if ($null -ne $settings.Verbose) { $chkVerbose.Checked = [bool]$settings.Verbose }
         if ($null -ne $settings.DiskProcessLogging) { $chkDiskProcessLogging.Checked = [bool]$settings.DiskProcessLogging }

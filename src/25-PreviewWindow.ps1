@@ -188,16 +188,9 @@ function Test-UseDynamicScenePreview {
 
 function Test-DynamicScenePreviewWanted {
     try {
-        $dynamicPreviewContextAllowed = (
-            $script:SceneWorkspaceActive -or
-            ($chkStandardPreviewOffSceneTab -and -not $chkStandardPreviewOffSceneTab.Checked)
-        )
-
         return (
-            $dynamicPreviewContextAllowed -and
             $script:DynamicPreviewUiReady -and
             -not $script:SuppressDynamicScenePreview -and
-            $chkDynamicScenePreviews -and $chkDynamicScenePreviews.Checked -and
             $chkSceneEnabled -and $chkSceneEnabled.Checked -and
             $chkPreview -and $chkPreview.Checked -and
             (Test-StandalonePreviewAllowed)
@@ -385,7 +378,6 @@ function Test-ControlledLiveStreamRequested {
         if ($script:SuppressControlledLiveStream) { return $false }
         if (-not $script:DynamicPreviewUiReady) { return $false }
         if (-not $chkLiveSceneEditing -or -not $chkLiveSceneEditing.Checked) { return $false }
-        if (-not $chkDynamicScenePreviews -or -not $chkDynamicScenePreviews.Checked) { return $false }
         if (-not $chkSceneEnabled -or -not $chkSceneEnabled.Checked) { return $false }
         if ([string]$cmbScenePreset.SelectedItem -ne 'Desktop + webcam') { return $false }
         if (-not $chkPreview -or -not $chkPreview.Checked) { return $false }
@@ -431,7 +423,7 @@ function Start-DynamicScenePreview {
         $script:SceneDesktopPreviewProcess = $null
         $script:SceneWebcamPreviewProcess = $null
 
-        if (-not $script:SceneWorkspaceActive -and $chkStandardPreviewOffSceneTab -and -not $chkStandardPreviewOffSceneTab.Checked) {
+        if (-not $script:SceneWorkspaceActive) {
             Show-DynamicScenePreviewInPreviewCard
         }
 
