@@ -560,6 +560,22 @@ $numDirectWebRtcMaxRtpPort.Value = $script:DefaultDirectWebRtcMaxRtpPort
 $settingsGroup.Controls.Add($numDirectWebRtcMaxRtpPort)
 $toolTip.SetToolTip($numDirectWebRtcMaxRtpPort, 'GST WebRTC protocol only. Upper bound of the ICE candidate UDP port range. See the Min RTP port tooltip for how this is enforced.')
 
+$chkUpnpEnabled = New-Object System.Windows.Forms.CheckBox
+$chkUpnpEnabled.Text = 'Forward ports via UPnP (if router supports it)'
+$chkUpnpEnabled.Location = New-Object System.Drawing.Point(15, 548)
+$chkUpnpEnabled.Size = New-Object System.Drawing.Size(300, 24)
+$chkUpnpEnabled.Checked = $script:DefaultUpnpEnabled
+$settingsGroup.Controls.Add($chkUpnpEnabled)
+$toolTip.SetToolTip($chkUpnpEnabled, 'Off by default. When enabled, asks the router for a UPnP IGD port mapping for the web viewer port (Destination address, e.g. 8889), the signalling port(s) above, and, if set, the Min/Max RTP port range, so the stream is reachable from outside the LAN without manual router configuration. Best-effort only: if the router does not support UPnP the stream still starts normally over the existing STUN/TURN path. Mappings are removed when the stream stops. RTP ranges wider than 256 ports are skipped (each port needs its own mapping call to the router); a wide range also adds a few seconds to stream start while each port is mapped.')
+
+$lblUpnpStatus = New-Object System.Windows.Forms.Label
+$lblUpnpStatus.Text = 'UPnP: disabled'
+$lblUpnpStatus.Location = New-Object System.Drawing.Point(15, 548)
+$lblUpnpStatus.Size = New-Object System.Drawing.Size(400, 23)
+$lblUpnpStatus.TextAlign = 'MiddleLeft'
+$lblUpnpStatus.ForeColor = [System.Drawing.Color]::DimGray
+$settingsGroup.Controls.Add($lblUpnpStatus)
+
 $txtDirectWebRtcWebPath = New-Object System.Windows.Forms.TextBox
 $txtDirectWebRtcWebPath.Location = New-Object System.Drawing.Point(15, 548)
 $txtDirectWebRtcWebPath.Size = New-Object System.Drawing.Size(120, 23)
@@ -3821,6 +3837,12 @@ $chkStartMediaMtx.Add_CheckedChanged({
     Update-MediaMtxUi
     Update-CommandPreview
 })
+$chkUpnpEnabled.Add_CheckedChanged({
+    if ($script:ActiveUpnpMappings.Count -eq 0) {
+        $lblUpnpStatus.Text = if ($chkUpnpEnabled.Checked) { 'UPnP: enabled - will map ports when the stream starts' } else { 'UPnP: disabled' }
+        $lblUpnpStatus.ForeColor = [System.Drawing.Color]::DimGray
+    }
+})
 
 foreach ($control in @(
     $txtDirectWebRtcSignalingHost,
@@ -3848,6 +3870,7 @@ foreach ($control in @(
     $txtDirectWebRtcTurn,
     $numDirectWebRtcMinRtpPort,
     $numDirectWebRtcMaxRtpPort,
+    $chkUpnpEnabled,
     $txtDirectWebRtcWebPath,
     $cmbDirectWebRtcBundledWebMode,
     $txtDirectWebRtcBundledWebDirectory,

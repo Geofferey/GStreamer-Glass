@@ -54,6 +54,7 @@ function Save-Settings {
             DirectWebRtcTurnServer = $txtDirectWebRtcTurn.Text
             DirectWebRtcMinRtpPort = [int]$numDirectWebRtcMinRtpPort.Value
             DirectWebRtcMaxRtpPort = [int]$numDirectWebRtcMaxRtpPort.Value
+            UpnpEnabled = [bool]$chkUpnpEnabled.Checked
             DirectWebRtcWebPath = $txtDirectWebRtcWebPath.Text
             DirectWebRtcBundledWebMode = [string]$cmbDirectWebRtcBundledWebMode.SelectedItem
             DirectWebRtcBundledWebDirectory = $txtDirectWebRtcBundledWebDirectory.Text
@@ -432,6 +433,7 @@ function Restore-SettingsFromObject {
         if ($null -ne $settings.DirectWebRtcTurnServer) { $txtDirectWebRtcTurn.Text = [string]$settings.DirectWebRtcTurnServer }
         if ($null -ne $settings.DirectWebRtcMinRtpPort) { $numDirectWebRtcMinRtpPort.Value = [decimal]([Math]::Min(65535, [Math]::Max(0, [int]$settings.DirectWebRtcMinRtpPort))) }
         if ($null -ne $settings.DirectWebRtcMaxRtpPort) { $numDirectWebRtcMaxRtpPort.Value = [decimal]([Math]::Min(65535, [Math]::Max(0, [int]$settings.DirectWebRtcMaxRtpPort))) }
+        if ($null -ne $settings.UpnpEnabled) { $chkUpnpEnabled.Checked = [bool]$settings.UpnpEnabled }
         if ($null -ne $settings.DirectWebRtcWebPath) { $txtDirectWebRtcWebPath.Text = [string]$settings.DirectWebRtcWebPath }
         if ($settings.DirectWebRtcBundledWebMode -and $cmbDirectWebRtcBundledWebMode.Items.Contains([string]$settings.DirectWebRtcBundledWebMode)) { $cmbDirectWebRtcBundledWebMode.SelectedItem = [string]$settings.DirectWebRtcBundledWebMode }
         if ($null -ne $settings.DirectWebRtcBundledWebDirectory) { $txtDirectWebRtcBundledWebDirectory.Text = [string]$settings.DirectWebRtcBundledWebDirectory }

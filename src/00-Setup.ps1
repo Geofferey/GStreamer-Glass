@@ -1781,6 +1781,7 @@ $script:DefaultDirectWebRtcTurnEnabled = $false
 $script:DefaultDirectWebRtcTurnServer = 'turn://openrelay.metered.ca:80'
 $script:DefaultDirectWebRtcMinRtpPort = 0
 $script:DefaultDirectWebRtcMaxRtpPort = 0
+$script:DefaultUpnpEnabled = $false
 $script:DefaultDirectWebRtcSmoothnessProfile = 'Sane defaults'
 $script:DefaultDirectWebRtcStartBitrateKbps = 0
 $script:DefaultDirectWebRtcMinBitrateKbps = 0

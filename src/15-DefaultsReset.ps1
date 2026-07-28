@@ -77,6 +77,7 @@ function Reset-TransportDefaults {
     $txtDirectWebRtcTurn.Text = $script:DefaultDirectWebRtcTurnServer
     $numDirectWebRtcMinRtpPort.Value = $script:DefaultDirectWebRtcMinRtpPort
     $numDirectWebRtcMaxRtpPort.Value = $script:DefaultDirectWebRtcMaxRtpPort
+    $chkUpnpEnabled.Checked = $script:DefaultUpnpEnabled
     $txtDirectWebRtcWebPath.Text = $script:DefaultDirectWebRtcWebPath
     if ($cmbDirectWebRtcBundledWebMode.Items.Contains($script:DefaultDirectWebRtcBundledWebMode)) { $cmbDirectWebRtcBundledWebMode.SelectedItem = $script:DefaultDirectWebRtcBundledWebMode }
     $txtDirectWebRtcBundledWebDirectory.Text = $script:DefaultDirectWebRtcBundledWebDirectory

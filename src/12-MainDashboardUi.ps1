@@ -724,6 +724,10 @@ function Apply-ModernDashboardUi {
     Add-Field $r -Label 'Min RTP port (0=unrestricted)' -Control $numDirectWebRtcMinRtpPort -Width 85 | Out-Null
     Add-Field $r -Label 'Max RTP port (0=unrestricted)' -Control $numDirectWebRtcMaxRtpPort -Width 85 | Out-Null
     $r = Add-Row $s
+    Add-Field $r -Control $chkUpnpEnabled -Width 300 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Control $lblUpnpStatus -Width 400 | Out-Null
+    $r = Add-Row $s
     Add-Field $r -Label 'Bundle policy' -Control $cmbDirectWebRtcBundlePolicy -Width 145 | Out-Null
     Add-Field $r -Label 'Internal RTP MTU (0=default)' -Control $numDirectWebRtcInternalRtpMtu -Width 85 | Out-Null
     Add-Field $r -Control $chkDirectWebRtcInternalRepeatHeaders -Width 250 | Out-Null

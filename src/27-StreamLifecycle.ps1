@@ -452,6 +452,10 @@ function Start-GstStream {
         Write-PsDebugTrace "Start-GstStream: main gst-launch process started (PID=$($script:GstProcess.Id))"
         Set-GstProcessPriority -Process $script:GstProcess
 
+        if ($chkUpnpEnabled -and $chkUpnpEnabled.Checked) {
+            try { Add-UpnpPortMappings } catch { Append-Log "UPnP: $($_.Exception.Message)" }
+        }
+
         if ($script:JobHandle -ne [IntPtr]::Zero) {
             try {
                 [GstProcessJob]::AssignProcess($script:JobHandle, $script:GstProcess.Handle)
@@ -552,6 +556,7 @@ function Start-GstStream {
             try { $failedProcess.Dispose() } catch {}
         }
         Close-WebRtcPortRangeWorkerPipe
+        try { Remove-UpnpPortMappings } catch {}
         $script:GstProcess = $null
         $script:GstVideoProcess = $null
         $script:GstAudioProcess = $null
@@ -797,6 +802,7 @@ function Stop-GstStream {
     }
     catch {}
     Close-WebRtcPortRangeWorkerPipe
+    try { Remove-UpnpPortMappings } catch {}
     $script:GstProcess = $null
     $script:GstVideoProcess = $null
     $script:GstAudioProcess = $null
