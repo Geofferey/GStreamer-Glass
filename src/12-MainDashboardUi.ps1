@@ -714,6 +714,12 @@ function Apply-ModernDashboardUi {
     $r = Add-Row $s
     Add-Field $r -Control $chkDirectWebRtcSharedSignaling -Width 260 | Out-Null
 
+    $s = Add-Section $paneWebRtc 'Signaling WebSocket proxy'
+    $r = Add-Row $s
+    Add-Field $r -Label 'Video path' -Control $txtPlayerVideoSignalingProxyPath -Width 300 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Label 'Voice path' -Control $txtPlayerAudioSignalingProxyPath -Width 300 | Out-Null
+
     $s = Add-Section $paneWebRtc 'ICE / connectivity'
     $r = Add-Row $s
     Add-Field $r -Label 'STUN' -Control $txtDirectWebRtcStun -Width 270 | Out-Null
@@ -1449,4 +1455,3 @@ function Apply-ModernDashboardUi {
     $txtCustomGstArguments.ForeColor = [System.Drawing.ColorTranslator]::FromHtml('#D1D5DB')
     $txtCustomGstArguments.BorderStyle = [System.Windows.Forms.BorderStyle]::None
 }
-

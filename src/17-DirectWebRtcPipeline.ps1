@@ -526,6 +526,8 @@ function Write-DirectWebRtcWebClientConfig {
             liveEdgeAverageSec = [int]$playerSettings.LiveEdgeAverageSec
             screenWakeLock = $true
             connectionMode = 'auto'
+            videoSignalingProxyPath = [string]$playerSettings.VideoSignalingProxyPath
+            audioSignalingProxyPath = [string]$playerSettings.AudioSignalingProxyPath
             stunUrl = $playerStun
             turnUrl = $playerTurn.Url
             turnUsername = $playerTurn.Username

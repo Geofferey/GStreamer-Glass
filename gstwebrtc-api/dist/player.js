@@ -1,5 +1,5 @@
 (() => {
-  const FRONTEND_VERSION = '3.8-proxy-ice-filter-14';
+  const FRONTEND_VERSION = '3.8-proxy-ice-filter-18';
   console.info(`[GStreamer Glass Live] frontend ${FRONTEND_VERSION}`);
   const playerRoot = document.getElementById('playerRoot');
   const video = document.getElementById('video');
@@ -413,11 +413,11 @@
     else releaseScreenWakeLock(reason);
   }
 
-  function normalizeProxySignalPath(raw, kind) {
+  function normalizeProxySignalPath(raw, kind, appendKind = true) {
     const fallbackBase = String(configValue('signalingProxyBasePath', '/live/GstSignal') || '/live/GstSignal').trim();
     let value = String(raw || fallbackBase).trim();
     if (!value) value = '/live/GstSignal';
-    const suffix = String(kind || 'video').toLowerCase() === 'audio' ? 'audio' : 'video';
+    const suffix = String(kind || 'video').toLowerCase() === 'audio' ? 'voice' : 'video';
     const absoluteInput = /^wss?:\/\//i.test(value);
     let absolute = null;
     try {
@@ -425,7 +425,7 @@
       value = absolute.pathname;
     } catch (_) {}
     value = `/${value.replace(/^\/+|\/+$/g, '')}`;
-    if (!new RegExp(`/${suffix}$`, 'i').test(value)) value += `/${suffix}`;
+    if (appendKind && !new RegExp(`/${suffix}$`, 'i').test(value)) value += `/${suffix}`;
     if (absoluteInput && absolute) {
       absolute.pathname = value;
       return trimWsUrl(absolute.toString());
@@ -447,14 +447,38 @@
       } catch (_) { return trimWsUrl(normalized); }
     }
 
-    const explicitPath = audio
-      ? (query('proxyAudioPath') || query('audioProxyPath') || configValue('audioSignalingProxyPath', ''))
-      : (query('proxyVideoPath') || query('videoProxyPath') || configValue('videoSignalingProxyPath', ''));
+    const queryPath = audio
+      ? (query('proxyAudioPath') ?? query('audioProxyPath'))
+      : (query('proxyVideoPath') ?? query('videoProxyPath'));
+    const configuredPath = configValue(audio ? 'audioSignalingProxyPath' : 'videoSignalingProxyPath', undefined);
+    const explicitPath = queryPath !== null ? queryPath : configuredPath;
+    const hasExplicitPath = explicitPath !== undefined && explicitPath !== null;
+    // A present-but-empty Player-tab value explicitly disables this preferred
+    // proxy path, allowing the mapped/direct candidates below to lead.
+    if (hasExplicitPath && !String(explicitPath).trim()) return '';
     const basePath = query('proxySignalBase') || query('signalProxyBase') || configValue('signalingProxyBasePath', '/live/GstSignal');
-    const path = normalizeProxySignalPath(explicitPath || basePath, audio ? 'audio' : 'video');
+    const path = hasExplicitPath
+      ? normalizeProxySignalPath(explicitPath, audio ? 'audio' : 'video', false)
+      : normalizeProxySignalPath(basePath, audio ? 'audio' : 'video', true);
     if (/^wss?:\/\//i.test(path)) return path;
     const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
     return `${scheme}://${location.host}${path}`;
+  }
+
+  // Always builds a root WebSocket endpoint from the hostname/domain used to
+  // open the player. This deliberately does not inherit /live/GstSignal/*
+  // (or any other path) from an explicit/proxied signaling URL.
+  function pageHostWsUrl(port) {
+    if (!port) return '';
+    const host = query('signalHost') || query('host') || (location.hostname && location.hostname !== '0.0.0.0' ? location.hostname : '127.0.0.1');
+    const requestedScheme = query('signalScheme') || query('scheme') || '';
+    const scheme = location.protocol === 'https:' ? 'wss' : (requestedScheme || 'ws');
+    return `${scheme}://${formatWsHost(host)}:${port}`;
+  }
+
+  function pageHostVideoWsUrl() {
+    const port = query('signalPort') || query('videoSignalingPort') || query('port') || String(configValue('videoSignalingPort', configValue('signalingPort', 8189)));
+    return pageHostWsUrl(port);
   }
 
   function directVideoWsUrl() {
@@ -471,11 +495,7 @@
       } catch (_) { return trimWsUrl(normalized); }
     }
 
-    const host = query('signalHost') || query('host') || (location.hostname && location.hostname !== '0.0.0.0' ? location.hostname : '127.0.0.1');
-    const port = query('signalPort') || query('videoSignalingPort') || query('port') || String(configValue('videoSignalingPort', configValue('signalingPort', 8189)));
-    const requestedScheme = query('signalScheme') || query('scheme') || '';
-    const scheme = location.protocol === 'https:' ? 'wss' : (requestedScheme || 'ws');
-    return `${scheme}://${formatWsHost(host)}:${port}`;
+    return pageHostVideoWsUrl();
   }
 
   function uniqueWsUrls(urls) {
@@ -490,22 +510,27 @@
 
   // Signalling can be UPnP-mapped to a different external (WAN-side) port
   // than the one gst-launch actually binds to internally (see
-  // externalSignalingPort in gstglass-config.js). Reuses buildWsWithPort
-  // (defined below) to keep the same host/scheme as the direct URL and only
-  // swap the port -- returns '' when no external mapping is configured, so
-  // it drops out of the candidate list via uniqueWsUrls.
+  // externalSignalingPort in gstglass-config.js). Build this from the page
+  // hostname and a root path so a proxy URL can never leak
+  // /live/GstSignal/video into the mapped direct endpoint.
   function externalVideoWsUrl() {
     const port = Number(query('externalSignalingPort') || configValue('externalSignalingPort', 0)) || 0;
     if (!port) return '';
-    return buildWsWithPort(directVideoWsUrl(), port);
+    return pageHostWsUrl(port);
   }
 
   function primarySignalingCandidates() {
     const proxy = proxyWsUrl('video');
     const direct = directVideoWsUrl();
+    const pageDirect = pageHostVideoWsUrl();
     const external = externalVideoWsUrl();
     const mode = connectionMode();
-    if (mode === 'proxy') return uniqueWsUrls([proxy]);
+    // Connection mode controls the WebRTC ICE/media route, not how the
+    // browser is allowed to reach the signaling server. PROXY mode keeps the
+    // configured Player-tab path first, then falls back to root WebSockets on
+    // the page's host/domain (mapped WAN port, then configured direct port).
+    // Its WAN/public ICE policy remains unchanged.
+    if (mode === 'proxy') return uniqueWsUrls([proxy, external, pageDirect, direct]);
     if (mode === 'lan') return uniqueWsUrls([proxy, direct, external]);
     return uniqueWsUrls([proxy, direct, external]);
   }
@@ -516,6 +541,8 @@
     if (target && target === trimWsUrl(proxyWsUrl(kind))) return 'proxy';
     const direct = kind === 'audio' ? directSplitAudioWsUrl() : directVideoWsUrl();
     if (target && target === trimWsUrl(direct)) return 'direct';
+    const pageDirect = kind === 'audio' ? pageHostSplitAudioWsUrl() : pageHostVideoWsUrl();
+    if (target && target === trimWsUrl(pageDirect)) return 'direct';
     const external = kind === 'audio' ? externalSplitAudioWsUrl() : externalVideoWsUrl();
     if (target && external && target === trimWsUrl(external)) return 'external';
     return 'explicit';
@@ -546,8 +573,16 @@
     const fromQuery = query('route') || query('mode') || query('connectionMode');
     if (fromQuery) return normalizeConnectionMode(fromQuery);
     try {
-      const saved = localStorage.getItem('gstglass-connection-mode') || localStorage.getItem('gstglass-signaling-route');
+      const saved = localStorage.getItem('gstglass-connection-mode');
       if (saved) return normalizeConnectionMode(saved);
+      // One-way migration from releases that stored the media mode under a
+      // signaling-route key. Only migrate canonical media-mode values: an old
+      // "direct" signaling transport must never silently select LAN ICE.
+      const legacy = String(localStorage.getItem('gstglass-signaling-route') || '').trim().toLowerCase();
+      if (['lan', 'auto', 'proxy'].includes(legacy)) {
+        localStorage.setItem('gstglass-connection-mode', legacy);
+        return legacy;
+      }
     } catch (_) {}
     return normalizeConnectionMode(configValue('connectionMode', 'auto'));
   }
@@ -573,7 +608,10 @@
     //                  very common on cellular networks)
     //   192.0.0.0/24   IETF Protocol Assignments, incl. 464XLAT client-side
     //                  translation addresses (RFC 7335)
-    const text = String(address || '');
+    const text = String(address || '').trim();
+    // Browsers commonly hide local host addresses behind an mDNS name. It is
+    // still a LAN-only address even though it does not resemble an RFC1918 IP.
+    if (/\.local\.?$/i.test(text)) return true;
     if (/^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|169\.254\.|127\.|fc|fd|fe80:|::1$)/i.test(text)) return true;
     if (/^192\.0\.0\./.test(text)) return true;
     const cgnat = text.match(/^100\.(\d{1,3})\./);
@@ -586,6 +624,11 @@
     const candidateType = String(type || '').toLowerCase();
     const original = Number.parseInt(originalPriority, 10);
     const componentBits = Number.isFinite(original) ? original & 0xff : 1;
+    // Candidate type alone cannot tell us whether a host path is local-only:
+    // a producer may advertise a host candidate containing its public/WAN
+    // address. Treat only private/mDNS (or address-less) host candidates as
+    // LAN paths so PROXY keeps preferring genuinely external host candidates.
+    const isPrivateHost = candidateType === 'host' && (!address || isPrivateIceAddress(address));
     // A prflx candidate discovered on a private address (common on
     // multi-homed machines/virtual adapters, where a connectivity check
     // arrives on a different local interface than the one a candidate was
@@ -596,11 +639,12 @@
       if (candidateType === 'relay') return 2130706176 + componentBits;
       if (candidateType === 'srflx') return 2122317568 + componentBits;
       if (candidateType === 'prflx' && !isPrivatePrflx) return 2122317312 + componentBits;
-      if (candidateType === 'host' || isPrivatePrflx) return 256 + componentBits;
+      if (candidateType === 'host' && !isPrivateHost) return 2122317056 + componentBits;
+      if (isPrivateHost || isPrivatePrflx) return 256 + componentBits;
     }
     if (mode === 'lan') {
-      if (candidateType === 'host' || isPrivatePrflx) return 2130706176 + componentBits;
-      if (candidateType === 'srflx' || (candidateType === 'prflx' && !isPrivatePrflx) || candidateType === 'relay') return 256 + componentBits;
+      if (isPrivateHost || isPrivatePrflx) return 2130706176 + componentBits;
+      if ((candidateType === 'host' && !isPrivateHost) || candidateType === 'srflx' || (candidateType === 'prflx' && !isPrivatePrflx) || candidateType === 'relay') return 256 + componentBits;
     }
     return Number.isFinite(original) ? original : originalPriority;
   }
@@ -618,10 +662,8 @@
     return `${hasAttributePrefix ? 'a=' : ''}${parts.join(' ')}`;
   }
 
-  // Our own outbound candidates are only ever reprioritized, never dropped --
-  // a dropped host candidate there removes the only fallback path in
-  // topologies (CGNAT, symmetric NAT) where the external/srflx pair genuinely
-  // isn't reachable, turning "suboptimal pair" into "ICE fails completely."
+  // In PROXY mode, our own private/mDNS host candidates are withheld while
+  // public host, srflx, prflx, and relay candidates remain eligible.
   //
   // The remote side (scope containing "remote", i.e. what the *producer*
   // advertises to us) is different: rejecting its private-address candidates
@@ -652,14 +694,16 @@
     return { ...init, candidate: rewritten };
   }
 
-  function isHostIceCandidateLine(candidateLine) {
+  function isLocalOnlyHostIceCandidateLine(candidateLine) {
     const text = String(candidateLine || '');
     const raw = /^a=/i.test(text) ? text.slice(2) : text;
     if (!/^candidate:/i.test(raw)) return false;
     const parts = raw.trim().split(/\s+/);
     const typIndex = parts.findIndex((part) => String(part).toLowerCase() === 'typ');
     if (typIndex < 0 || !parts[typIndex + 1]) return false;
-    return String(parts[typIndex + 1]).toLowerCase() === 'host';
+    if (String(parts[typIndex + 1]).toLowerCase() !== 'host') return false;
+    const address = parts[4] || '';
+    return !address || isPrivateIceAddress(address);
   }
 
   // Our own srflx candidate *is* our public IP as discovered via STUN -- no
@@ -680,7 +724,8 @@
   }
 
   // isOutbound=true for our own local/answer SDP: withhold only what *we*
-  // advertise about ourselves in PROXY mode (type-based, host only).
+  // advertise about ourselves in PROXY mode (private/mDNS host only; a
+  // public-address host candidate is an external path and remains eligible).
   // isOutbound=false for what we accept from the remote: reject any embedded
   // candidate whose address is private (address-based, not just type=host --
   // catches private-address prflx too), same reasoning as the trickled-ICE
@@ -697,7 +742,7 @@
     const rejectRemotePrivate = !isOutbound && mode === 'proxy';
     const sdp = String(description.sdp).split(/\r?\n/).filter((line) => {
       if (!/^a=candidate:/i.test(line)) return true;
-      if (withholdOwnHost && isHostIceCandidateLine(line)) { withheld += 1; return false; }
+      if (withholdOwnHost && isLocalOnlyHostIceCandidateLine(line)) { withheld += 1; return false; }
       if (rejectRemotePrivate) {
         const parts = line.replace(/^a=/i, '').trim().split(/\s+/);
         const address = parts[4] || '';
@@ -1236,6 +1281,11 @@
     return buildWsWithPort(directVideoWsUrl(), cfgPort);
   }
 
+  function pageHostSplitAudioWsUrl() {
+    if (sharedSignalingEnabled()) return pageHostVideoWsUrl();
+    return pageHostWsUrl(splitAudioSignalingPort());
+  }
+
   // Mirrors externalVideoWsUrl() for the independent split-audio signalling
   // connection -- '' (dropped by uniqueWsUrls) unless a split-audio external
   // port is actually configured (splitAudioExternalSignalingPort).
@@ -1243,16 +1293,20 @@
     if (sharedSignalingEnabled()) return '';
     const port = Number(query('splitAudioExternalSignalingPort') || configValue('splitAudioExternalSignalingPort', 0)) || 0;
     if (!port) return '';
-    return buildWsWithPort(directSplitAudioWsUrl(), port);
+    return pageHostWsUrl(port);
   }
 
   function splitAudioSignalingCandidates() {
     if (sharedSignalingEnabled()) return uniqueWsUrls([primaryWsUrlForSplit()]);
     const proxy = proxyWsUrl('audio');
     const direct = directSplitAudioWsUrl();
+    const pageDirect = pageHostSplitAudioWsUrl();
     const external = externalSplitAudioWsUrl();
     const mode = connectionMode();
-    if (mode === 'proxy') return uniqueWsUrls([proxy]);
+    // Keep signaling transport independent from the PROXY media/ICE policy,
+    // mirroring the primary connection. The configured /voice path stays
+    // exact and first; mapped/direct root WebSockets remain fallbacks.
+    if (mode === 'proxy') return uniqueWsUrls([proxy, external, pageDirect, direct]);
     if (mode === 'lan') return uniqueWsUrls([proxy, direct, external]);
     if (state.signalingRoute === 'direct') return uniqueWsUrls([direct, external, proxy]);
     return uniqueWsUrls([proxy, direct, external]);
@@ -1928,7 +1982,6 @@
     state.connectionModeOverride = next;
     try {
       localStorage.setItem('gstglass-connection-mode', next);
-      localStorage.setItem('gstglass-signaling-route', next);
     } catch (_) {}
     updateConnectionModeControl();
     if (next === previous) return next;
@@ -2659,7 +2712,7 @@
     pc.addEventListener('icecandidate', (ev) => {
       if (!ev.candidate) return;
       noteOwnPublicIpFromCandidate(ev.candidate.candidate);
-      if (connectionMode() === 'proxy' && isHostIceCandidateLine(ev.candidate.candidate)) return;
+      if (connectionMode() === 'proxy' && isLocalOnlyHostIceCandidateLine(ev.candidate.candidate)) return;
       const candidate = applyIceRoutePolicyToCandidate(ev.candidate, 'primary local');
       if (state.sessionId) send({ type: 'peer', sessionId: state.sessionId, ice: candidate }, true);
       else state.pendingIce.push(candidate);
@@ -2808,13 +2861,14 @@
     // A peer-reflexive candidate discovered on a private address (multi-homed
     // machine/virtual adapter: a check arrives on a different local interface
     // than the one a candidate was advertised for) is a local-only path just
-    // like host, not a real external one -- checking strictly for type
-    // 'host' let this slip through as if the pair were a genuine external
-    // connection. Match routeIcePriority's treatment of the same case.
+    // like a private host candidate, not a real external one. Conversely, a
+    // host candidate containing a public address is a valid external path and
+    // must not be mislabeled as a LAN fallback. Match routeIcePriority.
     const isLocalOnly = (candidate) => {
       const type = String(candidate.candidateType || '').toLowerCase();
       const address = String(candidate.address || candidate.ip || candidate.ipAddress || '');
-      return type === 'host' || (type === 'prflx' && isPrivateIceAddress(address));
+      return (type === 'host' && (!address || isPrivateIceAddress(address)))
+        || (type === 'prflx' && isPrivateIceAddress(address));
     };
     if (candidates.length && candidates.every(isLocalOnly)) {
       return connectionMode() === 'proxy' ? 'PROXY FALLBACK: DIRECT LAN MEDIA' : 'DIRECT LAN';
@@ -3656,7 +3710,7 @@
     pc.addEventListener('icecandidate', (ev) => {
       if (!ev.candidate) return;
       noteOwnPublicIpFromCandidate(ev.candidate.candidate);
-      if (connectionMode() === 'proxy' && isHostIceCandidateLine(ev.candidate.candidate)) return;
+      if (connectionMode() === 'proxy' && isLocalOnlyHostIceCandidateLine(ev.candidate.candidate)) return;
       const candidate = applyIceRoutePolicyToCandidate(ev.candidate, 'split audio local');
       if (sa.sessionId) splitSend({ type: 'peer', sessionId: sa.sessionId, ice: candidate }, true);
       else sa.pendingIce.push(candidate);

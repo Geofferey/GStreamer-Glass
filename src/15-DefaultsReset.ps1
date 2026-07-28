@@ -22,6 +22,8 @@ function Reset-WebRtcSaneDefaults {
     $numLiveEdgeGreenMs.Value = $script:DefaultLiveEdgeGreenMs
     $numLiveEdgeYellowMs.Value = $script:DefaultLiveEdgeYellowMs
     $chkPlayerUrlOverrides.Checked = $script:DefaultPlayerUrlOverrides
+    $txtPlayerVideoSignalingProxyPath.Text = $script:DefaultPlayerVideoSignalingProxyPath
+    $txtPlayerAudioSignalingProxyPath.Text = $script:DefaultPlayerAudioSignalingProxyPath
     $chkSendEosOnStop.Checked = $script:DefaultSendEosOnStop
     if ($cmbTimingMode.Items.Contains($script:DefaultTimingMode)) { $cmbTimingMode.SelectedItem = $script:DefaultTimingMode }
     $chkSplitClockSignalingOverrides.Checked = $script:DefaultSplitClockSignalingOverrides

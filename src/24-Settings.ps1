@@ -94,6 +94,8 @@ function Save-Settings {
             LiveEdgeYellowMs = [int]$numLiveEdgeYellowMs.Value
             LiveEdgeAverageSec = [int]$numLiveEdgeAverageSec.Value
             PlayerUrlOverrides = [bool]$chkPlayerUrlOverrides.Checked
+            PlayerVideoSignalingProxyPath = [string]$txtPlayerVideoSignalingProxyPath.Text
+            PlayerAudioSignalingProxyPath = [string]$txtPlayerAudioSignalingProxyPath.Text
             SendEosOnStop = [bool]$chkSendEosOnStop.Checked
             PlayerSeparateHtmlMediaElements = [bool]$chkPlayerSeparateHtmlMediaElements.Checked
             SeparateHtmlMediaElements = [bool]$chkPlayerSeparateHtmlMediaElements.Checked
@@ -487,6 +489,8 @@ function Restore-SettingsFromObject {
         if ($null -ne $settings.LiveEdgeAverageSec) { $numLiveEdgeAverageSec.Value = [decimal]([Math]::Min([int]$numLiveEdgeAverageSec.Maximum, [Math]::Max([int]$numLiveEdgeAverageSec.Minimum, [int]$settings.LiveEdgeAverageSec))) }
         if ($numLiveEdgeYellowMs.Value -le $numLiveEdgeGreenMs.Value) { $numLiveEdgeYellowMs.Value = [decimal]([Math]::Min([int]$numLiveEdgeYellowMs.Maximum, [int]$numLiveEdgeGreenMs.Value + 1)) }
         if ($null -ne $settings.PlayerUrlOverrides) { $chkPlayerUrlOverrides.Checked = [bool]$settings.PlayerUrlOverrides }
+        if ($null -ne $settings.PlayerVideoSignalingProxyPath) { $txtPlayerVideoSignalingProxyPath.Text = [string]$settings.PlayerVideoSignalingProxyPath }
+        if ($null -ne $settings.PlayerAudioSignalingProxyPath) { $txtPlayerAudioSignalingProxyPath.Text = [string]$settings.PlayerAudioSignalingProxyPath }
         if ($null -ne $settings.SendEosOnStop) { $chkSendEosOnStop.Checked = [bool]$settings.SendEosOnStop }
         if ($null -ne $settings.PlayerSeparateHtmlMediaElements) {
             $chkPlayerSeparateHtmlMediaElements.Checked = [bool]$settings.PlayerSeparateHtmlMediaElements
@@ -986,4 +990,3 @@ function Validate-Configuration {
 
     return $true
 }
-

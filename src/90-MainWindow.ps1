@@ -1410,6 +1410,20 @@ $chkPlayerUrlOverrides.Checked = $script:DefaultPlayerUrlOverrides
 $settingsGroup.Controls.Add($chkPlayerUrlOverrides)
 $toolTip.SetToolTip($chkPlayerUrlOverrides, 'Debug escape hatch. Off = clean /live/ URL uses gstglass-config.js. On = append current Player tab values as query overrides.')
 
+$txtPlayerVideoSignalingProxyPath = New-Object System.Windows.Forms.TextBox
+$txtPlayerVideoSignalingProxyPath.Location = New-Object System.Drawing.Point(15, 548)
+$txtPlayerVideoSignalingProxyPath.Size = New-Object System.Drawing.Size(260, 23)
+$txtPlayerVideoSignalingProxyPath.Text = $script:DefaultPlayerVideoSignalingProxyPath
+$settingsGroup.Controls.Add($txtPlayerVideoSignalingProxyPath)
+$toolTip.SetToolTip($txtPlayerVideoSignalingProxyPath, 'Preferred path-based WebSocket signaling endpoint for video. Used first in AUTO, LAN, and PROXY; mapped/direct ports remain fallbacks. Example: /live/GstSignal/video')
+
+$txtPlayerAudioSignalingProxyPath = New-Object System.Windows.Forms.TextBox
+$txtPlayerAudioSignalingProxyPath.Location = New-Object System.Drawing.Point(15, 548)
+$txtPlayerAudioSignalingProxyPath.Size = New-Object System.Drawing.Size(260, 23)
+$txtPlayerAudioSignalingProxyPath.Text = $script:DefaultPlayerAudioSignalingProxyPath
+$settingsGroup.Controls.Add($txtPlayerAudioSignalingProxyPath)
+$toolTip.SetToolTip($txtPlayerAudioSignalingProxyPath, 'Preferred path-based WebSocket signaling endpoint for split audio/voice. The configured path is used exactly and is not rewritten. Example: /live/GstSignal/voice')
+
 $chkSendEosOnStop = New-Object System.Windows.Forms.CheckBox
 $chkSendEosOnStop.Text = 'Send EOS on stop'
 $chkSendEosOnStop.Location = New-Object System.Drawing.Point(15, 548)
@@ -3929,6 +3943,8 @@ foreach ($control in @(
     $chkUpnpMapWebServer,
     $numUpnpWebServerExternalPort,
     $txtDirectWebRtcWebPath,
+    $txtPlayerVideoSignalingProxyPath,
+    $txtPlayerAudioSignalingProxyPath,
     $cmbDirectWebRtcBundledWebMode,
     $txtDirectWebRtcBundledWebDirectory,
     $cmbDirectWebRtcWorkingWebMode,

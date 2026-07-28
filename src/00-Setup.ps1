@@ -1806,6 +1806,8 @@ $script:DefaultJbufMaxMs = 30
 $script:DefaultPlayerStatsOverlay = $true
 $script:DefaultPlayerJbufDebug = $false
 $script:DefaultPlayerUrlOverrides = $false
+$script:DefaultPlayerVideoSignalingProxyPath = '/live/GstSignal/video'
+$script:DefaultPlayerAudioSignalingProxyPath = '/live/GstSignal/voice'
 $script:DefaultSendEosOnStop = $false
 $script:DefaultLiveEdgeGreenMs = 50
 $script:DefaultLiveEdgeYellowMs = 120
@@ -2026,4 +2028,3 @@ $script:ProtocolAudioCodecs = [ordered]@{
 }
 
 $script:SuppressAudioCodecChange = $false
-

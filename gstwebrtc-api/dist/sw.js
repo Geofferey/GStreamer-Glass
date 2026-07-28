@@ -1,4 +1,4 @@
-const CACHE_NAME = 'gstglass-pwa-3.8-proxy-ice-filter-14';
+const CACHE_NAME = 'gstglass-pwa-3.8-proxy-ice-filter-18';
 const SHELL_KEY = new URL('./index.html', self.registration.scope).href;
 const APP_SHELL = [
   './index.html',

@@ -339,6 +339,8 @@ function Get-PlayerSettingsFromUi {
         LiveEdgeYellowMs = [int]$numLiveEdgeYellowMs.Value
         LiveEdgeAverageSec = [int]$numLiveEdgeAverageSec.Value
         UrlOverrides = [bool]($chkPlayerUrlOverrides -and $chkPlayerUrlOverrides.Checked)
+        VideoSignalingProxyPath = [string]$txtPlayerVideoSignalingProxyPath.Text
+        AudioSignalingProxyPath = [string]$txtPlayerAudioSignalingProxyPath.Text
         SeparateHtmlMediaElements = [bool]($chkPlayerSeparateHtmlMediaElements -and $chkPlayerSeparateHtmlMediaElements.Checked)
         AvRenderMode = if ($chkPlayerSeparateHtmlMediaElements -and $chkPlayerSeparateHtmlMediaElements.Checked) { 'Decoupled video/audio elements' } else { 'Synced single media element' }
         AvPipelineMode = [string](Get-DirectWebRtcAvPipelineMode)
@@ -424,10 +426,13 @@ function Add-DirectWebRtcViewerQuery {
     $externalSignalingPart = if ($externalSignalingPort -gt 0) { "&externalSignalingPort=$externalSignalingPort" } else { '' }
     $externalSplitAudioPort = if ($externalSignalingMapped -and $splitAudioPort -gt 0) { [int]$numUpnpSplitAudioExternalPort.Value } else { 0 }
     $externalSplitAudioPart = if ($externalSplitAudioPort -gt 0) { "&splitAudioExternalSignalingPort=$externalSplitAudioPort" } else { '' }
+    $proxyVideoPath = [System.Uri]::EscapeDataString([string]$playerSettings.VideoSignalingProxyPath)
+    $proxyAudioPath = [System.Uri]::EscapeDataString([string]$playerSettings.AudioSignalingProxyPath)
+    $proxyPathPart = "&proxyVideoPath=$proxyVideoPath&proxyAudioPath=$proxyAudioPath"
     $stamp = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
     $joiner = if ($Url -match '\?') { '&' } else { '?' }
 
-    return ($Url + $joiner + "signalPort=$videoSignalPort&videoSignalingPort=$videoSignalPort&audioJbufMs=$audioJitterMs&videoJbufMs=$videoJitterMs&jitterMs=$fallbackJitterMs&browserJitterTargetMs=$fallbackJitterMs&jbufMaxMs=$maxMs&jbufWatchdog=$watchdog&jbufDebug=$debug&liveEdgeGreenMs=$liveEdgeGreenMs&liveEdgeYellowMs=$liveEdgeYellowMs&liveEdgeAverageSec=$liveEdgeAverageSec&watchdogWarmupSeconds=$warmupSeconds&jbufWatchdogWarmupSeconds=$warmupSeconds&splitAudioWarmupSeconds=$warmupSeconds&separateHtmlMediaElements=$separateHtmlMediaElements&playerSeparateHtmlMediaElements=$separateHtmlMediaElements&avRenderMode=$avRenderMode&playerAvRenderMode=$avRenderMode&avPipelineMode=$avPipelineMode&mediaStreamGrouping=$mediaStreamGrouping&videoMsid=$videoMediaStreamId&audioMsid=$audioMediaStreamId$splitAudioPart$externalSignalingPart$externalSplitAudioPart&cb=$stamp")
+    return ($Url + $joiner + "signalPort=$videoSignalPort&videoSignalingPort=$videoSignalPort&audioJbufMs=$audioJitterMs&videoJbufMs=$videoJitterMs&jitterMs=$fallbackJitterMs&browserJitterTargetMs=$fallbackJitterMs&jbufMaxMs=$maxMs&jbufWatchdog=$watchdog&jbufDebug=$debug&liveEdgeGreenMs=$liveEdgeGreenMs&liveEdgeYellowMs=$liveEdgeYellowMs&liveEdgeAverageSec=$liveEdgeAverageSec&watchdogWarmupSeconds=$warmupSeconds&jbufWatchdogWarmupSeconds=$warmupSeconds&splitAudioWarmupSeconds=$warmupSeconds&separateHtmlMediaElements=$separateHtmlMediaElements&playerSeparateHtmlMediaElements=$separateHtmlMediaElements&avRenderMode=$avRenderMode&playerAvRenderMode=$avRenderMode&avPipelineMode=$avPipelineMode&mediaStreamGrouping=$mediaStreamGrouping&videoMsid=$videoMediaStreamId&audioMsid=$audioMediaStreamId$splitAudioPart$externalSignalingPart$externalSplitAudioPart$proxyPathPart&cb=$stamp")
 }
 
 function Get-DirectWebRtcViewerUrl {
@@ -490,6 +495,8 @@ function Update-DirectWebRtcUi {
         $numDirectWebRtcInternalRtpMtu,
         $chkDirectWebRtcInternalRepeatHeaders,
         $txtDirectWebRtcWebPath,
+        $txtPlayerVideoSignalingProxyPath,
+        $txtPlayerAudioSignalingProxyPath,
         $cmbDirectWebRtcBundledWebMode,
         $txtDirectWebRtcBundledWebDirectory,
         $btnBrowseDirectWebRtcBundledWebDirectory,
