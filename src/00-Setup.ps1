@@ -1119,6 +1119,16 @@ public static class GstWebRtcConsumerPortRange
     [DllImport(GLib, CallingConvention = CallingConvention.Cdecl)]
     private static extern void g_free(IntPtr memory);
 
+    [DllImport(GLib, CallingConvention = CallingConvention.Cdecl)]
+    private static extern IntPtr g_main_context_default();
+
+    // No explicit MarshalAs needed: glib's gboolean is a 4-byte gint, which is
+    // exactly what .NET's default (unannotated) bool marshaling already uses
+    // for P/Invoke (the Win32 BOOL convention) -- MarshalAs(I1) would be wrong
+    // here (that's a 1-byte bool, for a different ABI).
+    [DllImport(GLib, CallingConvention = CallingConvention.Cdecl)]
+    private static extern bool g_main_context_iteration(IntPtr context, bool mayBlock);
+
     private static readonly object Gate = new object();
     private static bool initialized;
     private static IntPtr pipeline;
@@ -1235,6 +1245,22 @@ public static class GstWebRtcConsumerPortRange
                 throw new InvalidOperationException("Failed to set the pipeline to PLAYING.");
             }
         }
+    }
+
+    // The worker hosts the pipeline via gst_parse_launch + gst_element_set_state
+    // directly instead of the real gst-launch-1.0.exe binary, which normally
+    // runs g_main_loop_run() for the whole pipeline lifetime. Without that,
+    // nothing ever services the default GMainContext -- so anything scheduled
+    // on it via g_idle_add/g_timeout_add (RTCP timers, congestion-control
+    // bandwidth estimation ticks, async I/O completions for the embedded
+    // signalling/web server, clock-sync notifications) silently never fires.
+    // Called from the worker's outer command-pipe loop in a tight sub-loop
+    // (drain until no more pending sources) at a much finer cadence than that
+    // loop's own ~200ms pipe-wait, so this behaves like a real main loop
+    // instead of introducing its own scheduling jitter.
+    public static bool PumpMainContextOnce()
+    {
+        return g_main_context_iteration(g_main_context_default(), false);
     }
 
     public static string PollTerminalMessage()
@@ -1435,7 +1461,16 @@ if ($WebRtcPortRangeWorker) {
 
         $readTask = $pipeReader.ReadLineAsync()
         while ($true) {
-            if ($readTask.Wait(200)) {
+            # This worker runs the pipeline via gst_parse_launch + gst_element_set_state
+            # directly rather than the real gst-launch-1.0.exe binary, which normally
+            # keeps a GMainLoop running for the pipeline's whole lifetime. Drain the
+            # default GMainContext every tick so anything scheduled on it (RTCP
+            # timers, congestion-control bandwidth estimation, async I/O for the
+            # embedded signalling/web server, clock-sync notifications) actually
+            # gets serviced -- previously nothing pumped this at all.
+            while ([GstWebRtcConsumerPortRange]::PumpMainContextOnce()) {}
+
+            if ($readTask.Wait(5)) {
                 $line = $readTask.Result
                 if ($null -eq $line) { break }
                 if (-not [string]::IsNullOrWhiteSpace($line)) {
