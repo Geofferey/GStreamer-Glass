@@ -206,6 +206,7 @@ function Add-UpnpPortMappings {
     # wide RTP range that failed to tear down repeatedly) can make this slow
     # or make the router stop responding to fresh UPnP requests entirely --
     # log clearly instead of swallowing that possibility silently.
+    $currentMappingKeys = @{}
     try {
         $collection = $nat.StaticPortMappingCollection
         $stale = @()
@@ -214,9 +215,17 @@ function Add-UpnpPortMappings {
             $seenCount++
             if ($existing.Description -like "$($script:UpnpMappingTag)*") {
                 $stillNeeded = $required | Where-Object {
-                    $_.ExternalPort -eq $existing.ExternalPort -and $_.Protocol -eq $existing.Protocol
+                    $_.ExternalPort -eq $existing.ExternalPort -and
+                    $_.Protocol -eq $existing.Protocol -and
+                    $_.InternalPort -eq $existing.InternalPort -and
+                    $localIp -eq [string]$existing.InternalClient
+                } | Select-Object -First 1
+                if ($stillNeeded) {
+                    $currentMappingKeys["$($stillNeeded.Protocol)/$($stillNeeded.ExternalPort)"] = $true
                 }
-                if (-not $stillNeeded) { $stale += $existing }
+                else {
+                    $stale += $existing
+                }
             }
         }
         if ($stale.Count -gt 0) {
@@ -235,6 +244,12 @@ function Add-UpnpPortMappings {
     $script:ActiveUpnpMappings = @()
     $failCount = 0
     foreach ($mapping in $required) {
+        $mappingKey = "$($mapping.Protocol)/$($mapping.ExternalPort)"
+        if ($currentMappingKeys.ContainsKey($mappingKey)) {
+            $script:ActiveUpnpMappings += $mapping
+            Append-Log "UPnP: reusing existing $($mapping.Protocol) $($mapping.ExternalPort) -> $localIp`:$($mapping.InternalPort)."
+            continue
+        }
         try {
             $nat.StaticPortMappingCollection.Add(
                 $mapping.ExternalPort, $mapping.Protocol, $mapping.InternalPort,
@@ -277,22 +292,38 @@ function Remove-UpnpPortMappings {
     if ($script:ActiveUpnpMappings.Count -eq 0) { return }
 
     $nat = Get-UpnpNatDevice -Quiet:$Quiet
-
-    foreach ($mapping in $script:ActiveUpnpMappings) {
-        try {
-            if ($nat) {
-                $nat.StaticPortMappingCollection.Remove($mapping.ExternalPort, $mapping.Protocol)
-                if (-not $Quiet) { Append-Log "UPnP: removed $($mapping.Protocol) $($mapping.ExternalPort)." }
+    if (-not $nat) {
+        if (-not $Quiet) {
+            Append-Log "UPnP: router unavailable during cleanup; retaining $($script:ActiveUpnpMappings.Count) mapping record(s) for a later retry."
+            if ($lblUpnpStatus) {
+                $lblUpnpStatus.Text = "UPnP: cleanup pending for $($script:ActiveUpnpMappings.Count) mapping(s); router unavailable"
+                $lblUpnpStatus.ForeColor = [System.Drawing.Color]::DarkOrange
             }
         }
+        return
+    }
+
+    $remainingMappings = @()
+    foreach ($mapping in $script:ActiveUpnpMappings) {
+        try {
+            $nat.StaticPortMappingCollection.Remove($mapping.ExternalPort, $mapping.Protocol)
+            if (-not $Quiet) { Append-Log "UPnP: removed $($mapping.Protocol) $($mapping.ExternalPort)." }
+        }
         catch {
+            $remainingMappings += $mapping
             if (-not $Quiet) { Append-Log "UPnP: failed to remove $($mapping.Protocol) $($mapping.ExternalPort): $($_.Exception.Message)" }
         }
     }
-    $script:ActiveUpnpMappings = @()
+    $script:ActiveUpnpMappings = $remainingMappings
 
     if (-not $Quiet -and $lblUpnpStatus) {
-        $lblUpnpStatus.Text = if ($chkUpnpEnabled -and $chkUpnpEnabled.Checked) { 'UPnP: enabled, no active mappings' } else { 'UPnP: disabled' }
-        $lblUpnpStatus.ForeColor = [System.Drawing.Color]::DimGray
+        if ($remainingMappings.Count -gt 0) {
+            $lblUpnpStatus.Text = "UPnP: cleanup incomplete; $($remainingMappings.Count) mapping(s) pending retry"
+            $lblUpnpStatus.ForeColor = [System.Drawing.Color]::DarkOrange
+        }
+        else {
+            $lblUpnpStatus.Text = if ($chkUpnpEnabled -and $chkUpnpEnabled.Checked) { 'UPnP: enabled, no active mappings' } else { 'UPnP: disabled' }
+            $lblUpnpStatus.ForeColor = [System.Drawing.Color]::DimGray
+        }
     }
 }

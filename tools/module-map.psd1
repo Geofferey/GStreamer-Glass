@@ -161,6 +161,10 @@
     )
 
     '17-DirectWebRtcPipeline.ps1' = @(
+        'Test-DirectWebRtcPortRangeWorkerRequired'
+        'ConvertTo-GstParseLaunchPipelineOnly'
+        'Start-WebRtcPortRangeWorker'
+        'Close-WebRtcPortRangeWorkerPipe'
         'Get-DirectWebRtcAvPipelineMode'
         'Test-DirectWebRtcSplitAvPipelines'
         'Get-DirectWebRtcMediaStreamGrouping'
@@ -191,6 +195,8 @@
         'Get-DirectWebRtcUnifiedRtpVideoDefinition'
         'Build-DirectWebRtcUnifiedVideoBridgeArguments'
         'Build-DirectWebRtcUnifiedAudioBridgeArguments'
+        'Get-DirectWebRtcStunUrlForPlayer'
+        'Get-DirectWebRtcTurnUrlForPlayer'
         'Get-DirectWebRtcTurnOption'
         'Get-DirectWebRtcVideoBitrateEnvelope'
         'Build-DirectWebRtcUnifiedPublisherArguments'
@@ -214,6 +220,7 @@
         'Update-GstDebugUi'
         'Set-GstTracerEnvironment'
         'Restore-GstTracerEnvironment'
+        'Write-PsDebugTrace'
     )
 
     '19-AudioChains.ps1' = @(
@@ -383,5 +390,14 @@
         'Remove-SelectedProfile'
         'Import-ProfileFile'
         'Export-SelectedProfile'
+    )
+
+    '31-UpnpPortForwarding.ps1' = @(
+        'Get-UpnpNatDevice'
+        'Get-UpnpLocalIPv4Address'
+        'Test-UpnpSignalingMappedExternally'
+        'Get-UpnpRequiredMappings'
+        'Add-UpnpPortMappings'
+        'Remove-UpnpPortMappings'
     )
 }

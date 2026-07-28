@@ -495,7 +495,7 @@
   // swap the port -- returns '' when no external mapping is configured, so
   // it drops out of the candidate list via uniqueWsUrls.
   function externalVideoWsUrl() {
-    const port = Number(configValue('externalSignalingPort', 0)) || 0;
+    const port = Number(query('externalSignalingPort') || configValue('externalSignalingPort', 0)) || 0;
     if (!port) return '';
     return buildWsWithPort(directVideoWsUrl(), port);
   }
@@ -1241,7 +1241,7 @@
   // port is actually configured (splitAudioExternalSignalingPort).
   function externalSplitAudioWsUrl() {
     if (sharedSignalingEnabled()) return '';
-    const port = Number(configValue('splitAudioExternalSignalingPort', 0)) || 0;
+    const port = Number(query('splitAudioExternalSignalingPort') || configValue('splitAudioExternalSignalingPort', 0)) || 0;
     if (!port) return '';
     return buildWsWithPort(directSplitAudioWsUrl(), port);
   }
