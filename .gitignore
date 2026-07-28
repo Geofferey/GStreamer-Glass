@@ -3,6 +3,9 @@
 *.user
 *.bak
 *.zip
+*.exe
+*.pcap
+*.pcapng
 /dist/
 /releases/
 /out/
