@@ -488,13 +488,26 @@
     });
   }
 
+  // Signalling can be UPnP-mapped to a different external (WAN-side) port
+  // than the one gst-launch actually binds to internally (see
+  // externalSignalingPort in gstglass-config.js). Reuses buildWsWithPort
+  // (defined below) to keep the same host/scheme as the direct URL and only
+  // swap the port -- returns '' when no external mapping is configured, so
+  // it drops out of the candidate list via uniqueWsUrls.
+  function externalVideoWsUrl() {
+    const port = Number(configValue('externalSignalingPort', 0)) || 0;
+    if (!port) return '';
+    return buildWsWithPort(directVideoWsUrl(), port);
+  }
+
   function primarySignalingCandidates() {
     const proxy = proxyWsUrl('video');
     const direct = directVideoWsUrl();
+    const external = externalVideoWsUrl();
     const mode = connectionMode();
     if (mode === 'proxy') return uniqueWsUrls([proxy]);
-    if (mode === 'lan') return uniqueWsUrls([proxy, direct]);
-    return uniqueWsUrls([proxy, direct]);
+    if (mode === 'lan') return uniqueWsUrls([proxy, direct, external]);
+    return uniqueWsUrls([proxy, direct, external]);
   }
 
   function signalingRouteForUrl(url, kind = 'video') {
@@ -503,6 +516,8 @@
     if (target && target === trimWsUrl(proxyWsUrl(kind))) return 'proxy';
     const direct = kind === 'audio' ? directSplitAudioWsUrl() : directVideoWsUrl();
     if (target && target === trimWsUrl(direct)) return 'direct';
+    const external = kind === 'audio' ? externalSplitAudioWsUrl() : externalVideoWsUrl();
+    if (target && external && target === trimWsUrl(external)) return 'external';
     return 'explicit';
   }
 
@@ -1221,15 +1236,26 @@
     return buildWsWithPort(directVideoWsUrl(), cfgPort);
   }
 
+  // Mirrors externalVideoWsUrl() for the independent split-audio signalling
+  // connection -- '' (dropped by uniqueWsUrls) unless a split-audio external
+  // port is actually configured (splitAudioExternalSignalingPort).
+  function externalSplitAudioWsUrl() {
+    if (sharedSignalingEnabled()) return '';
+    const port = Number(configValue('splitAudioExternalSignalingPort', 0)) || 0;
+    if (!port) return '';
+    return buildWsWithPort(directSplitAudioWsUrl(), port);
+  }
+
   function splitAudioSignalingCandidates() {
     if (sharedSignalingEnabled()) return uniqueWsUrls([primaryWsUrlForSplit()]);
     const proxy = proxyWsUrl('audio');
     const direct = directSplitAudioWsUrl();
+    const external = externalSplitAudioWsUrl();
     const mode = connectionMode();
     if (mode === 'proxy') return uniqueWsUrls([proxy]);
-    if (mode === 'lan') return uniqueWsUrls([proxy, direct]);
-    if (state.signalingRoute === 'direct') return uniqueWsUrls([direct, proxy]);
-    return uniqueWsUrls([proxy, direct]);
+    if (mode === 'lan') return uniqueWsUrls([proxy, direct, external]);
+    if (state.signalingRoute === 'direct') return uniqueWsUrls([direct, external, proxy]);
+    return uniqueWsUrls([proxy, direct, external]);
   }
 
   function splitAudioWsUrl() {
@@ -1860,7 +1886,8 @@
     } catch (_) {}
     const route = state.signalingRoute === 'direct'
       ? (connectionMode() === 'auto' ? 'direct fallback' : 'direct')
-      : (state.signalingRoute === 'explicit' ? 'explicit' : 'proxy');
+      : (state.signalingRoute === 'external' ? 'external (mapped port)'
+        : (state.signalingRoute === 'explicit' ? 'explicit' : 'proxy'));
     return `signaling ${route} ${scheme} ${host}`;
   }
 
