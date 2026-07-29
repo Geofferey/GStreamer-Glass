@@ -16,7 +16,7 @@ The project is designed to make advanced real-time streaming workflows easier to
 - Override the generated pipeline using validated custom `gst-launch-1.0` arguments.
 - Configure capture devices, network adapters, WebRTC signaling, STUN and TURN behavior, retransmission, FEC, and related transport settings.
 - Serve a browser-based WebRTC player with playback controls, connection diagnostics, stream statistics, PWA support, and configurable latency-management behavior.
-- Support local, proxied, and authenticated signaling deployments.
+- Terminate HTTPS/WSS locally with automatically issued Let's Encrypt certificates and optionally require a native viewer login across the player and signaling sockets.
 - Preserve explicit control over active pipeline options: disabled settings should not silently modify the generated command line.
 
 ## Build Requirements

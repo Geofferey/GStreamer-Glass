@@ -582,6 +582,7 @@ function Write-DirectWebRtcWebClientConfig {
             liveEdgeAverageSec = [int]$playerSettings.LiveEdgeAverageSec
             screenWakeLock = $true
             connectionMode = 'auto'
+            viewerAuthenticationEnabled = [bool](Test-ViewerAuthenticationEnabled)
             videoSignalingProxyPath = [string]$playerSettings.VideoSignalingProxyPath
             audioSignalingProxyPath = [string]$playerSettings.AudioSignalingProxyPath
             stunUrl = $playerStun

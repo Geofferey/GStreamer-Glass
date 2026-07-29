@@ -1,7 +1,32 @@
 GStreamer Glass Direct WebRTC Web UI
 Version: 3.8
 
-Authenticated proxied signaling paths with direct fallback:
+Current viewer authentication and signaling behavior (3.8.25):
+- Viewer authentication is enforced by Glass's own TLS proxy before requests
+  reach the web viewer or GStreamer signaling servers.
+- The broadcaster configures a username and password in Network > Viewer
+  Authentication. Only a salted PBKDF2-HMAC-SHA256 password hash is saved.
+- Successful login issues an expiring Secure, HttpOnly, SameSite=Strict
+  session cookie. The same host-scoped cookie authorizes HTTPS assets plus the
+  video and voice WSS upgrade handshakes, including signaling on other ports.
+- Repeated failed logins are rate-limited. Restarting the TLS proxies,
+  changing the password, or changing authentication settings invalidates
+  existing sessions.
+- When authentication is enabled, the player refuses insecure or
+  different-host signaling candidates so fallback cannot bypass authorization.
+- Authentication requires an active Let's Encrypt certificate. Glass refuses
+  to start an authenticated Direct WebRTC broadcast without that TLS boundary.
+- The normal/video signaling proxy path defaults to
+  `/live/GstSignal/video`; separate split audio defaults to
+  `/live/GstSignal/voice`. Both paths are configurable on the WebRTC tab.
+- PROXY, LAN, and AUTO keep their media/ICE behavior independent from the
+  WebSocket transport. Configured proxy paths are tried first and mapped/direct
+  same-host ports remain fallbacks when they satisfy the active security mode.
+
+The entries below are historical implementation notes. Newer entries above
+supersede older route/authentication descriptions where they disagree.
+
+Historical authenticated-proxy signaling paths:
 - The normal/video signaling proxy is now the same-origin WebSocket path
   `/live/GstSignal/video`; separate split audio uses `/live/GstSignal/audio`.
 - AUTO tries the authenticated IIS path first. If the WebSocket fails before

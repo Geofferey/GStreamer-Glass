@@ -230,6 +230,11 @@ function Reset-LetsEncryptDefaults {
     $numLetsEncryptSignalingExternalPort.Value = $script:DefaultLetsEncryptSignalingExternalPort
     $numLetsEncryptSplitAudioExternalPort.Value = $script:DefaultLetsEncryptSplitAudioExternalPort
     $numLetsEncryptWebServerExternalPort.Value = $script:DefaultLetsEncryptWebServerExternalPort
+    $chkViewerAuthenticationEnabled.Checked = $script:DefaultViewerAuthenticationEnabled
+    $txtViewerAuthenticationUsername.Text = $script:DefaultViewerAuthenticationUsername
+    $txtViewerAuthenticationPassword.Clear()
+    $numViewerAuthenticationSessionHours.Value = $script:DefaultViewerAuthenticationSessionHours
+    $script:ViewerAuthenticationPasswordHash = ''
     Update-LetsEncryptUi
 }
 

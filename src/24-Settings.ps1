@@ -16,6 +16,15 @@ function Save-Settings {
             $script:ProtocolDestinations[$protocol] = $txtDestination.Text.Trim()
         }
 
+        $newViewerPassword = [string]$txtViewerAuthenticationPassword.Text
+        if (-not [string]::IsNullOrEmpty($newViewerPassword)) {
+            if ($newViewerPassword.Length -lt 10 -or $newViewerPassword.Length -gt 256) {
+                throw 'Viewer password must be between 10 and 256 characters.'
+            }
+            $script:ViewerAuthenticationPasswordHash = [TlsTerminatingProxy]::HashAuthenticationPassword($newViewerPassword)
+            $txtViewerAuthenticationPassword.Clear()
+        }
+
         $settings = [ordered]@{
             GstPath           = $txtGstPath.Text
             CustomGstArgumentsEnabled = [bool]$chkCustomGstArgumentsEnabled.Checked
@@ -78,6 +87,10 @@ function Save-Settings {
             LetsEncryptSignalingExternalPort = [int]$numLetsEncryptSignalingExternalPort.Value
             LetsEncryptSplitAudioExternalPort = [int]$numLetsEncryptSplitAudioExternalPort.Value
             LetsEncryptWebServerExternalPort = [int]$numLetsEncryptWebServerExternalPort.Value
+            ViewerAuthenticationEnabled = [bool]$chkViewerAuthenticationEnabled.Checked
+            ViewerAuthenticationUsername = [string]$txtViewerAuthenticationUsername.Text
+            ViewerAuthenticationPasswordHash = [string]$script:ViewerAuthenticationPasswordHash
+            ViewerAuthenticationSessionHours = [int]$numViewerAuthenticationSessionHours.Value
             DirectWebRtcWebPath = $txtDirectWebRtcWebPath.Text
             DirectWebRtcBundledWebMode = [string]$cmbDirectWebRtcBundledWebMode.SelectedItem
             DirectWebRtcBundledWebDirectory = $txtDirectWebRtcBundledWebDirectory.Text
@@ -472,6 +485,11 @@ function Restore-SettingsFromObject {
         if ($null -ne $settings.LetsEncryptSignalingExternalPort) { $numLetsEncryptSignalingExternalPort.Value = [decimal]([Math]::Min(65535, [Math]::Max(0, [int]$settings.LetsEncryptSignalingExternalPort))) }
         if ($null -ne $settings.LetsEncryptSplitAudioExternalPort) { $numLetsEncryptSplitAudioExternalPort.Value = [decimal]([Math]::Min(65535, [Math]::Max(0, [int]$settings.LetsEncryptSplitAudioExternalPort))) }
         if ($null -ne $settings.LetsEncryptWebServerExternalPort) { $numLetsEncryptWebServerExternalPort.Value = [decimal]([Math]::Min(65535, [Math]::Max(0, [int]$settings.LetsEncryptWebServerExternalPort))) }
+        if ($null -ne $settings.ViewerAuthenticationEnabled) { $chkViewerAuthenticationEnabled.Checked = [bool]$settings.ViewerAuthenticationEnabled }
+        if ($null -ne $settings.ViewerAuthenticationUsername) { $txtViewerAuthenticationUsername.Text = [string]$settings.ViewerAuthenticationUsername }
+        if ($null -ne $settings.ViewerAuthenticationPasswordHash) { $script:ViewerAuthenticationPasswordHash = [string]$settings.ViewerAuthenticationPasswordHash }
+        if ($null -ne $settings.ViewerAuthenticationSessionHours) { $numViewerAuthenticationSessionHours.Value = [decimal]([Math]::Min(168, [Math]::Max(1, [int]$settings.ViewerAuthenticationSessionHours))) }
+        $txtViewerAuthenticationPassword.Clear()
         if ($null -ne $settings.DirectWebRtcWebPath) { $txtDirectWebRtcWebPath.Text = [string]$settings.DirectWebRtcWebPath }
         if ($settings.DirectWebRtcBundledWebMode -and $cmbDirectWebRtcBundledWebMode.Items.Contains([string]$settings.DirectWebRtcBundledWebMode)) { $cmbDirectWebRtcBundledWebMode.SelectedItem = [string]$settings.DirectWebRtcBundledWebMode }
         if ($null -ne $settings.DirectWebRtcBundledWebDirectory) { $txtDirectWebRtcBundledWebDirectory.Text = [string]$settings.DirectWebRtcBundledWebDirectory }
@@ -772,6 +790,55 @@ function Validate-Configuration {
             'Warning'
         ) | Out-Null
         return $false
+    }
+
+    $viewerAuthenticationApplies = $chkViewerAuthenticationEnabled.Checked -and
+        (Test-TransportEnabled) -and
+        ([string]$cmbProtocol.SelectedItem -eq $script:DirectWebRtcProtocolName)
+    if ($viewerAuthenticationApplies) {
+        if (-not (Test-LetsEncryptTlsActive)) {
+            [System.Windows.Forms.MessageBox]::Show(
+                'Viewer authentication requires an active Let''s Encrypt certificate. Enable TLS, configure the DDNS hostname, and issue a certificate before starting the broadcast.',
+                $script:AppName,
+                'OK',
+                'Warning'
+            ) | Out-Null
+            return $false
+        }
+
+        $viewerUsername = [string]$txtViewerAuthenticationUsername.Text
+        if ([string]::IsNullOrWhiteSpace($viewerUsername) -or $viewerUsername.Length -gt 64 -or $viewerUsername -match '[\r\n]') {
+            [System.Windows.Forms.MessageBox]::Show(
+                'Viewer authentication requires a username between 1 and 64 characters with no line breaks.',
+                $script:AppName,
+                'OK',
+                'Warning'
+            ) | Out-Null
+            return $false
+        }
+
+        $newViewerPassword = [string]$txtViewerAuthenticationPassword.Text
+        if (
+            [string]::IsNullOrEmpty($newViewerPassword) -and
+            -not [TlsTerminatingProxy]::IsAuthenticationPasswordHashValid([string]$script:ViewerAuthenticationPasswordHash)
+        ) {
+            [System.Windows.Forms.MessageBox]::Show(
+                'Set a viewer password before enabling viewer authentication. The saved password hash is missing or invalid.',
+                $script:AppName,
+                'OK',
+                'Warning'
+            ) | Out-Null
+            return $false
+        }
+        if (-not [string]::IsNullOrEmpty($newViewerPassword) -and ($newViewerPassword.Length -lt 10 -or $newViewerPassword.Length -gt 256)) {
+            [System.Windows.Forms.MessageBox]::Show(
+                'Viewer password must be between 10 and 256 characters.',
+                $script:AppName,
+                'OK',
+                'Warning'
+            ) | Out-Null
+            return $false
+        }
     }
 
     if ((Test-TransportEnabled) -and $chkStartMediaMtx.Checked -and ([string]$cmbProtocol.SelectedItem -ne $script:DirectWebRtcProtocolName)) {

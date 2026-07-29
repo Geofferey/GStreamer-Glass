@@ -793,6 +793,37 @@ $btnLetsEncryptIssueNow.Size = New-Object System.Drawing.Size(150, 30)
 $settingsGroup.Controls.Add($btnLetsEncryptIssueNow)
 $toolTip.SetToolTip($btnLetsEncryptIssueNow, "Runs the ACME DNS-01 flow immediately, regardless of stream state -- useful for verifying this against Let's Encrypt staging before going live with it.")
 
+$chkViewerAuthenticationEnabled = New-Object System.Windows.Forms.CheckBox
+$chkViewerAuthenticationEnabled.Text = 'Require viewer login for HTTPS/WSS'
+$chkViewerAuthenticationEnabled.Location = New-Object System.Drawing.Point(15, 548)
+$chkViewerAuthenticationEnabled.Size = New-Object System.Drawing.Size(300, 24)
+$chkViewerAuthenticationEnabled.Checked = $script:DefaultViewerAuthenticationEnabled
+$settingsGroup.Controls.Add($chkViewerAuthenticationEnabled)
+$toolTip.SetToolTip($chkViewerAuthenticationEnabled, 'Protects the viewer page and every signaling WebSocket at the built-in TLS edge. Requires an active Let''s Encrypt certificate; unencrypted HTTP/WS is never used for authenticated viewing.')
+
+$txtViewerAuthenticationUsername = New-Object System.Windows.Forms.TextBox
+$txtViewerAuthenticationUsername.Location = New-Object System.Drawing.Point(15, 548)
+$txtViewerAuthenticationUsername.Size = New-Object System.Drawing.Size(180, 23)
+$txtViewerAuthenticationUsername.Text = $script:DefaultViewerAuthenticationUsername
+$settingsGroup.Controls.Add($txtViewerAuthenticationUsername)
+$toolTip.SetToolTip($txtViewerAuthenticationUsername, 'Viewer login name. Authentication uses a constant-time username comparison.')
+
+$txtViewerAuthenticationPassword = New-Object System.Windows.Forms.TextBox
+$txtViewerAuthenticationPassword.Location = New-Object System.Drawing.Point(15, 548)
+$txtViewerAuthenticationPassword.Size = New-Object System.Drawing.Size(260, 23)
+$txtViewerAuthenticationPassword.UseSystemPasswordChar = $true
+$settingsGroup.Controls.Add($txtViewerAuthenticationPassword)
+$toolTip.SetToolTip($txtViewerAuthenticationPassword, 'Set or replace the viewer password. The plaintext is never saved; Glass stores a salted PBKDF2-HMAC-SHA256 hash. Leave blank to keep the existing password.')
+
+$numViewerAuthenticationSessionHours = New-Object System.Windows.Forms.NumericUpDown
+$numViewerAuthenticationSessionHours.Location = New-Object System.Drawing.Point(15, 548)
+$numViewerAuthenticationSessionHours.Size = New-Object System.Drawing.Size(90, 23)
+$numViewerAuthenticationSessionHours.Minimum = 1
+$numViewerAuthenticationSessionHours.Maximum = 168
+$numViewerAuthenticationSessionHours.Value = $script:DefaultViewerAuthenticationSessionHours
+$settingsGroup.Controls.Add($numViewerAuthenticationSessionHours)
+$toolTip.SetToolTip($numViewerAuthenticationSessionHours, 'How long an authenticated viewer session remains valid. Sessions are also invalidated whenever the TLS proxies restart.')
+
 $txtDirectWebRtcWebPath = New-Object System.Windows.Forms.TextBox
 $txtDirectWebRtcWebPath.Location = New-Object System.Drawing.Point(15, 548)
 $txtDirectWebRtcWebPath.Size = New-Object System.Drawing.Size(120, 23)
@@ -4032,6 +4063,7 @@ $btnDdnsUpdateNow.Add_Click({
     Save-Settings
 })
 $chkLetsEncryptEnabled.Add_CheckedChanged({ Update-LetsEncryptUi })
+$chkViewerAuthenticationEnabled.Add_CheckedChanged({ Update-ViewerAuthenticationUi; Update-PlayerConfigFromUi })
 $btnLetsEncryptIssueNow.Add_Click({
     $lowerTabs.SelectedTab = $tabLog
     try { Update-LetsEncryptCertificate } catch { Append-Log "ACME: $($_.Exception.Message)" }
@@ -4093,6 +4125,7 @@ foreach ($control in @(
     $txtDirectWebRtcWebPath,
     $txtPlayerVideoSignalingProxyPath,
     $txtPlayerAudioSignalingProxyPath,
+    $chkViewerAuthenticationEnabled,
     $cmbDirectWebRtcBundledWebMode,
     $txtDirectWebRtcBundledWebDirectory,
     $cmbDirectWebRtcWorkingWebMode,

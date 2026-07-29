@@ -1186,6 +1186,16 @@ function Apply-ModernDashboardUi {
     $r = Add-Row $s
     Add-Field $r -Control $btnLetsEncryptIssueNow -Width 150 | Out-Null
 
+    $s = Add-CollapsibleSection $paneNetwork 'Viewer Authentication'
+    $r = Add-Row $s
+    Add-Field $r -Control $chkViewerAuthenticationEnabled -Width 340 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Label 'Username' -Control $txtViewerAuthenticationUsername -Width 180 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Label 'New password' -Control $txtViewerAuthenticationPassword -Width 260 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Label 'Session hours' -Control $numViewerAuthenticationSessionHours -Width 90 | Out-Null
+
     $s = Add-Section $paneNetwork ''
     $r = Add-Row $s
     Add-Field $r -Control $btnResetNetwork -Width 190 | Out-Null
@@ -1396,6 +1406,8 @@ function Apply-ModernDashboardUi {
         $chkLetsEncryptEnabled, $lblLetsEncryptStatus, $txtLetsEncryptEmail, $chkLetsEncryptStaging,
         $numLetsEncryptSignalingExternalPort, $numLetsEncryptSplitAudioExternalPort, $numLetsEncryptWebServerExternalPort,
         $btnLetsEncryptIssueNow,
+        $chkViewerAuthenticationEnabled, $txtViewerAuthenticationUsername, $txtViewerAuthenticationPassword,
+        $numViewerAuthenticationSessionHours,
         $btnResetTransport, $btnResetWebRtcSane, $btnResetVideo, $btnResetAudio,
         $btnResetRecording, $btnResetNetwork, $btnResetOptions, $btnExportLabConfig, $btnResetAll,
         $txtGstPath, $btnBrowseGst, $btnDetectGst, $btnCheckGst,
@@ -1427,7 +1439,7 @@ function Apply-ModernDashboardUi {
         $chkRecordingEnabled, $chkRecordWithStream, $chkRecordingLookAhead, $chkRecordingSpatialAq,
         $chkRecordingTemporalAq, $chkRecordingDesktopAudio, $chkRecordingMic,
         $chkDdnsEnabled, $chkDdnsCloudflareProxied,
-        $chkLetsEncryptEnabled, $chkLetsEncryptStaging,
+        $chkLetsEncryptEnabled, $chkLetsEncryptStaging, $chkViewerAuthenticationEnabled,
         $chkPreview, $chkHidePreviewDuringStream, $chkAutoRestart, $chkVerbose, $chkDiskProcessLogging,
         $chkCustomGstArgumentsEnabled,
         $chkMinimizeToTray, $chkStartMinimized, $chkPsDebug

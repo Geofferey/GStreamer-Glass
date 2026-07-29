@@ -1,9 +1,9 @@
-const CACHE_NAME = 'gstglass-pwa-3.8-proxy-ice-filter-18';
+const CACHE_NAME = 'gstglass-pwa-3.8-viewer-auth-19';
 const SHELL_KEY = new URL('./index.html', self.registration.scope).href;
 const APP_SHELL = [
   './index.html',
   './player.js',
-  './player.css?v=3.8',
+  './player.css?v=3.8.25',
   './manifest.webmanifest?v=3.8',
   './icons/gstreamer-glass-192.png',
   './icons/gstreamer-glass-512.png',
@@ -37,7 +37,11 @@ async function networkFirst(request, fallbackKey) {
   const cache = await caches.open(CACHE_NAME);
   try {
     const response = await fetch(request, { cache: 'no-cache' });
-    if (response && response.ok) await cache.put(fallbackKey || request, response.clone());
+    // Never cache an authentication redirect/login response under the app
+    // shell URL. Only a successful same-URL protected asset may be retained.
+    if (response && response.ok && !response.redirected && response.url === request.url) {
+      await cache.put(fallbackKey || request, response.clone());
+    }
     return response;
   } catch (err) {
     const cached = await cache.match(fallbackKey || request, { ignoreSearch: false });

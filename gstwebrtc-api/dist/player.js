@@ -1,5 +1,5 @@
 (() => {
-  const FRONTEND_VERSION = '3.8-proxy-ice-filter-18';
+  const FRONTEND_VERSION = '3.8-viewer-auth-19';
   console.info(`[GStreamer Glass Live] frontend ${FRONTEND_VERSION}`);
   const playerRoot = document.getElementById('playerRoot');
   const video = document.getElementById('video');
@@ -122,7 +122,7 @@
     lastCompactStatus: '',
     videoZoom: { scale: 1, x: 0, y: 0, pointers: new Map(), pinchStart: null, panStart: null, gestureMoved: false, suppressTapUntil: 0 },
     splitAudio: { ws: null, pc: null, sessionId: null, peerId: null, remotePeerId: null, pendingIce: [], pendingRemoteIce: [], producers: new Map(), ready: false, url: '', route: '', candidates: [], attemptToken: 0, status: 'idle', reconnectTimer: null, reconnectAttempts: 0, proxyPairRetryCount: 0, proxyPairRetrying: false, proxyPairLocalTicks: 0, lastRouteLine: '', connectTimer: null, keepAliveTimer: null, keepAliveCount: 0, lastKeepAliveAt: 0, lastError: '', lastTrackKind: '', lastInboundStats: null, lastHealthyAt: 0, lastRecoverAt: 0, recoveryCount: 0, stallTicks: 0, offsetHighTicks: 0, lastAvOffsetMs: NaN, syncHealth: 'free-run', connectStartedAt: 0, trackReceivedAt: 0, warmupUntil: 0, avOffsetBaselineMs: NaN, avOffsetBaselineSamples: 0, avOffsetBaselineLocked: false, avOffsetDeltaMs: NaN, avOffsetBaselineReason: 'none' },
-    controller: { userPaused: false, userMuted: false, volume: 1, uiPinned: false, initialized: false, installPrompt: null, bar: null, playButton: null, muteButton: null, volumeInput: null, spacer: null, reconnectButton: null, routeButton: null, installButton: null, zoomButton: null, pinButton: null, fullscreenButton: null, status: null, lastAppliedAt: 0 }
+    controller: { userPaused: false, userMuted: false, volume: 1, uiPinned: false, initialized: false, installPrompt: null, bar: null, playButton: null, muteButton: null, volumeInput: null, spacer: null, reconnectButton: null, routeButton: null, logoutButton: null, installButton: null, zoomButton: null, pinButton: null, fullscreenButton: null, status: null, lastAppliedAt: 0 }
   };
 
   function isStandalonePwa() {
@@ -131,6 +131,22 @@
 
   function registerPwaServiceWorker() {
     if (!('serviceWorker' in navigator) || !window.isSecureContext) return;
+    if (viewerAuthenticationEnabled()) {
+      window.addEventListener('load', () => {
+        Promise.all([
+          navigator.serviceWorker.getRegistrations()
+            .then((registrations) => Promise.all(registrations
+              .filter((registration) => registration.scope.startsWith(new URL('./', location.href).href))
+              .map((registration) => registration.unregister()))),
+          ('caches' in window
+            ? caches.keys().then((keys) => Promise.all(keys
+              .filter((key) => key.startsWith('gstglass-pwa-'))
+              .map((key) => caches.delete(key))))
+            : Promise.resolve())
+        ]).catch((err) => log('authenticated viewer cache cleanup failed', err && err.message ? err.message : err));
+      }, { once: true });
+      return;
+    }
     window.addEventListener('load', () => {
       navigator.serviceWorker.register('./sw.js', { scope: './', updateViaCache: 'none' })
         .then((registration) => registration.update())
@@ -508,6 +524,28 @@
     });
   }
 
+  function viewerAuthenticationEnabled() {
+    return boolValue(configValue('viewerAuthenticationEnabled', false), false);
+  }
+
+  // Authenticated viewer sessions are carried by a Secure, host-scoped
+  // HttpOnly cookie. When authentication is enabled, never fall back to an
+  // insecure or different-host signaling socket that cannot carry that
+  // cookie and could bypass the TLS proxy's authorization check.
+  function authenticatedSignalingCandidates(urls) {
+    const candidates = uniqueWsUrls(urls);
+    if (!viewerAuthenticationEnabled()) return candidates;
+    if (location.protocol !== 'https:') return [];
+    return candidates.filter((url) => {
+      try {
+        const parsed = new URL(url, location.href);
+        return parsed.protocol === 'wss:' && parsed.hostname === location.hostname;
+      } catch (_) {
+        return false;
+      }
+    });
+  }
+
   // Signalling can be UPnP-mapped to a different external (WAN-side) port
   // than the one gst-launch actually binds to internally (see
   // externalSignalingPort in gstglass-config.js). Build this from the page
@@ -530,9 +568,9 @@
     // configured Player-tab path first, then falls back to root WebSockets on
     // the page's host/domain (mapped WAN port, then configured direct port).
     // Its WAN/public ICE policy remains unchanged.
-    if (mode === 'proxy') return uniqueWsUrls([proxy, external, pageDirect, direct]);
-    if (mode === 'lan') return uniqueWsUrls([proxy, direct, external]);
-    return uniqueWsUrls([proxy, direct, external]);
+    if (mode === 'proxy') return authenticatedSignalingCandidates([proxy, external, pageDirect, direct]);
+    if (mode === 'lan') return authenticatedSignalingCandidates([proxy, direct, external]);
+    return authenticatedSignalingCandidates([proxy, direct, external]);
   }
 
   function signalingRouteForUrl(url, kind = 'video') {
@@ -1297,7 +1335,7 @@
   }
 
   function splitAudioSignalingCandidates() {
-    if (sharedSignalingEnabled()) return uniqueWsUrls([primaryWsUrlForSplit()]);
+    if (sharedSignalingEnabled()) return authenticatedSignalingCandidates([primaryWsUrlForSplit()]);
     const proxy = proxyWsUrl('audio');
     const direct = directSplitAudioWsUrl();
     const pageDirect = pageHostSplitAudioWsUrl();
@@ -1306,10 +1344,10 @@
     // Keep signaling transport independent from the PROXY media/ICE policy,
     // mirroring the primary connection. The configured /voice path stays
     // exact and first; mapped/direct root WebSockets remain fallbacks.
-    if (mode === 'proxy') return uniqueWsUrls([proxy, external, pageDirect, direct]);
-    if (mode === 'lan') return uniqueWsUrls([proxy, direct, external]);
-    if (state.signalingRoute === 'direct') return uniqueWsUrls([direct, external, proxy]);
-    return uniqueWsUrls([proxy, direct, external]);
+    if (mode === 'proxy') return authenticatedSignalingCandidates([proxy, external, pageDirect, direct]);
+    if (mode === 'lan') return authenticatedSignalingCandidates([proxy, direct, external]);
+    if (state.signalingRoute === 'direct') return authenticatedSignalingCandidates([direct, external, proxy]);
+    return authenticatedSignalingCandidates([proxy, direct, external]);
   }
 
   function splitAudioWsUrl() {
@@ -2049,6 +2087,14 @@
     routeButton.setAttribute('aria-label', 'Connection mode AUTO. Activate to switch mode.');
     routeButton.setAttribute('aria-pressed', 'false');
 
+    const logoutButton = document.createElement('button');
+    logoutButton.type = 'button';
+    logoutButton.className = 'glassControlButton glassLogoutButton';
+    logoutButton.textContent = 'Sign out';
+    logoutButton.title = 'Sign out of this broadcast';
+    logoutButton.setAttribute('aria-label', logoutButton.title);
+    logoutButton.hidden = !viewerAuthenticationEnabled();
+
     const installButton = document.createElement('button');
     installButton.type = 'button';
     installButton.className = 'glassControlButton glassInstallButton';
@@ -2089,7 +2135,7 @@
     status.setAttribute('aria-hidden', 'true');
     status.textContent = '';
 
-    bar.append(playButton, muteButton, volumeInput, spacer, reconnectButton, routeButton, installButton, zoomButton, pinButton, fullscreenCtl);
+    bar.append(playButton, muteButton, volumeInput, spacer, reconnectButton, routeButton, logoutButton, installButton, zoomButton, pinButton, fullscreenCtl);
     (playerRoot || document.body).appendChild(bar);
 
     playButton.addEventListener('click', (ev) => {
@@ -2120,6 +2166,11 @@
       ev.stopPropagation();
       recordUserInteraction('connection-mode');
       cycleConnectionMode('media-bar');
+    });
+    logoutButton.addEventListener('click', (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      location.assign(new URL('/__gstglass/auth/logout', location.origin).href);
     });
     installButton.addEventListener('click', async (ev) => {
       ev.preventDefault();
@@ -2164,6 +2215,7 @@
     ctl.spacer = spacer;
     ctl.reconnectButton = reconnectButton;
     ctl.routeButton = routeButton;
+    ctl.logoutButton = logoutButton;
     ctl.installButton = installButton;
     ctl.zoomButton = zoomButton;
     ctl.pinButton = pinButton;

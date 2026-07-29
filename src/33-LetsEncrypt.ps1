@@ -24,6 +24,7 @@
 # Running TlsTerminatingProxy instances (see Start-LetsEncryptTlsProxies),
 # one per externally-exposed port. Empty when TLS termination isn't active.
 $script:LetsEncryptTlsProxies = @()
+$script:LetsEncryptTlsProxyConfigurationSignature = ''
 
 function ConvertTo-AcmeBase64Url {
     param([byte[]]$Bytes)
@@ -610,6 +611,7 @@ function Update-LetsEncryptUi {
     foreach ($control in @($txtLetsEncryptEmail, $chkLetsEncryptStaging, $numLetsEncryptSignalingExternalPort, $numLetsEncryptSplitAudioExternalPort, $numLetsEncryptWebServerExternalPort, $btnLetsEncryptIssueNow)) {
         if ($control) { $control.Enabled = $enabled }
     }
+    Update-ViewerAuthenticationUi
 
     if (-not $enabled) {
         Set-LetsEncryptStatus 'ACME: disabled'
@@ -629,6 +631,19 @@ function Update-LetsEncryptUi {
     }
     else {
         Set-LetsEncryptStatus 'ACME: enabled - will issue a certificate when the stream starts' 'DimGray'
+    }
+}
+
+function Test-ViewerAuthenticationEnabled {
+    return [bool]($chkViewerAuthenticationEnabled -and $chkViewerAuthenticationEnabled.Checked)
+}
+
+function Update-ViewerAuthenticationUi {
+    $tlsEnabled = [bool]($chkLetsEncryptEnabled -and $chkLetsEncryptEnabled.Checked)
+    $authenticationEnabled = [bool]($tlsEnabled -and (Test-ViewerAuthenticationEnabled))
+    if ($chkViewerAuthenticationEnabled) { $chkViewerAuthenticationEnabled.Enabled = $tlsEnabled }
+    foreach ($control in @($txtViewerAuthenticationUsername, $txtViewerAuthenticationPassword, $numViewerAuthenticationSessionHours)) {
+        if ($control) { $control.Enabled = $authenticationEnabled }
     }
 }
 
@@ -671,10 +686,38 @@ function Get-LetsEncryptWebServerProxyPort {
 
 function Start-LetsEncryptTlsProxies {
     if (-not (Test-LetsEncryptTlsActive)) { return }
-    if (@($script:LetsEncryptTlsProxies).Count -gt 0) { return }
 
     $certificate = Get-LetsEncryptTlsCertificate
     if (-not $certificate) { return }
+
+    $authenticationEnabled = Test-ViewerAuthenticationEnabled
+    $authenticationSessionKey = $null
+    if ($authenticationEnabled) {
+        if (-not [TlsTerminatingProxy]::IsAuthenticationPasswordHashValid([string]$script:ViewerAuthenticationPasswordHash)) {
+            throw 'Viewer authentication is enabled but its password hash is missing or invalid.'
+        }
+        $authenticationSessionKey = [TlsTerminatingProxy]::CreateAuthenticationSessionKey()
+    }
+
+    $configurationSignature = @(
+        [string]$certificate.Thumbprint,
+        [string]$authenticationEnabled,
+        [string]$txtViewerAuthenticationUsername.Text,
+        [string]$script:ViewerAuthenticationPasswordHash,
+        [string]$numViewerAuthenticationSessionHours.Value,
+        [string]$numDirectWebRtcSignalingPort.Value,
+        [string](Get-DirectWebRtcSplitAudioSignalingPort),
+        [string]$numLetsEncryptSignalingExternalPort.Value,
+        [string]$numLetsEncryptSplitAudioExternalPort.Value,
+        [string]$numLetsEncryptWebServerExternalPort.Value,
+        [string]$txtPlayerVideoSignalingProxyPath.Text,
+        [string]$txtPlayerAudioSignalingProxyPath.Text
+    ) -join '|'
+    if (@($script:LetsEncryptTlsProxies).Count -gt 0) {
+        if ($script:LetsEncryptTlsProxyConfigurationSignature -eq $configurationSignature) { return }
+        Append-Log 'ACME: TLS/authentication configuration changed; restarting the local TLS proxies and invalidating viewer sessions.'
+        Stop-LetsEncryptTlsProxies
+    }
 
     $ports = @()
     $videoInternalPort = [int]$numDirectWebRtcSignalingPort.Value
@@ -706,7 +749,14 @@ function Start-LetsEncryptTlsProxies {
             if ($splitAudioActive) {
                 $webPathRoutes += [pscustomobject]@{ Path = [string]$txtPlayerAudioSignalingProxyPath.Text; Port = $audioInternalPort }
             }
-            $ports += [pscustomobject]@{ Label = 'web viewer'; ExternalPort = $webExternalPort; InternalPort = $webInternalPort; PathRoutes = $webPathRoutes }
+            # webrtcsink resolves the served page's own relative asset URLs
+            # against the browser's current directory, which only works once
+            # the address bar ends in "/" -- redirect a bare "/live" (no
+            # trailing slash) to "/live/" rather than leaving that to whatever
+            # (if anything) sits in front of Glass.
+            $webDirectorySegment = [string](Get-DirectWebRtcWebServerPathSegment)
+            $webDirectoryRedirectPath = if ([string]::IsNullOrWhiteSpace($webDirectorySegment)) { '' } else { "/$webDirectorySegment" }
+            $ports += [pscustomobject]@{ Label = 'web viewer'; ExternalPort = $webExternalPort; InternalPort = $webInternalPort; PathRoutes = $webPathRoutes; DirectoryRedirectPath = $webDirectoryRedirectPath }
         }
     }
     catch {
@@ -721,6 +771,18 @@ function Start-LetsEncryptTlsProxies {
             foreach ($route in @($portInfo.PathRoutes)) {
                 $proxy.AddPathRoute([string]$route.Path, [int]$route.Port)
             }
+            if (-not [string]::IsNullOrEmpty([string]$portInfo.DirectoryRedirectPath)) {
+                $proxy.DirectoryRedirectPath = [string]$portInfo.DirectoryRedirectPath
+            }
+            if ($authenticationEnabled) {
+                $proxy.ConfigureAuthentication(
+                    $true,
+                    [string]$txtViewerAuthenticationUsername.Text,
+                    [string]$script:ViewerAuthenticationPasswordHash,
+                    $authenticationSessionKey,
+                    [int]$numViewerAuthenticationSessionHours.Value
+                )
+            }
             $proxy.Start($portInfo.ExternalPort, '127.0.0.1', $portInfo.InternalPort, $certificate)
             $started += $proxy
             Append-Log "ACME: TLS termination active for $($portInfo.Label): 0.0.0.0:$($portInfo.ExternalPort) -> 127.0.0.1:$($portInfo.InternalPort)."
@@ -730,6 +792,10 @@ function Start-LetsEncryptTlsProxies {
         }
     }
     $script:LetsEncryptTlsProxies = $started
+    $script:LetsEncryptTlsProxyConfigurationSignature = if (@($started).Count -gt 0) { $configurationSignature } else { '' }
+    if ($authenticationEnabled -and @($started).Count -gt 0) {
+        Append-Log "AUTH: viewer login required on all TLS viewer/signaling endpoints; sessions expire after $([int]$numViewerAuthenticationSessionHours.Value) hour(s)."
+    }
 }
 
 # Called from the UI poll timer (90-MainWindow.ps1), same cadence as the
@@ -752,4 +818,5 @@ function Stop-LetsEncryptTlsProxies {
         try { $proxy.Stop() } catch {}
     }
     $script:LetsEncryptTlsProxies = @()
+    $script:LetsEncryptTlsProxyConfigurationSignature = ''
 }

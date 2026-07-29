@@ -1756,7 +1756,10 @@ using System.Net;
 using System.Net.Security;
 using System.Net.Sockets;
 using System.Security.Authentication;
+using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
+using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 
 public class TlsTerminatingProxy
@@ -1770,6 +1773,14 @@ public class TlsTerminatingProxy
     private string targetHost;
     private int targetPort;
     private volatile bool running;
+    private bool authenticationEnabled;
+    private string authenticationUsername = "viewer";
+    private string authenticationPasswordHash = "";
+    private byte[] authenticationSessionKey = new byte[0];
+    private int authenticationSessionHours = 12;
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, AuthenticationFailureState> authenticationFailures = new System.Collections.Concurrent.ConcurrentDictionary<string, AuthenticationFailureState>();
+    private static readonly SemaphoreSlim authenticationHashSlots = new SemaphoreSlim(2, 2);
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, long> activeAuthenticationSessions = new System.Collections.Concurrent.ConcurrentDictionary<string, long>();
 
     // Async continuations resume on arbitrary ThreadPool threads with no
     // PowerShell runspace bound to them, so failures here cannot invoke a
@@ -1786,6 +1797,67 @@ public class TlsTerminatingProxy
     // "Video path"/"Voice path" fields), mirroring what an external IIS/HAProxy
     // URL-rewrite rule does in front of Glass -- see tools/examples/IIS/live/web.config.
     private readonly System.Collections.Generic.List<Tuple<string, int>> pathRoutes = new System.Collections.Generic.List<Tuple<string, int>>();
+
+    // When set (e.g. "/live"), a bare GET for exactly this path (no trailing
+    // slash) gets a 301 to path + "/" instead of being forwarded as-is.
+    // webrtcsink's static file serving resolves the page's own relative
+    // asset URLs (script/style tags with no leading slash) against the
+    // current directory, which only works once the browser's address bar
+    // actually ends in "/" -- without this, loading the bare path serves
+    // the HTML but every relative asset 404s.
+    public string DirectoryRedirectPath;
+
+    private sealed class AuthenticationFailureState
+    {
+        public int Count;
+        public DateTime WindowStartedUtc;
+        public DateTime LockedUntilUtc;
+    }
+
+    public void ConfigureAuthentication(bool enabled, string username, string passwordHash, byte[] sessionKey, int sessionHours)
+    {
+        authenticationEnabled = enabled;
+        authenticationUsername = string.IsNullOrWhiteSpace(username) ? "viewer" : username.Trim();
+        authenticationPasswordHash = passwordHash ?? "";
+        authenticationSessionKey = sessionKey == null ? new byte[0] : (byte[])sessionKey.Clone();
+        authenticationSessionHours = Math.Max(1, Math.Min(168, sessionHours));
+    }
+
+    public static byte[] CreateAuthenticationSessionKey()
+    {
+        byte[] key = new byte[32];
+        using (RandomNumberGenerator random = RandomNumberGenerator.Create())
+        {
+            random.GetBytes(key);
+        }
+        return key;
+    }
+
+    public static string HashAuthenticationPassword(string password)
+    {
+        if (password == null) throw new ArgumentNullException("password");
+        byte[] salt = new byte[16];
+        using (RandomNumberGenerator random = RandomNumberGenerator.Create())
+        {
+            random.GetBytes(salt);
+        }
+        const int iterations = 600000;
+        byte[] hash = Pbkdf2Sha256(password, salt, iterations, 32);
+        return "pbkdf2-sha256$" + iterations.ToString() + "$" + Convert.ToBase64String(salt) + "$" + Convert.ToBase64String(hash);
+    }
+
+    public static bool IsAuthenticationPasswordHashValid(string encodedHash)
+    {
+        try
+        {
+            string[] parts = (encodedHash ?? "").Split('$');
+            if (parts.Length != 4 || parts[0] != "pbkdf2-sha256") return false;
+            int iterations;
+            if (!int.TryParse(parts[1], out iterations) || iterations < 100000 || iterations > 2000000) return false;
+            return Convert.FromBase64String(parts[2]).Length >= 16 && Convert.FromBase64String(parts[3]).Length == 32;
+        }
+        catch { return false; }
+    }
 
     public void Start(int externalPort, string targetHost, int targetPort, X509Certificate2 certificate)
     {
@@ -1854,14 +1926,36 @@ public class TlsTerminatingProxy
                 }
                 catch (Exception ex)
                 {
-                    pendingLog.Enqueue("TLS handshake failed: " + ex.Message);
+                    // "Unexpected packet format" and similar almost always mean
+                    // non-TLS bytes hit this port (a stale plain ws:// URL, a
+                    // browser prefetch, or internet scanner noise once the port
+                    // is DDNS-reachable) rather than a bug in this relay -- the
+                    // remote address at least tells us whether it's the same
+                    // source repeating or many different ones.
+                    string remote = "unknown";
+                    try
+                    {
+                        IPEndPoint endpoint = client.Client.RemoteEndPoint as IPEndPoint;
+                        if (endpoint != null) remote = endpoint.Address.ToString();
+                    }
+                    catch { }
+                    pendingLog.Enqueue("TLS handshake failed from " + remote + ": " + ex.Message);
                     return;
                 }
                 int effectivePort = targetPort;
                 byte[] headerBytes = new byte[0];
-                if (pathRoutes.Count > 0)
+                if (pathRoutes.Count > 0 || authenticationEnabled || !string.IsNullOrEmpty(DirectoryRedirectPath))
                 {
                     headerBytes = await ReadHttpRequestHeaderAsync(sslStream);
+                    if (headerBytes.Length == 0) return;
+                    if (!string.IsNullOrEmpty(DirectoryRedirectPath) && await RedirectMissingTrailingSlashAsync(sslStream, headerBytes))
+                    {
+                        return;
+                    }
+                    if (authenticationEnabled && await HandleAuthenticationAsync(sslStream, client, headerBytes))
+                    {
+                        return;
+                    }
                     string path = ExtractHttpRequestPath(headerBytes);
                     if (path != null)
                     {
@@ -1905,6 +1999,541 @@ public class TlsTerminatingProxy
             // or other connections -- but still surface why for diagnosis.
             pendingLog.Enqueue("relay error: " + ex.Message);
         }
+    }
+
+    // Returns true when the request was answered locally or rejected. A false
+    // return means the session cookie is valid and the original request may be
+    // forwarded to the configured viewer/signaling upstream.
+    private async Task<bool> HandleAuthenticationAsync(SslStream stream, TcpClient client, byte[] headerBytes)
+    {
+        string headerText = null;
+        try { headerText = Encoding.ASCII.GetString(headerBytes); }
+        catch { }
+        if (headerText == null)
+        {
+            await WriteHttpResponseAsync(stream, 400, "Bad Request", "text/plain; charset=utf-8", "Malformed HTTP request.", null);
+            return true;
+        }
+
+        string[] lines = headerText.Split(new string[] { "\r\n" }, StringSplitOptions.None);
+        string[] requestParts = lines.Length > 0 ? lines[0].Split(' ') : new string[0];
+        if (requestParts.Length < 2)
+        {
+            await WriteHttpResponseAsync(stream, 400, "Bad Request", "text/plain; charset=utf-8", "Malformed HTTP request.", null);
+            return true;
+        }
+
+        string method = requestParts[0].ToUpperInvariant();
+        string rawTarget = requestParts[1];
+        string path = ExtractHttpRequestPath(headerBytes) ?? "/";
+        Dictionary<string, string> headers = ParseHttpHeaders(lines);
+        string remoteAddress = "unknown";
+        try
+        {
+            IPEndPoint endpoint = client.Client.RemoteEndPoint as IPEndPoint;
+            if (endpoint != null) remoteAddress = endpoint.Address.ToString();
+        }
+        catch { }
+
+        const string loginPath = "/__gstglass/auth/login";
+        const string logoutPath = "/__gstglass/auth/logout";
+
+        if (string.Equals(path, logoutPath, StringComparison.OrdinalIgnoreCase))
+        {
+            string logoutToken = GetAuthenticationCookie(headers);
+            long removedSessionExpiry;
+            if (!string.IsNullOrWhiteSpace(logoutToken)) activeAuthenticationSessions.TryRemove(logoutToken, out removedSessionExpiry);
+            Dictionary<string, string> logoutHeaders = new Dictionary<string, string>();
+            logoutHeaders["Set-Cookie"] = "GstGlassAuth=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0";
+            logoutHeaders["Location"] = loginPath;
+            await WriteHttpResponseAsync(stream, 303, "See Other", "text/plain; charset=utf-8", "Signed out.", logoutHeaders);
+            return true;
+        }
+
+        if (string.Equals(path, loginPath, StringComparison.OrdinalIgnoreCase))
+        {
+            string returnTarget = GetQueryValue(rawTarget, "return");
+            if (method == "GET")
+            {
+                if (HasValidAuthenticationCookie(headers))
+                {
+                    await WriteRedirectAsync(stream, GetSafeReturnTarget(returnTarget));
+                }
+                else
+                {
+                    await WriteLoginPageAsync(stream, returnTarget, false, 200, "OK");
+                }
+                return true;
+            }
+
+            if (method != "POST")
+            {
+                Dictionary<string, string> methodHeaders = new Dictionary<string, string>();
+                methodHeaders["Allow"] = "GET, POST";
+                await WriteHttpResponseAsync(stream, 405, "Method Not Allowed", "text/plain; charset=utf-8", "Method not allowed.", methodHeaders);
+                return true;
+            }
+
+            int contentLength;
+            if (!TryGetContentLength(headers, out contentLength) || contentLength < 0 || contentLength > 8192)
+            {
+                await WriteHttpResponseAsync(stream, 413, "Payload Too Large", "text/plain; charset=utf-8", "Invalid login request.", null);
+                return true;
+            }
+
+            byte[] bodyBytes = await ReadExactAsync(stream, contentLength);
+            if (bodyBytes.Length != contentLength)
+            {
+                await WriteHttpResponseAsync(stream, 400, "Bad Request", "text/plain; charset=utf-8", "Incomplete login request.", null);
+                return true;
+            }
+
+            Dictionary<string, string> form = ParseUrlEncoded(Encoding.UTF8.GetString(bodyBytes));
+            string username = form.ContainsKey("username") ? form["username"] : "";
+            string password = form.ContainsKey("password") ? form["password"] : "";
+            returnTarget = form.ContainsKey("return") ? form["return"] : returnTarget;
+
+            int retryAfter = GetAuthenticationRetryAfterSeconds(remoteAddress);
+            if (retryAfter > 0)
+            {
+                Dictionary<string, string> limitedHeaders = new Dictionary<string, string>();
+                limitedHeaders["Retry-After"] = retryAfter.ToString();
+                await WriteLoginPageAsync(stream, returnTarget, true, 429, "Too Many Requests", limitedHeaders);
+                return true;
+            }
+
+            // Run the expensive password verification regardless of whether
+            // the username matches, preventing an observable fast username
+            // oracle. Password length is capped before hashing to bound abuse.
+            bool acquiredHashSlot = await authenticationHashSlots.WaitAsync(5000);
+            if (!acquiredHashSlot)
+            {
+                Dictionary<string, string> busyHeaders = new Dictionary<string, string>();
+                busyHeaders["Retry-After"] = "5";
+                await WriteLoginPageAsync(stream, returnTarget, true, 503, "Service Unavailable", busyHeaders);
+                return true;
+            }
+            bool passwordValid;
+            try
+            {
+                passwordValid = password.Length <= 256 && VerifyAuthenticationPassword(password, authenticationPasswordHash);
+            }
+            finally
+            {
+                authenticationHashSlots.Release();
+            }
+            bool usernameValid = FixedTimeEquals(Encoding.UTF8.GetBytes(username), Encoding.UTF8.GetBytes(authenticationUsername));
+            if (!passwordValid || !usernameValid)
+            {
+                RecordAuthenticationFailure(remoteAddress);
+                pendingLog.Enqueue("authentication rejected from " + remoteAddress);
+                await WriteLoginPageAsync(stream, returnTarget, true, 401, "Unauthorized");
+                return true;
+            }
+
+            AuthenticationFailureState removedFailureState;
+            authenticationFailures.TryRemove(remoteAddress, out removedFailureState);
+            string token = CreateAuthenticationSessionToken(authenticationUsername);
+            Dictionary<string, string> successHeaders = new Dictionary<string, string>();
+            successHeaders["Set-Cookie"] = "GstGlassAuth=" + token + "; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=" + (authenticationSessionHours * 3600).ToString();
+            successHeaders["Location"] = GetSafeReturnTarget(returnTarget);
+            pendingLog.Enqueue("viewer authenticated from " + remoteAddress);
+            await WriteHttpResponseAsync(stream, 303, "See Other", "text/plain; charset=utf-8", "Authenticated.", successHeaders);
+            return true;
+        }
+
+        if (HasValidAuthenticationCookie(headers)) return false;
+
+        bool isWebSocket = headers.ContainsKey("Upgrade") && headers["Upgrade"].IndexOf("websocket", StringComparison.OrdinalIgnoreCase) >= 0;
+        if (isWebSocket)
+        {
+            Dictionary<string, string> deniedHeaders = new Dictionary<string, string>();
+            deniedHeaders["WWW-Authenticate"] = "GstGlassSession";
+            await WriteHttpResponseAsync(stream, 401, "Unauthorized", "text/plain; charset=utf-8", "Authentication required.", deniedHeaders);
+            return true;
+        }
+
+        string loginTarget = loginPath + "?return=" + Uri.EscapeDataString(GetSafeReturnTarget(rawTarget));
+        await WriteRedirectAsync(stream, loginTarget);
+        return true;
+    }
+
+    // Returns true when a redirect was sent (caller must not forward the
+    // request). Only fires for an exact, case-insensitive match on a plain
+    // GET -- WebSocket upgrades and any other path pass through untouched.
+    private async Task<bool> RedirectMissingTrailingSlashAsync(Stream stream, byte[] headerBytes)
+    {
+        string text;
+        try { text = Encoding.ASCII.GetString(headerBytes); }
+        catch { return false; }
+        int lineEnd = text.IndexOf("\r\n");
+        string requestLine = lineEnd >= 0 ? text.Substring(0, lineEnd) : text;
+        string[] parts = requestLine.Split(' ');
+        if (parts.Length < 2 || !string.Equals(parts[0], "GET", StringComparison.OrdinalIgnoreCase)) return false;
+
+        string rawTarget = parts[1];
+        int query = rawTarget.IndexOf('?');
+        string rawPath = query >= 0 ? rawTarget.Substring(0, query) : rawTarget;
+        string queryString = query >= 0 ? rawTarget.Substring(query) : "";
+        if (!string.Equals(rawPath, DirectoryRedirectPath, StringComparison.OrdinalIgnoreCase)) return false;
+
+        Dictionary<string, string> headers = new Dictionary<string, string>();
+        headers["Location"] = DirectoryRedirectPath + "/" + queryString;
+        await WriteHttpResponseAsync(stream, 301, "Moved Permanently", "text/plain; charset=utf-8", "Redirecting.", headers);
+        return true;
+    }
+
+    private static Dictionary<string, string> ParseHttpHeaders(string[] lines)
+    {
+        Dictionary<string, string> headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        for (int i = 1; i < lines.Length; i++)
+        {
+            int separator = lines[i].IndexOf(':');
+            if (separator <= 0) continue;
+            string name = lines[i].Substring(0, separator).Trim();
+            string value = lines[i].Substring(separator + 1).Trim();
+            if (!headers.ContainsKey(name)) headers[name] = value;
+        }
+        return headers;
+    }
+
+    private static bool TryGetContentLength(Dictionary<string, string> headers, out int length)
+    {
+        length = 0;
+        string value;
+        return headers.TryGetValue("Content-Length", out value) && int.TryParse(value, out length);
+    }
+
+    private static async Task<byte[]> ReadExactAsync(Stream stream, int length)
+    {
+        byte[] result = new byte[length];
+        int offset = 0;
+        while (offset < length)
+        {
+            int read = await stream.ReadAsync(result, offset, length - offset);
+            if (read <= 0) break;
+            offset += read;
+        }
+        if (offset == length) return result;
+        byte[] partial = new byte[offset];
+        Buffer.BlockCopy(result, 0, partial, 0, offset);
+        return partial;
+    }
+
+    private async Task WriteLoginPageAsync(Stream stream, string returnTarget, bool invalid, int statusCode, string reason)
+    {
+        await WriteLoginPageAsync(stream, returnTarget, invalid, statusCode, reason, null);
+    }
+
+    private async Task WriteLoginPageAsync(Stream stream, string returnTarget, bool invalid, int statusCode, string reason, Dictionary<string, string> additionalHeaders)
+    {
+        string safeReturn = GetSafeReturnTarget(returnTarget);
+        string error = invalid ? "<p class=\"error\">That login was not accepted. Check the credentials or wait a moment and try again.</p>" : "";
+        string html = "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">" +
+            "<title>GStreamer Glass - Viewer Login</title><style>html{color-scheme:dark}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;background:#090d14;color:#e8edf5;font:16px system-ui,-apple-system,Segoe UI,sans-serif}" +
+            "main{width:min(92vw,420px);padding:32px;border:1px solid #273244;border-radius:16px;background:#111824;box-shadow:0 18px 60px #0008}h1{margin:0 0 8px;font-size:1.55rem}p{color:#aab6c8}.error{color:#ff9b9b}" +
+            "label{display:block;margin:18px 0 6px;font-weight:650}input{width:100%;padding:12px;border:1px solid #35435a;border-radius:9px;background:#090f19;color:#fff;font:inherit}button{width:100%;margin-top:22px;padding:12px;border:0;border-radius:9px;background:#4f8cff;color:white;font:inherit;font-weight:750;cursor:pointer}</style></head>" +
+            "<body><main><h1>GStreamer Glass</h1><p>This broadcast requires viewer authentication.</p>" + error +
+            "<form method=\"post\" action=\"/__gstglass/auth/login\"><input type=\"hidden\" name=\"return\" value=\"" + WebUtility.HtmlEncode(safeReturn) + "\">" +
+            "<label for=\"username\">Username</label><input id=\"username\" name=\"username\" autocomplete=\"username\" required value=\"" + WebUtility.HtmlEncode(authenticationUsername) + "\">" +
+            "<label for=\"password\">Password</label><input id=\"password\" name=\"password\" type=\"password\" autocomplete=\"current-password\" required autofocus>" +
+            "<button type=\"submit\">Watch broadcast</button></form></main></body></html>";
+        await WriteHttpResponseAsync(stream, statusCode, reason, "text/html; charset=utf-8", html, additionalHeaders);
+    }
+
+    private static async Task WriteRedirectAsync(Stream stream, string location)
+    {
+        Dictionary<string, string> headers = new Dictionary<string, string>();
+        headers["Location"] = GetSafeReturnTarget(location);
+        await WriteHttpResponseAsync(stream, 303, "See Other", "text/plain; charset=utf-8", "Redirecting.", headers);
+    }
+
+    private static async Task WriteHttpResponseAsync(Stream stream, int statusCode, string reason, string contentType, string body, Dictionary<string, string> additionalHeaders)
+    {
+        byte[] bodyBytes = Encoding.UTF8.GetBytes(body ?? "");
+        StringBuilder response = new StringBuilder();
+        response.Append("HTTP/1.1 ").Append(statusCode).Append(' ').Append(reason).Append("\r\n");
+        response.Append("Content-Type: ").Append(contentType).Append("\r\n");
+        response.Append("Content-Length: ").Append(bodyBytes.Length).Append("\r\n");
+        response.Append("Cache-Control: no-store\r\n");
+        response.Append("Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'\r\n");
+        response.Append("Referrer-Policy: no-referrer\r\n");
+        response.Append("X-Content-Type-Options: nosniff\r\n");
+        response.Append("X-Frame-Options: DENY\r\n");
+        if (additionalHeaders != null)
+        {
+            foreach (KeyValuePair<string, string> header in additionalHeaders)
+            {
+                response.Append(header.Key).Append(": ").Append(header.Value).Append("\r\n");
+            }
+        }
+        response.Append("Connection: close\r\n\r\n");
+        byte[] headerBytes = Encoding.ASCII.GetBytes(response.ToString());
+        await stream.WriteAsync(headerBytes, 0, headerBytes.Length);
+        if (bodyBytes.Length > 0) await stream.WriteAsync(bodyBytes, 0, bodyBytes.Length);
+        await stream.FlushAsync();
+    }
+
+    private static string GetAuthenticationCookie(Dictionary<string, string> headers)
+    {
+        string cookieHeader;
+        if (!headers.TryGetValue("Cookie", out cookieHeader)) return "";
+        string[] cookies = cookieHeader.Split(';');
+        foreach (string cookie in cookies)
+        {
+            int separator = cookie.IndexOf('=');
+            if (separator <= 0) continue;
+            if (!string.Equals(cookie.Substring(0, separator).Trim(), "GstGlassAuth", StringComparison.Ordinal)) continue;
+            return cookie.Substring(separator + 1).Trim();
+        }
+        return "";
+    }
+
+    private bool HasValidAuthenticationCookie(Dictionary<string, string> headers)
+    {
+        return ValidateAuthenticationSessionToken(GetAuthenticationCookie(headers));
+    }
+
+    private string CreateAuthenticationSessionToken(string username)
+    {
+        long expires = ToUnixTimeSeconds(DateTime.UtcNow.AddHours(authenticationSessionHours));
+        byte[] nonce = new byte[24];
+        using (RandomNumberGenerator random = RandomNumberGenerator.Create())
+        {
+            random.GetBytes(nonce);
+        }
+        string payload = expires.ToString() + "." + Base64UrlEncode(nonce) + "." + Base64UrlEncode(Encoding.UTF8.GetBytes(username));
+        byte[] signature;
+        using (HMACSHA256 hmac = new HMACSHA256(authenticationSessionKey))
+        {
+            signature = hmac.ComputeHash(Encoding.UTF8.GetBytes(payload));
+        }
+        string token = payload + "." + Base64UrlEncode(signature);
+        activeAuthenticationSessions[token] = expires;
+        if (activeAuthenticationSessions.Count > 4096) RemoveExpiredAuthenticationSessions();
+        return token;
+    }
+
+    private bool ValidateAuthenticationSessionToken(string token)
+    {
+        if (authenticationSessionKey == null || authenticationSessionKey.Length < 32 || string.IsNullOrWhiteSpace(token)) return false;
+        string[] parts = token.Split('.');
+        if (parts.Length != 4) return false;
+        long expires;
+        if (!long.TryParse(parts[0], out expires) || expires < ToUnixTimeSeconds(DateTime.UtcNow)) return false;
+        string payload = parts[0] + "." + parts[1] + "." + parts[2];
+        byte[] expected;
+        using (HMACSHA256 hmac = new HMACSHA256(authenticationSessionKey))
+        {
+            expected = hmac.ComputeHash(Encoding.UTF8.GetBytes(payload));
+        }
+        byte[] supplied;
+        try { supplied = Base64UrlDecode(parts[3]); }
+        catch { return false; }
+        if (!FixedTimeEquals(expected, supplied)) return false;
+        try
+        {
+            string username = Encoding.UTF8.GetString(Base64UrlDecode(parts[2]));
+            if (!FixedTimeEquals(Encoding.UTF8.GetBytes(username), Encoding.UTF8.GetBytes(authenticationUsername))) return false;
+            long registeredExpiry;
+            return activeAuthenticationSessions.TryGetValue(token, out registeredExpiry) && registeredExpiry == expires;
+        }
+        catch { return false; }
+    }
+
+    private static void RemoveExpiredAuthenticationSessions()
+    {
+        long now = ToUnixTimeSeconds(DateTime.UtcNow);
+        foreach (KeyValuePair<string, long> session in activeAuthenticationSessions)
+        {
+            if (session.Value >= now) continue;
+            long removedExpiry;
+            activeAuthenticationSessions.TryRemove(session.Key, out removedExpiry);
+        }
+    }
+
+    private int GetAuthenticationRetryAfterSeconds(string remoteAddress)
+    {
+        AuthenticationFailureState state;
+        if (!authenticationFailures.TryGetValue(remoteAddress, out state)) return 0;
+        lock (state)
+        {
+            DateTime now = DateTime.UtcNow;
+            if (state.LockedUntilUtc <= now) return 0;
+            return Math.Max(1, (int)Math.Ceiling((state.LockedUntilUtc - now).TotalSeconds));
+        }
+    }
+
+    private void RecordAuthenticationFailure(string remoteAddress)
+    {
+        if (authenticationFailures.Count > 4096 && !authenticationFailures.ContainsKey(remoteAddress))
+        {
+            authenticationFailures.Clear();
+        }
+        AuthenticationFailureState state = authenticationFailures.GetOrAdd(remoteAddress, delegate(string _)
+        {
+            return new AuthenticationFailureState { Count = 0, WindowStartedUtc = DateTime.UtcNow, LockedUntilUtc = DateTime.MinValue };
+        });
+        lock (state)
+        {
+            DateTime now = DateTime.UtcNow;
+            if ((now - state.WindowStartedUtc).TotalMinutes >= 5)
+            {
+                state.Count = 0;
+                state.WindowStartedUtc = now;
+                state.LockedUntilUtc = DateTime.MinValue;
+            }
+            state.Count++;
+            if (state.Count >= 5) state.LockedUntilUtc = now.AddSeconds(60);
+        }
+    }
+
+    private static bool VerifyAuthenticationPassword(string password, string encodedHash)
+    {
+        byte[] salt = new byte[16];
+        int iterations = 600000;
+        byte[] expected = new byte[32];
+        bool formatValid = false;
+        try
+        {
+            string[] parts = (encodedHash ?? "").Split('$');
+            if (parts.Length == 4 && parts[0] == "pbkdf2-sha256")
+            {
+                iterations = int.Parse(parts[1]);
+                salt = Convert.FromBase64String(parts[2]);
+                expected = Convert.FromBase64String(parts[3]);
+                formatValid = iterations >= 100000 && iterations <= 2000000 && salt.Length >= 16 && expected.Length == 32;
+            }
+        }
+        catch { formatValid = false; }
+        if (!formatValid)
+        {
+            salt = new byte[16];
+            expected = new byte[32];
+            iterations = 600000;
+        }
+        byte[] actual = Pbkdf2Sha256(password ?? "", salt, iterations, expected.Length);
+        return formatValid && FixedTimeEquals(actual, expected);
+    }
+
+    private static byte[] Pbkdf2Sha256(string password, byte[] salt, int iterations, int outputLength)
+    {
+        byte[] passwordBytes = Encoding.UTF8.GetBytes(password ?? "");
+        try
+        {
+            using (HMACSHA256 hmac = new HMACSHA256(passwordBytes))
+            {
+                const int hashLength = 32;
+                int blockCount = (int)Math.Ceiling((double)outputLength / hashLength);
+                byte[] output = new byte[outputLength];
+                int outputOffset = 0;
+                for (int block = 1; block <= blockCount; block++)
+                {
+                    byte[] blockInput = new byte[salt.Length + 4];
+                    Buffer.BlockCopy(salt, 0, blockInput, 0, salt.Length);
+                    blockInput[salt.Length] = (byte)(block >> 24);
+                    blockInput[salt.Length + 1] = (byte)(block >> 16);
+                    blockInput[salt.Length + 2] = (byte)(block >> 8);
+                    blockInput[salt.Length + 3] = (byte)block;
+                    byte[] u = hmac.ComputeHash(blockInput);
+                    byte[] accumulator = (byte[])u.Clone();
+                    for (int iteration = 1; iteration < iterations; iteration++)
+                    {
+                        u = hmac.ComputeHash(u);
+                        for (int i = 0; i < accumulator.Length; i++) accumulator[i] ^= u[i];
+                    }
+                    int copyLength = Math.Min(hashLength, outputLength - outputOffset);
+                    Buffer.BlockCopy(accumulator, 0, output, outputOffset, copyLength);
+                    outputOffset += copyLength;
+                }
+                return output;
+            }
+        }
+        finally
+        {
+            Array.Clear(passwordBytes, 0, passwordBytes.Length);
+        }
+    }
+
+    private static bool FixedTimeEquals(byte[] left, byte[] right)
+    {
+        if (left == null || right == null) return false;
+        int difference = left.Length ^ right.Length;
+        int length = Math.Max(left.Length, right.Length);
+        for (int i = 0; i < length; i++)
+        {
+            byte a = i < left.Length ? left[i] : (byte)0;
+            byte b = i < right.Length ? right[i] : (byte)0;
+            difference |= a ^ b;
+        }
+        return difference == 0;
+    }
+
+    private static Dictionary<string, string> ParseUrlEncoded(string encoded)
+    {
+        Dictionary<string, string> values = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (string pair in (encoded ?? "").Split('&'))
+        {
+            int separator = pair.IndexOf('=');
+            string name = separator >= 0 ? pair.Substring(0, separator) : pair;
+            string value = separator >= 0 ? pair.Substring(separator + 1) : "";
+            values[UrlDecode(name)] = UrlDecode(value);
+        }
+        return values;
+    }
+
+    private static string GetQueryValue(string target, string name)
+    {
+        int query = (target ?? "").IndexOf('?');
+        if (query < 0 || query == target.Length - 1) return "";
+        Dictionary<string, string> values = ParseUrlEncoded(target.Substring(query + 1));
+        string value;
+        return values.TryGetValue(name, out value) ? value : "";
+    }
+
+    private static string UrlDecode(string value)
+    {
+        try { return Uri.UnescapeDataString((value ?? "").Replace("+", " ")); }
+        catch { return ""; }
+    }
+
+    private static string GetSafeReturnTarget(string target)
+    {
+        string value = string.IsNullOrWhiteSpace(target) ? "/live/" : target.Trim();
+        string decoded = value;
+        try { decoded = Uri.UnescapeDataString(value); } catch { }
+        if (!value.StartsWith("/", StringComparison.Ordinal) ||
+            value.StartsWith("//", StringComparison.Ordinal) ||
+            value.StartsWith("/\\", StringComparison.Ordinal) ||
+            decoded.StartsWith("//", StringComparison.Ordinal) ||
+            decoded.StartsWith("/\\", StringComparison.Ordinal) ||
+            value.IndexOf('\r') >= 0 ||
+            value.IndexOf('\n') >= 0)
+        {
+            return "/live/";
+        }
+        return value;
+    }
+
+    private static string Base64UrlEncode(byte[] value)
+    {
+        return Convert.ToBase64String(value).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+    }
+
+    private static byte[] Base64UrlDecode(string value)
+    {
+        string padded = (value ?? "").Replace('-', '+').Replace('_', '/');
+        switch (padded.Length % 4)
+        {
+            case 2: padded += "=="; break;
+            case 3: padded += "="; break;
+        }
+        return Convert.FromBase64String(padded);
+    }
+
+    private static long ToUnixTimeSeconds(DateTime utc)
+    {
+        return (long)(utc.ToUniversalTime() - new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc)).TotalSeconds;
     }
 
     private static async Task PumpAsync(Stream source, Stream destination)
@@ -2184,6 +2813,10 @@ $script:DefaultLetsEncryptStaging = $true
 $script:DefaultLetsEncryptSignalingExternalPort = 0
 $script:DefaultLetsEncryptSplitAudioExternalPort = 0
 $script:DefaultLetsEncryptWebServerExternalPort = 0
+$script:DefaultViewerAuthenticationEnabled = $false
+$script:DefaultViewerAuthenticationUsername = 'viewer'
+$script:DefaultViewerAuthenticationSessionHours = 12
+$script:ViewerAuthenticationPasswordHash = ''
 $script:DefaultDirectWebRtcSmoothnessProfile = 'Sane defaults'
 $script:DefaultDirectWebRtcStartBitrateKbps = 0
 $script:DefaultDirectWebRtcMinBitrateKbps = 0

@@ -299,6 +299,11 @@ body.hasGlassControls.isFullscreen .statsOverlay {
   color: #b9d0ff;
 }
 .glassInstallButton[hidden] { display: none !important; }
+.glassLogoutButton {
+  white-space: nowrap;
+  color: #ffc4c4;
+}
+.glassLogoutButton[hidden] { display: none !important; }
 .glassZoomButton {
   white-space: nowrap;
   color: #b9d0ff;
@@ -357,6 +362,7 @@ body:not(.playing) .glassControls { opacity: .96; }
   .glassVolume { width: min(96px, 20vw); min-width: 58px; }
   .glassReconnectButton { font-size: 11px; white-space: nowrap; }
   .glassInstallButton { font-size: 11px; padding-inline: 7px; }
+  .glassLogoutButton { font-size: 10px; padding-inline: 6px; }
   .glassZoomButton { font-size: 11px; padding-inline: 7px; }
   .glassRouteButton { min-width: 48px; font-size: 10px; padding-inline: 6px; }
   .glassControlStatus { flex-basis: 100%; text-align: center; max-width: none; }
