@@ -1124,16 +1124,51 @@ function Apply-ModernDashboardUi {
     Add-Field $r -Control $btnResetRecording -Width 170 | Out-Null
 
     # ---------------- Network ----------------
-    # Intentionally empty -- placeholder for whatever comes next. See
-    # src/14-NetworkTuning.ps1 for why the previous controls were removed.
     $paneNetwork = New-SettingsPane $tabNetwork
+
+    $s = Add-CollapsibleSection $paneNetwork 'Dynamic DNS'
+    $r = Add-Row $s
+    Add-Field $r -Control $chkDdnsEnabled -Width 340 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Control $lblDdnsStatus -Width 460 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Label 'Hostname' -Control $txtDdnsHostname -Width 260 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Label 'Provider' -Control $cmbDdnsProvider -Width 260 | Out-Null
+
+    $sub = Add-Section $s 'DuckDNS'
+    $r = Add-Row $sub
+    Add-Field $r -Label 'Token' -Control $txtDdnsToken -Width 260 | Out-Null
+
+    $sub = Add-Section $s 'No-IP / Dynu / FreeDNS'
+    $r = Add-Row $sub
+    Add-Field $r -Label 'Update host' -Control $txtDdnsDynV2UpdateHost -Width 260 | Out-Null
+
+    $sub = Add-Section $s 'Cloudflare'
+    $r = Add-Row $sub
+    Add-Field $r -Label 'API token' -Control $txtDdnsCloudflareApiToken -Width 260 | Out-Null
+    $r = Add-Row $sub
+    Add-Field $r -Label 'Zone ID' -Control $txtDdnsCloudflareZoneId -Width 260 | Out-Null
+    Add-Field $r -Label 'Record ID' -Control $txtDdnsCloudflareRecordId -Width 260 | Out-Null
+    $r = Add-Row $sub
+    Add-Field $r -Control $chkDdnsCloudflareProxied -Width 260 | Out-Null
+
+    $sub = Add-Section $s 'Custom URL'
+    $r = Add-Row $sub
+    Add-Field $r -Label 'URL template' -Control $txtDdnsCustomUrlTemplate -Width 400 | Out-Null
+    Add-Field $r -Label 'Method' -Control $cmbDdnsCustomMethod -Width 90 | Out-Null
+
+    $sub = Add-Section $s 'Account (No-IP / Dynu / FreeDNS / Custom URL basic auth)'
+    $r = Add-Row $sub
+    Add-Field $r -Label 'Username' -Control $txtDdnsUsername -Width 260 | Out-Null
+    Add-Field $r -Label 'Password' -Control $txtDdnsPassword -Width 260 | Out-Null
+
+    $r = Add-Row $s
+    Add-Field $r -Control $btnDdnsUpdateNow -Width 150 | Out-Null
+
     $s = Add-Section $paneNetwork ''
     $r = Add-Row $s
-    $lblNetworkPlaceholder = New-Object System.Windows.Forms.Label
-    $lblNetworkPlaceholder.Text = 'Nothing here yet.'
-    $lblNetworkPlaceholder.AutoSize = $true
-    $lblNetworkPlaceholder.ForeColor = $script:ColorMuted
-    Add-Field $r -Control $lblNetworkPlaceholder -Width 300 | Out-Null
+    Add-Field $r -Control $btnResetNetwork -Width 190 | Out-Null
 
     # ---------------- Options ----------------
     $paneOptions = New-SettingsPane $tabOptions
@@ -1333,8 +1368,13 @@ function Apply-ModernDashboardUi {
         $chkRecordingSpatialAq, $chkRecordingTemporalAq, $numRecordingAqStrength,
         $numRecordingVbvBuffer, $txtRecordingCustomEncoderOptions,
         $chkRecordingDesktopAudio, $chkRecordingMic, $numRecordingAudioBitrate,
+        $chkDdnsEnabled, $lblDdnsStatus, $txtDdnsHostname, $cmbDdnsProvider,
+        $txtDdnsToken, $txtDdnsDynV2UpdateHost, $txtDdnsUsername, $txtDdnsPassword,
+        $txtDdnsCloudflareApiToken, $txtDdnsCloudflareZoneId, $txtDdnsCloudflareRecordId,
+        $chkDdnsCloudflareProxied, $txtDdnsCustomUrlTemplate, $cmbDdnsCustomMethod,
+        $btnDdnsUpdateNow,
         $btnResetTransport, $btnResetWebRtcSane, $btnResetVideo, $btnResetAudio,
-        $btnResetRecording, $btnResetOptions, $btnExportLabConfig, $btnResetAll,
+        $btnResetRecording, $btnResetNetwork, $btnResetOptions, $btnExportLabConfig, $btnResetAll,
         $txtGstPath, $btnBrowseGst, $btnDetectGst, $btnCheckGst,
         $chkPreview, $chkHidePreviewDuringStream, $chkAutoRestart, $chkVerbose, $chkDiskProcessLogging, $chkMinimizeToTray,
         $chkCustomGstArgumentsEnabled, $txtCustomGstArguments, $btnUseGeneratedAsCustomGstArgs, $btnClearCustomGstArgs,
@@ -1363,6 +1403,7 @@ function Apply-ModernDashboardUi {
         $chkDesktopAudio, $chkAudioMixerMode, $chkMic, $chkAudioSampleRateOverride,
         $chkRecordingEnabled, $chkRecordWithStream, $chkRecordingLookAhead, $chkRecordingSpatialAq,
         $chkRecordingTemporalAq, $chkRecordingDesktopAudio, $chkRecordingMic,
+        $chkDdnsEnabled, $chkDdnsCloudflareProxied,
         $chkPreview, $chkHidePreviewDuringStream, $chkAutoRestart, $chkVerbose, $chkDiskProcessLogging,
         $chkCustomGstArgumentsEnabled,
         $chkMinimizeToTray, $chkStartMinimized, $chkPsDebug

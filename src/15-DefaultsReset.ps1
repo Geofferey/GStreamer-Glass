@@ -206,6 +206,23 @@ function Reset-RecordingDefaults {
     Update-RecordingUi
 }
 
+function Reset-DdnsDefaults {
+    $chkDdnsEnabled.Checked = $script:DefaultDdnsEnabled
+    if ($cmbDdnsProvider.Items.Contains($script:DefaultDdnsProvider)) { $cmbDdnsProvider.SelectedItem = $script:DefaultDdnsProvider }
+    $txtDdnsHostname.Text = $script:DefaultDdnsHostname
+    $txtDdnsToken.Text = $script:DefaultDdnsToken
+    $txtDdnsDynV2UpdateHost.Text = $script:DefaultDdnsDynV2UpdateHost
+    $txtDdnsUsername.Text = $script:DefaultDdnsUsername
+    $txtDdnsPassword.Text = $script:DefaultDdnsPassword
+    $txtDdnsCloudflareApiToken.Text = $script:DefaultDdnsCloudflareApiToken
+    $txtDdnsCloudflareZoneId.Text = $script:DefaultDdnsCloudflareZoneId
+    $txtDdnsCloudflareRecordId.Text = $script:DefaultDdnsCloudflareRecordId
+    $chkDdnsCloudflareProxied.Checked = $script:DefaultDdnsCloudflareProxied
+    $txtDdnsCustomUrlTemplate.Text = $script:DefaultDdnsCustomUrlTemplate
+    if ($cmbDdnsCustomMethod.Items.Contains($script:DefaultDdnsCustomMethod)) { $cmbDdnsCustomMethod.SelectedItem = $script:DefaultDdnsCustomMethod }
+    Update-DdnsUi
+}
+
 function Reset-OptionsDefaults {
     $txtGstPath.Text = Find-GstLaunch
     $chkPreview.Checked = $false
@@ -233,6 +250,7 @@ function Reset-AllAppDefaults {
     Reset-VideoDefaults
     Reset-AudioDefaults
     Reset-RecordingDefaults
+    Reset-DdnsDefaults
     Reset-OptionsDefaults
     Save-Settings
     Append-Log 'All GStreamer Glass app settings reset to defaults.'

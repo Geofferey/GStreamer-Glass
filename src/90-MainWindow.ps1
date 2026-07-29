@@ -627,6 +627,121 @@ $numUpnpWebServerExternalPort.Value = $script:DefaultUpnpWebServerExternalPort
 $settingsGroup.Controls.Add($numUpnpWebServerExternalPort)
 $toolTip.SetToolTip($numUpnpWebServerExternalPort, 'External (WAN-side) port the router maps to the web viewer port, e.g. 18889 -> 8889. 0 = map the same port number on both sides. A remote viewer must be given a URL using this external port explicitly; the page itself does not need to know about the remap.')
 
+$chkDdnsEnabled = New-Object System.Windows.Forms.CheckBox
+$chkDdnsEnabled.Text = 'Keep a hostname pointed at this stream (Dynamic DNS)'
+$chkDdnsEnabled.Location = New-Object System.Drawing.Point(15, 548)
+$chkDdnsEnabled.Size = New-Object System.Drawing.Size(340, 24)
+$chkDdnsEnabled.Checked = $script:DefaultDdnsEnabled
+$settingsGroup.Controls.Add($chkDdnsEnabled)
+$toolTip.SetToolTip($chkDdnsEnabled, 'Off by default. When enabled, updates the DNS record below with the current public IPv4 address whenever the stream actually goes live. Best-effort only: a DDNS failure never blocks the stream from starting.')
+
+$lblDdnsStatus = New-Object System.Windows.Forms.Label
+$lblDdnsStatus.Text = 'DDNS: disabled'
+$lblDdnsStatus.Location = New-Object System.Drawing.Point(15, 548)
+$lblDdnsStatus.Size = New-Object System.Drawing.Size(460, 23)
+$lblDdnsStatus.TextAlign = 'MiddleLeft'
+$lblDdnsStatus.ForeColor = [System.Drawing.Color]::DimGray
+$settingsGroup.Controls.Add($lblDdnsStatus)
+
+$cmbDdnsProvider = New-Object System.Windows.Forms.ComboBox
+$cmbDdnsProvider.Location = New-Object System.Drawing.Point(15, 548)
+$cmbDdnsProvider.Size = New-Object System.Drawing.Size(260, 23)
+$cmbDdnsProvider.DropDownStyle = 'DropDownList'
+$null = $cmbDdnsProvider.Items.AddRange([string[]]@('DuckDNS', 'No-IP / Dynu / FreeDNS (dyndns2)', 'Cloudflare', 'Custom URL'))
+$cmbDdnsProvider.SelectedItem = $script:DefaultDdnsProvider
+$settingsGroup.Controls.Add($cmbDdnsProvider)
+$toolTip.SetToolTip($cmbDdnsProvider, 'Which Dynamic DNS provider to update. Only the fields relevant to the selected provider are enabled below.')
+
+$txtDdnsHostname = New-Object System.Windows.Forms.TextBox
+$txtDdnsHostname.Location = New-Object System.Drawing.Point(15, 548)
+$txtDdnsHostname.Size = New-Object System.Drawing.Size(260, 23)
+$txtDdnsHostname.Text = $script:DefaultDdnsHostname
+$settingsGroup.Controls.Add($txtDdnsHostname)
+$toolTip.SetToolTip($txtDdnsHostname, 'The hostname to keep current, e.g. myname.duckdns.org, myhost.ddns.net, or stream.example.com.')
+
+$txtDdnsToken = New-Object System.Windows.Forms.TextBox
+$txtDdnsToken.Location = New-Object System.Drawing.Point(15, 548)
+$txtDdnsToken.Size = New-Object System.Drawing.Size(260, 23)
+$txtDdnsToken.UseSystemPasswordChar = $true
+$txtDdnsToken.Text = $script:DefaultDdnsToken
+$settingsGroup.Controls.Add($txtDdnsToken)
+$toolTip.SetToolTip($txtDdnsToken, 'DuckDNS only. The token shown on your DuckDNS account page.')
+
+$txtDdnsDynV2UpdateHost = New-Object System.Windows.Forms.TextBox
+$txtDdnsDynV2UpdateHost.Location = New-Object System.Drawing.Point(15, 548)
+$txtDdnsDynV2UpdateHost.Size = New-Object System.Drawing.Size(260, 23)
+$txtDdnsDynV2UpdateHost.Text = $script:DefaultDdnsDynV2UpdateHost
+$settingsGroup.Controls.Add($txtDdnsDynV2UpdateHost)
+$toolTip.SetToolTip($txtDdnsDynV2UpdateHost, 'No-IP / Dynu / FreeDNS only. The update-protocol host: dynupdate.no-ip.com (No-IP), api.dynu.com (Dynu), or freedns.afraid.org (FreeDNS).')
+
+$txtDdnsUsername = New-Object System.Windows.Forms.TextBox
+$txtDdnsUsername.Location = New-Object System.Drawing.Point(15, 548)
+$txtDdnsUsername.Size = New-Object System.Drawing.Size(260, 23)
+$txtDdnsUsername.Text = $script:DefaultDdnsUsername
+$settingsGroup.Controls.Add($txtDdnsUsername)
+$toolTip.SetToolTip($txtDdnsUsername, 'No-IP / Dynu / FreeDNS: account username. Custom URL: optional HTTP Basic auth username (only sent if both username and password are set).')
+
+$txtDdnsPassword = New-Object System.Windows.Forms.TextBox
+$txtDdnsPassword.Location = New-Object System.Drawing.Point(15, 548)
+$txtDdnsPassword.Size = New-Object System.Drawing.Size(260, 23)
+$txtDdnsPassword.UseSystemPasswordChar = $true
+$txtDdnsPassword.Text = $script:DefaultDdnsPassword
+$settingsGroup.Controls.Add($txtDdnsPassword)
+$toolTip.SetToolTip($txtDdnsPassword, 'No-IP / Dynu / FreeDNS: account password. Custom URL: optional HTTP Basic auth password (only sent if both username and password are set).')
+
+$txtDdnsCloudflareApiToken = New-Object System.Windows.Forms.TextBox
+$txtDdnsCloudflareApiToken.Location = New-Object System.Drawing.Point(15, 548)
+$txtDdnsCloudflareApiToken.Size = New-Object System.Drawing.Size(260, 23)
+$txtDdnsCloudflareApiToken.UseSystemPasswordChar = $true
+$txtDdnsCloudflareApiToken.Text = $script:DefaultDdnsCloudflareApiToken
+$settingsGroup.Controls.Add($txtDdnsCloudflareApiToken)
+$toolTip.SetToolTip($txtDdnsCloudflareApiToken, 'Cloudflare only. An API token scoped to Zone : DNS : Edit for the target zone.')
+
+$txtDdnsCloudflareZoneId = New-Object System.Windows.Forms.TextBox
+$txtDdnsCloudflareZoneId.Location = New-Object System.Drawing.Point(15, 548)
+$txtDdnsCloudflareZoneId.Size = New-Object System.Drawing.Size(260, 23)
+$txtDdnsCloudflareZoneId.Text = $script:DefaultDdnsCloudflareZoneId
+$settingsGroup.Controls.Add($txtDdnsCloudflareZoneId)
+$toolTip.SetToolTip($txtDdnsCloudflareZoneId, 'Cloudflare only. The Zone ID shown on the domain''s Cloudflare dashboard overview page.')
+
+$txtDdnsCloudflareRecordId = New-Object System.Windows.Forms.TextBox
+$txtDdnsCloudflareRecordId.Location = New-Object System.Drawing.Point(15, 548)
+$txtDdnsCloudflareRecordId.Size = New-Object System.Drawing.Size(260, 23)
+$txtDdnsCloudflareRecordId.Text = $script:DefaultDdnsCloudflareRecordId
+$settingsGroup.Controls.Add($txtDdnsCloudflareRecordId)
+$toolTip.SetToolTip($txtDdnsCloudflareRecordId, 'Cloudflare only. The existing A record''s ID (create the record once in the Cloudflare dashboard first; this only updates its content, it does not create records). Retrievable via Cloudflare''s "List DNS records" API.')
+
+$chkDdnsCloudflareProxied = New-Object System.Windows.Forms.CheckBox
+$chkDdnsCloudflareProxied.Text = 'Proxy through Cloudflare (orange cloud)'
+$chkDdnsCloudflareProxied.Location = New-Object System.Drawing.Point(15, 548)
+$chkDdnsCloudflareProxied.Size = New-Object System.Drawing.Size(260, 24)
+$chkDdnsCloudflareProxied.Checked = $script:DefaultDdnsCloudflareProxied
+$settingsGroup.Controls.Add($chkDdnsCloudflareProxied)
+$toolTip.SetToolTip($chkDdnsCloudflareProxied, 'Cloudflare only. Off by default. Cloudflare''s proxy only forwards plain HTTP/HTTPS, not arbitrary WebRTC/RTP ports, so this usually needs to stay off for the stream itself to remain reachable through the mapped ports.')
+
+$txtDdnsCustomUrlTemplate = New-Object System.Windows.Forms.TextBox
+$txtDdnsCustomUrlTemplate.Location = New-Object System.Drawing.Point(15, 548)
+$txtDdnsCustomUrlTemplate.Size = New-Object System.Drawing.Size(400, 23)
+$txtDdnsCustomUrlTemplate.Text = $script:DefaultDdnsCustomUrlTemplate
+$settingsGroup.Controls.Add($txtDdnsCustomUrlTemplate)
+$toolTip.SetToolTip($txtDdnsCustomUrlTemplate, 'Custom URL only. Any update URL, with {ip} and {hostname} substituted literally, e.g. https://example.com/update?host={hostname}&ip={ip}.')
+
+$cmbDdnsCustomMethod = New-Object System.Windows.Forms.ComboBox
+$cmbDdnsCustomMethod.Location = New-Object System.Drawing.Point(15, 548)
+$cmbDdnsCustomMethod.Size = New-Object System.Drawing.Size(90, 23)
+$cmbDdnsCustomMethod.DropDownStyle = 'DropDownList'
+$null = $cmbDdnsCustomMethod.Items.AddRange([string[]]@('GET', 'PUT', 'POST'))
+$cmbDdnsCustomMethod.SelectedItem = $script:DefaultDdnsCustomMethod
+$settingsGroup.Controls.Add($cmbDdnsCustomMethod)
+$toolTip.SetToolTip($cmbDdnsCustomMethod, 'Custom URL only. HTTP method used for the update request.')
+
+$btnDdnsUpdateNow = New-Object System.Windows.Forms.Button
+$btnDdnsUpdateNow.Text = 'Update DDNS Now'
+$btnDdnsUpdateNow.Location = New-Object System.Drawing.Point(15, 548)
+$btnDdnsUpdateNow.Size = New-Object System.Drawing.Size(150, 30)
+$settingsGroup.Controls.Add($btnDdnsUpdateNow)
+$toolTip.SetToolTip($btnDdnsUpdateNow, 'Resolves the current public IP and updates the configured DDNS record immediately, regardless of stream state -- useful for verifying credentials without going live.')
+
 $txtDirectWebRtcWebPath = New-Object System.Windows.Forms.TextBox
 $txtDirectWebRtcWebPath.Location = New-Object System.Drawing.Point(15, 548)
 $txtDirectWebRtcWebPath.Size = New-Object System.Drawing.Size(120, 23)
@@ -942,6 +1057,12 @@ $btnResetRecording.Text = 'Reset Recording Defaults'
 $btnResetRecording.Location = New-Object System.Drawing.Point(15, 548)
 $btnResetRecording.Size = New-Object System.Drawing.Size(170, 30)
 $settingsGroup.Controls.Add($btnResetRecording)
+
+$btnResetNetwork = New-Object System.Windows.Forms.Button
+$btnResetNetwork.Text = 'Reset Network Tab Defaults'
+$btnResetNetwork.Location = New-Object System.Drawing.Point(15, 548)
+$btnResetNetwork.Size = New-Object System.Drawing.Size(180, 30)
+$settingsGroup.Controls.Add($btnResetNetwork)
 
 $btnResetOptions = New-Object System.Windows.Forms.Button
 $btnResetOptions.Text = 'Reset Options Defaults'
@@ -3846,6 +3967,19 @@ $chkUpnpEnabled.Add_CheckedChanged({
         $lblUpnpStatus.ForeColor = [System.Drawing.Color]::DimGray
     }
 })
+$chkDdnsEnabled.Add_CheckedChanged({
+    Update-DdnsUi
+    if (-not $script:DdnsLastAppliedIp) {
+        $lblDdnsStatus.Text = if ($chkDdnsEnabled.Checked) { 'DDNS: enabled - will update when the stream starts' } else { 'DDNS: disabled' }
+        $lblDdnsStatus.ForeColor = [System.Drawing.Color]::DimGray
+    }
+})
+$cmbDdnsProvider.Add_SelectedIndexChanged({ Update-DdnsUi })
+$btnDdnsUpdateNow.Add_Click({
+    $lowerTabs.SelectedTab = $tabLog
+    try { Update-DdnsRecord } catch { Append-Log "DDNS: $($_.Exception.Message)" }
+    Save-Settings
+})
 
 foreach ($control in @(
     $txtDirectWebRtcSignalingHost,
@@ -4216,6 +4350,7 @@ $resetDefaultsBindings = @(
     @{ Button = $btnResetVideo;     ResetFunction = 'Reset-VideoDefaults' }
     @{ Button = $btnResetAudio;     ResetFunction = 'Reset-AudioDefaults' }
     @{ Button = $btnResetRecording; ResetFunction = 'Reset-RecordingDefaults' }
+    @{ Button = $btnResetNetwork;   ResetFunction = 'Reset-DdnsDefaults' }
     @{ Button = $btnResetOptions;   ResetFunction = 'Reset-OptionsDefaults' }
 )
 foreach ($binding in $resetDefaultsBindings) {
@@ -4786,6 +4921,7 @@ $form.Add_Shown({
     Update-AudioTimingOptionUi
     Update-EncoderUi
     Update-RecordingUi
+    Update-DdnsUi
     Update-SceneUi
     Refresh-ProfileList
     Update-CommandPreview

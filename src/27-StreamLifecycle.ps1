@@ -379,6 +379,9 @@ function Start-GstStream {
             if ($chkUpnpEnabled -and $chkUpnpEnabled.Checked -and $transportEnabled) {
                 try { Add-UpnpPortMappings } catch { Append-Log "UPnP: $($_.Exception.Message)" }
             }
+            if ($chkDdnsEnabled -and $chkDdnsEnabled.Checked -and $transportEnabled) {
+                try { Update-DdnsRecord } catch { Append-Log "DDNS: $($_.Exception.Message)" }
+            }
 
             $mediaSuffix = if ($script:MediaMtxProcess -and -not $script:MediaMtxProcess.HasExited) { " + MediaMTX PID $($script:MediaMtxProcess.Id)" } else { '' }
             if ($transportEnabled) {
@@ -470,6 +473,9 @@ function Start-GstStream {
         # rather than a real demap/remap cycle.
         if ($chkUpnpEnabled -and $chkUpnpEnabled.Checked -and $transportEnabled) {
             try { Add-UpnpPortMappings } catch { Append-Log "UPnP: $($_.Exception.Message)" }
+        }
+        if ($chkDdnsEnabled -and $chkDdnsEnabled.Checked -and $transportEnabled) {
+            try { Update-DdnsRecord } catch { Append-Log "DDNS: $($_.Exception.Message)" }
         }
 
         if ($script:JobHandle -ne [IntPtr]::Zero) {

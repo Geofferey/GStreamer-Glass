@@ -92,6 +92,7 @@
         'Reset-VideoDefaults'
         'Reset-AudioDefaults'
         'Reset-RecordingDefaults'
+        'Reset-DdnsDefaults'
         'Reset-OptionsDefaults'
         'Reset-AllAppDefaults'
     )
@@ -375,5 +376,15 @@
         'Get-UpnpRequiredMappings'
         'Add-UpnpPortMappings'
         'Remove-UpnpPortMappings'
+    )
+
+    '32-Ddns.ps1' = @(
+        'Get-DdnsPublicIPv4Address'
+        'Update-DdnsRecordDuckDns'
+        'Update-DdnsRecordDynV2'
+        'Update-DdnsRecordCloudflare'
+        'Update-DdnsRecordCustom'
+        'Update-DdnsRecord'
+        'Update-DdnsUi'
     )
 }

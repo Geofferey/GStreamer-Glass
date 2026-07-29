@@ -61,6 +61,19 @@ function Save-Settings {
             UpnpSignalingExternalPort = [int]$numUpnpSignalingExternalPort.Value
             UpnpSplitAudioExternalPort = [int]$numUpnpSplitAudioExternalPort.Value
             UpnpWebServerExternalPort = [int]$numUpnpWebServerExternalPort.Value
+            DdnsEnabled       = [bool]$chkDdnsEnabled.Checked
+            DdnsProvider      = [string]$cmbDdnsProvider.SelectedItem
+            DdnsHostname      = [string]$txtDdnsHostname.Text
+            DdnsToken         = [string]$txtDdnsToken.Text
+            DdnsDynV2UpdateHost = [string]$txtDdnsDynV2UpdateHost.Text
+            DdnsUsername      = [string]$txtDdnsUsername.Text
+            DdnsPassword      = [string]$txtDdnsPassword.Text
+            DdnsCloudflareApiToken = [string]$txtDdnsCloudflareApiToken.Text
+            DdnsCloudflareZoneId = [string]$txtDdnsCloudflareZoneId.Text
+            DdnsCloudflareRecordId = [string]$txtDdnsCloudflareRecordId.Text
+            DdnsCloudflareProxied = [bool]$chkDdnsCloudflareProxied.Checked
+            DdnsCustomUrlTemplate = [string]$txtDdnsCustomUrlTemplate.Text
+            DdnsCustomMethod  = [string]$cmbDdnsCustomMethod.SelectedItem
             DirectWebRtcWebPath = $txtDirectWebRtcWebPath.Text
             DirectWebRtcBundledWebMode = [string]$cmbDirectWebRtcBundledWebMode.SelectedItem
             DirectWebRtcBundledWebDirectory = $txtDirectWebRtcBundledWebDirectory.Text
@@ -342,6 +355,7 @@ function Load-Settings {
         Update-DirectWebRtcUi
         Update-EncoderUi
         Update-RecordingUi
+        Update-DdnsUi
         Update-SceneUi
     }
 }
@@ -430,6 +444,19 @@ function Restore-SettingsFromObject {
         if ($null -ne $settings.UpnpSignalingExternalPort) { $numUpnpSignalingExternalPort.Value = [decimal]([Math]::Min(65535, [Math]::Max(0, [int]$settings.UpnpSignalingExternalPort))) }
         if ($null -ne $settings.UpnpSplitAudioExternalPort) { $numUpnpSplitAudioExternalPort.Value = [decimal]([Math]::Min(65535, [Math]::Max(0, [int]$settings.UpnpSplitAudioExternalPort))) }
         if ($null -ne $settings.UpnpWebServerExternalPort) { $numUpnpWebServerExternalPort.Value = [decimal]([Math]::Min(65535, [Math]::Max(0, [int]$settings.UpnpWebServerExternalPort))) }
+        if ($null -ne $settings.DdnsEnabled) { $chkDdnsEnabled.Checked = [bool]$settings.DdnsEnabled }
+        if ($settings.DdnsProvider -and $cmbDdnsProvider.Items.Contains([string]$settings.DdnsProvider)) { $cmbDdnsProvider.SelectedItem = [string]$settings.DdnsProvider }
+        if ($null -ne $settings.DdnsHostname) { $txtDdnsHostname.Text = [string]$settings.DdnsHostname }
+        if ($null -ne $settings.DdnsToken) { $txtDdnsToken.Text = [string]$settings.DdnsToken }
+        if ($null -ne $settings.DdnsDynV2UpdateHost) { $txtDdnsDynV2UpdateHost.Text = [string]$settings.DdnsDynV2UpdateHost }
+        if ($null -ne $settings.DdnsUsername) { $txtDdnsUsername.Text = [string]$settings.DdnsUsername }
+        if ($null -ne $settings.DdnsPassword) { $txtDdnsPassword.Text = [string]$settings.DdnsPassword }
+        if ($null -ne $settings.DdnsCloudflareApiToken) { $txtDdnsCloudflareApiToken.Text = [string]$settings.DdnsCloudflareApiToken }
+        if ($null -ne $settings.DdnsCloudflareZoneId) { $txtDdnsCloudflareZoneId.Text = [string]$settings.DdnsCloudflareZoneId }
+        if ($null -ne $settings.DdnsCloudflareRecordId) { $txtDdnsCloudflareRecordId.Text = [string]$settings.DdnsCloudflareRecordId }
+        if ($null -ne $settings.DdnsCloudflareProxied) { $chkDdnsCloudflareProxied.Checked = [bool]$settings.DdnsCloudflareProxied }
+        if ($null -ne $settings.DdnsCustomUrlTemplate) { $txtDdnsCustomUrlTemplate.Text = [string]$settings.DdnsCustomUrlTemplate }
+        if ($settings.DdnsCustomMethod -and $cmbDdnsCustomMethod.Items.Contains([string]$settings.DdnsCustomMethod)) { $cmbDdnsCustomMethod.SelectedItem = [string]$settings.DdnsCustomMethod }
         if ($null -ne $settings.DirectWebRtcWebPath) { $txtDirectWebRtcWebPath.Text = [string]$settings.DirectWebRtcWebPath }
         if ($settings.DirectWebRtcBundledWebMode -and $cmbDirectWebRtcBundledWebMode.Items.Contains([string]$settings.DirectWebRtcBundledWebMode)) { $cmbDirectWebRtcBundledWebMode.SelectedItem = [string]$settings.DirectWebRtcBundledWebMode }
         if ($null -ne $settings.DirectWebRtcBundledWebDirectory) { $txtDirectWebRtcBundledWebDirectory.Text = [string]$settings.DirectWebRtcBundledWebDirectory }
