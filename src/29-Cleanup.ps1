@@ -82,6 +82,13 @@ function Invoke-ApplicationCleanup {
             $script:PreviewParkForm.Dispose()
         }
 
+        if ($script:LogPopoutForm -and -not $script:LogPopoutForm.IsDisposed) {
+            $script:LogPopoutForm.Close()
+            $script:LogPopoutForm.Dispose()
+        }
+        $script:LogPopoutForm = $null
+        $script:LogPopoutTextBox = $null
+
         $trayMenu.Dispose()
     }
     catch {}

@@ -448,29 +448,31 @@ function Set-WaitingForFullscreenState {
     Update-TrayMenuState
 }
 
-function Scroll-LogToBottom {
+function Scroll-TextBoxToBottom {
+    param([Parameter(Mandatory)][System.Windows.Forms.TextBox]$TextBox)
+
     try {
-        if (-not $txtLog -or $txtLog.IsDisposed) {
+        if (-not $TextBox -or $TextBox.IsDisposed) {
             return
         }
 
-        $txtLog.SelectionStart = $txtLog.TextLength
-        $txtLog.SelectionLength = 0
-        $txtLog.ScrollToCaret()
+        $TextBox.SelectionStart = $TextBox.TextLength
+        $TextBox.SelectionLength = 0
+        $TextBox.ScrollToCaret()
 
-        if ($txtLog.IsHandleCreated) {
+        if ($TextBox.IsHandleCreated) {
             # ScrollToCaret() can be lazy when the TextBox does not have focus or
-            # when the Logs tab is not active. Force the Win32 edit control to
+            # when its tab/window is not active. Force the Win32 edit control to
             # move to the bottom so live GStreamer output actually follows tail.
             [GstUiNative]::SendMessage(
-                $txtLog.Handle,
+                $TextBox.Handle,
                 [GstUiNative]::EM_SCROLLCARET,
                 [IntPtr]::Zero,
                 [IntPtr]::Zero
             ) | Out-Null
 
             [GstUiNative]::SendMessage(
-                $txtLog.Handle,
+                $TextBox.Handle,
                 [GstUiNative]::WM_VSCROLL,
                 [IntPtr]([GstUiNative]::SB_BOTTOM),
                 [IntPtr]::Zero
@@ -478,6 +480,20 @@ function Scroll-LogToBottom {
         }
     }
     catch {}
+}
+
+function Scroll-LogToBottom {
+    Scroll-TextBoxToBottom -TextBox $txtLog
+}
+
+function Test-LogPopoutViewLive {
+    try {
+        if (-not $script:LogPopoutTextBox -or $script:LogPopoutTextBox.IsDisposed) { return $false }
+        if (-not $script:LogPopoutForm -or $script:LogPopoutForm.IsDisposed -or -not $script:LogPopoutForm.Visible) { return $false }
+        if ($script:LogPopoutForm.WindowState -eq [System.Windows.Forms.FormWindowState]::Minimized) { return $false }
+        return $true
+    }
+    catch { return $false }
 }
 
 function Drain-ManagedProcessLogs {
@@ -573,6 +589,24 @@ function Append-Log {
                 [void][GstUiNative]::SendMessage($txtLog.Handle, [GstUiNative]::WM_SETREDRAW, [IntPtr]1, [IntPtr]::Zero)
                 $txtLog.Invalidate()
             }
+        }
+
+        # Mirror into the popped-out log window, if one is open. Kept entirely
+        # separate from the main txtLog's suspend-redraw/trim above so a popout
+        # issue can never affect the primary log, and the popout can be closed
+        # and reopened without needing to resync -- it always reflects the full
+        # current text, just like $txtLog does.
+        if ($script:LogPopoutTextBox -and -not $script:LogPopoutTextBox.IsDisposed) {
+            try {
+                $script:LogPopoutTextBox.AppendText($Text)
+                if ($script:LogPopoutTextBox.TextLength -gt 250000) {
+                    $script:LogPopoutTextBox.Text = $script:LogPopoutTextBox.Text.Substring($script:LogPopoutTextBox.TextLength - 180000)
+                }
+                if (Test-LogPopoutViewLive) {
+                    Scroll-TextBoxToBottom -TextBox $script:LogPopoutTextBox
+                }
+            }
+            catch {}
         }
     }
     catch {}

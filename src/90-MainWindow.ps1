@@ -2434,7 +2434,7 @@ $null = $lowerTabs.TabPages.Add($tabCommand)
 
 $tabCustomGstArgs = New-Object System.Windows.Forms.TabPage
 $tabCustomGstArgs.Text = 'Custom Args'
-$tabCustomGstArgs.Padding = New-Object System.Windows.Forms.Padding(6)
+$tabCustomGstArgs.Padding = New-Object System.Windows.Forms.Padding(6, 6, 10, 6)
 $null = $lowerTabs.TabPages.Add($tabCustomGstArgs)
 
 # Appends no longer force a scroll while the log tab is hidden, so catch the
@@ -2459,8 +2459,18 @@ $tabCommand.Controls.Add($txtCommand)
 
 $customArgsTopPanel = New-Object System.Windows.Forms.Panel
 $customArgsTopPanel.Dock = 'Top'
-$customArgsTopPanel.Height = 62
+$customArgsTopPanel.Height = 76
 $tabCustomGstArgs.Controls.Add($customArgsTopPanel)
+
+$customArgsButtonRow = New-Object System.Windows.Forms.FlowLayoutPanel
+$customArgsButtonRow.Dock = 'Right'
+$customArgsButtonRow.FlowDirection = 'RightToLeft'
+$customArgsButtonRow.WrapContents = $false
+$customArgsButtonRow.AutoSize = $true
+$customArgsButtonRow.AutoSizeMode = 'GrowAndShrink'
+$customArgsButtonRow.Margin = New-Object System.Windows.Forms.Padding(0)
+$customArgsButtonRow.Padding = New-Object System.Windows.Forms.Padding(0, 6, 8, 0)
+$customArgsTopPanel.Controls.Add($customArgsButtonRow)
 
 $chkCustomGstArgumentsEnabled = New-Object System.Windows.Forms.CheckBox
 $chkCustomGstArgumentsEnabled.Text = 'Use custom gst-launch args override'
@@ -2471,22 +2481,31 @@ $customArgsTopPanel.Controls.Add($chkCustomGstArgumentsEnabled)
 $lblCustomGstArgumentsHelp = New-Object System.Windows.Forms.Label
 $lblCustomGstArgumentsHelp.Text = 'Arguments only: paste everything after gst-launch-1.0.exe. Shell wrappers/operators are rejected.'
 $lblCustomGstArgumentsHelp.AutoSize = $true
-$lblCustomGstArgumentsHelp.Location = New-Object System.Drawing.Point(8, 34)
+$lblCustomGstArgumentsHelp.Location = New-Object System.Drawing.Point(8, 38)
 $customArgsTopPanel.Controls.Add($lblCustomGstArgumentsHelp)
+
+# Docked (not Anchor+absolute-Location) so these stay correctly placed
+# regardless of the panel's actual width when it's first laid out --
+# Anchor='Top,Right' with a hardcoded X assumes the panel is already at its
+# final docked width the moment the control is added, which it isn't yet.
+$btnClearCustomGstArgs = New-Object System.Windows.Forms.Button
+$btnClearCustomGstArgs.Text = 'Clear'
+$btnClearCustomGstArgs.Size = New-Object System.Drawing.Size(80, 28)
+$btnClearCustomGstArgs.Margin = New-Object System.Windows.Forms.Padding(8, 0, 0, 0)
+$customArgsButtonRow.Controls.Add($btnClearCustomGstArgs)
 
 $btnUseGeneratedAsCustomGstArgs = New-Object System.Windows.Forms.Button
 $btnUseGeneratedAsCustomGstArgs.Text = 'Use Generated'
 $btnUseGeneratedAsCustomGstArgs.Size = New-Object System.Drawing.Size(112, 28)
-$btnUseGeneratedAsCustomGstArgs.Anchor = 'Top,Right'
-$btnUseGeneratedAsCustomGstArgs.Location = New-Object System.Drawing.Point(930, 8)
-$customArgsTopPanel.Controls.Add($btnUseGeneratedAsCustomGstArgs)
+$btnUseGeneratedAsCustomGstArgs.Margin = New-Object System.Windows.Forms.Padding(8, 0, 0, 0)
+$customArgsButtonRow.Controls.Add($btnUseGeneratedAsCustomGstArgs)
 
-$btnClearCustomGstArgs = New-Object System.Windows.Forms.Button
-$btnClearCustomGstArgs.Text = 'Clear'
-$btnClearCustomGstArgs.Size = New-Object System.Drawing.Size(80, 28)
-$btnClearCustomGstArgs.Anchor = 'Top,Right'
-$btnClearCustomGstArgs.Location = New-Object System.Drawing.Point(1050, 8)
-$customArgsTopPanel.Controls.Add($btnClearCustomGstArgs)
+$btnPopOutCustomGstArgs = New-Object System.Windows.Forms.Button
+$btnPopOutCustomGstArgs.Text = 'Pop Out'
+$btnPopOutCustomGstArgs.Size = New-Object System.Drawing.Size(90, 28)
+$btnPopOutCustomGstArgs.Margin = New-Object System.Windows.Forms.Padding(8, 0, 0, 0)
+$toolTip.SetToolTip($btnPopOutCustomGstArgs, 'Open the custom args in a larger, resizable editor window.')
+$customArgsButtonRow.Controls.Add($btnPopOutCustomGstArgs)
 
 $txtCustomGstArguments = New-Object System.Windows.Forms.TextBox
 $txtCustomGstArguments.Multiline = $true
@@ -2587,6 +2606,27 @@ $notifyIcon.Text = $script:AppName
 $notifyIcon.ContextMenuStrip = $trayMenu
 $notifyIcon.Visible = $true
 
+$logTopPanel = New-Object System.Windows.Forms.Panel
+$logTopPanel.Dock = 'Top'
+$logTopPanel.Height = 36
+$tabLog.Controls.Add($logTopPanel)
+
+$logButtonRow = New-Object System.Windows.Forms.FlowLayoutPanel
+$logButtonRow.Dock = 'Right'
+$logButtonRow.FlowDirection = 'RightToLeft'
+$logButtonRow.WrapContents = $false
+$logButtonRow.AutoSize = $true
+$logButtonRow.AutoSizeMode = 'GrowAndShrink'
+$logButtonRow.Margin = New-Object System.Windows.Forms.Padding(0)
+$logButtonRow.Padding = New-Object System.Windows.Forms.Padding(0, 4, 8, 0)
+$logTopPanel.Controls.Add($logButtonRow)
+
+$btnPopOutLog = New-Object System.Windows.Forms.Button
+$btnPopOutLog.Text = 'Pop Out'
+$btnPopOutLog.Size = New-Object System.Drawing.Size(90, 28)
+$toolTip.SetToolTip($btnPopOutLog, 'Open a separate, resizable log window that stays live while you use the rest of the app.')
+$logButtonRow.Controls.Add($btnPopOutLog)
+
 $txtLog = New-Object System.Windows.Forms.TextBox
 $txtLog.Multiline = $true
 $txtLog.ScrollBars = 'Both'
@@ -2596,6 +2636,7 @@ $txtLog.HideSelection = $false
 $txtLog.Font = New-Object System.Drawing.Font('Consolas', 9)
 $txtLog.Dock = 'Fill'
 $tabLog.Controls.Add($txtLog)
+$logTopPanel.BringToFront()
 
 # Experimental scene controls. Scenes remain off by default, preserving the
 # original single-source capture path byte-for-byte until explicitly enabled.
@@ -3545,6 +3586,123 @@ $encoderUiHandler = { Update-EncoderUi }
 $recordingUiHandler = { Update-RecordingUi }
 $audioTimingPreviewHandler = { Update-AudioTimingOptionUi; Update-CommandPreview }
 
+function Show-LogPopoutWindow {
+    if ($script:LogPopoutForm -and -not $script:LogPopoutForm.IsDisposed) {
+        if ($script:LogPopoutForm.WindowState -eq [System.Windows.Forms.FormWindowState]::Minimized) {
+            $script:LogPopoutForm.WindowState = [System.Windows.Forms.FormWindowState]::Normal
+        }
+        $script:LogPopoutForm.Activate()
+        return
+    }
+
+    $popout = New-Object System.Windows.Forms.Form
+    $popout.Text = "$($script:AppName) - Log Console"
+    $popout.StartPosition = 'Manual'
+    $mainBounds = $form.Bounds
+    $popout.Location = New-Object System.Drawing.Point(($mainBounds.Right + 12), $mainBounds.Top)
+    $popout.Size = New-Object System.Drawing.Size(720, 600)
+    $popout.MinimumSize = New-Object System.Drawing.Size(360, 240)
+    $popout.BackColor = $script:ColorBg
+    $popout.ForeColor = $script:ColorText
+    $popout.Font = New-Object System.Drawing.Font('Segoe UI', 9)
+    if ($script:AppIcon) { $popout.Icon = $script:AppIcon }
+
+    $popoutTextBox = New-Object System.Windows.Forms.TextBox
+    $popoutTextBox.Multiline = $true
+    $popoutTextBox.ScrollBars = 'Both'
+    $popoutTextBox.WordWrap = $false
+    $popoutTextBox.ReadOnly = $true
+    $popoutTextBox.HideSelection = $false
+    $popoutTextBox.Font = New-Object System.Drawing.Font('Consolas', 9)
+    $popoutTextBox.BackColor = [System.Drawing.ColorTranslator]::FromHtml('#0F172A')
+    $popoutTextBox.ForeColor = $script:ColorText
+    $popoutTextBox.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
+    $popoutTextBox.Dock = 'Fill'
+    $popoutTextBox.Text = $txtLog.Text
+    $popout.Controls.Add($popoutTextBox)
+
+    # Live-mirrored by Append-Log (13-ProcessLifecycle.ps1) for as long as this
+    # form and textbox exist; clearing both references on close is what lets
+    # Append-Log cheaply no-op once the window is gone instead of needing an
+    # explicit "popout closed" notification path.
+    $popout.Add_FormClosed({
+        $script:LogPopoutForm = $null
+        $script:LogPopoutTextBox = $null
+    })
+
+    $script:LogPopoutForm = $popout
+    $script:LogPopoutTextBox = $popoutTextBox
+    $popout.Show($form)
+    Scroll-TextBoxToBottom -TextBox $popoutTextBox
+}
+
+function Show-CustomGstArgsEditor {
+    $editor = New-Object System.Windows.Forms.Form
+    $editor.Text = 'Custom gst-launch Arguments'
+    $editor.StartPosition = 'CenterParent'
+    $editor.Size = New-Object System.Drawing.Size(1000, 560)
+    $editor.MinimumSize = New-Object System.Drawing.Size(560, 300)
+    $editor.BackColor = $script:ColorBg
+    $editor.ForeColor = $script:ColorText
+    $editor.Font = New-Object System.Drawing.Font('Segoe UI', 9)
+    $editor.ShowInTaskbar = $false
+    if ($script:AppIcon) { $editor.Icon = $script:AppIcon }
+
+    $buttonPanel = New-Object System.Windows.Forms.Panel
+    $buttonPanel.Dock = 'Bottom'
+    $buttonPanel.Height = 44
+    $buttonPanel.BackColor = $script:ColorSurface
+    $editor.Controls.Add($buttonPanel)
+
+    $btnEditorCancel = New-Object System.Windows.Forms.Button
+    $btnEditorCancel.Text = 'Cancel'
+    $btnEditorCancel.Size = New-Object System.Drawing.Size(90, 28)
+    $btnEditorCancel.Anchor = 'Top,Right'
+    $btnEditorCancel.Location = New-Object System.Drawing.Point(($editor.ClientSize.Width - 98), 8)
+    $btnEditorCancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+    $buttonPanel.Controls.Add($btnEditorCancel)
+
+    $btnEditorApply = New-Object System.Windows.Forms.Button
+    $btnEditorApply.Text = 'Apply'
+    $btnEditorApply.Size = New-Object System.Drawing.Size(90, 28)
+    $btnEditorApply.Anchor = 'Top,Right'
+    $btnEditorApply.Location = New-Object System.Drawing.Point(($editor.ClientSize.Width - 196), 8)
+    $btnEditorApply.DialogResult = [System.Windows.Forms.DialogResult]::OK
+    $buttonPanel.Controls.Add($btnEditorApply)
+
+    foreach ($editorButton in @($btnEditorApply, $btnEditorCancel)) {
+        $editorButton.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+        $editorButton.FlatAppearance.BorderColor = $script:ColorBorder
+        $editorButton.BackColor = [System.Drawing.ColorTranslator]::FromHtml('#1F2937')
+        $editorButton.ForeColor = $script:ColorText
+        $editorButton.Cursor = [System.Windows.Forms.Cursors]::Hand
+    }
+
+    $editorTextBox = New-Object System.Windows.Forms.TextBox
+    $editorTextBox.Multiline = $true
+    $editorTextBox.ScrollBars = 'Vertical'
+    $editorTextBox.WordWrap = $true
+    $editorTextBox.AcceptsReturn = $true
+    $editorTextBox.AcceptsTab = $true
+    $editorTextBox.HideSelection = $false
+    $editorTextBox.Font = New-Object System.Drawing.Font('Consolas', 11)
+    $editorTextBox.BackColor = [System.Drawing.ColorTranslator]::FromHtml('#0F172A')
+    $editorTextBox.ForeColor = $script:ColorText
+    $editorTextBox.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
+    $editorTextBox.Dock = 'Fill'
+    $editorTextBox.Text = $txtCustomGstArguments.Text
+    $editor.Controls.Add($editorTextBox)
+
+    $editor.AcceptButton = $btnEditorApply
+    $editor.CancelButton = $btnEditorCancel
+
+    $result = $editor.ShowDialog($form)
+    if ($result -eq [System.Windows.Forms.DialogResult]::OK) {
+        $txtCustomGstArguments.Text = $editorTextBox.Text
+    }
+    $editor.Dispose()
+}
+
 $chkCustomGstArgumentsEnabled.Add_CheckedChanged({
     if ($script:LoadingSettings) { return }
     Save-Settings
@@ -3591,6 +3749,12 @@ $btnClearCustomGstArgs.Add_Click({
     $txtCustomGstArguments.Clear()
     Save-Settings
     Update-CommandPreview
+})
+$btnPopOutCustomGstArgs.Add_Click({
+    Show-CustomGstArgsEditor
+})
+$btnPopOutLog.Add_Click({
+    Show-LogPopoutWindow
 })
 
 
