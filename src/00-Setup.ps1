@@ -1768,6 +1768,15 @@ public class TlsTerminatingProxy
     // cosmetic, used only when formatting drained log messages.
     public string Label;
 
+    // Canonical and legacy-alias authentication route paths, shared between
+    // IsAuthenticationEndpointPath (classification) and
+    // HandleAuthenticationAsync (dispatch) so the two can never drift apart.
+    private const string CanonicalLoginPath = "/auth/login";
+    private const string CanonicalLogoutPath = "/auth/logout";
+    private const string LegacyLoginPath = "/__gstglass/auth/login";
+    private const string LegacyLogoutPath = "/__gstglass/auth/logout";
+    private const string LegacySimpleLogoutPath = "/logout";
+
     private TcpListener listener;
     private X509Certificate2 certificate;
     private string targetHost;
@@ -2092,24 +2101,19 @@ public class TlsTerminatingProxy
         }
         catch { }
 
-        const string loginPath = "/auth/login";
-        const string logoutPath = "/auth/logout";
-        const string legacyLoginPath = "/__gstglass/auth/login";
-        const string legacyLogoutPath = "/__gstglass/auth/logout";
-        const string legacySimpleLogoutPath = "/logout";
-        string mountedLegacyLoginPath = GetMountedAuthenticationPath(legacyLoginPath);
-        string mountedLegacyLogoutPath = GetMountedAuthenticationPath(legacyLogoutPath);
-        string mountedSimpleLogoutPath = GetMountedAuthenticationPath(legacySimpleLogoutPath);
+        string mountedLegacyLoginPath = GetMountedAuthenticationPath(LegacyLoginPath);
+        string mountedLegacyLogoutPath = GetMountedAuthenticationPath(LegacyLogoutPath);
+        string mountedSimpleLogoutPath = GetMountedAuthenticationPath(LegacySimpleLogoutPath);
 
         bool isLogoutEndpoint =
-            string.Equals(path, logoutPath, StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(path, legacyLogoutPath, StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(path, legacySimpleLogoutPath, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(path, CanonicalLogoutPath, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(path, LegacyLogoutPath, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(path, LegacySimpleLogoutPath, StringComparison.OrdinalIgnoreCase) ||
             string.Equals(path, mountedLegacyLogoutPath, StringComparison.OrdinalIgnoreCase) ||
             string.Equals(path, mountedSimpleLogoutPath, StringComparison.OrdinalIgnoreCase);
         bool isLoginEndpoint =
-            string.Equals(path, loginPath, StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(path, legacyLoginPath, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(path, CanonicalLoginPath, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(path, LegacyLoginPath, StringComparison.OrdinalIgnoreCase) ||
             string.Equals(path, mountedLegacyLoginPath, StringComparison.OrdinalIgnoreCase);
         bool isAuthenticationRoot =
             string.Equals(path, "/auth", StringComparison.OrdinalIgnoreCase) ||
@@ -2148,7 +2152,7 @@ public class TlsTerminatingProxy
             // "/live/"), not bare "/" -- nothing is served at the site root,
             // so a bare "/" return would strand a re-logged-in viewer on a
             // blank/404 page instead of back at the broadcast.
-            logoutHeaders["Location"] = loginPath + "?return=" + Uri.EscapeDataString(GetMountedViewerPath());
+            logoutHeaders["Location"] = CanonicalLoginPath + "?return=" + Uri.EscapeDataString(GetMountedViewerPath());
             pendingLog.Enqueue(
                 "viewer logout from " + remoteAddress +
                 "; current session " + (removedCurrentSession ? "removed" : "not found") +
@@ -2163,7 +2167,7 @@ public class TlsTerminatingProxy
             {
                 await WriteRedirectAsync(
                     stream,
-                    loginPath + "?return=" + Uri.EscapeDataString(GetMountedViewerPath())
+                    CanonicalLoginPath + "?return=" + Uri.EscapeDataString(GetMountedViewerPath())
                 );
             }
             else
@@ -2307,7 +2311,7 @@ public class TlsTerminatingProxy
             return true;
         }
 
-        string loginTarget = loginPath + "?return=" + Uri.EscapeDataString(GetSafeReturnTarget(rawTarget));
+        string loginTarget = CanonicalLoginPath + "?return=" + Uri.EscapeDataString(GetSafeReturnTarget(rawTarget));
         await WriteRedirectAsync(stream, loginTarget);
         return true;
     }
@@ -2323,25 +2327,21 @@ public class TlsTerminatingProxy
     private bool IsAuthenticationEndpointPath(string path)
     {
         if (string.IsNullOrEmpty(path)) return false;
+        // Every canonical path (login, logout, and any other /auth/* child)
+        // already starts with "/auth" or "/auth/", so only the legacy,
+        // non-canonical alias paths need their own explicit comparisons below.
         if (string.Equals(path, "/auth", StringComparison.OrdinalIgnoreCase) ||
             path.StartsWith("/auth/", StringComparison.OrdinalIgnoreCase))
         {
             return true;
         }
-        const string loginPath = "/auth/login";
-        const string logoutPath = "/auth/logout";
-        const string legacyLoginPath = "/__gstglass/auth/login";
-        const string legacyLogoutPath = "/__gstglass/auth/logout";
-        const string legacySimpleLogoutPath = "/logout";
         return
-            string.Equals(path, loginPath, StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(path, logoutPath, StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(path, legacyLoginPath, StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(path, legacyLogoutPath, StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(path, legacySimpleLogoutPath, StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(path, GetMountedAuthenticationPath(legacyLoginPath), StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(path, GetMountedAuthenticationPath(legacyLogoutPath), StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(path, GetMountedAuthenticationPath(legacySimpleLogoutPath), StringComparison.OrdinalIgnoreCase);
+            string.Equals(path, LegacyLoginPath, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(path, LegacyLogoutPath, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(path, LegacySimpleLogoutPath, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(path, GetMountedAuthenticationPath(LegacyLoginPath), StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(path, GetMountedAuthenticationPath(LegacyLogoutPath), StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(path, GetMountedAuthenticationPath(LegacySimpleLogoutPath), StringComparison.OrdinalIgnoreCase);
     }
 
     private string GetMountedViewerPath()
