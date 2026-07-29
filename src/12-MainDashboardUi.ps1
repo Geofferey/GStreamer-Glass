@@ -1190,9 +1190,14 @@ function Apply-ModernDashboardUi {
     $r = Add-Row $s
     Add-Field $r -Control $chkViewerAuthenticationEnabled -Width 340 | Out-Null
     $r = Add-Row $s
-    Add-Field $r -Label 'Username' -Control $txtViewerAuthenticationUsername -Width 180 | Out-Null
+    Add-Field $r -Label 'Accounts' -Control $lstViewerAuthenticationAccounts -Width 260 | Out-Null
     $r = Add-Row $s
-    Add-Field $r -Label 'New password' -Control $txtViewerAuthenticationPassword -Width 260 | Out-Null
+    Add-Field $r -Label 'Username' -Control $txtViewerAuthenticationNewUsername -Width 180 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Label 'Password' -Control $txtViewerAuthenticationNewPassword -Width 180 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Control $btnViewerAuthenticationAddAccount -Width 120 | Out-Null
+    Add-Field $r -Control $btnViewerAuthenticationRemoveAccount -Width 120 | Out-Null
     $r = Add-Row $s
     Add-Field $r -Label 'Session hours' -Control $numViewerAuthenticationSessionHours -Width 90 | Out-Null
 
@@ -1406,7 +1411,9 @@ function Apply-ModernDashboardUi {
         $chkLetsEncryptEnabled, $lblLetsEncryptStatus, $txtLetsEncryptEmail, $chkLetsEncryptStaging,
         $numLetsEncryptSignalingExternalPort, $numLetsEncryptSplitAudioExternalPort, $numLetsEncryptWebServerExternalPort,
         $btnLetsEncryptIssueNow,
-        $chkViewerAuthenticationEnabled, $txtViewerAuthenticationUsername, $txtViewerAuthenticationPassword,
+        $chkViewerAuthenticationEnabled, $lstViewerAuthenticationAccounts,
+        $txtViewerAuthenticationNewUsername, $txtViewerAuthenticationNewPassword,
+        $btnViewerAuthenticationAddAccount, $btnViewerAuthenticationRemoveAccount,
         $numViewerAuthenticationSessionHours,
         $btnResetTransport, $btnResetWebRtcSane, $btnResetVideo, $btnResetAudio,
         $btnResetRecording, $btnResetNetwork, $btnResetOptions, $btnExportLabConfig, $btnResetAll,

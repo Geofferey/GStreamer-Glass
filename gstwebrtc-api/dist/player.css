@@ -204,7 +204,7 @@ body.isFullscreen.uiPinned .debugLink {
   border-radius: 13px;
   background: rgba(6,10,16,.58);
   color: rgba(238,244,255,.76);
-  backdrop-filter: blur(8px);
+  backdrop-filter: blur(10px);
   box-shadow: 0 12px 36px rgba(0,0,0,.28);
   font: 11px/1.35 Consolas, "Cascadia Mono", monospace;
   white-space: pre-wrap;

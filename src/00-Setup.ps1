@@ -1777,14 +1777,24 @@ public class TlsTerminatingProxy
     private const string LegacyLogoutPath = "/__gstglass/auth/logout";
     private const string LegacySimpleLogoutPath = "/logout";
 
+    // One named account per viewer -- distinct from a single shared
+    // credential, each account's own username is what gets embedded in and
+    // checked against its issued session tokens (see CreateAuthenticationSessionToken
+    // / ValidateAuthenticationSessionToken), so removing an account from the
+    // configured list immediately invalidates any session still using it.
+    public sealed class AuthenticationAccount
+    {
+        public string Username;
+        public string PasswordHash;
+    }
+
     private TcpListener listener;
     private X509Certificate2 certificate;
     private string targetHost;
     private int targetPort;
     private volatile bool running;
     private bool authenticationEnabled;
-    private string authenticationUsername = "viewer";
-    private string authenticationPasswordHash = "";
+    private List<AuthenticationAccount> authenticationAccounts = new List<AuthenticationAccount>();
     private byte[] authenticationSessionKey = new byte[0];
     private int authenticationSessionHours = 12;
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, AuthenticationFailureState> authenticationFailures = new System.Collections.Concurrent.ConcurrentDictionary<string, AuthenticationFailureState>();
@@ -1831,13 +1841,31 @@ public class TlsTerminatingProxy
         public DateTime LockedUntilUtc;
     }
 
-    public void ConfigureAuthentication(bool enabled, string username, string passwordHash, byte[] sessionKey, int sessionHours)
+    public void ConfigureAuthentication(bool enabled, AuthenticationAccount[] accounts, byte[] sessionKey, int sessionHours)
     {
         authenticationEnabled = enabled;
-        authenticationUsername = string.IsNullOrWhiteSpace(username) ? "viewer" : username.Trim();
-        authenticationPasswordHash = passwordHash ?? "";
+        List<AuthenticationAccount> normalized = new List<AuthenticationAccount>();
+        if (accounts != null)
+        {
+            foreach (AuthenticationAccount account in accounts)
+            {
+                if (account == null || string.IsNullOrWhiteSpace(account.Username) || string.IsNullOrWhiteSpace(account.PasswordHash)) continue;
+                normalized.Add(new AuthenticationAccount { Username = account.Username.Trim(), PasswordHash = account.PasswordHash });
+            }
+        }
+        authenticationAccounts = normalized;
         authenticationSessionKey = sessionKey == null ? new byte[0] : (byte[])sessionKey.Clone();
         authenticationSessionHours = Math.Max(1, Math.Min(168, sessionHours));
+    }
+
+    private AuthenticationAccount FindAuthenticationAccount(string username)
+    {
+        if (string.IsNullOrEmpty(username)) return null;
+        foreach (AuthenticationAccount account in authenticationAccounts)
+        {
+            if (string.Equals(account.Username, username, StringComparison.Ordinal)) return account;
+        }
+        return null;
     }
 
     public static byte[] CreateAuthenticationSessionKey()
@@ -2131,17 +2159,21 @@ public class TlsTerminatingProxy
                 await WriteHttpResponseAsync(stream, 405, "Method Not Allowed", "text/plain; charset=utf-8", "Method not allowed.", methodHeaders);
                 return true;
             }
+            // Multiple viewers can be signed in at once under this one shared
+            // account (there is no per-user login). Logout must only revoke
+            // THIS browser's own session token -- removing it from the
+            // dictionary already makes that exact token fail validation
+            // everywhere it's presented (any alias host/port, any concurrent
+            // signaling connection, since they all key off the same token
+            // value) without touching anyone else's independently issued
+            // token. Clearing the whole session table here would sign out
+            // every other viewer just because one person clicked logout.
             string logoutToken = GetAuthenticationCookie(headers);
+            string logoutUsername = GetTokenUsernameForLogging(logoutToken);
             long removedSessionExpiry;
             bool removedCurrentSession =
                 !string.IsNullOrWhiteSpace(logoutToken) &&
                 activeAuthenticationSessions.TryRemove(logoutToken, out removedSessionExpiry);
-            // One broadcaster-configured account protects every viewer origin
-            // and TLS signaling port. Logout is therefore authoritative for
-            // that account: invalidate every issued token so an alias-host
-            // cookie or concurrent signaling session cannot silently keep the
-            // viewer authenticated.
-            activeAuthenticationSessions.Clear();
             Dictionary<string, string> logoutHeaders = new Dictionary<string, string>();
             logoutHeaders["Set-Cookie"] = "GstGlassAuth=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT";
             logoutHeaders["Clear-Site-Data"] = "\"cookies\", \"storage\"";
@@ -2154,9 +2186,8 @@ public class TlsTerminatingProxy
             // blank/404 page instead of back at the broadcast.
             logoutHeaders["Location"] = CanonicalLoginPath + "?return=" + Uri.EscapeDataString(GetMountedViewerPath());
             pendingLog.Enqueue(
-                "viewer logout from " + remoteAddress +
-                "; current session " + (removedCurrentSession ? "removed" : "not found") +
-                "; all viewer sessions invalidated");
+                "viewer" + (logoutUsername != null ? " '" + logoutUsername + "'" : "") + " logout from " + remoteAddress +
+                "; current session " + (removedCurrentSession ? "removed" : "not found"));
             await WriteHttpResponseAsync(stream, 303, "See Other", "text/plain; charset=utf-8", "Signed out.", logoutHeaders);
             return true;
         }
@@ -2260,9 +2291,15 @@ public class TlsTerminatingProxy
                 return true;
             }
 
-            // Run the expensive password verification regardless of whether
-            // the username matches, preventing an observable fast username
-            // oracle. Password length is capped before hashing to bound abuse.
+            // Run the expensive password verification even when the username
+            // matches no configured account (against an empty/invalid hash,
+            // which VerifyAuthenticationPassword still spends a full PBKDF2
+            // round on before reporting "invalid format") -- this keeps a
+            // request for an unknown username from completing observably
+            // faster than one for a real account, preventing a username
+            // enumeration oracle. Password length is capped before hashing
+            // to bound abuse.
+            AuthenticationAccount matchedAccount = FindAuthenticationAccount(username);
             bool acquiredHashSlot = await authenticationHashSlots.WaitAsync(5000);
             if (!acquiredHashSlot)
             {
@@ -2274,14 +2311,14 @@ public class TlsTerminatingProxy
             bool passwordValid;
             try
             {
-                passwordValid = password.Length <= 256 && VerifyAuthenticationPassword(password, authenticationPasswordHash);
+                string hashToVerify = matchedAccount != null ? matchedAccount.PasswordHash : "";
+                passwordValid = password.Length <= 256 && VerifyAuthenticationPassword(password, hashToVerify);
             }
             finally
             {
                 authenticationHashSlots.Release();
             }
-            bool usernameValid = FixedTimeEquals(Encoding.UTF8.GetBytes(username), Encoding.UTF8.GetBytes(authenticationUsername));
-            if (!passwordValid || !usernameValid)
+            if (!passwordValid || matchedAccount == null)
             {
                 RecordAuthenticationFailure(remoteAddress);
                 pendingLog.Enqueue("authentication rejected from " + remoteAddress);
@@ -2291,11 +2328,11 @@ public class TlsTerminatingProxy
 
             AuthenticationFailureState removedFailureState;
             authenticationFailures.TryRemove(remoteAddress, out removedFailureState);
-            string token = CreateAuthenticationSessionToken(authenticationUsername);
+            string token = CreateAuthenticationSessionToken(matchedAccount.Username);
             Dictionary<string, string> successHeaders = new Dictionary<string, string>();
             successHeaders["Set-Cookie"] = "GstGlassAuth=" + token + "; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=" + (authenticationSessionHours * 3600).ToString();
             successHeaders["Location"] = GetSafeReturnTarget(returnTarget);
-            pendingLog.Enqueue("viewer authenticated from " + remoteAddress);
+            pendingLog.Enqueue("viewer '" + matchedAccount.Username + "' authenticated from " + remoteAddress);
             await WriteHttpResponseAsync(stream, 303, "See Other", "text/plain; charset=utf-8", "Authenticated.", successHeaders);
             return true;
         }
@@ -2423,13 +2460,29 @@ public class TlsTerminatingProxy
         string safeReturn = GetSafeReturnTarget(returnTarget);
         string error = invalid ? "<p class=\"error\">That login was not accepted. Check the credentials or wait a moment and try again.</p>" : "";
         string html = "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">" +
-            "<title>GStreamer Glass - Viewer Login</title><style>html{color-scheme:dark}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;background:#090d14;color:#e8edf5;font:16px system-ui,-apple-system,Segoe UI,sans-serif}" +
-            "main{width:min(92vw,420px);padding:32px;border:1px solid #273244;border-radius:16px;background:#111824;box-shadow:0 18px 60px #0008}h1{margin:0 0 8px;font-size:1.55rem}p{color:#aab6c8}.error{color:#ff9b9b}" +
+            "<title>GStreamer Glass - Viewer Login</title><style>html{color-scheme:dark}*{box-sizing:border-box}" +
+            // backdrop-filter blur only produces a visible effect when there is
+            // actual detail behind the element to blur -- the in-player .overlay
+            // is visibly frosted because it sits over real video. A smooth flat
+            // gradient behind main would blur to something indistinguishable
+            // from itself, so the body gets a few contrasty, brand-colored glow
+            // blobs (fixed, so they don't scroll away from behind the card) for
+            // the card's blur to actually soften against.
+            "body{margin:0;min-height:100vh;display:grid;place-items:center;background:#05070b;color:#e8edf5;font:16px system-ui,-apple-system,Segoe UI,sans-serif}" +
+            "body::before{content:\"\";position:fixed;inset:0;z-index:-1;background:" +
+            "radial-gradient(560px circle at 18% 20%,rgba(79,140,255,.40),transparent 60%)," +
+            "radial-gradient(520px circle at 85% 75%,rgba(53,215,137,.30),transparent 58%)," +
+            "radial-gradient(640px circle at 60% 100%,rgba(255,93,108,.20),transparent 60%)," +
+            "#05070b}" +
+            // Same frosted-glass treatment as the in-player .overlay (top-left
+            // status card): translucent gradient fill + backdrop-filter blur,
+            // so the login page matches the rest of the viewer chrome.
+            "main{width:min(92vw,420px);padding:32px;border:1px solid rgba(255,255,255,.12);border-radius:16px;background:linear-gradient(180deg,rgba(10,14,22,.82),rgba(10,14,22,.48));backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);box-shadow:0 14px 44px rgba(0,0,0,.35)}h1{margin:0 0 8px;font-size:1.55rem}p{color:#aab6c8}.error{color:#ff9b9b}" +
             "label{display:block;margin:18px 0 6px;font-weight:650}input{width:100%;padding:12px;border:1px solid #35435a;border-radius:9px;background:#090f19;color:#fff;font:inherit}button{width:100%;margin-top:22px;padding:12px;border:0;border-radius:9px;background:#4f8cff;color:white;font:inherit;font-weight:750;cursor:pointer}</style></head>" +
             "<body><main><h1>GStreamer Glass</h1><p>This broadcast requires viewer authentication.</p>" + error +
             "<form method=\"post\" action=\"./login\"><input type=\"hidden\" name=\"return\" value=\"" + WebUtility.HtmlEncode(safeReturn) + "\">" +
-            "<label for=\"username\">Username</label><input id=\"username\" name=\"username\" autocomplete=\"username\" required value=\"" + WebUtility.HtmlEncode(authenticationUsername) + "\">" +
-            "<label for=\"password\">Password</label><input id=\"password\" name=\"password\" type=\"password\" autocomplete=\"current-password\" required autofocus>" +
+            "<label for=\"username\">Username</label><input id=\"username\" name=\"username\" autocomplete=\"username\" required autofocus>" +
+            "<label for=\"password\">Password</label><input id=\"password\" name=\"password\" type=\"password\" autocomplete=\"current-password\" required>" +
             "<button type=\"submit\">Watch broadcast</button></form></main></body></html>";
         await WriteHttpResponseAsync(stream, statusCode, reason, "text/html; charset=utf-8", html, additionalHeaders);
     }
@@ -2507,6 +2560,19 @@ public class TlsTerminatingProxy
         return token;
     }
 
+    // Best-effort, unvalidated extraction of a token's embedded username for
+    // a nicer log line -- never used for an authorization decision (that's
+    // ValidateAuthenticationSessionToken, which also checks the HMAC
+    // signature and session-table membership).
+    private static string GetTokenUsernameForLogging(string token)
+    {
+        if (string.IsNullOrWhiteSpace(token)) return null;
+        string[] parts = token.Split('.');
+        if (parts.Length != 4) return null;
+        try { return Encoding.UTF8.GetString(Base64UrlDecode(parts[2])); }
+        catch { return null; }
+    }
+
     private bool ValidateAuthenticationSessionToken(string token)
     {
         if (authenticationSessionKey == null || authenticationSessionKey.Length < 32 || string.IsNullOrWhiteSpace(token)) return false;
@@ -2526,8 +2592,11 @@ public class TlsTerminatingProxy
         if (!FixedTimeEquals(expected, supplied)) return false;
         try
         {
+            // Checked against the CURRENT account list, not a snapshot taken
+            // at login time -- removing an account revokes every session it
+            // already issued immediately, without needing a proxy restart.
             string username = Encoding.UTF8.GetString(Base64UrlDecode(parts[2]));
-            if (!FixedTimeEquals(Encoding.UTF8.GetBytes(username), Encoding.UTF8.GetBytes(authenticationUsername))) return false;
+            if (FindAuthenticationAccount(username) == null) return false;
             long registeredExpiry;
             return activeAuthenticationSessions.TryGetValue(token, out registeredExpiry) && registeredExpiry == expires;
         }
@@ -3058,9 +3127,11 @@ $script:DefaultLetsEncryptSignalingExternalPort = 0
 $script:DefaultLetsEncryptSplitAudioExternalPort = 0
 $script:DefaultLetsEncryptWebServerExternalPort = 0
 $script:DefaultViewerAuthenticationEnabled = $false
-$script:DefaultViewerAuthenticationUsername = 'viewer'
 $script:DefaultViewerAuthenticationSessionHours = 12
-$script:ViewerAuthenticationPasswordHash = ''
+# Named accounts, each @{ Username; PasswordHash }. Only the salted
+# PBKDF2-HMAC-SHA256 hash is ever persisted -- see Add-ViewerAuthenticationAccount
+# in src/33-LetsEncrypt.ps1.
+$script:ViewerAuthenticationAccounts = @()
 $script:DefaultDirectWebRtcSmoothnessProfile = 'Sane defaults'
 $script:DefaultDirectWebRtcStartBitrateKbps = 0
 $script:DefaultDirectWebRtcMinBitrateKbps = 0

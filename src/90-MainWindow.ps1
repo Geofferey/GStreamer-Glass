@@ -801,19 +801,39 @@ $chkViewerAuthenticationEnabled.Checked = $script:DefaultViewerAuthenticationEna
 $settingsGroup.Controls.Add($chkViewerAuthenticationEnabled)
 $toolTip.SetToolTip($chkViewerAuthenticationEnabled, 'Protects the viewer page and every signaling WebSocket at the built-in TLS edge. Requires an active Let''s Encrypt certificate; unencrypted HTTP/WS is never used for authenticated viewing.')
 
-$txtViewerAuthenticationUsername = New-Object System.Windows.Forms.TextBox
-$txtViewerAuthenticationUsername.Location = New-Object System.Drawing.Point(15, 548)
-$txtViewerAuthenticationUsername.Size = New-Object System.Drawing.Size(180, 23)
-$txtViewerAuthenticationUsername.Text = $script:DefaultViewerAuthenticationUsername
-$settingsGroup.Controls.Add($txtViewerAuthenticationUsername)
-$toolTip.SetToolTip($txtViewerAuthenticationUsername, 'Viewer login name. Authentication uses a constant-time username comparison.')
+$lstViewerAuthenticationAccounts = New-Object System.Windows.Forms.ListBox
+$lstViewerAuthenticationAccounts.Location = New-Object System.Drawing.Point(15, 548)
+$lstViewerAuthenticationAccounts.Size = New-Object System.Drawing.Size(260, 82)
+$lstViewerAuthenticationAccounts.SelectionMode = 'One'
+$settingsGroup.Controls.Add($lstViewerAuthenticationAccounts)
+$toolTip.SetToolTip($lstViewerAuthenticationAccounts, 'Each named account can sign in independently -- logging out or removing one account never affects any other viewer''s session.')
 
-$txtViewerAuthenticationPassword = New-Object System.Windows.Forms.TextBox
-$txtViewerAuthenticationPassword.Location = New-Object System.Drawing.Point(15, 548)
-$txtViewerAuthenticationPassword.Size = New-Object System.Drawing.Size(260, 23)
-$txtViewerAuthenticationPassword.UseSystemPasswordChar = $true
-$settingsGroup.Controls.Add($txtViewerAuthenticationPassword)
-$toolTip.SetToolTip($txtViewerAuthenticationPassword, 'Set or replace the viewer password. The plaintext is never saved; Glass stores a salted PBKDF2-HMAC-SHA256 hash. Leave blank to keep the existing password.')
+$txtViewerAuthenticationNewUsername = New-Object System.Windows.Forms.TextBox
+$txtViewerAuthenticationNewUsername.Location = New-Object System.Drawing.Point(15, 548)
+$txtViewerAuthenticationNewUsername.Size = New-Object System.Drawing.Size(180, 23)
+$settingsGroup.Controls.Add($txtViewerAuthenticationNewUsername)
+$toolTip.SetToolTip($txtViewerAuthenticationNewUsername, 'Username for a new viewer account.')
+
+$txtViewerAuthenticationNewPassword = New-Object System.Windows.Forms.TextBox
+$txtViewerAuthenticationNewPassword.Location = New-Object System.Drawing.Point(15, 548)
+$txtViewerAuthenticationNewPassword.Size = New-Object System.Drawing.Size(180, 23)
+$txtViewerAuthenticationNewPassword.UseSystemPasswordChar = $true
+$settingsGroup.Controls.Add($txtViewerAuthenticationNewPassword)
+$toolTip.SetToolTip($txtViewerAuthenticationNewPassword, 'Password for the new account (10-256 characters). The plaintext is never saved; Glass stores a salted PBKDF2-HMAC-SHA256 hash.')
+
+$btnViewerAuthenticationAddAccount = New-Object System.Windows.Forms.Button
+$btnViewerAuthenticationAddAccount.Text = 'Add account'
+$btnViewerAuthenticationAddAccount.Location = New-Object System.Drawing.Point(15, 548)
+$btnViewerAuthenticationAddAccount.Size = New-Object System.Drawing.Size(120, 27)
+$settingsGroup.Controls.Add($btnViewerAuthenticationAddAccount)
+$toolTip.SetToolTip($btnViewerAuthenticationAddAccount, 'Adds (or replaces the password for) the account above.')
+
+$btnViewerAuthenticationRemoveAccount = New-Object System.Windows.Forms.Button
+$btnViewerAuthenticationRemoveAccount.Text = 'Remove selected'
+$btnViewerAuthenticationRemoveAccount.Location = New-Object System.Drawing.Point(15, 548)
+$btnViewerAuthenticationRemoveAccount.Size = New-Object System.Drawing.Size(120, 27)
+$settingsGroup.Controls.Add($btnViewerAuthenticationRemoveAccount)
+$toolTip.SetToolTip($btnViewerAuthenticationRemoveAccount, 'Removes the selected account and immediately revokes any of its active sessions.')
 
 $numViewerAuthenticationSessionHours = New-Object System.Windows.Forms.NumericUpDown
 $numViewerAuthenticationSessionHours.Location = New-Object System.Drawing.Point(15, 548)
@@ -4064,6 +4084,8 @@ $btnDdnsUpdateNow.Add_Click({
 })
 $chkLetsEncryptEnabled.Add_CheckedChanged({ Update-LetsEncryptUi })
 $chkViewerAuthenticationEnabled.Add_CheckedChanged({ Update-ViewerAuthenticationUi; Update-PlayerConfigFromUi })
+$btnViewerAuthenticationAddAccount.Add_Click({ Add-ViewerAuthenticationAccount })
+$btnViewerAuthenticationRemoveAccount.Add_Click({ Remove-ViewerAuthenticationAccount })
 $btnLetsEncryptIssueNow.Add_Click({
     $lowerTabs.SelectedTab = $tabLog
     try { Update-LetsEncryptCertificate } catch { Append-Log "ACME: $($_.Exception.Message)" }

@@ -642,9 +642,70 @@ function Update-ViewerAuthenticationUi {
     $tlsEnabled = [bool]($chkLetsEncryptEnabled -and $chkLetsEncryptEnabled.Checked)
     $authenticationEnabled = [bool]($tlsEnabled -and (Test-ViewerAuthenticationEnabled))
     if ($chkViewerAuthenticationEnabled) { $chkViewerAuthenticationEnabled.Enabled = $tlsEnabled }
-    foreach ($control in @($txtViewerAuthenticationUsername, $txtViewerAuthenticationPassword, $numViewerAuthenticationSessionHours)) {
+    foreach ($control in @(
+        $lstViewerAuthenticationAccounts, $txtViewerAuthenticationNewUsername, $txtViewerAuthenticationNewPassword,
+        $btnViewerAuthenticationAddAccount, $btnViewerAuthenticationRemoveAccount, $numViewerAuthenticationSessionHours
+    )) {
         if ($control) { $control.Enabled = $authenticationEnabled }
     }
+}
+
+# Each named account can log in independently -- see AuthenticationAccount /
+# ConfigureAuthentication in the TlsTerminatingProxy C# class. Only the
+# salted PBKDF2-HMAC-SHA256 hash is ever kept; the plaintext password field
+# is cleared immediately after hashing.
+function Sync-ViewerAuthenticationAccountsListBox {
+    if (-not $lstViewerAuthenticationAccounts) { return }
+    $selectedUsername = [string]$lstViewerAuthenticationAccounts.SelectedItem
+    $lstViewerAuthenticationAccounts.BeginUpdate()
+    try {
+        $lstViewerAuthenticationAccounts.Items.Clear()
+        foreach ($account in @($script:ViewerAuthenticationAccounts)) {
+            [void]$lstViewerAuthenticationAccounts.Items.Add([string]$account.Username)
+        }
+        if (-not [string]::IsNullOrEmpty($selectedUsername) -and $lstViewerAuthenticationAccounts.Items.Contains($selectedUsername)) {
+            $lstViewerAuthenticationAccounts.SelectedItem = $selectedUsername
+        }
+    }
+    finally {
+        $lstViewerAuthenticationAccounts.EndUpdate()
+    }
+}
+
+function Add-ViewerAuthenticationAccount {
+    $username = [string]$txtViewerAuthenticationNewUsername.Text.Trim()
+    $password = [string]$txtViewerAuthenticationNewPassword.Text
+    if ([string]::IsNullOrWhiteSpace($username) -or $username.Length -gt 64 -or $username -match '[\r\n]') {
+        [System.Windows.Forms.MessageBox]::Show('Enter a username between 1 and 64 characters with no line breaks.', $script:AppName, 'OK', 'Warning') | Out-Null
+        return
+    }
+    if ($password.Length -lt 10 -or $password.Length -gt 256) {
+        [System.Windows.Forms.MessageBox]::Show('Password must be between 10 and 256 characters.', $script:AppName, 'OK', 'Warning') | Out-Null
+        return
+    }
+    $passwordHash = [TlsTerminatingProxy]::HashAuthenticationPassword($password)
+    $existing = @($script:ViewerAuthenticationAccounts) | Where-Object { $_.Username -eq $username }
+    if ($existing) {
+        $existing[0].PasswordHash = $passwordHash
+        Append-Log "AUTH: updated the password for viewer account '$username'."
+    }
+    else {
+        $script:ViewerAuthenticationAccounts = @(@($script:ViewerAuthenticationAccounts) + [pscustomobject]@{ Username = $username; PasswordHash = $passwordHash })
+        Append-Log "AUTH: added viewer account '$username'."
+    }
+    $txtViewerAuthenticationNewUsername.Clear()
+    $txtViewerAuthenticationNewPassword.Clear()
+    Sync-ViewerAuthenticationAccountsListBox
+    Save-Settings
+}
+
+function Remove-ViewerAuthenticationAccount {
+    $selected = [string]$lstViewerAuthenticationAccounts.SelectedItem
+    if ([string]::IsNullOrWhiteSpace($selected)) { return }
+    $script:ViewerAuthenticationAccounts = @(@($script:ViewerAuthenticationAccounts) | Where-Object { $_.Username -ne $selected })
+    Append-Log "AUTH: removed viewer account '$selected'; its active sessions are now revoked."
+    Sync-ViewerAuthenticationAccountsListBox
+    Save-Settings
 }
 
 # Starts one TlsTerminatingProxy per port that needs external HTTPS/WSS
@@ -691,22 +752,25 @@ function Start-LetsEncryptTlsProxies {
     if (-not $certificate) { return }
 
     $authenticationEnabled = Test-ViewerAuthenticationEnabled
+    $authenticationAccounts = @($script:ViewerAuthenticationAccounts) | Where-Object {
+        $_.Username -and [TlsTerminatingProxy]::IsAuthenticationPasswordHashValid([string]$_.PasswordHash)
+    }
     $authenticationSessionKey = $null
     if ($authenticationEnabled) {
-        if (-not [TlsTerminatingProxy]::IsAuthenticationPasswordHashValid([string]$script:ViewerAuthenticationPasswordHash)) {
-            throw 'Viewer authentication is enabled but its password hash is missing or invalid.'
+        if (@($authenticationAccounts).Count -eq 0) {
+            throw 'Viewer authentication is enabled but no account has a valid password hash.'
         }
         $authenticationSessionKey = [TlsTerminatingProxy]::CreateAuthenticationSessionKey()
     }
     $viewerMountSegment = [string](Get-DirectWebRtcWebServerPathSegment)
     $authenticationMountPath = if ([string]::IsNullOrWhiteSpace($viewerMountSegment)) { '' } else { "/$($viewerMountSegment.Trim('/'))" }
 
+    $accountsSignature = (@($authenticationAccounts) | ForEach-Object { "$($_.Username)=$($_.PasswordHash)" }) -join ','
     $configurationSignature = @(
         [string]$certificate.Thumbprint,
         [string]$authenticationEnabled,
         [string]$authenticationMountPath,
-        [string]$txtViewerAuthenticationUsername.Text,
-        [string]$script:ViewerAuthenticationPasswordHash,
+        $accountsSignature,
         [string]$numViewerAuthenticationSessionHours.Value,
         [string]$numDirectWebRtcSignalingPort.Value,
         [string](Get-DirectWebRtcSplitAudioSignalingPort),
@@ -779,10 +843,17 @@ function Start-LetsEncryptTlsProxies {
                 $proxy.DirectoryRedirectPath = [string]$portInfo.DirectoryRedirectPath
             }
             if ($authenticationEnabled) {
+                $accountObjects = [TlsTerminatingProxy+AuthenticationAccount[]]@(
+                    @($authenticationAccounts) | ForEach-Object {
+                        $account = [TlsTerminatingProxy+AuthenticationAccount]::new()
+                        $account.Username = [string]$_.Username
+                        $account.PasswordHash = [string]$_.PasswordHash
+                        $account
+                    }
+                )
                 $proxy.ConfigureAuthentication(
                     $true,
-                    [string]$txtViewerAuthenticationUsername.Text,
-                    [string]$script:ViewerAuthenticationPasswordHash,
+                    $accountObjects,
                     $authenticationSessionKey,
                     [int]$numViewerAuthenticationSessionHours.Value
                 )

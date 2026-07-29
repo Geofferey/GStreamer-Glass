@@ -5,7 +5,7 @@ param()
 
 $ErrorActionPreference = 'Stop'
 
-$setupPath = Join-Path $PSScriptRoot '..\src\00-Setup.ps1'
+$setupPath = Join-Path $PSScriptRoot '..\..\src\00-Setup.ps1'
 $source = Get-Content -Raw -LiteralPath $setupPath
 $marker = "if (-not ('TlsTerminatingProxy' -as [type])) {"
 $blockStart = $source.IndexOf($marker)
@@ -106,6 +106,14 @@ function Assert-ViewerAuth {
     if (-not $Condition) { throw $Message }
 }
 
+function New-TestAccount {
+    param([string]$Username, [string]$PasswordHash)
+    $account = [TlsTerminatingProxy+AuthenticationAccount]::new()
+    $account.Username = $Username
+    $account.PasswordHash = $PasswordHash
+    return $account
+}
+
 $csp = [System.Security.Cryptography.CspParameters]::new(24)
 $csp.KeyContainerName = 'GstGlassViewerAuthTest-' + [Guid]::NewGuid().ToString('N')
 $rsa = [System.Security.Cryptography.RSACryptoServiceProvider]::new(2048, $csp)
@@ -125,12 +133,13 @@ $proxyPort = Get-FreeTcpPort
 $proxy = [TlsTerminatingProxy]::new()
 $secondProxy = $null
 $transitionProxy = $null
+$multiAccountProxy = $null
 $passwordHash = [TlsTerminatingProxy]::HashAuthenticationPassword('glass-auth-test-password')
 $sessionKey = [TlsTerminatingProxy]::CreateAuthenticationSessionKey()
+$accounts = [TlsTerminatingProxy+AuthenticationAccount[]]@((New-TestAccount 'viewer' $passwordHash))
 $proxy.ConfigureAuthentication(
     $true,
-    'viewer',
-    $passwordHash,
+    $accounts,
     $sessionKey,
     12
 )
@@ -186,7 +195,7 @@ try {
 
     $secondProxyPort = Get-FreeTcpPort
     $secondProxy = [TlsTerminatingProxy]::new()
-    $secondProxy.ConfigureAuthentication($true, 'viewer', $passwordHash, $sessionKey, 12)
+    $secondProxy.ConfigureAuthentication($true, $accounts, $sessionKey, 12)
     # Models the combined viewer/signaling listener: it owns the viewer auth
     # mount but has no DirectoryRedirectPath because GStreamer is its default
     # upstream on this shared external port.
@@ -247,6 +256,77 @@ try {
     Assert-ViewerAuth ($response -match 'Location: /auth/login\?return=') 'Post-logout viewer request did not redirect to the origin-level login route.'
     $response = Send-TlsRequest $proxyPort "GET /live/ HTTP/1.1`r`nHost: localhost`r`nCookie: $cookiePair`r`nConnection: close`r`n`r`n"
     Assert-ViewerAuth $response.StartsWith('HTTP/1.1 303') 'Logged-out session token remained valid.'
+
+    # This is one shared account with no per-user identity -- multiple
+    # viewers can be signed in at once, each with their own independently
+    # issued token. One viewer's logout must revoke only their own token,
+    # never every other viewer's session table-wide.
+    $response = Send-TlsRequest $proxyPort "POST /auth/login HTTP/1.1`r`nHost: localhost`r`nContent-Type: application/x-www-form-urlencoded`r`nContent-Length: $loginLength`r`nConnection: close`r`n`r`n$loginBody"
+    $viewerACookie = (([regex]::Match($response, '(?im)^Set-Cookie:\s*(.+)$')).Groups[1].Value.Trim()).Split(';')[0]
+    $response = Send-TlsRequest $proxyPort "POST /auth/login HTTP/1.1`r`nHost: localhost`r`nContent-Type: application/x-www-form-urlencoded`r`nContent-Length: $loginLength`r`nConnection: close`r`n`r`n$loginBody"
+    $viewerBCookie = (([regex]::Match($response, '(?im)^Set-Cookie:\s*(.+)$')).Groups[1].Value.Trim()).Split(';')[0]
+    Assert-ViewerAuth ($viewerACookie -ne $viewerBCookie) 'Two independent logins unexpectedly produced the same session token.'
+    $response = Send-TlsRequest $proxyPort "GET /auth/logout HTTP/1.1`r`nHost: localhost`r`nCookie: $viewerACookie`r`nConnection: close`r`n`r`n"
+    Assert-ViewerAuth $response.StartsWith('HTTP/1.1 303') 'Viewer A logout did not redirect.'
+    $response = Send-TlsRequest $proxyPort "GET /live/ HTTP/1.1`r`nHost: localhost`r`nCookie: $viewerACookie`r`nConnection: close`r`n`r`n"
+    Assert-ViewerAuth $response.StartsWith('HTTP/1.1 303') 'Viewer A session remained valid after their own logout.'
+    $viewerBUpstream = [ViewerAuthTestUpstream]::ServeOne($upstreamPort, 'viewer-ok')
+    $response = Send-TlsRequest $proxyPort "GET /live/ HTTP/1.1`r`nHost: localhost`r`nCookie: $viewerBCookie`r`nConnection: close`r`n`r`n"
+    Assert-ViewerAuth ($response -match 'viewer-ok') 'Viewer B was signed out by Viewer A logging out -- logout must only revoke its own session.'
+    Assert-ViewerAuth $viewerBUpstream.Result.StartsWith('GET /live/') 'Viewer B request did not reach the upstream as expected.'
+
+    # True multi-user: two DISTINCT named accounts (not just two sessions
+    # under one shared login). Each must only authenticate with its own
+    # credentials, never the other's, and removing one account must revoke
+    # only that account's own already-active session.
+    $multiAccountProxyPort = Get-FreeTcpPort
+    $multiAccountProxy = [TlsTerminatingProxy]::new()
+    $alicePasswordHash = [TlsTerminatingProxy]::HashAuthenticationPassword('alice-test-password')
+    $bobPasswordHash = [TlsTerminatingProxy]::HashAuthenticationPassword('bob-test-password')
+    $multiAccountProxy.ConfigureAuthentication(
+        $true,
+        [TlsTerminatingProxy+AuthenticationAccount[]]@((New-TestAccount 'alice' $alicePasswordHash), (New-TestAccount 'bob' $bobPasswordHash)),
+        $sessionKey,
+        12
+    )
+    $multiAccountProxy.Start($multiAccountProxyPort, '127.0.0.1', $upstreamPort, $certificate)
+    Start-Sleep -Milliseconds 50
+
+    $aliceWrongBody = 'username=alice&password=bob-test-password&return=%2Flive%2F'
+    $aliceWrongLength = [System.Text.Encoding]::UTF8.GetByteCount($aliceWrongBody)
+    $response = Send-TlsRequest $multiAccountProxyPort "POST /auth/login HTTP/1.1`r`nHost: localhost`r`nContent-Type: application/x-www-form-urlencoded`r`nContent-Length: $aliceWrongLength`r`nConnection: close`r`n`r`n$aliceWrongBody"
+    Assert-ViewerAuth $response.StartsWith('HTTP/1.1 401') "Alice was authenticated using Bob's password."
+
+    $aliceBody = 'username=alice&password=alice-test-password&return=%2Flive%2F'
+    $aliceLength = [System.Text.Encoding]::UTF8.GetByteCount($aliceBody)
+    $response = Send-TlsRequest $multiAccountProxyPort "POST /auth/login HTTP/1.1`r`nHost: localhost`r`nContent-Type: application/x-www-form-urlencoded`r`nContent-Length: $aliceLength`r`nConnection: close`r`n`r`n$aliceBody"
+    Assert-ViewerAuth $response.StartsWith('HTTP/1.1 303') "Alice was not authenticated with her own correct password."
+    $aliceCookie = (([regex]::Match($response, '(?im)^Set-Cookie:\s*(.+)$')).Groups[1].Value.Trim()).Split(';')[0]
+
+    $bobBody = 'username=bob&password=bob-test-password&return=%2Flive%2F'
+    $bobLength = [System.Text.Encoding]::UTF8.GetByteCount($bobBody)
+    $response = Send-TlsRequest $multiAccountProxyPort "POST /auth/login HTTP/1.1`r`nHost: localhost`r`nContent-Type: application/x-www-form-urlencoded`r`nContent-Length: $bobLength`r`nConnection: close`r`n`r`n$bobBody"
+    Assert-ViewerAuth $response.StartsWith('HTTP/1.1 303') "Bob was not authenticated with his own correct password."
+    $bobCookie = (([regex]::Match($response, '(?im)^Set-Cookie:\s*(.+)$')).Groups[1].Value.Trim()).Split(';')[0]
+
+    Assert-ViewerAuth ($aliceCookie -ne $bobCookie) "Alice and Bob unexpectedly received the same session token."
+
+    # Removing Alice's account (reconfiguring with only Bob) must revoke
+    # Alice's already-active session immediately, without touching Bob's.
+    $multiAccountProxy.ConfigureAuthentication(
+        $true,
+        [TlsTerminatingProxy+AuthenticationAccount[]]@((New-TestAccount 'bob' $bobPasswordHash)),
+        $sessionKey,
+        12
+    )
+    $response = Send-TlsRequest $multiAccountProxyPort "GET /live/ HTTP/1.1`r`nHost: localhost`r`nCookie: $aliceCookie`r`nConnection: close`r`n`r`n"
+    Assert-ViewerAuth $response.StartsWith('HTTP/1.1 303') "Removing Alice's account did not revoke her active session."
+    $bobUpstream = [ViewerAuthTestUpstream]::ServeOne($upstreamPort, 'bob-still-ok')
+    $response = Send-TlsRequest $multiAccountProxyPort "GET /live/ HTTP/1.1`r`nHost: localhost`r`nCookie: $bobCookie`r`nConnection: close`r`n`r`n"
+    Assert-ViewerAuth ($response -match 'bob-still-ok') "Removing Alice's account incorrectly revoked Bob's unrelated session."
+    Assert-ViewerAuth $bobUpstream.Result.StartsWith('GET /live/') "Bob's request did not reach the upstream as expected."
+    $multiAccountProxy.Stop()
+    $multiAccountProxy = $null
 
     # A listener can briefly have auth enforcement off while its generated
     # player config still exposes Sign out. The TLS edge must continue to own
@@ -322,6 +402,7 @@ catch {
 }
 finally {
     if ($transitionProxy) { $transitionProxy.Stop() }
+    if ($multiAccountProxy) { $multiAccountProxy.Stop() }
     if ($secondProxy) { $secondProxy.Stop() }
     $proxy.Stop()
     $certificate.Dispose()
