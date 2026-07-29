@@ -40,31 +40,41 @@ function Get-UpnpNatDevice {
             if ($null -ne $script:UpnpNatDevice.StaticPortMappingCollection) { return $script:UpnpNatDevice }
         }
         catch {}
+        try { [System.Runtime.InteropServices.Marshal]::FinalReleaseComObject($script:UpnpNatDevice) | Out-Null } catch {}
         $script:UpnpNatDevice = $null
     }
 
-    try {
-        $nat = New-Object -ComObject HNetCfg.NATUPnP
-    }
-    catch {
-        if (-not $Quiet) { Append-Log "UPnP: NATUPnP COM class unavailable ($($_.Exception.Message)); skipping port forwarding." }
-        return $null
-    }
-
+    # Each attempt creates a genuinely fresh COM object. HNetCfg.NATUPnP
+    # appears to perform its SSDP discovery once, at creation/first property
+    # access, and does not re-broadcast on repeated reads of the same
+    # instance -- so re-checking one already-failed object (the previous
+    # approach here) was never a real retry, just re-polling a result that
+    # was never going to change. SSDP over UDP multicast is inherently a bit
+    # lossy on real networks (the spec has routers randomize their response
+    # delay specifically to avoid response storms), so a fresh discovery
+    # attempt each time is what actually gives this a real independent
+    # chance to succeed -- mirroring what already happens naturally every
+    # time the user clicks Start (a brand new discovery each stream start).
     for ($attempt = 1; $attempt -le 3; $attempt++) {
+        $nat = $null
+        try {
+            $nat = New-Object -ComObject HNetCfg.NATUPnP
+        }
+        catch {
+            if (-not $Quiet) { Append-Log "UPnP: NATUPnP COM class unavailable ($($_.Exception.Message)); skipping port forwarding." }
+            return $null
+        }
+
         try {
             if ($null -ne $nat.StaticPortMappingCollection) {
                 $script:UpnpNatDevice = $nat
                 return $nat
             }
         }
-        catch {
-            if ($attempt -eq 3) {
-                if (-not $Quiet) { Append-Log "UPnP: could not reach the router's UPnP mapping table ($($_.Exception.Message)); skipping port forwarding." }
-                return $null
-            }
-        }
-        Start-Sleep -Milliseconds (500 * $attempt)
+        catch {}
+
+        try { [System.Runtime.InteropServices.Marshal]::FinalReleaseComObject($nat) | Out-Null } catch {}
+        if ($attempt -lt 3) { Start-Sleep -Milliseconds (700 * $attempt) }
     }
 
     if (-not $Quiet) { Append-Log 'UPnP: no Internet Gateway Device responded after retrying; skipping port forwarding.' }
@@ -72,6 +82,32 @@ function Get-UpnpNatDevice {
 }
 
 function Get-UpnpLocalIPv4Address {
+    # Many routers run a UPnP "secure mode" that rejects AddPortMapping (and
+    # sometimes Remove) unless the InternalClient argument matches the
+    # actual source IP the SOAP request arrived from -- specifically to stop
+    # one LAN device mapping/hijacking a port on another device's behalf. On
+    # a system with more than one active IPv4 interface (VPN, virtual
+    # switches, etc.), "first matching address found" can pick a different
+    # one than the router actually sees. The interface that owns the
+    # default route is provably the one any outbound call -- including the
+    # UPnP SOAP request itself -- actually goes out over, so it's checked
+    # first and is the most reliable match for what a secure-mode router
+    # validates against.
+    if (Get-Command Get-NetRoute -ErrorAction SilentlyContinue) {
+        try {
+            $defaultRoute = Get-NetRoute -DestinationPrefix '0.0.0.0/0' -ErrorAction Stop |
+                Sort-Object -Property RouteMetric |
+                Select-Object -First 1
+            if ($defaultRoute) {
+                $addr = Get-NetIPAddress -InterfaceIndex $defaultRoute.InterfaceIndex -AddressFamily IPv4 -ErrorAction Stop |
+                    Where-Object { $_.PrefixOrigin -in @('Dhcp', 'Manual') -and -not $_.IPAddress.StartsWith('169.254.') } |
+                    Select-Object -First 1 -ExpandProperty IPAddress
+                if ($addr) { return $addr }
+            }
+        }
+        catch {}
+    }
+
     $adapterName = $null
     try { $adapterName = Get-SelectedNetworkAdapterName } catch {}
 
