@@ -386,6 +386,12 @@ function Start-GstStream {
             Sync-ControlledLivePreviewLayout
             Save-ActiveProcessState
 
+            # Same gate as the plain gst-launch path below: only for a genuine
+            # outbound stream, never for local scene editing/preview/recording.
+            if ($chkUpnpEnabled -and $chkUpnpEnabled.Checked -and $transportEnabled) {
+                try { Add-UpnpPortMappings } catch { Append-Log "UPnP: $($_.Exception.Message)" }
+            }
+
             $mediaSuffix = if ($script:MediaMtxProcess -and -not $script:MediaMtxProcess.HasExited) { " + MediaMTX PID $($script:MediaMtxProcess.Id)" } else { '' }
             if ($transportEnabled) {
                 $statusLabel.Text = "$([string]$cmbProtocol.SelectedItem) streaming - controlled worker PID $($script:GstProcess.Id)$mediaSuffix"
@@ -467,7 +473,14 @@ function Start-GstStream {
         Write-PsDebugTrace "Start-GstStream: main gst-launch process started (PID=$($script:GstProcess.Id))"
         Set-GstProcessPriority -Process $script:GstProcess
 
-        if ($chkUpnpEnabled -and $chkUpnpEnabled.Checked) {
+        # Only for a genuine outbound stream -- $transportEnabled is already
+        # forced false for Preview/Recording-only runs (Test-TransportEnabled
+        # checks $script:ForceLocalPreviewMode), so local-only activity never
+        # touches the router. Mapping happens once per actual stream start;
+        # Add-UpnpPortMappings' own reconciliation logic makes a repeat call
+        # on an automatic restart a cheap no-op against already-live mappings
+        # rather than a real demap/remap cycle.
+        if ($chkUpnpEnabled -and $chkUpnpEnabled.Checked -and $transportEnabled) {
             try { Add-UpnpPortMappings } catch { Append-Log "UPnP: $($_.Exception.Message)" }
         }
 
@@ -644,6 +657,11 @@ function Stop-ControlledLiveStream {
         try { $workerProcess.WaitForExit(3000) | Out-Null } catch {}
     }
     Close-ControlledLiveWorkerPipe
+    # Only demap on a genuine stop, not a settings-triggered restart-in-place
+    # -- see the identical comment in Stop-GstStream's plain-path teardown.
+    if (-not $Restart) {
+        try { Remove-UpnpPortMappings } catch {}
+    }
     try { if ($workerProcess) { $workerProcess.Dispose() } } catch {}
     $script:GstProcess = $null
 
@@ -817,7 +835,12 @@ function Stop-GstStream {
     }
     catch {}
     Close-WebRtcPortRangeWorkerPipe
-    try { Remove-UpnpPortMappings } catch {}
+    # Only demap on a genuine stop, not a settings-triggered restart-in-place
+    # -- routers can rate-limit/dislike frequent UPnP add/remove churn, and
+    # a restart is about to re-map the exact same ports moments later anyway.
+    if (-not $Restart) {
+        try { Remove-UpnpPortMappings } catch {}
+    }
     $script:GstProcess = $null
     $script:GstVideoProcess = $null
     $script:GstAudioProcess = $null
