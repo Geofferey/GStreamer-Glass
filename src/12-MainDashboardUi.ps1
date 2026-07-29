@@ -730,19 +730,6 @@ function Apply-ModernDashboardUi {
     Add-Field $r -Label 'Min RTP port (0=unrestricted)' -Control $numDirectWebRtcMinRtpPort -Width 85 | Out-Null
     Add-Field $r -Label 'Max RTP port (0=unrestricted)' -Control $numDirectWebRtcMaxRtpPort -Width 85 | Out-Null
     $r = Add-Row $s
-    Add-Field $r -Control $chkUpnpEnabled -Width 300 | Out-Null
-    $r = Add-Row $s
-    Add-Field $r -Control $lblUpnpStatus -Width 400 | Out-Null
-    $r = Add-Row $s
-    Add-Field $r -Control $chkUpnpMapSignaling -Width 180 | Out-Null
-    Add-Field $r -Label 'External (0=same)' -Control $numUpnpSignalingExternalPort -Width 90 | Out-Null
-    Add-Field $r -Label 'Audio external (0=same)' -Control $numUpnpSplitAudioExternalPort -Width 90 | Out-Null
-    $r = Add-Row $s
-    Add-Field $r -Control $chkUpnpMapWebServer -Width 180 | Out-Null
-    Add-Field $r -Label 'External (0=same)' -Control $numUpnpWebServerExternalPort -Width 90 | Out-Null
-    $r = Add-Row $s
-    Add-Field $r -Control $chkUpnpMapRtp -Width 180 | Out-Null
-    $r = Add-Row $s
     Add-Field $r -Label 'Bundle policy' -Control $cmbDirectWebRtcBundlePolicy -Width 145 | Out-Null
     Add-Field $r -Label 'Internal RTP MTU (0=default)' -Control $numDirectWebRtcInternalRtpMtu -Width 85 | Out-Null
     Add-Field $r -Control $chkDirectWebRtcInternalRepeatHeaders -Width 250 | Out-Null
@@ -1125,6 +1112,21 @@ function Apply-ModernDashboardUi {
 
     # ---------------- Network ----------------
     $paneNetwork = New-SettingsPane $tabNetwork
+
+    $s = Add-CollapsibleSection $paneNetwork 'UPnP Port Forwarding'
+    $r = Add-Row $s
+    Add-Field $r -Control $chkUpnpEnabled -Width 300 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Control $lblUpnpStatus -Width 400 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Control $chkUpnpMapSignaling -Width 180 | Out-Null
+    Add-Field $r -Label 'External (0=same)' -Control $numUpnpSignalingExternalPort -Width 90 | Out-Null
+    Add-Field $r -Label 'Audio external (0=same)' -Control $numUpnpSplitAudioExternalPort -Width 90 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Control $chkUpnpMapWebServer -Width 180 | Out-Null
+    Add-Field $r -Label 'External (0=same)' -Control $numUpnpWebServerExternalPort -Width 90 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Control $chkUpnpMapRtp -Width 180 | Out-Null
 
     $s = Add-CollapsibleSection $paneNetwork 'Dynamic DNS'
     $r = Add-Row $s
