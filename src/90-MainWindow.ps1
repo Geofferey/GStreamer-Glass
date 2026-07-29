@@ -728,6 +728,71 @@ $btnDdnsUpdateNow.Size = New-Object System.Drawing.Size(150, 30)
 $settingsGroup.Controls.Add($btnDdnsUpdateNow)
 $toolTip.SetToolTip($btnDdnsUpdateNow, 'Resolves the current public IP and updates the configured DDNS record immediately, regardless of stream state -- useful for verifying credentials without going live.')
 
+$chkLetsEncryptEnabled = New-Object System.Windows.Forms.CheckBox
+$chkLetsEncryptEnabled.Text = "Get a Let's Encrypt certificate (DNS-01)"
+$chkLetsEncryptEnabled.Location = New-Object System.Drawing.Point(15, 548)
+$chkLetsEncryptEnabled.Size = New-Object System.Drawing.Size(300, 24)
+$chkLetsEncryptEnabled.Checked = $script:DefaultLetsEncryptEnabled
+$settingsGroup.Controls.Add($chkLetsEncryptEnabled)
+$toolTip.SetToolTip($chkLetsEncryptEnabled, "Off by default. Requires Dynamic DNS above to be enabled with Cloudflare or DuckDNS as the provider (the only two that can publish the DNS-01 challenge record this needs). Issues/renews a Let's Encrypt certificate for the Dynamic DNS hostname; a failure never blocks the stream from starting.")
+
+$lblLetsEncryptStatus = New-Object System.Windows.Forms.Label
+$lblLetsEncryptStatus.Text = 'ACME: disabled'
+$lblLetsEncryptStatus.Location = New-Object System.Drawing.Point(15, 548)
+$lblLetsEncryptStatus.Size = New-Object System.Drawing.Size(460, 23)
+$lblLetsEncryptStatus.TextAlign = 'MiddleLeft'
+$lblLetsEncryptStatus.ForeColor = [System.Drawing.Color]::DimGray
+$settingsGroup.Controls.Add($lblLetsEncryptStatus)
+
+$txtLetsEncryptEmail = New-Object System.Windows.Forms.TextBox
+$txtLetsEncryptEmail.Location = New-Object System.Drawing.Point(15, 548)
+$txtLetsEncryptEmail.Size = New-Object System.Drawing.Size(260, 23)
+$txtLetsEncryptEmail.Text = $script:DefaultLetsEncryptEmail
+$settingsGroup.Controls.Add($txtLetsEncryptEmail)
+$toolTip.SetToolTip($txtLetsEncryptEmail, "Optional contact email for the Let's Encrypt account (expiry notices, etc.). Not required.")
+
+$chkLetsEncryptStaging = New-Object System.Windows.Forms.CheckBox
+$chkLetsEncryptStaging.Text = "Use Let's Encrypt staging environment"
+$chkLetsEncryptStaging.Location = New-Object System.Drawing.Point(15, 548)
+$chkLetsEncryptStaging.Size = New-Object System.Drawing.Size(260, 24)
+$chkLetsEncryptStaging.Checked = $script:DefaultLetsEncryptStaging
+$settingsGroup.Controls.Add($chkLetsEncryptStaging)
+$toolTip.SetToolTip($chkLetsEncryptStaging, "On by default. Staging certificates aren't trusted by browsers but share none of production's tight rate limits (5 duplicate certs/week) -- verify the whole flow here first, then switch off once it works.")
+
+$numLetsEncryptSignalingExternalPort = New-Object System.Windows.Forms.NumericUpDown
+$numLetsEncryptSignalingExternalPort.Location = New-Object System.Drawing.Point(15, 548)
+$numLetsEncryptSignalingExternalPort.Size = New-Object System.Drawing.Size(90, 23)
+$numLetsEncryptSignalingExternalPort.Minimum = 0
+$numLetsEncryptSignalingExternalPort.Maximum = 65535
+$numLetsEncryptSignalingExternalPort.Value = $script:DefaultLetsEncryptSignalingExternalPort
+$settingsGroup.Controls.Add($numLetsEncryptSignalingExternalPort)
+$toolTip.SetToolTip($numLetsEncryptSignalingExternalPort, 'External (WAN-side) HTTPS/WSS port for video signalling once TLS termination is wired in. 0 = same as the internal signalling port.')
+
+$numLetsEncryptSplitAudioExternalPort = New-Object System.Windows.Forms.NumericUpDown
+$numLetsEncryptSplitAudioExternalPort.Location = New-Object System.Drawing.Point(15, 548)
+$numLetsEncryptSplitAudioExternalPort.Size = New-Object System.Drawing.Size(90, 23)
+$numLetsEncryptSplitAudioExternalPort.Minimum = 0
+$numLetsEncryptSplitAudioExternalPort.Maximum = 65535
+$numLetsEncryptSplitAudioExternalPort.Value = $script:DefaultLetsEncryptSplitAudioExternalPort
+$settingsGroup.Controls.Add($numLetsEncryptSplitAudioExternalPort)
+$toolTip.SetToolTip($numLetsEncryptSplitAudioExternalPort, 'External (WAN-side) HTTPS/WSS port for split-audio signalling, when active. 0 = same as the internal port.')
+
+$numLetsEncryptWebServerExternalPort = New-Object System.Windows.Forms.NumericUpDown
+$numLetsEncryptWebServerExternalPort.Location = New-Object System.Drawing.Point(15, 548)
+$numLetsEncryptWebServerExternalPort.Size = New-Object System.Drawing.Size(90, 23)
+$numLetsEncryptWebServerExternalPort.Minimum = 0
+$numLetsEncryptWebServerExternalPort.Maximum = 65535
+$numLetsEncryptWebServerExternalPort.Value = $script:DefaultLetsEncryptWebServerExternalPort
+$settingsGroup.Controls.Add($numLetsEncryptWebServerExternalPort)
+$toolTip.SetToolTip($numLetsEncryptWebServerExternalPort, 'External (WAN-side) HTTPS port for the web viewer once TLS termination is wired in. 0 = same as the internal port.')
+
+$btnLetsEncryptIssueNow = New-Object System.Windows.Forms.Button
+$btnLetsEncryptIssueNow.Text = 'Issue/Renew Now'
+$btnLetsEncryptIssueNow.Location = New-Object System.Drawing.Point(15, 548)
+$btnLetsEncryptIssueNow.Size = New-Object System.Drawing.Size(150, 30)
+$settingsGroup.Controls.Add($btnLetsEncryptIssueNow)
+$toolTip.SetToolTip($btnLetsEncryptIssueNow, "Runs the ACME DNS-01 flow immediately, regardless of stream state -- useful for verifying this against Let's Encrypt staging before going live with it.")
+
 $txtDirectWebRtcWebPath = New-Object System.Windows.Forms.TextBox
 $txtDirectWebRtcWebPath.Location = New-Object System.Drawing.Point(15, 548)
 $txtDirectWebRtcWebPath.Size = New-Object System.Drawing.Size(120, 23)
@@ -3960,10 +4025,16 @@ $chkDdnsEnabled.Add_CheckedChanged({
         $lblDdnsStatus.ForeColor = [System.Drawing.Color]::DimGray
     }
 })
-$cmbDdnsProvider.Add_SelectedIndexChanged({ Update-DdnsUi })
+$cmbDdnsProvider.Add_SelectedIndexChanged({ Update-DdnsUi; Update-LetsEncryptUi })
 $btnDdnsUpdateNow.Add_Click({
     $lowerTabs.SelectedTab = $tabLog
     try { Update-DdnsRecord } catch { Append-Log "DDNS: $($_.Exception.Message)" }
+    Save-Settings
+})
+$chkLetsEncryptEnabled.Add_CheckedChanged({ Update-LetsEncryptUi })
+$btnLetsEncryptIssueNow.Add_Click({
+    $lowerTabs.SelectedTab = $tabLog
+    try { Update-LetsEncryptCertificate } catch { Append-Log "ACME: $($_.Exception.Message)" }
     Save-Settings
 })
 # Live-typing convenience for Cloudflare: auto-fill Zone from everything
@@ -4927,6 +4998,7 @@ $form.Add_Shown({
     Update-EncoderUi
     Update-RecordingUi
     Update-DdnsUi
+    Update-LetsEncryptUi
     Update-SceneUi
     Refresh-ProfileList
     Update-CommandPreview

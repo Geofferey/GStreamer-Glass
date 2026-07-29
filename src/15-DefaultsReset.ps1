@@ -220,6 +220,17 @@ function Reset-DdnsDefaults {
     if ($cmbDdnsCustomMethod.Items.Contains($script:DefaultDdnsCustomMethod)) { $cmbDdnsCustomMethod.SelectedItem = $script:DefaultDdnsCustomMethod }
     $script:DdnsCloudflareZoneManuallySet = $false
     Update-DdnsUi
+    Reset-LetsEncryptDefaults
+}
+
+function Reset-LetsEncryptDefaults {
+    $chkLetsEncryptEnabled.Checked = $script:DefaultLetsEncryptEnabled
+    $txtLetsEncryptEmail.Text = $script:DefaultLetsEncryptEmail
+    $chkLetsEncryptStaging.Checked = $script:DefaultLetsEncryptStaging
+    $numLetsEncryptSignalingExternalPort.Value = $script:DefaultLetsEncryptSignalingExternalPort
+    $numLetsEncryptSplitAudioExternalPort.Value = $script:DefaultLetsEncryptSplitAudioExternalPort
+    $numLetsEncryptWebServerExternalPort.Value = $script:DefaultLetsEncryptWebServerExternalPort
+    Update-LetsEncryptUi
 }
 
 function Reset-OptionsDefaults {

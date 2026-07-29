@@ -1170,6 +1170,22 @@ function Apply-ModernDashboardUi {
     $r = Add-Row $s
     Add-Field $r -Control $btnDdnsUpdateNow -Width 150 | Out-Null
 
+    $s = Add-CollapsibleSection $paneNetwork "TLS Certificate (Let's Encrypt)"
+    $r = Add-Row $s
+    Add-Field $r -Control $chkLetsEncryptEnabled -Width 340 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Control $lblLetsEncryptStatus -Width 460 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Label 'Contact email (optional)' -Control $txtLetsEncryptEmail -Width 260 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Control $chkLetsEncryptStaging -Width 260 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Label 'Video external (0=same)' -Control $numLetsEncryptSignalingExternalPort -Width 90 | Out-Null
+    Add-Field $r -Label 'Audio external (0=same)' -Control $numLetsEncryptSplitAudioExternalPort -Width 90 | Out-Null
+    Add-Field $r -Label 'Web external (0=same)' -Control $numLetsEncryptWebServerExternalPort -Width 90 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Control $btnLetsEncryptIssueNow -Width 150 | Out-Null
+
     $s = Add-Section $paneNetwork ''
     $r = Add-Row $s
     Add-Field $r -Control $btnResetNetwork -Width 190 | Out-Null
@@ -1377,6 +1393,9 @@ function Apply-ModernDashboardUi {
         $txtDdnsCloudflareZoneId,
         $chkDdnsCloudflareProxied, $txtDdnsCustomUrlTemplate, $cmbDdnsCustomMethod,
         $btnDdnsUpdateNow,
+        $chkLetsEncryptEnabled, $lblLetsEncryptStatus, $txtLetsEncryptEmail, $chkLetsEncryptStaging,
+        $numLetsEncryptSignalingExternalPort, $numLetsEncryptSplitAudioExternalPort, $numLetsEncryptWebServerExternalPort,
+        $btnLetsEncryptIssueNow,
         $btnResetTransport, $btnResetWebRtcSane, $btnResetVideo, $btnResetAudio,
         $btnResetRecording, $btnResetNetwork, $btnResetOptions, $btnExportLabConfig, $btnResetAll,
         $txtGstPath, $btnBrowseGst, $btnDetectGst, $btnCheckGst,
@@ -1408,6 +1427,7 @@ function Apply-ModernDashboardUi {
         $chkRecordingEnabled, $chkRecordWithStream, $chkRecordingLookAhead, $chkRecordingSpatialAq,
         $chkRecordingTemporalAq, $chkRecordingDesktopAudio, $chkRecordingMic,
         $chkDdnsEnabled, $chkDdnsCloudflareProxied,
+        $chkLetsEncryptEnabled, $chkLetsEncryptStaging,
         $chkPreview, $chkHidePreviewDuringStream, $chkAutoRestart, $chkVerbose, $chkDiskProcessLogging,
         $chkCustomGstArgumentsEnabled,
         $chkMinimizeToTray, $chkStartMinimized, $chkPsDebug

@@ -72,6 +72,12 @@ function Save-Settings {
             DdnsCloudflareProxied = [bool]$chkDdnsCloudflareProxied.Checked
             DdnsCustomUrlTemplate = [string]$txtDdnsCustomUrlTemplate.Text
             DdnsCustomMethod  = [string]$cmbDdnsCustomMethod.SelectedItem
+            LetsEncryptEnabled = [bool]$chkLetsEncryptEnabled.Checked
+            LetsEncryptEmail  = [string]$txtLetsEncryptEmail.Text
+            LetsEncryptStaging = [bool]$chkLetsEncryptStaging.Checked
+            LetsEncryptSignalingExternalPort = [int]$numLetsEncryptSignalingExternalPort.Value
+            LetsEncryptSplitAudioExternalPort = [int]$numLetsEncryptSplitAudioExternalPort.Value
+            LetsEncryptWebServerExternalPort = [int]$numLetsEncryptWebServerExternalPort.Value
             DirectWebRtcWebPath = $txtDirectWebRtcWebPath.Text
             DirectWebRtcBundledWebMode = [string]$cmbDirectWebRtcBundledWebMode.SelectedItem
             DirectWebRtcBundledWebDirectory = $txtDirectWebRtcBundledWebDirectory.Text
@@ -360,6 +366,7 @@ function Load-Settings {
         # in 90-MainWindow.ps1.
         $script:DdnsCloudflareZoneManuallySet = -not [string]::IsNullOrWhiteSpace($txtDdnsCloudflareZoneId.Text)
         Update-DdnsUi
+        Update-LetsEncryptUi
         Update-SceneUi
     }
 }
@@ -459,6 +466,12 @@ function Restore-SettingsFromObject {
         if ($null -ne $settings.DdnsCloudflareProxied) { $chkDdnsCloudflareProxied.Checked = [bool]$settings.DdnsCloudflareProxied }
         if ($null -ne $settings.DdnsCustomUrlTemplate) { $txtDdnsCustomUrlTemplate.Text = [string]$settings.DdnsCustomUrlTemplate }
         if ($settings.DdnsCustomMethod -and $cmbDdnsCustomMethod.Items.Contains([string]$settings.DdnsCustomMethod)) { $cmbDdnsCustomMethod.SelectedItem = [string]$settings.DdnsCustomMethod }
+        if ($null -ne $settings.LetsEncryptEnabled) { $chkLetsEncryptEnabled.Checked = [bool]$settings.LetsEncryptEnabled }
+        if ($null -ne $settings.LetsEncryptEmail) { $txtLetsEncryptEmail.Text = [string]$settings.LetsEncryptEmail }
+        if ($null -ne $settings.LetsEncryptStaging) { $chkLetsEncryptStaging.Checked = [bool]$settings.LetsEncryptStaging }
+        if ($null -ne $settings.LetsEncryptSignalingExternalPort) { $numLetsEncryptSignalingExternalPort.Value = [decimal]([Math]::Min(65535, [Math]::Max(0, [int]$settings.LetsEncryptSignalingExternalPort))) }
+        if ($null -ne $settings.LetsEncryptSplitAudioExternalPort) { $numLetsEncryptSplitAudioExternalPort.Value = [decimal]([Math]::Min(65535, [Math]::Max(0, [int]$settings.LetsEncryptSplitAudioExternalPort))) }
+        if ($null -ne $settings.LetsEncryptWebServerExternalPort) { $numLetsEncryptWebServerExternalPort.Value = [decimal]([Math]::Min(65535, [Math]::Max(0, [int]$settings.LetsEncryptWebServerExternalPort))) }
         if ($null -ne $settings.DirectWebRtcWebPath) { $txtDirectWebRtcWebPath.Text = [string]$settings.DirectWebRtcWebPath }
         if ($settings.DirectWebRtcBundledWebMode -and $cmbDirectWebRtcBundledWebMode.Items.Contains([string]$settings.DirectWebRtcBundledWebMode)) { $cmbDirectWebRtcBundledWebMode.SelectedItem = [string]$settings.DirectWebRtcBundledWebMode }
         if ($null -ne $settings.DirectWebRtcBundledWebDirectory) { $txtDirectWebRtcBundledWebDirectory.Text = [string]$settings.DirectWebRtcBundledWebDirectory }

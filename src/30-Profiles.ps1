@@ -349,6 +349,7 @@ function Invoke-LoadSelectedProfile {
         Update-RecordingUi
         $script:DdnsCloudflareZoneManuallySet = -not [string]::IsNullOrWhiteSpace($txtDdnsCloudflareZoneId.Text)
         Update-DdnsUi
+        Update-LetsEncryptUi
         Update-SceneUi
         Update-CommandPreview
     }
