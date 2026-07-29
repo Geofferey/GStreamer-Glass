@@ -116,23 +116,11 @@ function Start-GstStream {
     $previewPlaceholder.Visible = $true
     $previewPlaceholder.Text = if ($script:PipelineHasPreview) { 'Starting preview...' } else { 'Preview disabled for this pipeline' }
 
-    if (-not (Apply-NetworkTuningForSession)) {
-        $statusLabel.Text = 'Network tuning failed'
-        $statusLabel.ForeColor = [System.Drawing.Color]::DarkRed
-        $script:PreviewOnlyMode = $false
-        $script:ForceLocalPreviewMode = $false
-        $script:RecordingPipelineRequested = $false
-        $script:RecordingOnlyMode = $false
-        Set-RunState $false
-        return
-    }
-
     $gstPath = Resolve-GstLaunchSelection -RequestedPath $txtGstPath.Text -UpdateControl
     Prepare-GStreamerRuntime -GstPath $gstPath
     Initialize-GstJob
 
     if (-not (Start-ManagedMediaMtx)) {
-        if ($chkNetworkRestoreOnStop.Checked) { Restore-NetworkTuning -Quiet | Out-Null }
         $statusLabel.Text = 'MediaMTX start failed'
         $statusLabel.ForeColor = [System.Drawing.Color]::DarkRed
         $script:PreviewOnlyMode = $false
@@ -594,7 +582,6 @@ function Start-GstStream {
         $script:RecordingPipelineActive = $false
         $script:RecordingOnlyMode = $false
         Stop-ManagedMediaMtx -Quiet
-        if ($chkNetworkRestoreOnStop.Checked) { Restore-NetworkTuning -Quiet | Out-Null }
         Remove-ActiveProcessState
         $statusLabel.Text = 'Start failed'
         $statusLabel.ForeColor = [System.Drawing.Color]::DarkRed
@@ -689,9 +676,6 @@ function Stop-ControlledLiveStream {
     if ($finalText) { Append-Log $finalText }
     Reset-ProcessLogPaths
     Remove-ActiveProcessState
-    if ((-not $Restart) -and $chkNetworkRestoreOnStop.Checked) {
-        Restore-NetworkTuning -Quiet | Out-Null
-    }
 
     Set-RunState $false
     if ($Restart) {
@@ -848,10 +832,6 @@ function Stop-GstStream {
     Stop-ManagedMediaMtx
 
     Remove-ActiveProcessState
-
-    if ((-not $Restart) -and $chkNetworkRestoreOnStop.Checked) {
-        Restore-NetworkTuning -Quiet | Out-Null
-    }
 
     if (-not $Restart) {
         $statusLabel.Text = 'Stopped'

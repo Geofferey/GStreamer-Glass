@@ -54,13 +54,6 @@ function Invoke-ApplicationCleanup {
 
     Remove-ActiveProcessState
 
-    try {
-        if ($chkNetworkRestoreOnExit -and $chkNetworkRestoreOnExit.Checked) {
-            Restore-NetworkTuning -Quiet | Out-Null
-        }
-    }
-    catch {}
-
     if ($script:JobHandle -ne [IntPtr]::Zero) {
         try {
             # Closing this handle forcibly terminates every process assigned to the job.

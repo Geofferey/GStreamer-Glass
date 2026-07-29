@@ -1124,53 +1124,16 @@ function Apply-ModernDashboardUi {
     Add-Field $r -Control $btnResetRecording -Width 170 | Out-Null
 
     # ---------------- Network ----------------
+    # Intentionally empty -- placeholder for whatever comes next. See
+    # src/14-NetworkTuning.ps1 for why the previous controls were removed.
     $paneNetwork = New-SettingsPane $tabNetwork
-
-    $s = Add-Section $paneNetwork 'Windows / network tuning'
-    $r = Add-Row $s
-    Add-Field $r -Control $chkNetworkTuningEnabled -Width 310 | Out-Null
-    $r = Add-Row $s
-    Add-Field $r -Label 'Adapter' -Control $cmbNetworkAdapter -Width 405 | Out-Null
-    Add-Field $r -Control $btnRefreshNetworkAdapters -Width 90 | Out-Null
-    $r = Add-Row $s
-    Add-Field $r -Label 'Profile' -Control $cmbNetworkProfile -Width 180 | Out-Null
-
-    $s = Add-Section $paneNetwork 'QoS / DSCP'
-    $r = Add-Row $s
-    Add-Field $r -Control $chkNetworkDscp -Width 195 | Out-Null
-    Add-Field $r -Label 'DSCP' -Control $numNetworkDscp -Width 65 | Out-Null
-    Add-Field $r -Label 'Protocol' -Control $cmbNetworkQosProtocol -Width 80 | Out-Null
-    Add-Field $r -Label 'Dst port/range' -Control $txtNetworkPorts -Width 120 | Out-Null
-
-    $s = Add-Section $paneNetwork 'UDP global offloads'
-    $r = Add-Row $s
-    Add-Field $r -Label 'USO' -Control $cmbNetworkUso -Width 125 | Out-Null
-    Add-Field $r -Label 'URO' -Control $cmbNetworkUro -Width 125 | Out-Null
-
-    $s = Add-Section $paneNetwork 'Adapter low-latency switches'
-    $r = Add-Row $s
-    Add-Field $r -Control $chkNetworkDisablePowerSaving -Width 220 | Out-Null
-    Add-Field $r -Label 'Interrupt moderation' -Control $cmbNetworkInterruptModeration -Width 150 | Out-Null
-    $r = Add-Row $s
-    Add-Field $r -Control $chkNetworkDisableEee -Width 220 | Out-Null
-
-    $s = Add-Section $paneNetwork 'Recovery'
-    $r = Add-Row $s
-    Add-Field $r -Control $chkNetworkRestoreOnStop -Width 240 | Out-Null
-    Add-Field $r -Control $chkNetworkRestoreOnExit -Width 220 | Out-Null
-    $r = Add-Row $s
-    Add-Field $r -Control $chkNetworkRecoveryTask -Width 300 | Out-Null
-    $r = Add-Row $s
-    Add-Field $r -Control $lblNetworkStatus -Width 520 | Out-Null
-    $r = Add-Row $s
-    Add-Field $r -Control $btnNetworkSnapshot -Width 90 | Out-Null
-    Add-Field $r -Control $btnNetworkApply -Width 90 | Out-Null
-    Add-Field $r -Control $btnNetworkRestore -Width 130 | Out-Null
-    Add-Field $r -Control $btnOpenNetworkRecovery -Width 170 | Out-Null
-
     $s = Add-Section $paneNetwork ''
     $r = Add-Row $s
-    Add-Field $r -Control $btnResetNetwork -Width 190 | Out-Null
+    $lblNetworkPlaceholder = New-Object System.Windows.Forms.Label
+    $lblNetworkPlaceholder.Text = 'Nothing here yet.'
+    $lblNetworkPlaceholder.AutoSize = $true
+    $lblNetworkPlaceholder.ForeColor = $script:ColorMuted
+    Add-Field $r -Control $lblNetworkPlaceholder -Width 300 | Out-Null
 
     # ---------------- Options ----------------
     $paneOptions = New-SettingsPane $tabOptions
@@ -1370,14 +1333,8 @@ function Apply-ModernDashboardUi {
         $chkRecordingSpatialAq, $chkRecordingTemporalAq, $numRecordingAqStrength,
         $numRecordingVbvBuffer, $txtRecordingCustomEncoderOptions,
         $chkRecordingDesktopAudio, $chkRecordingMic, $numRecordingAudioBitrate,
-        $chkNetworkTuningEnabled, $cmbNetworkAdapter, $btnRefreshNetworkAdapters,
-        $cmbNetworkProfile, $chkNetworkDscp, $numNetworkDscp, $cmbNetworkQosProtocol,
-        $txtNetworkPorts, $cmbNetworkUso, $cmbNetworkUro, $chkNetworkDisablePowerSaving,
-        $cmbNetworkInterruptModeration, $chkNetworkDisableEee,
-        $chkNetworkRestoreOnStop, $chkNetworkRestoreOnExit, $chkNetworkRecoveryTask,
-        $btnNetworkSnapshot, $btnNetworkApply, $btnNetworkRestore, $btnOpenNetworkRecovery,
-        $lblNetworkStatus, $btnResetTransport, $btnResetWebRtcSane, $btnResetVideo, $btnResetAudio,
-        $btnResetRecording, $btnResetNetwork, $btnResetOptions, $btnExportLabConfig, $btnResetAll,
+        $btnResetTransport, $btnResetWebRtcSane, $btnResetVideo, $btnResetAudio,
+        $btnResetRecording, $btnResetOptions, $btnExportLabConfig, $btnResetAll,
         $txtGstPath, $btnBrowseGst, $btnDetectGst, $btnCheckGst,
         $chkPreview, $chkHidePreviewDuringStream, $chkAutoRestart, $chkVerbose, $chkDiskProcessLogging, $chkMinimizeToTray,
         $chkCustomGstArgumentsEnabled, $txtCustomGstArguments, $btnUseGeneratedAsCustomGstArgs, $btnClearCustomGstArgs,
@@ -1406,9 +1363,6 @@ function Apply-ModernDashboardUi {
         $chkDesktopAudio, $chkAudioMixerMode, $chkMic, $chkAudioSampleRateOverride,
         $chkRecordingEnabled, $chkRecordWithStream, $chkRecordingLookAhead, $chkRecordingSpatialAq,
         $chkRecordingTemporalAq, $chkRecordingDesktopAudio, $chkRecordingMic,
-        $chkNetworkTuningEnabled, $chkNetworkDscp, $chkNetworkDisablePowerSaving,
-        $chkNetworkDisableEee, $chkNetworkRestoreOnStop, $chkNetworkRestoreOnExit,
-        $chkNetworkRecoveryTask,
         $chkPreview, $chkHidePreviewDuringStream, $chkAutoRestart, $chkVerbose, $chkDiskProcessLogging,
         $chkCustomGstArgumentsEnabled,
         $chkMinimizeToTray, $chkStartMinimized, $chkPsDebug

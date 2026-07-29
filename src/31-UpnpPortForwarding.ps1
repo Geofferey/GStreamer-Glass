@@ -108,19 +108,6 @@ function Get-UpnpLocalIPv4Address {
         catch {}
     }
 
-    $adapterName = $null
-    try { $adapterName = Get-SelectedNetworkAdapterName } catch {}
-
-    if (-not [string]::IsNullOrWhiteSpace($adapterName) -and (Get-Command Get-NetIPAddress -ErrorAction SilentlyContinue)) {
-        try {
-            $addr = Get-NetIPAddress -InterfaceAlias $adapterName -AddressFamily IPv4 -ErrorAction Stop |
-                Where-Object { $_.PrefixOrigin -in @('Dhcp', 'Manual') -and -not $_.IPAddress.StartsWith('169.254.') } |
-                Select-Object -First 1 -ExpandProperty IPAddress
-            if ($addr) { return $addr }
-        }
-        catch {}
-    }
-
     if (Get-Command Get-NetIPAddress -ErrorAction SilentlyContinue) {
         try {
             $addr = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction Stop |

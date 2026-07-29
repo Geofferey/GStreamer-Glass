@@ -912,165 +912,7 @@ $chkMinimizeToTray.Checked = $true
 $settingsGroup.Controls.Add($chkMinimizeToTray)
 $toolTip.SetToolTip($chkMinimizeToTray, 'Hides the main window in the notification area when minimized. Closing the window still exits and terminates GStreamer.')
 
-# Windows/network tuning controls. These are intentionally opt-in because they can touch global or adapter-level OS settings.
-$chkNetworkTuningEnabled = New-Object System.Windows.Forms.CheckBox
-$chkNetworkTuningEnabled.Text = 'Enable Windows network tuning while active'
-$chkNetworkTuningEnabled.Location = New-Object System.Drawing.Point(15, 548)
-$chkNetworkTuningEnabled.Size = New-Object System.Drawing.Size(300, 24)
-$chkNetworkTuningEnabled.Checked = $false
-$settingsGroup.Controls.Add($chkNetworkTuningEnabled)
-$toolTip.SetToolTip($chkNetworkTuningEnabled, 'Opt-in. GStreamer Glass snapshots current adapter/global settings before applying OS-level network tuning.')
-
-$cmbNetworkAdapter = New-Object System.Windows.Forms.ComboBox
-$cmbNetworkAdapter.Location = New-Object System.Drawing.Point(15, 548)
-$cmbNetworkAdapter.Size = New-Object System.Drawing.Size(360, 23)
-$cmbNetworkAdapter.DropDownStyle = 'DropDownList'
-$settingsGroup.Controls.Add($cmbNetworkAdapter)
-$toolTip.SetToolTip($cmbNetworkAdapter, 'Adapter to tune. Refresh picks the first Up adapter if possible.')
-
-$btnRefreshNetworkAdapters = New-Object System.Windows.Forms.Button
-$btnRefreshNetworkAdapters.Text = 'Refresh'
-$btnRefreshNetworkAdapters.Location = New-Object System.Drawing.Point(15, 548)
-$btnRefreshNetworkAdapters.Size = New-Object System.Drawing.Size(80, 28)
-$settingsGroup.Controls.Add($btnRefreshNetworkAdapters)
-
-$cmbNetworkProfile = New-Object System.Windows.Forms.ComboBox
-$cmbNetworkProfile.Location = New-Object System.Drawing.Point(15, 548)
-$cmbNetworkProfile.Size = New-Object System.Drawing.Size(180, 23)
-$cmbNetworkProfile.DropDownStyle = 'DropDownList'
-$null = $cmbNetworkProfile.Items.AddRange([string[]]@('No changes','Low latency LAN','Stable WAN','Custom'))
-$cmbNetworkProfile.SelectedItem = 'No changes'
-$settingsGroup.Controls.Add($cmbNetworkProfile)
-$toolTip.SetToolTip($cmbNetworkProfile, 'Profile helper. No changes leaves tuning off; Low latency LAN and Stable WAN prefill conservative defaults.')
-
-$chkNetworkDscp = New-Object System.Windows.Forms.CheckBox
-$chkNetworkDscp.Text = 'DSCP / QoS mark transport'
-$chkNetworkDscp.Location = New-Object System.Drawing.Point(15, 548)
-$chkNetworkDscp.Size = New-Object System.Drawing.Size(210, 24)
-$chkNetworkDscp.Checked = $false
-$settingsGroup.Controls.Add($chkNetworkDscp)
-$toolTip.SetToolTip($chkNetworkDscp, 'Creates a Windows QoS policy for gst-launch-1.0.exe. Useful only when your LAN/VPN/router honors DSCP.')
-
-$numNetworkDscp = New-Object System.Windows.Forms.NumericUpDown
-$numNetworkDscp.Location = New-Object System.Drawing.Point(15, 548)
-$numNetworkDscp.Size = New-Object System.Drawing.Size(70, 23)
-$numNetworkDscp.Minimum = 0
-$numNetworkDscp.Maximum = 63
-$numNetworkDscp.Value = 34
-$settingsGroup.Controls.Add($numNetworkDscp)
-$toolTip.SetToolTip($numNetworkDscp, 'DSCP value. 34 is AF41/video-ish; 46 is EF/voice-like and more aggressive.')
-
-$cmbNetworkQosProtocol = New-Object System.Windows.Forms.ComboBox
-$cmbNetworkQosProtocol.Location = New-Object System.Drawing.Point(15, 548)
-$cmbNetworkQosProtocol.Size = New-Object System.Drawing.Size(80, 23)
-$cmbNetworkQosProtocol.DropDownStyle = 'DropDownList'
-$null = $cmbNetworkQosProtocol.Items.AddRange([string[]]@('UDP','TCP','Any'))
-$cmbNetworkQosProtocol.SelectedItem = 'UDP'
-$settingsGroup.Controls.Add($cmbNetworkQosProtocol)
-
-$txtNetworkPorts = New-Object System.Windows.Forms.TextBox
-$txtNetworkPorts.Location = New-Object System.Drawing.Point(15, 548)
-$txtNetworkPorts.Size = New-Object System.Drawing.Size(160, 23)
-$txtNetworkPorts.Text = ''
-$settingsGroup.Controls.Add($txtNetworkPorts)
-$toolTip.SetToolTip($txtNetworkPorts, 'Optional destination port or range for QoS policy, e.g. 8890 or 8889-8890. Leave blank to match all gst-launch traffic for the protocol.')
-
-$cmbNetworkUso = New-Object System.Windows.Forms.ComboBox
-$cmbNetworkUso.Location = New-Object System.Drawing.Point(15, 548)
-$cmbNetworkUso.Size = New-Object System.Drawing.Size(130, 23)
-$cmbNetworkUso.DropDownStyle = 'DropDownList'
-$null = $cmbNetworkUso.Items.AddRange([string[]]@('Leave unchanged','Enable','Disable'))
-$cmbNetworkUso.SelectedItem = 'Leave unchanged'
-$settingsGroup.Controls.Add($cmbNetworkUso)
-$toolTip.SetToolTip($cmbNetworkUso, 'Global UDP Segmentation Offload. Leave unchanged unless testing CPU/latency behavior.')
-
-$cmbNetworkUro = New-Object System.Windows.Forms.ComboBox
-$cmbNetworkUro.Location = New-Object System.Drawing.Point(15, 548)
-$cmbNetworkUro.Size = New-Object System.Drawing.Size(130, 23)
-$cmbNetworkUro.DropDownStyle = 'DropDownList'
-$null = $cmbNetworkUro.Items.AddRange([string[]]@('Leave unchanged','Enable','Disable'))
-$cmbNetworkUro.SelectedItem = 'Leave unchanged'
-$settingsGroup.Controls.Add($cmbNetworkUro)
-$toolTip.SetToolTip($cmbNetworkUro, 'Global UDP Receive Offload. Disable can be worth testing for receive-side latency; Enable can help throughput.')
-
-$chkNetworkDisablePowerSaving = New-Object System.Windows.Forms.CheckBox
-$chkNetworkDisablePowerSaving.Text = 'Disable adapter power saving'
-$chkNetworkDisablePowerSaving.Location = New-Object System.Drawing.Point(15, 548)
-$chkNetworkDisablePowerSaving.Size = New-Object System.Drawing.Size(210, 24)
-$chkNetworkDisablePowerSaving.Checked = $false
-$settingsGroup.Controls.Add($chkNetworkDisablePowerSaving)
-
-$cmbNetworkInterruptModeration = New-Object System.Windows.Forms.ComboBox
-$cmbNetworkInterruptModeration.Location = New-Object System.Drawing.Point(15, 548)
-$cmbNetworkInterruptModeration.Size = New-Object System.Drawing.Size(150, 23)
-$cmbNetworkInterruptModeration.DropDownStyle = 'DropDownList'
-$null = $cmbNetworkInterruptModeration.Items.AddRange([string[]]@('Leave unchanged','Disable','Enable / Adaptive'))
-$cmbNetworkInterruptModeration.SelectedItem = 'Leave unchanged'
-$settingsGroup.Controls.Add($cmbNetworkInterruptModeration)
-$toolTip.SetToolTip($cmbNetworkInterruptModeration, 'Driver advanced property when present. Disable can reduce latency but increases CPU/interrupt load.')
-
-$chkNetworkDisableEee = New-Object System.Windows.Forms.CheckBox
-$chkNetworkDisableEee.Text = 'Disable EEE / Green Ethernet'
-$chkNetworkDisableEee.Location = New-Object System.Drawing.Point(15, 548)
-$chkNetworkDisableEee.Size = New-Object System.Drawing.Size(220, 24)
-$chkNetworkDisableEee.Checked = $false
-$settingsGroup.Controls.Add($chkNetworkDisableEee)
-
-$chkNetworkRestoreOnStop = New-Object System.Windows.Forms.CheckBox
-$chkNetworkRestoreOnStop.Text = 'Restore tuning when stream stops'
-$chkNetworkRestoreOnStop.Location = New-Object System.Drawing.Point(15, 548)
-$chkNetworkRestoreOnStop.Size = New-Object System.Drawing.Size(240, 24)
-$chkNetworkRestoreOnStop.Checked = $true
-$settingsGroup.Controls.Add($chkNetworkRestoreOnStop)
-
-$chkNetworkRestoreOnExit = New-Object System.Windows.Forms.CheckBox
-$chkNetworkRestoreOnExit.Text = 'Restore tuning on app exit'
-$chkNetworkRestoreOnExit.Location = New-Object System.Drawing.Point(15, 548)
-$chkNetworkRestoreOnExit.Size = New-Object System.Drawing.Size(220, 24)
-$chkNetworkRestoreOnExit.Checked = $true
-$settingsGroup.Controls.Add($chkNetworkRestoreOnExit)
-
-$chkNetworkRecoveryTask = New-Object System.Windows.Forms.CheckBox
-$chkNetworkRecoveryTask.Text = 'Create recovery task/script before applying'
-$chkNetworkRecoveryTask.Location = New-Object System.Drawing.Point(15, 548)
-$chkNetworkRecoveryTask.Size = New-Object System.Drawing.Size(280, 24)
-$chkNetworkRecoveryTask.Checked = $true
-$settingsGroup.Controls.Add($chkNetworkRecoveryTask)
-$toolTip.SetToolTip($chkNetworkRecoveryTask, 'Writes a restore script and attempts to register a logon recovery task. The script remains in ProgramData even if task registration fails.')
-
-$btnNetworkSnapshot = New-Object System.Windows.Forms.Button
-$btnNetworkSnapshot.Text = 'Snapshot'
-$btnNetworkSnapshot.Location = New-Object System.Drawing.Point(15, 548)
-$btnNetworkSnapshot.Size = New-Object System.Drawing.Size(90, 30)
-$settingsGroup.Controls.Add($btnNetworkSnapshot)
-
-$btnNetworkApply = New-Object System.Windows.Forms.Button
-$btnNetworkApply.Text = 'Apply Now'
-$btnNetworkApply.Location = New-Object System.Drawing.Point(15, 548)
-$btnNetworkApply.Size = New-Object System.Drawing.Size(90, 30)
-$settingsGroup.Controls.Add($btnNetworkApply)
-
-$btnNetworkRestore = New-Object System.Windows.Forms.Button
-$btnNetworkRestore.Text = 'Restore Previous'
-$btnNetworkRestore.Location = New-Object System.Drawing.Point(15, 548)
-$btnNetworkRestore.Size = New-Object System.Drawing.Size(120, 30)
-$settingsGroup.Controls.Add($btnNetworkRestore)
-
-$btnOpenNetworkRecovery = New-Object System.Windows.Forms.Button
-$btnOpenNetworkRecovery.Text = 'Open Recovery Folder'
-$btnOpenNetworkRecovery.Location = New-Object System.Drawing.Point(15, 548)
-$btnOpenNetworkRecovery.Size = New-Object System.Drawing.Size(150, 30)
-$settingsGroup.Controls.Add($btnOpenNetworkRecovery)
-
-$lblNetworkStatus = New-Object System.Windows.Forms.Label
-$lblNetworkStatus.Text = 'Network tuning disabled'
-$lblNetworkStatus.Location = New-Object System.Drawing.Point(15, 548)
-$lblNetworkStatus.Size = New-Object System.Drawing.Size(520, 40)
-$lblNetworkStatus.TextAlign = 'MiddleLeft'
-$lblNetworkStatus.ForeColor = [System.Drawing.Color]::DimGray
-$settingsGroup.Controls.Add($lblNetworkStatus)
-
-# Per-tab reset buttons. These restore GStreamer Glass app defaults only; they do not overwrite Windows network snapshots.
+# Per-tab reset buttons. These restore GStreamer Glass app defaults only.
 $btnResetTransport = New-Object System.Windows.Forms.Button
 $btnResetTransport.Text = 'Reset Transport Defaults'
 $btnResetTransport.Location = New-Object System.Drawing.Point(15, 548)
@@ -1100,12 +942,6 @@ $btnResetRecording.Text = 'Reset Recording Defaults'
 $btnResetRecording.Location = New-Object System.Drawing.Point(15, 548)
 $btnResetRecording.Size = New-Object System.Drawing.Size(170, 30)
 $settingsGroup.Controls.Add($btnResetRecording)
-
-$btnResetNetwork = New-Object System.Windows.Forms.Button
-$btnResetNetwork.Text = 'Reset Network Tab Defaults'
-$btnResetNetwork.Location = New-Object System.Drawing.Point(15, 548)
-$btnResetNetwork.Size = New-Object System.Drawing.Size(180, 30)
-$settingsGroup.Controls.Add($btnResetNetwork)
 
 $btnResetOptions = New-Object System.Windows.Forms.Button
 $btnResetOptions.Text = 'Reset Options Defaults'
@@ -4375,42 +4211,11 @@ $chkRecordingDesktopAudio.Add_CheckedChanged($recordingUiHandler)
 $chkRecordingMic.Add_CheckedChanged($recordingUiHandler)
 $numRecordingAudioBitrate.Add_ValueChanged($previewHandler)
 
-$chkNetworkTuningEnabled.Add_CheckedChanged({ Update-NetworkUi })
-$chkNetworkDscp.Add_CheckedChanged({ Update-NetworkUi })
-$cmbNetworkProfile.Add_SelectedIndexChanged({ Apply-NetworkProfileToUi })
-$btnRefreshNetworkAdapters.Add_Click({ Refresh-NetworkAdapters })
-$btnNetworkSnapshot.Add_Click({
-    try {
-        Save-NetworkSnapshot | Out-Null
-        $lowerTabs.SelectedTab = $tabLog
-    }
-    catch {
-        [System.Windows.Forms.MessageBox]::Show("Could not create network snapshot.`r`n`r`n$($_.Exception.Message)", $script:AppName, 'OK', 'Warning') | Out-Null
-    }
-})
-$btnNetworkApply.Add_Click({
-    $lowerTabs.SelectedTab = $tabLog
-    Apply-NetworkTuningForSession | Out-Null
-})
-$btnNetworkRestore.Add_Click({
-    $lowerTabs.SelectedTab = $tabLog
-    Restore-NetworkTuning | Out-Null
-})
-$btnOpenNetworkRecovery.Add_Click({
-    try {
-        Ensure-NetworkRecoveryDirectory
-        Start-Process -FilePath 'explorer.exe' -ArgumentList @($script:NetworkRecoveryDirectory) | Out-Null
-    }
-    catch {
-        Append-Log "Could not open recovery folder: $($_.Exception.Message)"
-    }
-})
 $resetDefaultsBindings = @(
     @{ Button = $btnResetTransport; ResetFunction = 'Reset-TransportDefaults' }
     @{ Button = $btnResetVideo;     ResetFunction = 'Reset-VideoDefaults' }
     @{ Button = $btnResetAudio;     ResetFunction = 'Reset-AudioDefaults' }
     @{ Button = $btnResetRecording; ResetFunction = 'Reset-RecordingDefaults' }
-    @{ Button = $btnResetNetwork;   ResetFunction = 'Reset-NetworkDefaults' }
     @{ Button = $btnResetOptions;   ResetFunction = 'Reset-OptionsDefaults' }
 )
 foreach ($binding in $resetDefaultsBindings) {
@@ -4870,7 +4675,6 @@ $pollTimer.Add_Tick({
         $script:MediaMtxStdOutPosition = [int64]0
         $script:MediaMtxStdErrPosition = [int64]0
 
-        if ($wasRequested -and $chkNetworkRestoreOnStop.Checked) { Restore-NetworkTuning -Quiet | Out-Null }
         $script:PreviewHwnd = [IntPtr]::Zero
         $script:PreviewOnlyMode = $false
         $script:ForceLocalPreviewMode = $false
@@ -4964,7 +4768,6 @@ $pollTimer.Add_Tick({
 $pollTimer.Start()
 
 $form.Add_Shown({
-    Refresh-NetworkAdapters
     Refresh-WebcamDevices
     Load-Settings
     Write-PsDebugTrace "GStreamer Glass v$($script:AppVersion) started."
@@ -4983,12 +4786,10 @@ $form.Add_Shown({
     Update-AudioTimingOptionUi
     Update-EncoderUi
     Update-RecordingUi
-    Update-NetworkUi
     Update-SceneUi
     Refresh-ProfileList
     Update-CommandPreview
     Update-TrayMenuState
-    Check-PendingNetworkRecovery
     Append-Log "Application icon: $($script:AppIconSource)"
 
     if ($chkStartMinimized.Checked) {

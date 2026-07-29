@@ -191,21 +191,6 @@ function Save-Settings {
             PsDebugEnabled    = $chkPsDebug.Checked
             MinimizeToTray    = [bool]($chkMinimizeToTray.Checked -or $chkStartMinimized.Checked)
             StartMinimized    = $chkStartMinimized.Checked
-            NetworkTuningEnabled = $chkNetworkTuningEnabled.Checked
-            NetworkAdapter    = Get-SelectedNetworkAdapterName
-            NetworkProfile    = [string]$cmbNetworkProfile.SelectedItem
-            NetworkDscpEnabled = $chkNetworkDscp.Checked
-            NetworkDscpValue  = [int]$numNetworkDscp.Value
-            NetworkQosProtocol = [string]$cmbNetworkQosProtocol.SelectedItem
-            NetworkQosPorts   = $txtNetworkPorts.Text
-            NetworkUso        = [string]$cmbNetworkUso.SelectedItem
-            NetworkUro        = [string]$cmbNetworkUro.SelectedItem
-            NetworkDisablePowerSaving = $chkNetworkDisablePowerSaving.Checked
-            NetworkInterruptModeration = [string]$cmbNetworkInterruptModeration.SelectedItem
-            NetworkDisableEee = $chkNetworkDisableEee.Checked
-            NetworkRestoreOnStop = $chkNetworkRestoreOnStop.Checked
-            NetworkRestoreOnExit = $chkNetworkRestoreOnExit.Checked
-            NetworkRecoveryTask = $chkNetworkRecoveryTask.Checked
             Width             = [int]$numWidth.Value
             Height            = [int]$numHeight.Value
             Fps               = [int]$numFps.Value
@@ -357,7 +342,6 @@ function Load-Settings {
         Update-DirectWebRtcUi
         Update-EncoderUi
         Update-RecordingUi
-        Update-NetworkUi
         Update-SceneUi
     }
 }
@@ -619,25 +603,6 @@ function Restore-SettingsFromObject {
         if ($null -ne $settings.PsDebugEnabled) { $chkPsDebug.Checked = [bool]$settings.PsDebugEnabled }
         if ($null -ne $settings.MinimizeToTray) { $chkMinimizeToTray.Checked = [bool]$settings.MinimizeToTray }
         if ($null -ne $settings.StartMinimized) { $chkStartMinimized.Checked = [bool]$settings.StartMinimized }
-        if ($null -ne $settings.NetworkTuningEnabled) { $chkNetworkTuningEnabled.Checked = [bool]$settings.NetworkTuningEnabled }
-        if ($settings.NetworkProfile -and $cmbNetworkProfile.Items.Contains([string]$settings.NetworkProfile)) { $cmbNetworkProfile.SelectedItem = [string]$settings.NetworkProfile }
-        if ($null -ne $settings.NetworkDscpEnabled) { $chkNetworkDscp.Checked = [bool]$settings.NetworkDscpEnabled }
-        if ($null -ne $settings.NetworkDscpValue) { $numNetworkDscp.Value = [decimal]$settings.NetworkDscpValue }
-        if ($settings.NetworkQosProtocol -and $cmbNetworkQosProtocol.Items.Contains([string]$settings.NetworkQosProtocol)) { $cmbNetworkQosProtocol.SelectedItem = [string]$settings.NetworkQosProtocol }
-        if ($null -ne $settings.NetworkQosPorts) { $txtNetworkPorts.Text = [string]$settings.NetworkQosPorts }
-        if ($settings.NetworkUso -and $cmbNetworkUso.Items.Contains([string]$settings.NetworkUso)) { $cmbNetworkUso.SelectedItem = [string]$settings.NetworkUso }
-        if ($settings.NetworkUro -and $cmbNetworkUro.Items.Contains([string]$settings.NetworkUro)) { $cmbNetworkUro.SelectedItem = [string]$settings.NetworkUro }
-        if ($null -ne $settings.NetworkDisablePowerSaving) { $chkNetworkDisablePowerSaving.Checked = [bool]$settings.NetworkDisablePowerSaving }
-        if ($settings.NetworkInterruptModeration -and $cmbNetworkInterruptModeration.Items.Contains([string]$settings.NetworkInterruptModeration)) { $cmbNetworkInterruptModeration.SelectedItem = [string]$settings.NetworkInterruptModeration }
-        if ($null -ne $settings.NetworkDisableEee) { $chkNetworkDisableEee.Checked = [bool]$settings.NetworkDisableEee }
-        if ($null -ne $settings.NetworkRestoreOnStop) { $chkNetworkRestoreOnStop.Checked = [bool]$settings.NetworkRestoreOnStop }
-        if ($null -ne $settings.NetworkRestoreOnExit) { $chkNetworkRestoreOnExit.Checked = [bool]$settings.NetworkRestoreOnExit }
-        if ($null -ne $settings.NetworkRecoveryTask) { $chkNetworkRecoveryTask.Checked = [bool]$settings.NetworkRecoveryTask }
-        if ($settings.NetworkAdapter) {
-            for ($i = 0; $i -lt $cmbNetworkAdapter.Items.Count; $i++) {
-                if ([string]$cmbNetworkAdapter.Items[$i] -like "$([string]$settings.NetworkAdapter) |*") { $cmbNetworkAdapter.SelectedIndex = $i; break }
-            }
-        }
         if ($settings.Width) { $numWidth.Value = [decimal]$settings.Width }
         if ($settings.Height) { $numHeight.Value = [decimal]$settings.Height }
         if ($settings.Fps) { $numFps.Value = [decimal]$settings.Fps }

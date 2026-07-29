@@ -84,30 +84,7 @@
         'Test-IsAdministrator'
     )
 
-    '14-NetworkTuning.ps1' = @(
-        'Ensure-NetworkRecoveryDirectory'
-        'Get-SelectedNetworkAdapterName'
-        'Refresh-NetworkAdapters'
-        'Normalize-UdpOffloadState'
-        'Get-UdpGlobalState'
-        'Get-SnapshotUdpOffloadState'
-        'Set-UdpGlobalOffload'
-        'Get-NetworkSnapshotObject'
-        'Write-NetworkRecoveryScript'
-        'Save-NetworkSnapshot'
-        'Set-NetworkAppliedState'
-        'Get-NetworkAppliedState'
-        'Register-NetworkRecoveryTask'
-        'Unregister-NetworkRecoveryTask'
-        'Set-AdapterAdvancedPropertyByCandidates'
-        'Set-NetworkPowerSavingDisabled'
-        'Apply-NetworkProfileToUi'
-        'Update-NetworkUi'
-        'New-QosPolicyForGStreamer'
-        'Apply-NetworkTuningForSession'
-        'Restore-NetworkTuning'
-        'Check-PendingNetworkRecovery'
-    )
+    '14-NetworkTuning.ps1' = @()
 
     '15-DefaultsReset.ps1' = @(
         'Reset-WebRtcSaneDefaults'
@@ -115,7 +92,6 @@
         'Reset-VideoDefaults'
         'Reset-AudioDefaults'
         'Reset-RecordingDefaults'
-        'Reset-NetworkDefaults'
         'Reset-OptionsDefaults'
         'Reset-AllAppDefaults'
     )

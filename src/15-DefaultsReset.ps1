@@ -206,24 +206,6 @@ function Reset-RecordingDefaults {
     Update-RecordingUi
 }
 
-function Reset-NetworkDefaults {
-    $chkNetworkTuningEnabled.Checked = $false
-    $cmbNetworkProfile.SelectedItem = 'No changes'
-    $chkNetworkDscp.Checked = $false
-    $numNetworkDscp.Value = 34
-    $cmbNetworkQosProtocol.SelectedItem = 'UDP'
-    $txtNetworkPorts.Text = ''
-    $cmbNetworkUso.SelectedItem = 'Leave unchanged'
-    $cmbNetworkUro.SelectedItem = 'Leave unchanged'
-    $chkNetworkDisablePowerSaving.Checked = $false
-    $cmbNetworkInterruptModeration.SelectedItem = 'Leave unchanged'
-    $chkNetworkDisableEee.Checked = $false
-    $chkNetworkRestoreOnStop.Checked = $true
-    $chkNetworkRestoreOnExit.Checked = $true
-    $chkNetworkRecoveryTask.Checked = $true
-    Update-NetworkUi
-}
-
 function Reset-OptionsDefaults {
     $txtGstPath.Text = Find-GstLaunch
     $chkPreview.Checked = $false
@@ -251,9 +233,8 @@ function Reset-AllAppDefaults {
     Reset-VideoDefaults
     Reset-AudioDefaults
     Reset-RecordingDefaults
-    Reset-NetworkDefaults
     Reset-OptionsDefaults
     Save-Settings
-    Append-Log 'All GStreamer Glass app settings reset to defaults. Windows network snapshots were not touched.'
+    Append-Log 'All GStreamer Glass app settings reset to defaults.'
     Update-DirectWebRtcWebUiStatus
 }

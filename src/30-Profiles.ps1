@@ -347,7 +347,6 @@ function Invoke-LoadSelectedProfile {
         Update-DirectWebRtcUi
         Update-EncoderUi
         Update-RecordingUi
-        Update-NetworkUi
         Update-SceneUi
         Update-CommandPreview
     }
