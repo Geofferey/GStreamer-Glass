@@ -184,6 +184,14 @@ function Start-GstStream {
         [string]::IsNullOrWhiteSpace($videoArguments) -and
         [string]::IsNullOrWhiteSpace($audioArguments)
     )
+    # Captured here, before ForceLocalPreviewMode is cleared below, since
+    # Test-DirectWebRtcPortRangeWorkerRequired calls Test-TransportEnabled
+    # internally -- computing it any later would see transport as enabled
+    # again (from the saved Protocol/Transport checkbox state) even though
+    # this run is a suppressed preview, wrongly routing a plain preview
+    # pipeline through the WebRTC port-range worker (which then fails
+    # looking for a webrtcsink element that a preview pipeline never has).
+    $portRangeWorkerRequested = Test-DirectWebRtcPortRangeWorkerRequired
     $script:ForceLocalPreviewMode = $false
     if ($script:PendingPipelineStop) { return }
     Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Starting full GStreamer pipeline..."
@@ -359,7 +367,9 @@ function Start-GstStream {
                     -Pipeline $pipelineDescription `
                     -WindowHandle $renderTarget.Handle `
                     -Width ([Math]::Max(1, $renderSize.Width)) `
-                    -Height ([Math]::Max(1, $renderSize.Height))
+                    -Height ([Math]::Max(1, $renderSize.Height)) `
+                    -MinRtpPort (if ($portRangeWorkerRequested) { [int]$numDirectWebRtcMinRtpPort.Value } else { 0 }) `
+                    -MaxRtpPort (if ($portRangeWorkerRequested) { [int]$numDirectWebRtcMaxRtpPort.Value } else { 0 })
                 if (-not $workerStarted) { throw 'The controlled live worker did not start.' }
             }
             finally {
@@ -418,17 +428,22 @@ function Start-GstStream {
         }
     }
 
-    $portRangeWorkerRequested = Test-DirectWebRtcPortRangeWorkerRequired
     $useWebRtcPortRangeWorker = (-not $useControlledLiveStream) -and (-not $runNeedsUnifiedPublisherHost) -and $portRangeWorkerRequested
 
     try {
+        # Live scene editing is NOT in this list: GstControlledScenePreview
+        # (00-Setup.ps1) hooks webrtcsink's consumer-added signal to pin the
+        # ICE port range on its own hosted pipeline, exactly like the
+        # separate WebRTC port-range worker does for the plain gst-launch
+        # path -- so the two are no longer mutually exclusive. Split A/V
+        # without a unified publisher genuinely has no mechanism to specify
+        # media ports for the separate signalling pipeline yet.
         $unsupportedPortRangeTopology = (
-            $useControlledLiveStream -or
             $runNeedsUnifiedPublisherHost -or
             ((Test-DirectWebRtcSplitAvPipelines) -and -not (Test-DirectWebRtcUnifiedPublisher))
         )
         if ($portRangeWorkerRequested -and $unsupportedPortRangeTopology) {
-            throw 'The Min/Max RTP port range cannot be enforced with live scene editing, separate A/V publishers, or advanced unified publisher host options enabled.'
+            throw 'The Min/Max RTP port range cannot be enforced with separate A/V publishers or advanced unified publisher host options enabled.'
         }
         $tracerEnvState = $null
         try {

@@ -273,7 +273,9 @@ function Start-ControlledLiveWorker {
         [Parameter(Mandatory)][string]$Pipeline,
         [Parameter(Mandatory)][IntPtr]$WindowHandle,
         [Parameter(Mandatory)][int]$Width,
-        [Parameter(Mandatory)][int]$Height
+        [Parameter(Mandatory)][int]$Height,
+        [int]$MinRtpPort = 0,
+        [int]$MaxRtpPort = 0
     )
 
     Close-ControlledLiveWorkerPipe
@@ -342,6 +344,8 @@ function Start-ControlledLiveWorker {
             Height       = [Math]::Max(1, $Height)
             DesktopPad   = 'sink_0'
             WebcamPad    = 'sink_1'
+            MinRtpPort   = [int][Math]::Max(0, $MinRtpPort)
+            MaxRtpPort   = [int][Math]::Max(0, $MaxRtpPort)
         } | ConvertTo-Json -Compress))
 
         $replyTask = $reader.ReadLineAsync()

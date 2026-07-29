@@ -715,11 +715,35 @@ public static class GstControlledScenePreview
     [DllImport(GObject, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
     private static extern IntPtr g_object_class_find_property(IntPtr oclass, string property_name);
 
+    [DllImport(GObject, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
+    private static extern void g_object_get(IntPtr obj, string first_property_name, out IntPtr value, IntPtr terminator);
+
+    [DllImport(GObject, EntryPoint = "g_object_get", CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
+    private static extern void g_object_get_uint(IntPtr obj, string first_property_name, out uint value, IntPtr terminator);
+
+    [DllImport(GObject, CallingConvention = CallingConvention.Cdecl)]
+    private static extern void g_object_unref(IntPtr obj);
+
+    private delegate void ConsumerAddedDelegate(IntPtr webrtcsink, IntPtr peerId, IntPtr consumerElement, IntPtr userData);
+
+    [DllImport(GObject, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
+    private static extern ulong g_signal_connect_data(IntPtr instance, string detailed_signal, ConsumerAddedDelegate c_handler, IntPtr data, IntPtr destroy_data, int connect_flags);
+
     [DllImport(GLib, CallingConvention = CallingConvention.Cdecl)]
     private static extern void g_error_free(IntPtr error);
 
     [DllImport(GLib, CallingConvention = CallingConvention.Cdecl)]
     private static extern void g_free(IntPtr memory);
+
+    [DllImport(GLib, CallingConvention = CallingConvention.Cdecl)]
+    private static extern IntPtr g_main_context_default();
+
+    // No explicit MarshalAs needed: glib's gboolean is a 4-byte gint, which is
+    // exactly what .NET's default (unannotated) bool marshaling already uses
+    // for P/Invoke (the Win32 BOOL convention) -- MarshalAs(I1) would be wrong
+    // here (that's a 1-byte bool, for a different ABI).
+    [DllImport(GLib, CallingConvention = CallingConvention.Cdecl)]
+    private static extern bool g_main_context_iteration(IntPtr context, bool mayBlock);
 
     private static readonly object Gate = new object();
     private static bool initialized;
@@ -729,6 +753,18 @@ public static class GstControlledScenePreview
     private static IntPtr bus;
     private static IntPtr desktopPad;
     private static IntPtr webcamPad;
+    // Only resolved/hooked when StartLive is given a nonzero Min/Max RTP
+    // port range -- the "out" webrtcsink element that Start-GstStream's
+    // plain gst-launch path also uses. Mirrors GstWebRtcConsumerPortRange's
+    // own consumer-added hook exactly, so Live Scene Editing can pin the ICE
+    // port range on its own hosted webrtcsink instead of that being
+    // mutually exclusive with the separate port-range worker process.
+    private static IntPtr webrtcSinkForPortRange;
+    private static uint minRtpPort;
+    private static uint maxRtpPort;
+    private static int consumersConfigured;
+    private static string consumerError;
+    private static ConsumerAddedDelegate consumerAddedCallback;
 
     public static bool IsRunning
     {
@@ -747,6 +783,54 @@ public static class GstControlledScenePreview
         return value.message == IntPtr.Zero ? "Unknown GStreamer error" : Marshal.PtrToStringAnsi(value.message);
     }
 
+    // Identical in spirit to GstWebRtcConsumerPortRange.OnConsumerAdded --
+    // duplicated rather than shared because these are two independently
+    // Add-Type-compiled classes with no shared native-interop assembly.
+    private static void OnConsumerAdded(IntPtr webrtcsink, IntPtr peerId, IntPtr consumerElement, IntPtr userData)
+    {
+        try
+        {
+            if (consumerElement == IntPtr.Zero)
+                throw new InvalidOperationException("The WebRTC consumer element was not provided.");
+            IntPtr iceAgent;
+            g_object_get(consumerElement, "ice-agent", out iceAgent, IntPtr.Zero);
+            if (iceAgent == IntPtr.Zero)
+                throw new InvalidOperationException("The WebRTC consumer has no ICE agent.");
+            try
+            {
+                SetUInt(iceAgent, "min-rtp-port", minRtpPort);
+                SetUInt(iceAgent, "max-rtp-port", maxRtpPort);
+                uint actualMin;
+                uint actualMax;
+                g_object_get_uint(iceAgent, "min-rtp-port", out actualMin, IntPtr.Zero);
+                g_object_get_uint(iceAgent, "max-rtp-port", out actualMax, IntPtr.Zero);
+                if (actualMin != minRtpPort || actualMax != maxRtpPort)
+                    throw new InvalidOperationException("The ICE agent rejected the requested RTP port range.");
+                System.Threading.Interlocked.Increment(ref consumersConfigured);
+            }
+            finally
+            {
+                g_object_unref(iceAgent);
+            }
+        }
+        catch (Exception ex)
+        {
+            System.Threading.Interlocked.CompareExchange(
+                ref consumerError, "Failed to apply WebRTC ICE port range: " + ex.Message, null);
+        }
+    }
+
+    // See GstWebRtcConsumerPortRange.PumpMainContextOnce for why this exists:
+    // this class also hosts webrtcsink directly via gst_parse_launch +
+    // gst_element_set_state instead of gst-launch-1.0.exe's own
+    // g_main_loop_run(), so nothing services the default GMainContext
+    // (RTCP timers, congestion-control ticks, the embedded signalling/web
+    // server's async I/O, clock-sync notifications) without this.
+    public static bool PumpMainContextOnce()
+    {
+        return g_main_context_iteration(g_main_context_default(), false);
+    }
+
     public static void Start(
         string description,
         long windowHandle,
@@ -762,7 +846,9 @@ public static class GstControlledScenePreview
             height,
             "controlledpreview",
             desktopPadName,
-            webcamPadName);
+            webcamPadName,
+            0,
+            0);
     }
 
     public static void StartLive(
@@ -771,7 +857,9 @@ public static class GstControlledScenePreview
         int width,
         int height,
         string desktopPadName,
-        string webcamPadName)
+        string webcamPadName,
+        uint minRtpPortValue,
+        uint maxRtpPortValue)
     {
         StartCore(
             description,
@@ -780,7 +868,9 @@ public static class GstControlledScenePreview
             height,
             "localpreview",
             desktopPadName,
-            webcamPadName);
+            webcamPadName,
+            minRtpPortValue,
+            maxRtpPortValue);
     }
 
     private static void StartCore(
@@ -790,7 +880,9 @@ public static class GstControlledScenePreview
         int height,
         string sinkName,
         string desktopPadName,
-        string webcamPadName)
+        string webcamPadName,
+        uint minRtpPortValue,
+        uint maxRtpPortValue)
     {
         lock (Gate)
         {
@@ -800,6 +892,11 @@ public static class GstControlledScenePreview
                 gst_init(IntPtr.Zero, IntPtr.Zero);
                 initialized = true;
             }
+
+            minRtpPort = minRtpPortValue;
+            maxRtpPort = maxRtpPortValue;
+            consumersConfigured = 0;
+            System.Threading.Interlocked.Exchange(ref consumerError, null);
 
             IntPtr parseError;
             pipeline = gst_parse_launch(description, out parseError);
@@ -843,6 +940,18 @@ public static class GstControlledScenePreview
                     StopUnsafe();
                     throw new InvalidOperationException("A required controlled compositor pad was not found.");
                 }
+            }
+
+            if (minRtpPort > 0 && maxRtpPort > 0)
+            {
+                webrtcSinkForPortRange = gst_bin_get_by_name(pipeline, "out");
+                if (webrtcSinkForPortRange == IntPtr.Zero)
+                {
+                    StopUnsafe();
+                    throw new InvalidOperationException("The webrtcsink element 'out' was not found for RTP port range enforcement.");
+                }
+                consumerAddedCallback = new ConsumerAddedDelegate(OnConsumerAdded);
+                g_signal_connect_data(webrtcSinkForPortRange, "consumer-added", consumerAddedCallback, IntPtr.Zero, IntPtr.Zero, 0);
             }
 
             if (windowHandle != 0)
@@ -947,6 +1056,8 @@ public static class GstControlledScenePreview
     {
         lock (Gate)
         {
+            string callbackError = System.Threading.Interlocked.Exchange(ref consumerError, null);
+            if (!String.IsNullOrEmpty(callbackError)) return callbackError;
             if (bus == IntPtr.Zero) return null;
             IntPtr errorMessage = gst_bus_timed_pop_filtered(bus, 0, GST_MESSAGE_ERROR);
             if (errorMessage != IntPtr.Zero)
@@ -1001,8 +1112,10 @@ public static class GstControlledScenePreview
         if (bus != IntPtr.Zero) gst_object_unref(bus);
         if (sink != IntPtr.Zero) gst_object_unref(sink);
         if (scene != IntPtr.Zero) gst_object_unref(scene);
+        if (webrtcSinkForPortRange != IntPtr.Zero) gst_object_unref(webrtcSinkForPortRange);
         if (pipeline != IntPtr.Zero) gst_object_unref(pipeline);
-        webcamPad = desktopPad = bus = sink = scene = pipeline = IntPtr.Zero;
+        webcamPad = desktopPad = bus = sink = scene = webrtcSinkForPortRange = pipeline = IntPtr.Zero;
+        consumerAddedCallback = null;
     }
 }
 '@
@@ -1363,13 +1476,23 @@ if ($ControlledLiveWorker) {
             [int]$start.Width,
             [int]$start.Height,
             [string]$start.DesktopPad,
-            [string]$start.WebcamPad
+            [string]$start.WebcamPad,
+            [uint32](if ($start.MinRtpPort) { $start.MinRtpPort } else { 0 }),
+            [uint32](if ($start.MaxRtpPort) { $start.MaxRtpPort } else { 0 })
         )
         $pipeWriter.WriteLine((@{ Status = 'Ready'; Error = '' } | ConvertTo-Json -Compress))
 
         $readTask = $pipeReader.ReadLineAsync()
         while ($true) {
-            if ($readTask.Wait(100)) {
+            # This worker hosts webrtcsink directly via gst_parse_launch +
+            # gst_element_set_state rather than gst-launch-1.0.exe's own
+            # g_main_loop_run(), so nothing services the default GMainContext
+            # (RTCP timers, congestion-control ticks, the embedded
+            # signalling/web server's async I/O, clock-sync notifications)
+            # without this -- see GstWebRtcConsumerPortRange's identical fix.
+            while ([GstControlledScenePreview]::PumpMainContextOnce()) {}
+
+            if ($readTask.Wait(5)) {
                 $line = $readTask.Result
                 if ($null -eq $line) { break }
                 if (-not [string]::IsNullOrWhiteSpace($line)) {
