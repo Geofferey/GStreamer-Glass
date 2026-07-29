@@ -1,5 +1,5 @@
 (() => {
-  const FRONTEND_VERSION = '3.8-viewer-auth-19';
+  const FRONTEND_VERSION = '3.8-viewer-auth-36';
   console.info(`[GStreamer Glass Live] frontend ${FRONTEND_VERSION}`);
   const playerRoot = document.getElementById('playerRoot');
   const video = document.getElementById('video');
@@ -133,6 +133,10 @@
     if (!('serviceWorker' in navigator) || !window.isSecureContext) return;
     if (viewerAuthenticationEnabled()) {
       window.addEventListener('load', () => {
+        const cleanupReloadKey = 'gstglass-auth-worker-cleanup';
+        const controlledByRetiredWorker =
+          !!navigator.serviceWorker.controller &&
+          sessionStorage.getItem(cleanupReloadKey) !== 'complete';
         Promise.all([
           navigator.serviceWorker.getRegistrations()
             .then((registrations) => Promise.all(registrations
@@ -143,7 +147,17 @@
               .filter((key) => key.startsWith('gstglass-pwa-'))
               .map((key) => caches.delete(key))))
             : Promise.resolve())
-        ]).catch((err) => log('authenticated viewer cache cleanup failed', err && err.message ? err.message : err));
+        ]).then(() => {
+          // unregister() does not release an already-controlled page. Without
+          // one clean reload, that retired worker can consume the first
+          // post-login auth/logout navigation and hide the TLS edge's 303.
+          if (controlledByRetiredWorker) {
+            sessionStorage.setItem(cleanupReloadKey, 'complete');
+            location.reload();
+            return;
+          }
+          sessionStorage.removeItem(cleanupReloadKey);
+        }).catch((err) => log('authenticated viewer cache cleanup failed', err && err.message ? err.message : err));
       }, { once: true });
       return;
     }
@@ -2093,7 +2107,7 @@
     logoutButton.textContent = 'Sign out';
     logoutButton.title = 'Sign out of this broadcast';
     logoutButton.setAttribute('aria-label', logoutButton.title);
-    logoutButton.hidden = !viewerAuthenticationEnabled();
+    logoutButton.hidden = !viewerAuthenticationEnabled() || location.protocol !== 'https:';
 
     const installButton = document.createElement('button');
     installButton.type = 'button';
@@ -2170,7 +2184,9 @@
     logoutButton.addEventListener('click', (ev) => {
       ev.preventDefault();
       ev.stopPropagation();
-      location.assign(new URL('/__gstglass/auth/logout', location.origin).href);
+      if (typeof window.GST_GLASS_LOGOUT === 'function') {
+        window.GST_GLASS_LOGOUT();
+      }
     });
     installButton.addEventListener('click', async (ev) => {
       ev.preventDefault();

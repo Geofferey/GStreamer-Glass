@@ -1,7 +1,7 @@
 GStreamer Glass Direct WebRTC Web UI
 Version: 3.8
 
-Current viewer authentication and signaling behavior (3.8.25):
+Current viewer authentication and signaling behavior (3.8.36):
 - Viewer authentication is enforced by Glass's own TLS proxy before requests
   reach the web viewer or GStreamer signaling servers.
 - The broadcaster configures a username and password in Network > Viewer
@@ -9,6 +9,19 @@ Current viewer authentication and signaling behavior (3.8.25):
 - Successful login issues an expiring Secure, HttpOnly, SameSite=Strict
   session cookie. The same host-scoped cookie authorizes HTTPS assets plus the
   video and voice WSS upgrade handshakes, including signaling on other ports.
+- The player loads the real `logout.js` asset beside `player.js`. Sign out
+  uses that file to navigate to the separate, uncached `/auth/logout` TLS
+  action. Glass invalidates all issued viewer sessions, expires the cookie,
+  and redirects the same browser origin to `/live/`.
+- Canonical authentication routes live permanently at `/auth/login` and
+  `/auth/logout`, outside the protected `/live/` mount. `/live/` assets and
+  signaling can never shadow or bypass those gate-owned endpoints.
+- The complete `/auth/` namespace is reserved by the TLS gate. `/auth/`
+  redirects according to session state, while unknown `/auth/*` children are
+  rejected locally and are never forwarded to GStreamer.
+- Login/logout navigations bypass the PWA service worker so browser-native 303
+  redirects remain intact. If an older worker still controls the first
+  authenticated page, Glass unregisters it and performs one cleanup reload.
 - Repeated failed logins are rate-limited. Restarting the TLS proxies,
   changing the password, or changing authentication settings invalidates
   existing sessions.

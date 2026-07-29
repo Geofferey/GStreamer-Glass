@@ -698,10 +698,13 @@ function Start-LetsEncryptTlsProxies {
         }
         $authenticationSessionKey = [TlsTerminatingProxy]::CreateAuthenticationSessionKey()
     }
+    $viewerMountSegment = [string](Get-DirectWebRtcWebServerPathSegment)
+    $authenticationMountPath = if ([string]::IsNullOrWhiteSpace($viewerMountSegment)) { '' } else { "/$($viewerMountSegment.Trim('/'))" }
 
     $configurationSignature = @(
         [string]$certificate.Thumbprint,
         [string]$authenticationEnabled,
+        [string]$authenticationMountPath,
         [string]$txtViewerAuthenticationUsername.Text,
         [string]$script:ViewerAuthenticationPasswordHash,
         [string]$numViewerAuthenticationSessionHours.Value,
@@ -768,6 +771,7 @@ function Start-LetsEncryptTlsProxies {
         try {
             $proxy = New-Object TlsTerminatingProxy
             $proxy.Label = [string]$portInfo.Label
+            $proxy.AuthenticationMountPath = $authenticationMountPath
             foreach ($route in @($portInfo.PathRoutes)) {
                 $proxy.AddPathRoute([string]$route.Path, [int]$route.Port)
             }

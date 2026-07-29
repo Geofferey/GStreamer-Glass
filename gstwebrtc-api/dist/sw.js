@@ -1,7 +1,8 @@
-const CACHE_NAME = 'gstglass-pwa-3.8-viewer-auth-19';
+const CACHE_NAME = 'gstglass-pwa-3.8-viewer-auth-36';
 const SHELL_KEY = new URL('./index.html', self.registration.scope).href;
 const APP_SHELL = [
   './index.html',
+  './logout.js',
   './player.js',
   './player.css?v=3.8.25',
   './manifest.webmanifest?v=3.8',
@@ -33,6 +34,15 @@ function isRuntimeConfig(url) {
   return url.pathname.endsWith('/gstglass-config.js');
 }
 
+function isAuthenticationAction(url) {
+  const path = url.pathname.replace(/\/+$/, '');
+  return path === '/auth/login' ||
+    path === '/auth/logout' ||
+    path.endsWith('/__gstglass/auth/login') ||
+    path.endsWith('/__gstglass/auth/logout') ||
+    path.endsWith('/logout');
+}
+
 async function networkFirst(request, fallbackKey) {
   const cache = await caches.open(CACHE_NAME);
   try {
@@ -56,6 +66,12 @@ self.addEventListener('fetch', (event) => {
 
   const url = new URL(request.url);
   if (url.origin !== self.location.origin) return;
+
+  // Do not wrap authentication navigations in respondWith(fetch(...)).
+  // A service-worker fetch follows Glass's 303 internally and can leave the
+  // browser on the original auth URL. Native network navigation is required
+  // so the address bar, cookie mutation, and redirect all complete together.
+  if (isAuthenticationAction(url)) return;
 
   // This file is generated from the current Glass settings and may change
   // every second. Never put it in Cache Storage, including on reload probes.

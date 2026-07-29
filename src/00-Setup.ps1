@@ -1807,6 +1807,14 @@ public class TlsTerminatingProxy
     // the HTML but every relative asset 404s.
     public string DirectoryRedirectPath;
 
+    // Viewer mount used for proxy-owned authentication endpoints. This is
+    // deliberately independent of DirectoryRedirectPath: when viewer HTTP
+    // and signaling share one external port, the signaling proxy is reused
+    // and does not need the directory redirect, but it still owns auth URLs
+    // at the permanent origin-level /auth/ gate. The viewer mount is retained
+    // only for protected-content redirects and legacy compatibility aliases.
+    public string AuthenticationMountPath;
+
     private sealed class AuthenticationFailureState
     {
         public int Count;
@@ -1944,7 +1952,10 @@ public class TlsTerminatingProxy
                 }
                 int effectivePort = targetPort;
                 byte[] headerBytes = new byte[0];
-                if (pathRoutes.Count > 0 || authenticationEnabled || !string.IsNullOrEmpty(DirectoryRedirectPath))
+                if (pathRoutes.Count > 0 ||
+                    authenticationEnabled ||
+                    !string.IsNullOrEmpty(DirectoryRedirectPath) ||
+                    !string.IsNullOrEmpty(AuthenticationMountPath))
                 {
                     headerBytes = await ReadHttpRequestHeaderAsync(sslStream);
                     if (headerBytes.Length == 0) return;
@@ -1952,21 +1963,65 @@ public class TlsTerminatingProxy
                     {
                         return;
                     }
-                    if (authenticationEnabled && await HandleAuthenticationAsync(sslStream, client, headerBytes))
+                    string requestPath = ExtractHttpRequestPath(headerBytes);
+                    bool isAuthenticationEndpoint = IsAuthenticationEndpointPath(requestPath);
+                    if (isAuthenticationEndpoint)
+                    {
+                        // Authentication routes are permanently owned by this
+                        // TLS gate. A valid viewer session must never cause
+                        // login/logout to fall through to GStreamer's static
+                        // or signaling servers.
+                        bool endpointHandled = await HandleAuthenticationAsync(sslStream, client, headerBytes);
+                        if (!endpointHandled)
+                        {
+                            pendingLog.Enqueue("authentication endpoint was not handled locally: " + requestPath);
+                            await WriteHttpResponseAsync(
+                                sslStream,
+                                500,
+                                "Internal Server Error",
+                                "text/plain; charset=utf-8",
+                                "Authentication gate error.",
+                                null
+                            );
+                        }
+                        return;
+                    }
+                    if (authenticationEnabled &&
+                        await HandleAuthenticationAsync(sslStream, client, headerBytes))
                     {
                         return;
                     }
-                    string path = ExtractHttpRequestPath(headerBytes);
-                    if (path != null)
+                    if (requestPath != null)
                     {
                         foreach (Tuple<string, int> route in pathRoutes)
                         {
-                            if (string.Equals(route.Item1, path, StringComparison.OrdinalIgnoreCase))
+                            if (string.Equals(route.Item1, requestPath, StringComparison.OrdinalIgnoreCase))
                             {
                                 effectivePort = route.Item2;
                                 break;
                             }
                         }
+                    }
+
+                    // This proxy only inspects the FIRST request on each TCP
+                    // connection -- forwarding below becomes a blind byte pump
+                    // for the rest of that connection's life (required for
+                    // WebSocket upgrades, which must stay a raw pipe). If the
+                    // browser keeps this same connection alive and reuses it
+                    // for a LATER, unrelated request (e.g. navigating to
+                    // /auth/logout after the page already loaded), that later
+                    // request would never be re-inspected and would silently
+                    // ride the upstream target chosen for the first request --
+                    // this is what made /auth/* start 404ing after the first
+                    // request on a connection, recovering only when the whole
+                    // process restarted and forced every connection fresh.
+                    // Forcing the upstream to close after any non-upgrade
+                    // response makes the browser open a new connection for
+                    // its next request, which runs this same header-peek /
+                    // auth / routing gate again from scratch.
+                    if (!IsWebSocketUpgradeRequest(headerBytes))
+                    {
+                        headerBytes = ForceConnectionCloseHeader(headerBytes);
                     }
                 }
 
@@ -2001,9 +2056,11 @@ public class TlsTerminatingProxy
         }
     }
 
-    // Returns true when the request was answered locally or rejected. A false
-    // return means the session cookie is valid and the original request may be
-    // forwarded to the configured viewer/signaling upstream.
+    // Returns true when this request was answered locally or rejected. A false
+    // return authorizes only this ordinary request for forwarding; it does not
+    // disable or remove the gate. The next HTTPS/WSS request is validated
+    // independently. Authentication endpoints are dispatched separately above
+    // and are never eligible for upstream forwarding.
     private async Task<bool> HandleAuthenticationAsync(SslStream stream, TcpClient client, byte[] headerBytes)
     {
         string headerText = null;
@@ -2035,24 +2092,121 @@ public class TlsTerminatingProxy
         }
         catch { }
 
-        const string loginPath = "/__gstglass/auth/login";
-        const string logoutPath = "/__gstglass/auth/logout";
+        const string loginPath = "/auth/login";
+        const string logoutPath = "/auth/logout";
+        const string legacyLoginPath = "/__gstglass/auth/login";
+        const string legacyLogoutPath = "/__gstglass/auth/logout";
+        const string legacySimpleLogoutPath = "/logout";
+        string mountedLegacyLoginPath = GetMountedAuthenticationPath(legacyLoginPath);
+        string mountedLegacyLogoutPath = GetMountedAuthenticationPath(legacyLogoutPath);
+        string mountedSimpleLogoutPath = GetMountedAuthenticationPath(legacySimpleLogoutPath);
 
-        if (string.Equals(path, logoutPath, StringComparison.OrdinalIgnoreCase))
+        bool isLogoutEndpoint =
+            string.Equals(path, logoutPath, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(path, legacyLogoutPath, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(path, legacySimpleLogoutPath, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(path, mountedLegacyLogoutPath, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(path, mountedSimpleLogoutPath, StringComparison.OrdinalIgnoreCase);
+        bool isLoginEndpoint =
+            string.Equals(path, loginPath, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(path, legacyLoginPath, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(path, mountedLegacyLoginPath, StringComparison.OrdinalIgnoreCase);
+        bool isAuthenticationRoot =
+            string.Equals(path, "/auth", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(path, "/auth/", StringComparison.OrdinalIgnoreCase);
+        bool isCanonicalAuthenticationPath =
+            string.Equals(path, "/auth", StringComparison.OrdinalIgnoreCase) ||
+            path.StartsWith("/auth/", StringComparison.OrdinalIgnoreCase);
+
+        if (isLogoutEndpoint)
         {
+            if (!string.Equals(method, "GET", StringComparison.OrdinalIgnoreCase))
+            {
+                Dictionary<string, string> methodHeaders = new Dictionary<string, string>();
+                methodHeaders["Allow"] = "GET";
+                await WriteHttpResponseAsync(stream, 405, "Method Not Allowed", "text/plain; charset=utf-8", "Method not allowed.", methodHeaders);
+                return true;
+            }
             string logoutToken = GetAuthenticationCookie(headers);
             long removedSessionExpiry;
-            if (!string.IsNullOrWhiteSpace(logoutToken)) activeAuthenticationSessions.TryRemove(logoutToken, out removedSessionExpiry);
+            bool removedCurrentSession =
+                !string.IsNullOrWhiteSpace(logoutToken) &&
+                activeAuthenticationSessions.TryRemove(logoutToken, out removedSessionExpiry);
+            // One broadcaster-configured account protects every viewer origin
+            // and TLS signaling port. Logout is therefore authoritative for
+            // that account: invalidate every issued token so an alias-host
+            // cookie or concurrent signaling session cannot silently keep the
+            // viewer authenticated.
+            activeAuthenticationSessions.Clear();
             Dictionary<string, string> logoutHeaders = new Dictionary<string, string>();
-            logoutHeaders["Set-Cookie"] = "GstGlassAuth=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0";
-            logoutHeaders["Location"] = loginPath;
+            logoutHeaders["Set-Cookie"] = "GstGlassAuth=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT";
+            logoutHeaders["Clear-Site-Data"] = "\"cookies\", \"storage\"";
+            // Straight to the login page, not the viewer -- redirecting to the
+            // viewer here just means that request immediately gets challenged
+            // and redirected to login again anyway, a wasted extra round trip.
+            // The return target is still the actual viewer mount (e.g.
+            // "/live/"), not bare "/" -- nothing is served at the site root,
+            // so a bare "/" return would strand a re-logged-in viewer on a
+            // blank/404 page instead of back at the broadcast.
+            logoutHeaders["Location"] = loginPath + "?return=" + Uri.EscapeDataString(GetMountedViewerPath());
+            pendingLog.Enqueue(
+                "viewer logout from " + remoteAddress +
+                "; current session " + (removedCurrentSession ? "removed" : "not found") +
+                "; all viewer sessions invalidated");
             await WriteHttpResponseAsync(stream, 303, "See Other", "text/plain; charset=utf-8", "Signed out.", logoutHeaders);
             return true;
         }
 
-        if (string.Equals(path, loginPath, StringComparison.OrdinalIgnoreCase))
+        if (isAuthenticationRoot)
+        {
+            if (authenticationEnabled && !HasValidAuthenticationCookie(headers))
+            {
+                await WriteRedirectAsync(
+                    stream,
+                    loginPath + "?return=" + Uri.EscapeDataString(GetMountedViewerPath())
+                );
+            }
+            else
+            {
+                await WriteRedirectAsync(stream, GetMountedViewerPath());
+            }
+            return true;
+        }
+
+        // /auth/ is a permanently reserved gate namespace. Unknown children
+        // are answered locally and are never eligible for authenticated
+        // forwarding to the viewer or signaling upstreams.
+        if (isCanonicalAuthenticationPath && !isLoginEndpoint)
+        {
+            await WriteHttpResponseAsync(
+                stream,
+                404,
+                "Not Found",
+                "text/plain; charset=utf-8",
+                "Authentication endpoint not found.",
+                null
+            );
+            return true;
+        }
+
+        // Auth endpoints belong to the TLS edge even while authentication is
+        // being enabled, disabled, or restarted. Logout above must always be
+        // consumable so a stale HttpOnly cookie can be expired. A login route
+        // reached while enforcement is off simply returns to the viewer.
+        if (!authenticationEnabled)
+        {
+            if (isLoginEndpoint)
+            {
+                await WriteRedirectAsync(stream, GetMountedViewerPath());
+                return true;
+            }
+            return false;
+        }
+
+        if (isLoginEndpoint)
         {
             string returnTarget = GetQueryValue(rawTarget, "return");
+            if (string.IsNullOrWhiteSpace(returnTarget)) returnTarget = GetMountedViewerPath();
             if (method == "GET")
             {
                 if (HasValidAuthenticationCookie(headers))
@@ -2158,6 +2312,45 @@ public class TlsTerminatingProxy
         return true;
     }
 
+    private string GetMountedAuthenticationPath(string rootPath)
+    {
+        string mount = (AuthenticationMountPath ?? "").TrimEnd('/');
+        if (string.IsNullOrEmpty(mount)) mount = (DirectoryRedirectPath ?? "").TrimEnd('/');
+        if (string.IsNullOrEmpty(mount)) return rootPath;
+        return mount + rootPath;
+    }
+
+    private bool IsAuthenticationEndpointPath(string path)
+    {
+        if (string.IsNullOrEmpty(path)) return false;
+        if (string.Equals(path, "/auth", StringComparison.OrdinalIgnoreCase) ||
+            path.StartsWith("/auth/", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+        const string loginPath = "/auth/login";
+        const string logoutPath = "/auth/logout";
+        const string legacyLoginPath = "/__gstglass/auth/login";
+        const string legacyLogoutPath = "/__gstglass/auth/logout";
+        const string legacySimpleLogoutPath = "/logout";
+        return
+            string.Equals(path, loginPath, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(path, logoutPath, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(path, legacyLoginPath, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(path, legacyLogoutPath, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(path, legacySimpleLogoutPath, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(path, GetMountedAuthenticationPath(legacyLoginPath), StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(path, GetMountedAuthenticationPath(legacyLogoutPath), StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(path, GetMountedAuthenticationPath(legacySimpleLogoutPath), StringComparison.OrdinalIgnoreCase);
+    }
+
+    private string GetMountedViewerPath()
+    {
+        string mount = (AuthenticationMountPath ?? "").TrimEnd('/');
+        if (string.IsNullOrEmpty(mount)) mount = (DirectoryRedirectPath ?? "").TrimEnd('/');
+        return string.IsNullOrEmpty(mount) ? "/live/" : mount + "/";
+    }
+
     // Returns true when a redirect was sent (caller must not forward the
     // request). Only fires for an exact, case-insensitive match on a plain
     // GET -- WebSocket upgrades and any other path pass through untouched.
@@ -2234,7 +2427,7 @@ public class TlsTerminatingProxy
             "main{width:min(92vw,420px);padding:32px;border:1px solid #273244;border-radius:16px;background:#111824;box-shadow:0 18px 60px #0008}h1{margin:0 0 8px;font-size:1.55rem}p{color:#aab6c8}.error{color:#ff9b9b}" +
             "label{display:block;margin:18px 0 6px;font-weight:650}input{width:100%;padding:12px;border:1px solid #35435a;border-radius:9px;background:#090f19;color:#fff;font:inherit}button{width:100%;margin-top:22px;padding:12px;border:0;border-radius:9px;background:#4f8cff;color:white;font:inherit;font-weight:750;cursor:pointer}</style></head>" +
             "<body><main><h1>GStreamer Glass</h1><p>This broadcast requires viewer authentication.</p>" + error +
-            "<form method=\"post\" action=\"/__gstglass/auth/login\"><input type=\"hidden\" name=\"return\" value=\"" + WebUtility.HtmlEncode(safeReturn) + "\">" +
+            "<form method=\"post\" action=\"./login\"><input type=\"hidden\" name=\"return\" value=\"" + WebUtility.HtmlEncode(safeReturn) + "\">" +
             "<label for=\"username\">Username</label><input id=\"username\" name=\"username\" autocomplete=\"username\" required value=\"" + WebUtility.HtmlEncode(authenticationUsername) + "\">" +
             "<label for=\"password\">Password</label><input id=\"password\" name=\"password\" type=\"password\" autocomplete=\"current-password\" required autofocus>" +
             "<button type=\"submit\">Watch broadcast</button></form></main></body></html>";
@@ -2587,6 +2780,57 @@ public class TlsTerminatingProxy
         int query = path.IndexOf('?');
         if (query >= 0) path = path.Substring(0, query);
         return path.TrimEnd('/');
+    }
+
+    private static bool IsWebSocketUpgradeRequest(byte[] header)
+    {
+        if (header == null || header.Length == 0) return false;
+        string text;
+        try { text = Encoding.ASCII.GetString(header); }
+        catch { return false; }
+        string[] lines = text.Split(new string[] { "\r\n" }, StringSplitOptions.None);
+        Dictionary<string, string> headers = ParseHttpHeaders(lines);
+        string upgrade;
+        return headers.TryGetValue("Upgrade", out upgrade) && upgrade.IndexOf("websocket", StringComparison.OrdinalIgnoreCase) >= 0;
+    }
+
+    // Rewrites (or adds) a Connection header on a raw HTTP request so the
+    // header always reads "Connection: close", forcing a compliant upstream
+    // HTTP/1.1 server to close after answering rather than keeping the
+    // connection alive for a request it never actually said. Operates on the
+    // exact header-line split produced by "\r\n", so re-joining always
+    // reproduces byte-for-byte valid CRLF-terminated request text.
+    private static byte[] ForceConnectionCloseHeader(byte[] header)
+    {
+        string text;
+        try { text = Encoding.ASCII.GetString(header); }
+        catch { return header; }
+        string[] lines = text.Split(new string[] { "\r\n" }, StringSplitOptions.None);
+        List<string> rebuilt = new List<string>();
+        bool sawConnection = false;
+        foreach (string line in lines)
+        {
+            int separator = line.IndexOf(':');
+            if (separator > 0 && string.Equals(line.Substring(0, separator).Trim(), "Connection", StringComparison.OrdinalIgnoreCase))
+            {
+                rebuilt.Add("Connection: close");
+                sawConnection = true;
+            }
+            else
+            {
+                rebuilt.Add(line);
+            }
+        }
+        if (!sawConnection)
+        {
+            // The split of a well-formed "...\r\n\r\n" request always ends in
+            // two empty strings (the blank line, then after the final CRLF);
+            // insert just before those so the blank-line terminator survives.
+            int insertAt = rebuilt.Count >= 2 ? rebuilt.Count - 2 : rebuilt.Count;
+            rebuilt.Insert(Math.Max(0, insertAt), "Connection: close");
+        }
+        try { return Encoding.ASCII.GetBytes(string.Join("\r\n", rebuilt)); }
+        catch { return header; }
     }
 }
 '@
