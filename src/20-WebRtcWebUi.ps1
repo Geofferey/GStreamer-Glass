@@ -421,10 +421,9 @@ function Add-DirectWebRtcViewerQuery {
     $splitAudioPort = if ((Test-DirectWebRtcSplitAvPipelines) -and -not (Test-DirectWebRtcUnifiedPublisher)) { [int](Get-DirectWebRtcSplitAudioSignalingPort) } else { 0 }
     $sharedSignaling = if (Test-DirectWebRtcSharedSignaling) { 1 } else { 0 }
     $splitAudioPart = if ($splitAudioPort -gt 0) { "&splitAudioPort=$splitAudioPort&splitAudioSignalingPort=$splitAudioPort&sharedSignaling=$sharedSignaling&splitSharedSignaling=$sharedSignaling" } else { '' }
-    $externalSignalingMapped = Test-UpnpSignalingMappedExternally
-    $externalSignalingPort = if ($externalSignalingMapped) { [int]$numUpnpSignalingExternalPort.Value } else { 0 }
+    $externalSignalingPort = Get-DirectWebRtcEffectiveExternalSignalingPort
     $externalSignalingPart = if ($externalSignalingPort -gt 0) { "&externalSignalingPort=$externalSignalingPort" } else { '' }
-    $externalSplitAudioPort = if ($externalSignalingMapped -and $splitAudioPort -gt 0) { [int]$numUpnpSplitAudioExternalPort.Value } else { 0 }
+    $externalSplitAudioPort = Get-DirectWebRtcEffectiveSplitAudioExternalSignalingPort
     $externalSplitAudioPart = if ($externalSplitAudioPort -gt 0) { "&splitAudioExternalSignalingPort=$externalSplitAudioPort" } else { '' }
     $proxyVideoPath = [System.Uri]::EscapeDataString([string]$playerSettings.VideoSignalingProxyPath)
     $proxyAudioPath = [System.Uri]::EscapeDataString([string]$playerSettings.AudioSignalingProxyPath)

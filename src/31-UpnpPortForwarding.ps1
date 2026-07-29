@@ -137,25 +137,62 @@ function Get-UpnpRequiredMappings {
     if ([string]$cmbProtocol.SelectedItem -ne $script:DirectWebRtcProtocolName) { return @() }
 
     $mappings = @()
+    # Once Let's Encrypt TLS termination is active, webrtcsink's own
+    # signalling/web servers are bound loopback-only (17-DirectWebRtcPipeline.ps1)
+    # -- only the TlsTerminatingProxy is actually listening on this machine's
+    # LAN IP, so that's what the router needs to reach, not webrtcsink's
+    # original port. Mapped 1:1 like RTP: the proxy already applied its own
+    # external-port override when it started listening
+    # (Get-LetsEncryptSignalingProxyPort etc. in 33-LetsEncrypt.ps1), so a
+    # second remap here would just be a confusing second layer of the same
+    # thing -- UPnP's own external-port-override fields don't apply in this
+    # mode.
+    $tlsActive = Test-LetsEncryptTlsActive
 
     if ($chkUpnpMapSignaling -and $chkUpnpMapSignaling.Checked) {
-        $internalPort = [int]$numDirectWebRtcSignalingPort.Value
-        $externalOverride = if ($numUpnpSignalingExternalPort) { [int]$numUpnpSignalingExternalPort.Value } else { 0 }
-        $mappings += [pscustomobject]@{
-            ExternalPort = if ($externalOverride -gt 0) { $externalOverride } else { $internalPort }
-            InternalPort = $internalPort
-            Protocol     = 'TCP'
-            Description  = "${script:UpnpMappingTag}Video signalling"
+        if ($tlsActive) {
+            $proxyPort = Get-LetsEncryptSignalingProxyPort
+            $mappings += [pscustomobject]@{
+                ExternalPort = $proxyPort
+                InternalPort = $proxyPort
+                Protocol     = 'TCP'
+                Description  = "${script:UpnpMappingTag}Video signalling (TLS)"
+            }
+        }
+        else {
+            $internalPort = [int]$numDirectWebRtcSignalingPort.Value
+            $externalOverride = if ($numUpnpSignalingExternalPort) { [int]$numUpnpSignalingExternalPort.Value } else { 0 }
+            $mappings += [pscustomobject]@{
+                ExternalPort = if ($externalOverride -gt 0) { $externalOverride } else { $internalPort }
+                InternalPort = $internalPort
+                Protocol     = 'TCP'
+                Description  = "${script:UpnpMappingTag}Video signalling"
+            }
         }
 
-        if ((Test-DirectWebRtcSplitAvPipelines) -and -not (Test-DirectWebRtcSharedSignaling)) {
-            $splitInternalPort = [int](Get-DirectWebRtcSplitAudioSignalingPort)
-            $splitExternalOverride = if ($numUpnpSplitAudioExternalPort) { [int]$numUpnpSplitAudioExternalPort.Value } else { 0 }
-            $mappings += [pscustomobject]@{
-                ExternalPort = if ($splitExternalOverride -gt 0) { $splitExternalOverride } else { $splitInternalPort }
-                InternalPort = $splitInternalPort
-                Protocol     = 'TCP'
-                Description  = "${script:UpnpMappingTag}Audio signalling"
+        # Unified-publisher mode bundles audio+video into one producer/server
+        # (no separate split-audio port exists then, regardless of the shared-
+        # signalling toggle) -- matches the same condition
+        # Write-DirectWebRtcWebClientConfig already uses for splitAudioSignalingPort.
+        if ((Test-DirectWebRtcSplitAvPipelines) -and -not (Test-DirectWebRtcUnifiedPublisher) -and -not (Test-DirectWebRtcSharedSignaling)) {
+            if ($tlsActive) {
+                $splitProxyPort = Get-LetsEncryptSplitAudioProxyPort
+                $mappings += [pscustomobject]@{
+                    ExternalPort = $splitProxyPort
+                    InternalPort = $splitProxyPort
+                    Protocol     = 'TCP'
+                    Description  = "${script:UpnpMappingTag}Audio signalling (TLS)"
+                }
+            }
+            else {
+                $splitInternalPort = [int](Get-DirectWebRtcSplitAudioSignalingPort)
+                $splitExternalOverride = if ($numUpnpSplitAudioExternalPort) { [int]$numUpnpSplitAudioExternalPort.Value } else { 0 }
+                $mappings += [pscustomobject]@{
+                    ExternalPort = if ($splitExternalOverride -gt 0) { $splitExternalOverride } else { $splitInternalPort }
+                    InternalPort = $splitInternalPort
+                    Protocol     = 'TCP'
+                    Description  = "${script:UpnpMappingTag}Audio signalling"
+                }
             }
         }
     }
@@ -166,16 +203,30 @@ function Get-UpnpRequiredMappings {
     # browser has to reach before it can even open the signalling socket.
     if ($chkUpnpMapWebServer -and $chkUpnpMapWebServer.Checked) {
         try {
-            $webUri = [System.Uri](Normalize-DirectWebRtcWebAddress $txtDestination.Text)
+            $bindAddress = if ($tlsActive) { Get-DirectWebRtcWebServerBindAddress -Destination $txtDestination.Text } else { Normalize-DirectWebRtcWebAddress $txtDestination.Text }
+            $webUri = [System.Uri]$bindAddress
             $webPort = $webUri.Port
-            $webExternalOverride = if ($numUpnpWebServerExternalPort) { [int]$numUpnpWebServerExternalPort.Value } else { 0 }
-            $webExternalPort = if ($webExternalOverride -gt 0) { $webExternalOverride } else { $webPort }
-            if ($webPort -gt 0 -and -not ($mappings | Where-Object { $_.ExternalPort -eq $webExternalPort -and $_.Protocol -eq 'TCP' })) {
-                $mappings += [pscustomobject]@{
-                    ExternalPort = $webExternalPort
-                    InternalPort = $webPort
-                    Protocol     = 'TCP'
-                    Description  = "${script:UpnpMappingTag}Web viewer"
+            if ($tlsActive) {
+                $webProxyPort = Get-LetsEncryptWebServerProxyPort -InternalPort $webPort
+                if ($webPort -gt 0 -and -not ($mappings | Where-Object { $_.ExternalPort -eq $webProxyPort -and $_.Protocol -eq 'TCP' })) {
+                    $mappings += [pscustomobject]@{
+                        ExternalPort = $webProxyPort
+                        InternalPort = $webProxyPort
+                        Protocol     = 'TCP'
+                        Description  = "${script:UpnpMappingTag}Web viewer (TLS)"
+                    }
+                }
+            }
+            else {
+                $webExternalOverride = if ($numUpnpWebServerExternalPort) { [int]$numUpnpWebServerExternalPort.Value } else { 0 }
+                $webExternalPort = if ($webExternalOverride -gt 0) { $webExternalOverride } else { $webPort }
+                if ($webPort -gt 0 -and -not ($mappings | Where-Object { $_.ExternalPort -eq $webExternalPort -and $_.Protocol -eq 'TCP' })) {
+                    $mappings += [pscustomobject]@{
+                        ExternalPort = $webExternalPort
+                        InternalPort = $webPort
+                        Protocol     = 'TCP'
+                        Description  = "${script:UpnpMappingTag}Web viewer"
+                    }
                 }
             }
         }

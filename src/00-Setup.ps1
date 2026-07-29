@@ -1736,6 +1736,233 @@ public static class GstProcessJob
 '@
 }
 
+# A protocol-agnostic TLS-terminating TCP relay: accepts a TLS connection on
+# an external port and blind-relays the decrypted byte stream to a plain TCP
+# target -- webrtcsink's own HTTP/WS server, bound to loopback-only once this
+# sits in front of it (see 17-DirectWebRtcPipeline.ps1). After TLS decryption
+# a plain HTTPS GET and a WS upgrade handshake are just bytes indistinguishable
+# from the unencrypted wire format, so one relay implementation covers both
+# the web viewer and signalling sockets -- no HTTP-aware parsing needed. Not
+# static like the classes above: multiple independent instances run at once
+# (video signalling, split-audio signalling, web viewer), one per exposed
+# port -- see src/27-StreamLifecycle.ps1 for where instances are started/
+# stopped.
+if (-not ('TlsTerminatingProxy' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Net;
+using System.Net.Security;
+using System.Net.Sockets;
+using System.Security.Authentication;
+using System.Security.Cryptography.X509Certificates;
+using System.Threading.Tasks;
+
+public class TlsTerminatingProxy
+{
+    // Diagnostic label set by the caller (e.g. "web viewer") -- purely
+    // cosmetic, used only when formatting drained log messages.
+    public string Label;
+
+    private TcpListener listener;
+    private X509Certificate2 certificate;
+    private string targetHost;
+    private int targetPort;
+    private volatile bool running;
+
+    // Async continuations resume on arbitrary ThreadPool threads with no
+    // PowerShell runspace bound to them, so failures here cannot invoke a
+    // PowerShell callback directly (that throws "no Runspace available"
+    // and, since this all runs under async void, crashes the process).
+    // Queue messages instead and let the UI-thread poll timer drain them
+    // via PollLogMessage(), the same pattern PollTerminalMessage() uses
+    // for GstControlledScenePreview/GstWebRtcConsumerPortRange.
+    private readonly System.Collections.Concurrent.ConcurrentQueue<string> pendingLog = new System.Collections.Concurrent.ConcurrentQueue<string>();
+
+    // Optional path -> internal-port overrides, checked against the decrypted
+    // HTTP request's path before falling back to the default target. Lets one
+    // external port also serve path-routed WebSocket signaling endpoints (the
+    // "Video path"/"Voice path" fields), mirroring what an external IIS/HAProxy
+    // URL-rewrite rule does in front of Glass -- see tools/examples/IIS/live/web.config.
+    private readonly System.Collections.Generic.List<Tuple<string, int>> pathRoutes = new System.Collections.Generic.List<Tuple<string, int>>();
+
+    public void Start(int externalPort, string targetHost, int targetPort, X509Certificate2 certificate)
+    {
+        this.targetHost = targetHost;
+        this.targetPort = targetPort;
+        this.certificate = certificate;
+        this.listener = new TcpListener(IPAddress.Any, externalPort);
+        this.listener.Start();
+        this.running = true;
+        AcceptLoop();
+    }
+
+    public void AddPathRoute(string path, int internalPort)
+    {
+        if (string.IsNullOrWhiteSpace(path) || internalPort <= 0) return;
+        pathRoutes.Add(Tuple.Create(path.TrimEnd('/'), internalPort));
+    }
+
+    public void Stop()
+    {
+        running = false;
+        try { if (listener != null) listener.Stop(); } catch { }
+    }
+
+    public string PollLogMessage()
+    {
+        string message;
+        return pendingLog.TryDequeue(out message) ? message : null;
+    }
+
+    private async void AcceptLoop()
+    {
+        while (running)
+        {
+            TcpClient client;
+            try
+            {
+                client = await listener.AcceptTcpClientAsync();
+            }
+            catch (Exception ex)
+            {
+                if (running) pendingLog.Enqueue("listener stopped accepting: " + ex.Message);
+                break;
+            }
+            HandleClient(client);
+        }
+    }
+
+    private async void HandleClient(TcpClient client)
+    {
+        try
+        {
+            client.NoDelay = true;
+            using (client)
+            using (SslStream sslStream = new SslStream(client.GetStream(), false))
+            {
+                try
+                {
+                    // Explicit protocols rather than SslProtocols.None (meant to mean
+                    // "let the OS pick") -- on at least one Windows 11 Enterprise host
+                    // in the field, None threw ArgumentException("...SslProtocolType
+                    // enumeration...") out of AuthenticateAsServerAsync, likely due to
+                    // local SChannel/TLS policy restricting the OS-default protocol
+                    // set. Naming the protocols explicitly sidesteps that.
+                    await sslStream.AuthenticateAsServerAsync(certificate, false, SslProtocols.Tls12 | SslProtocols.Tls13, false);
+                }
+                catch (Exception ex)
+                {
+                    pendingLog.Enqueue("TLS handshake failed: " + ex.Message);
+                    return;
+                }
+                int effectivePort = targetPort;
+                byte[] headerBytes = new byte[0];
+                if (pathRoutes.Count > 0)
+                {
+                    headerBytes = await ReadHttpRequestHeaderAsync(sslStream);
+                    string path = ExtractHttpRequestPath(headerBytes);
+                    if (path != null)
+                    {
+                        foreach (Tuple<string, int> route in pathRoutes)
+                        {
+                            if (string.Equals(route.Item1, path, StringComparison.OrdinalIgnoreCase))
+                            {
+                                effectivePort = route.Item2;
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                using (TcpClient upstream = new TcpClient())
+                {
+                    upstream.NoDelay = true;
+                    try
+                    {
+                        await upstream.ConnectAsync(targetHost, effectivePort);
+                    }
+                    catch (Exception ex)
+                    {
+                        pendingLog.Enqueue("could not reach upstream " + targetHost + ":" + effectivePort + ": " + ex.Message);
+                        return;
+                    }
+                    using (NetworkStream upstreamStream = upstream.GetStream())
+                    {
+                        if (headerBytes.Length > 0) await upstreamStream.WriteAsync(headerBytes, 0, headerBytes.Length);
+                        Task toUpstream = PumpAsync(sslStream, upstreamStream);
+                        Task toClient = PumpAsync(upstreamStream, sslStream);
+                        await Task.WhenAny(toUpstream, toClient);
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            // Best-effort relay: a single connection failing (client
+            // disconnect, reset mid-stream) must never affect the listener
+            // or other connections -- but still surface why for diagnosis.
+            pendingLog.Enqueue("relay error: " + ex.Message);
+        }
+    }
+
+    private static async Task PumpAsync(Stream source, Stream destination)
+    {
+        try
+        {
+            await source.CopyToAsync(destination);
+        }
+        catch
+        {
+        }
+    }
+
+    // Reads exactly up through the blank line that ends an HTTP request's
+    // headers (no body is expected for a GET/WebSocket-upgrade request), one
+    // byte at a time -- this runs once per connection at setup, not on the
+    // media data path, so simplicity wins over throughput here. Whatever is
+    // read is later replayed verbatim to the chosen upstream so no bytes are
+    // lost to the peek. Bails out (returning what it has) past a generous cap
+    // so a non-HTTP or malformed client can't buffer unbounded data.
+    private static async Task<byte[]> ReadHttpRequestHeaderAsync(Stream stream)
+    {
+        List<byte> buffer = new List<byte>();
+        byte[] one = new byte[1];
+        int matched = 0;
+        byte[] terminator = new byte[] { (byte)'\r', (byte)'\n', (byte)'\r', (byte)'\n' };
+        while (buffer.Count < 16384)
+        {
+            int read;
+            try { read = await stream.ReadAsync(one, 0, 1); }
+            catch { break; }
+            if (read <= 0) break;
+            buffer.Add(one[0]);
+            matched = (one[0] == terminator[matched]) ? matched + 1 : (one[0] == terminator[0] ? 1 : 0);
+            if (matched == terminator.Length) break;
+        }
+        return buffer.ToArray();
+    }
+
+    private static string ExtractHttpRequestPath(byte[] header)
+    {
+        if (header == null || header.Length == 0) return null;
+        string text;
+        try { text = System.Text.Encoding.ASCII.GetString(header); }
+        catch { return null; }
+        int lineEnd = text.IndexOf("\r\n");
+        string requestLine = lineEnd >= 0 ? text.Substring(0, lineEnd) : text;
+        string[] parts = requestLine.Split(' ');
+        if (parts.Length < 2) return null;
+        string path = parts[1];
+        int query = path.IndexOf('?');
+        if (query >= 0) path = path.Substring(0, query);
+        return path.TrimEnd('/');
+    }
+}
+'@
+}
+
 $script:AppVersion = '3.8.3a'
 $script:AppName = "GStreamer Glass v$($script:AppVersion)"
 $script:ConfigDirectory = Join-Path $env:APPDATA 'GStreamerBasicWhipStreamer'

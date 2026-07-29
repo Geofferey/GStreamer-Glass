@@ -351,13 +351,15 @@ function Start-GstStream {
             $tracerEnvState = $null
             try {
                 $tracerEnvState = Set-GstTracerEnvironment -Enable:([bool]$chkBufferLatenessTracer.Checked) -DebugSpec $gstDebugSpec -NoColor:([bool]$chkGstDebugNoColor.Checked)
+                $workerMinRtpPort = if ($portRangeWorkerRequested) { [int]$numDirectWebRtcMinRtpPort.Value } else { 0 }
+                $workerMaxRtpPort = if ($portRangeWorkerRequested) { [int]$numDirectWebRtcMaxRtpPort.Value } else { 0 }
                 $workerStarted = Start-ControlledLiveWorker `
                     -Pipeline $pipelineDescription `
                     -WindowHandle $renderTarget.Handle `
                     -Width ([Math]::Max(1, $renderSize.Width)) `
                     -Height ([Math]::Max(1, $renderSize.Height)) `
-                    -MinRtpPort (if ($portRangeWorkerRequested) { [int]$numDirectWebRtcMinRtpPort.Value } else { 0 }) `
-                    -MaxRtpPort (if ($portRangeWorkerRequested) { [int]$numDirectWebRtcMaxRtpPort.Value } else { 0 })
+                    -MinRtpPort $workerMinRtpPort `
+                    -MaxRtpPort $workerMaxRtpPort
                 if (-not $workerStarted) { throw 'The controlled live worker did not start.' }
             }
             finally {
@@ -381,6 +383,9 @@ function Start-GstStream {
             }
             if ($chkDdnsEnabled -and $chkDdnsEnabled.Checked -and $transportEnabled) {
                 try { Update-DdnsRecord } catch { Append-Log "DDNS: $($_.Exception.Message)" }
+            }
+            if ($chkLetsEncryptEnabled -and $chkLetsEncryptEnabled.Checked -and $transportEnabled) {
+                try { Start-LetsEncryptTlsProxies } catch { Append-Log "ACME: $($_.Exception.Message)" }
             }
 
             $mediaSuffix = if ($script:MediaMtxProcess -and -not $script:MediaMtxProcess.HasExited) { " + MediaMTX PID $($script:MediaMtxProcess.Id)" } else { '' }
@@ -476,6 +481,9 @@ function Start-GstStream {
         }
         if ($chkDdnsEnabled -and $chkDdnsEnabled.Checked -and $transportEnabled) {
             try { Update-DdnsRecord } catch { Append-Log "DDNS: $($_.Exception.Message)" }
+        }
+        if ($chkLetsEncryptEnabled -and $chkLetsEncryptEnabled.Checked -and $transportEnabled) {
+            try { Start-LetsEncryptTlsProxies } catch { Append-Log "ACME: $($_.Exception.Message)" }
         }
 
         if ($script:JobHandle -ne [IntPtr]::Zero) {
@@ -579,6 +587,7 @@ function Start-GstStream {
         }
         Close-WebRtcPortRangeWorkerPipe
         try { Remove-UpnpPortMappings } catch {}
+        try { Stop-LetsEncryptTlsProxies } catch {}
         $script:GstProcess = $null
         $script:GstVideoProcess = $null
         $script:GstAudioProcess = $null
@@ -654,6 +663,7 @@ function Stop-ControlledLiveStream {
     # -- see the identical comment in Stop-GstStream's plain-path teardown.
     if (-not $Restart) {
         try { Remove-UpnpPortMappings } catch {}
+        try { Stop-LetsEncryptTlsProxies } catch {}
     }
     try { if ($workerProcess) { $workerProcess.Dispose() } } catch {}
     $script:GstProcess = $null
@@ -830,6 +840,7 @@ function Stop-GstStream {
     # a restart is about to re-map the exact same ports moments later anyway.
     if (-not $Restart) {
         try { Remove-UpnpPortMappings } catch {}
+        try { Stop-LetsEncryptTlsProxies } catch {}
     }
     $script:GstProcess = $null
     $script:GstVideoProcess = $null

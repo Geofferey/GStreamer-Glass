@@ -4727,6 +4727,7 @@ $pollTimer.Add_Tick({
     $pending = Drain-ManagedProcessLogs
     if ($pending) { Append-Log $pending }
     Update-GstThreadCountStatus
+    Drain-LetsEncryptTlsProxyLogs
 
     Try-AttachPreview
 

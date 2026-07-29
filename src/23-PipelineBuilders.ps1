@@ -334,16 +334,12 @@ function Build-GstArguments {
             $timestampOption = Get-AbsoluteTimestampTransportOption -Protocol $protocol -SinkRole Video
             $timestampOption = if ([string]::IsNullOrWhiteSpace($timestampOption)) { '' } else { " $timestampOption" }
 
-            $webAddress = Quote-GstValue (Normalize-DirectWebRtcWebAddress $destination)
+            $webAddress = Quote-GstValue (Get-DirectWebRtcWebServerBindAddress -Destination $destination)
             $webPathSegment = Get-DirectWebRtcWebServerPathSegment
             $webPathOption = if ([string]::IsNullOrWhiteSpace($webPathSegment)) { '' } else { ' web-server-path=' + (Quote-GstValue $webPathSegment) }
             $webDirectory = Get-DirectWebRtcWebDirectory
             $webDirectoryOption = if ([string]::IsNullOrWhiteSpace($webDirectory)) { '' } else { ' web-server-directory=' + (Quote-GstValue $webDirectory) }
-            $signalHost = $txtDirectWebRtcSignalingHost.Text.Trim()
-            if ([string]::IsNullOrWhiteSpace($signalHost)) {
-                $signalHost = $script:DefaultDirectWebRtcSignalingHost
-            }
-            $signalHost = Quote-GstValue $signalHost
+            $signalHost = Quote-GstValue (Get-DirectWebRtcSignalingServerBindHost)
             $signalPort = [int]$numDirectWebRtcSignalingPort.Value
             $stunServer = $txtDirectWebRtcStun.Text.Trim()
             $stunOption = if ([string]::IsNullOrWhiteSpace($stunServer)) { '' } else { ' stun-server=' + (Quote-GstValue $stunServer) }

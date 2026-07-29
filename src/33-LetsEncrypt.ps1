@@ -21,6 +21,10 @@
 # Like UPnP/DDNS, a failure here never blocks the stream: every call site
 # wraps these functions in try/catch and just logs on failure.
 
+# Running TlsTerminatingProxy instances (see Start-LetsEncryptTlsProxies),
+# one per externally-exposed port. Empty when TLS termination isn't active.
+$script:LetsEncryptTlsProxies = @()
+
 function ConvertTo-AcmeBase64Url {
     param([byte[]]$Bytes)
     return [Convert]::ToBase64String($Bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_')
@@ -466,6 +470,39 @@ function Test-LetsEncryptCertificateNeedsRenewal {
     catch { return $true }
 }
 
+# Whether TLS termination should actually be active right now: the feature
+# is enabled, a DDNS hostname is configured, and a certificate matching
+# that hostname already exists on disk (issued via "Issue/Renew Now" or a
+# previous stream start -- see Update-LetsEncryptCertificate). This is the
+# single source of truth src/17-DirectWebRtcPipeline.ps1,
+# src/27-StreamLifecycle.ps1, and src/31-UpnpPortForwarding.ps1 all check,
+# so "is TLS on" can never disagree between the pipeline, the proxy
+# lifecycle, and the UPnP mapping.
+function Test-LetsEncryptTlsActive {
+    if (-not ($chkLetsEncryptEnabled -and $chkLetsEncryptEnabled.Checked)) { return $false }
+    $hostname = [string]$txtDdnsHostname.Text.Trim()
+    if ([string]::IsNullOrWhiteSpace($hostname)) { return $false }
+    $state = Get-LetsEncryptCertificateState
+    return [bool]($state -and [string]$state.Hostname -eq $hostname -and (Test-Path -LiteralPath ([string]$state.PfxPath)))
+}
+
+# Loads the issued certificate (with its private key) for TlsTerminatingProxy
+# instances to present. Returns $null rather than throwing if TLS isn't
+# active or the file can't be loaded -- every caller treats a missing
+# certificate as "skip starting the proxy," best-effort like every other
+# UPnP/DDNS/ACME integration point.
+function Get-LetsEncryptTlsCertificate {
+    if (-not (Test-LetsEncryptTlsActive)) { return $null }
+    $state = Get-LetsEncryptCertificateState
+    try {
+        return [System.Security.Cryptography.X509Certificates.X509Certificate2]::new([string]$state.PfxPath)
+    }
+    catch {
+        Append-Log "ACME: could not load certificate from '$($state.PfxPath)': $($_.Exception.Message)"
+        return $null
+    }
+}
+
 # Top-level orchestrator, same shape as Update-DdnsRecord: gated on the
 # enable checkbox, best-effort, skips work when the current cert is still
 # valid and not near expiry.
@@ -593,4 +630,126 @@ function Update-LetsEncryptUi {
     else {
         Set-LetsEncryptStatus 'ACME: enabled - will issue a certificate when the stream starts' 'DimGray'
     }
+}
+
+# Starts one TlsTerminatingProxy per port that needs external HTTPS/WSS
+# exposure (video signalling, split-audio signalling when it runs its own
+# server, web viewer), forwarding to webrtcsink's own now-loopback-only
+# servers (Get-DirectWebRtcSignalingServerBindHost/-WebServerBindAddress in
+# 17-DirectWebRtcPipeline.ps1). Called from the same stream-start success
+# paths as Add-UpnpPortMappings/Update-DdnsRecord (27-StreamLifecycle.ps1),
+# gated the same way. A no-op if proxies are already running -- an
+# automatic restart-in-place doesn't tear them down (see
+# Stop-LetsEncryptTlsProxies), so this just leaves the still-live ones
+# alone rather than failing on an address-already-in-use retry.
+# The TLS proxy's own effective port for each of the three exposed
+# services (0 = same number as webrtcsink's/the web server's real internal
+# port). Shared by Start-LetsEncryptTlsProxies (what to listen on),
+# Get-DirectWebRtcEffectiveExternalSignalingPort/-SplitAudio... in
+# 17-DirectWebRtcPipeline.ps1 (what to tell the browser), and
+# Get-UpnpRequiredMappings in 31-UpnpPortForwarding.ps1 (what the router
+# should actually forward to, since webrtcsink's own port is loopback-only
+# once TLS is active) -- one calculation, three consumers.
+function Get-LetsEncryptSignalingProxyPort {
+    $override = [int]$numLetsEncryptSignalingExternalPort.Value
+    if ($override -gt 0) { return $override }
+    return [int]$numDirectWebRtcSignalingPort.Value
+}
+
+function Get-LetsEncryptSplitAudioProxyPort {
+    $override = [int]$numLetsEncryptSplitAudioExternalPort.Value
+    if ($override -gt 0) { return $override }
+    return [int](Get-DirectWebRtcSplitAudioSignalingPort)
+}
+
+function Get-LetsEncryptWebServerProxyPort {
+    param([int]$InternalPort)
+    $override = [int]$numLetsEncryptWebServerExternalPort.Value
+    if ($override -gt 0) { return $override }
+    return $InternalPort
+}
+
+function Start-LetsEncryptTlsProxies {
+    if (-not (Test-LetsEncryptTlsActive)) { return }
+    if (@($script:LetsEncryptTlsProxies).Count -gt 0) { return }
+
+    $certificate = Get-LetsEncryptTlsCertificate
+    if (-not $certificate) { return }
+
+    $ports = @()
+    $videoInternalPort = [int]$numDirectWebRtcSignalingPort.Value
+    $videoExternalPort = Get-LetsEncryptSignalingProxyPort
+    $ports += [pscustomobject]@{ Label = 'video signalling'; ExternalPort = $videoExternalPort; InternalPort = $videoInternalPort; PathRoutes = @() }
+
+    $splitAudioActive = (Test-DirectWebRtcSplitAvPipelines) -and -not (Test-DirectWebRtcUnifiedPublisher) -and -not (Test-DirectWebRtcSharedSignaling)
+    $audioInternalPort = 0
+    if ($splitAudioActive) {
+        $audioInternalPort = [int](Get-DirectWebRtcSplitAudioSignalingPort)
+        $audioExternalPort = Get-LetsEncryptSplitAudioProxyPort
+        $ports += [pscustomobject]@{ Label = 'split-audio signalling'; ExternalPort = $audioExternalPort; InternalPort = $audioInternalPort; PathRoutes = @() }
+    }
+
+    try {
+        $webUri = [System.Uri](Get-DirectWebRtcWebServerBindAddress -Destination $txtDestination.Text)
+        $webInternalPort = $webUri.Port
+        $webExternalPort = Get-LetsEncryptWebServerProxyPort -InternalPort $webInternalPort
+        if ($webInternalPort -gt 0 -and -not (@($ports) | Where-Object { $_.ExternalPort -eq $webExternalPort })) {
+            # The "proxy" signaling candidate in player.js requests these paths
+            # on the page's own origin (same host:port as the web viewer),
+            # expecting a smart reverse proxy in front to route them to the
+            # actual signaling server(s) -- see tools/examples/IIS/live/web.config
+            # for the pattern this mirrors. Reuse the same Video/Voice path
+            # fields that already drive that client-side URL (Player tab,
+            # $txtPlayerVideoSignalingProxyPath/$txtPlayerAudioSignalingProxyPath)
+            # so there is exactly one place these paths are configured.
+            $webPathRoutes = @([pscustomobject]@{ Path = [string]$txtPlayerVideoSignalingProxyPath.Text; Port = $videoInternalPort })
+            if ($splitAudioActive) {
+                $webPathRoutes += [pscustomobject]@{ Path = [string]$txtPlayerAudioSignalingProxyPath.Text; Port = $audioInternalPort }
+            }
+            $ports += [pscustomobject]@{ Label = 'web viewer'; ExternalPort = $webExternalPort; InternalPort = $webInternalPort; PathRoutes = $webPathRoutes }
+        }
+    }
+    catch {
+        Append-Log "ACME: could not determine the web viewer port for TLS termination: $($_.Exception.Message)"
+    }
+
+    $started = @()
+    foreach ($portInfo in $ports) {
+        try {
+            $proxy = New-Object TlsTerminatingProxy
+            $proxy.Label = [string]$portInfo.Label
+            foreach ($route in @($portInfo.PathRoutes)) {
+                $proxy.AddPathRoute([string]$route.Path, [int]$route.Port)
+            }
+            $proxy.Start($portInfo.ExternalPort, '127.0.0.1', $portInfo.InternalPort, $certificate)
+            $started += $proxy
+            Append-Log "ACME: TLS termination active for $($portInfo.Label): 0.0.0.0:$($portInfo.ExternalPort) -> 127.0.0.1:$($portInfo.InternalPort)."
+        }
+        catch {
+            Append-Log "ACME: could not start TLS termination for $($portInfo.Label) on port $($portInfo.ExternalPort): $($_.Exception.Message)"
+        }
+    }
+    $script:LetsEncryptTlsProxies = $started
+}
+
+# Called from the UI poll timer (90-MainWindow.ps1), same cadence as the
+# GstControlledScenePreview/GstWebRtcConsumerPortRange terminal-message
+# poll -- proxies queue errors from ThreadPool threads that have no
+# PowerShell runspace, so draining must happen from the UI thread.
+function Drain-LetsEncryptTlsProxyLogs {
+    foreach ($proxy in $script:LetsEncryptTlsProxies) {
+        while ($true) {
+            $message = $proxy.PollLogMessage()
+            if (-not $message) { break }
+            Append-Log "ACME: TLS proxy ($($proxy.Label)): $message"
+        }
+    }
+}
+
+function Stop-LetsEncryptTlsProxies {
+    if (@($script:LetsEncryptTlsProxies).Count -eq 0) { return }
+    foreach ($proxy in $script:LetsEncryptTlsProxies) {
+        try { $proxy.Stop() } catch {}
+    }
+    $script:LetsEncryptTlsProxies = @()
 }
