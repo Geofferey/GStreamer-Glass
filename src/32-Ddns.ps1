@@ -13,6 +13,16 @@
 $script:DdnsLastAppliedIp = $null
 $script:DdnsLastAppliedKey = $null
 
+# Tracks whether the Cloudflare Zone field holds a value the user typed
+# themselves, as opposed to one this app auto-filled from the Hostname
+# field. Starts (or resets) false so auto-fill is active until the user
+# actually types into Zone directly, or until a saved settings load finds
+# a non-blank Zone already on disk (see Load-Settings in 24-Settings.ps1).
+$script:DdnsCloudflareZoneManuallySet = $false
+# Set around a programmatic write to the Zone field so its own TextChanged
+# handler can tell that write apart from the user actually typing into it.
+$script:DdnsSuppressZoneAutoFill = $false
+
 # A handful of plain-text "what's my IP" endpoints, tried in order. No
 # single one of these is authoritative or guaranteed up, so failure of any
 # individual endpoint is expected and not logged -- only exhausting all of
@@ -29,6 +39,37 @@ function Get-DdnsPublicIPv4Address {
         catch {}
     }
     return $null
+}
+
+# Invoke-RestMethod's own exception message for a non-2xx response is just
+# the bare HTTP status line (e.g. "The remote server returned an error:
+# (404) Not Found"), which throws away the part that actually explains why
+# (a provider's JSON error body, e.g. Cloudflare's "Invalid zone identifier").
+# Pull the real response body out of the exception instead, across both
+# Windows PowerShell 5.1 (System.Net.WebException) and PowerShell 7+
+# (Microsoft.PowerShell.Commands.HttpResponseException), falling back to the
+# plain exception message if no body is available.
+function Get-DdnsHttpErrorDetail {
+    param($ErrorRecord)
+    try {
+        if ($ErrorRecord.ErrorDetails -and -not [string]::IsNullOrWhiteSpace($ErrorRecord.ErrorDetails.Message)) {
+            return $ErrorRecord.ErrorDetails.Message
+        }
+    }
+    catch {}
+    try {
+        $webResponse = $ErrorRecord.Exception.Response
+        if ($webResponse) {
+            $stream = $webResponse.GetResponseStream()
+            if ($stream) {
+                $reader = New-Object System.IO.StreamReader($stream)
+                $body = $reader.ReadToEnd()
+                if (-not [string]::IsNullOrWhiteSpace($body)) { return $body }
+            }
+        }
+    }
+    catch {}
+    return $ErrorRecord.Exception.Message
 }
 
 function Update-DdnsRecordDuckDns {
@@ -64,7 +105,7 @@ function Update-DdnsRecordDuckDns {
         return $false
     }
     catch {
-        Append-Log "DDNS (DuckDNS): update failed: $($_.Exception.Message)"
+        Append-Log "DDNS (DuckDNS): update failed: $(Get-DdnsHttpErrorDetail $_)"
         if ($lblDdnsStatus) {
             $lblDdnsStatus.Text = 'DDNS: DuckDNS update failed; see log'
             $lblDdnsStatus.ForeColor = [System.Drawing.Color]::DarkRed
@@ -111,7 +152,7 @@ function Update-DdnsRecordDynV2 {
         return $false
     }
     catch {
-        Append-Log "DDNS (dyndns2): update failed: $($_.Exception.Message)"
+        Append-Log "DDNS (dyndns2): update failed: $(Get-DdnsHttpErrorDetail $_)"
         if ($lblDdnsStatus) {
             $lblDdnsStatus.Text = 'DDNS: dyndns2 update failed; see log'
             $lblDdnsStatus.ForeColor = [System.Drawing.Color]::DarkRed
@@ -120,28 +161,130 @@ function Update-DdnsRecordDynV2 {
     }
 }
 
+# Resolves the Cloudflare Zone field (either a real Zone ID or a domain
+# name -- see the tolerance note in Update-DdnsRecordCloudflare below) to
+# both the Zone ID every zone-scoped API call needs, and the zone's domain
+# name for callers that build a record name from a bare hostname label.
+# Shared by the DDNS A-record updater and the Let's Encrypt DNS-01 TXT
+# challenge (src/33-LetsEncrypt.ps1) so this lookup/tolerance logic exists
+# in exactly one place.
+function Resolve-CloudflareZoneId {
+    param(
+        [string]$ZoneFieldValue,
+        [hashtable]$Headers,
+        [switch]$NeedZoneName
+    )
+    $result = [pscustomobject]@{ Success = $false; ZoneId = $null; ZoneName = $null; ErrorMessage = $null }
+    try {
+        if ($ZoneFieldValue -match '^[0-9a-fA-F]{32}$') {
+            $result.ZoneId = $ZoneFieldValue
+            if ($NeedZoneName) {
+                $zoneLookupUri = "https://api.cloudflare.com/client/v4/zones/$($result.ZoneId)"
+                $zoneLookupResponse = Invoke-RestMethod -Uri $zoneLookupUri -Headers $Headers -TimeoutSec 8 -ErrorAction Stop
+                if (-not $zoneLookupResponse.success -or -not $zoneLookupResponse.result) {
+                    $result.ErrorMessage = "could not look up zone '$ZoneFieldValue'; check the Zone field."
+                    return $result
+                }
+                $result.ZoneName = [string]$zoneLookupResponse.result.name
+            }
+        }
+        else {
+            $result.ZoneName = $ZoneFieldValue
+            $zoneLookupUri = "https://api.cloudflare.com/client/v4/zones?name=$([System.Uri]::EscapeDataString($ZoneFieldValue))"
+            $zoneLookupResponse = Invoke-RestMethod -Uri $zoneLookupUri -Headers $Headers -TimeoutSec 8 -ErrorAction Stop
+            $matchedZone = @($zoneLookupResponse.result) | Select-Object -First 1
+            if (-not $zoneLookupResponse.success -or -not $matchedZone) {
+                $result.ErrorMessage = "could not resolve '$ZoneFieldValue' to a zone on this account; check the Zone field (paste the Zone ID from the dashboard, or the exact registered domain name)."
+                return $result
+            }
+            $result.ZoneId = [string]$matchedZone.id
+        }
+        $result.Success = $true
+    }
+    catch {
+        $result.ErrorMessage = Get-DdnsHttpErrorDetail $_
+    }
+    return $result
+}
+
 function Update-DdnsRecordCloudflare {
     param([string]$Hostname, [string]$IpAddress)
-    $apiToken = [string]$txtDdnsCloudflareApiToken.Text.Trim()
-    $zoneId = [string]$txtDdnsCloudflareZoneId.Text.Trim()
-    $recordId = [string]$txtDdnsCloudflareRecordId.Text.Trim()
-    if ([string]::IsNullOrWhiteSpace($apiToken) -or [string]::IsNullOrWhiteSpace($zoneId) -or [string]::IsNullOrWhiteSpace($recordId)) {
-        Append-Log 'DDNS (Cloudflare): API token, zone ID, and record ID must all be configured; skipping update.'
+    $apiToken = [string]$txtDdnsToken.Text.Trim()
+    $zoneFieldValue = [string]$txtDdnsCloudflareZoneId.Text.Trim()
+
+    # A blank Zone is inferred from everything after the Hostname's first
+    # dot (e.g. Hostname "live.netlabwork.net" -> zone "netlabwork.net"). A
+    # bare Hostname with no dot (e.g. just "live") is combined with the
+    # zone's own domain name instead, once that's resolved below.
+    if ([string]::IsNullOrWhiteSpace($zoneFieldValue) -and $Hostname -match '\.') {
+        $zoneFieldValue = $Hostname.Substring($Hostname.IndexOf('.') + 1)
+    }
+
+    if ([string]::IsNullOrWhiteSpace($apiToken) -or [string]::IsNullOrWhiteSpace($zoneFieldValue)) {
+        Append-Log 'DDNS (Cloudflare): API token, and a zone (or a fully-qualified Hostname to derive one from), must be configured; skipping update.'
         if ($lblDdnsStatus) {
-            $lblDdnsStatus.Text = 'DDNS: Cloudflare token/zone/record not fully configured'
+            $lblDdnsStatus.Text = 'DDNS: Cloudflare token/zone not fully configured'
             $lblDdnsStatus.ForeColor = [System.Drawing.Color]::DarkOrange
         }
         return $false
     }
+
     $proxied = [bool]($chkDdnsCloudflareProxied -and $chkDdnsCloudflareProxied.Checked)
-    $uri = "https://api.cloudflare.com/client/v4/zones/$zoneId/dns_records/$recordId"
-    $body = @{ type = 'A'; name = $Hostname; content = $IpAddress; ttl = 1; proxied = $proxied } | ConvertTo-Json
+    $headers = @{ Authorization = "Bearer $apiToken" }
+    # The Zone field accepts either the real Zone ID (a 32-character hex
+    # string) or the plain registered domain name -- Cloudflare's own
+    # dashboard shows the Zone ID right next to the unrelated Account ID,
+    # and typing the domain there instead is an easy, common mixup.
+    $needZoneName = ($Hostname -notmatch '\.')
+
+    $zoneResolution = Resolve-CloudflareZoneId -ZoneFieldValue $zoneFieldValue -Headers $headers -NeedZoneName:$needZoneName
+    if (-not $zoneResolution.Success) {
+        Append-Log "DDNS (Cloudflare): $($zoneResolution.ErrorMessage)"
+        if ($lblDdnsStatus) {
+            $lblDdnsStatus.Text = 'DDNS: Cloudflare zone not found; see log'
+            $lblDdnsStatus.ForeColor = [System.Drawing.Color]::DarkOrange
+        }
+        return $false
+    }
+    $zoneId = $zoneResolution.ZoneId
+    $zoneName = $zoneResolution.ZoneName
+
     try {
-        $response = Invoke-RestMethod -Uri $uri -Method Patch -Headers @{ Authorization = "Bearer $apiToken" } -ContentType 'application/json' -Body $body -TimeoutSec 8 -ErrorAction Stop
-        if ($response.success) {
-            Append-Log "DDNS (Cloudflare): updated $Hostname -> $IpAddress."
+        # A bare Hostname label (no dot) is the record's subdomain within the
+        # zone above, e.g. Hostname "live" + Zone "netlabwork.net" -> update
+        # "live.netlabwork.net".
+        $recordHostname = if ($needZoneName) { "$Hostname.$zoneName" } else { $Hostname }
+        $body = @{ type = 'A'; name = $recordHostname; content = $IpAddress; ttl = 1; proxied = $proxied } | ConvertTo-Json
+
+        # No record ID is asked of the user -- look the existing A record up
+        # by name within the zone, and fall back to creating it if this is
+        # the first update for a hostname that doesn't have one yet.
+        $listUri = "https://api.cloudflare.com/client/v4/zones/$zoneId/dns_records?type=A&name=$([System.Uri]::EscapeDataString($recordHostname))"
+        $listResponse = Invoke-RestMethod -Uri $listUri -Headers $headers -TimeoutSec 8 -ErrorAction Stop
+        if (-not $listResponse.success) {
+            $errorText = @($listResponse.errors | ForEach-Object { $_.message }) -join '; '
+            Append-Log "DDNS (Cloudflare): could not look up the existing record: $errorText"
             if ($lblDdnsStatus) {
-                $lblDdnsStatus.Text = "DDNS: $Hostname -> $IpAddress (Cloudflare)"
+                $lblDdnsStatus.Text = 'DDNS: Cloudflare record lookup failed; see log'
+                $lblDdnsStatus.ForeColor = [System.Drawing.Color]::DarkOrange
+            }
+            return $false
+        }
+
+        $existing = @($listResponse.result) | Select-Object -First 1
+        if ($existing) {
+            $updateUri = "https://api.cloudflare.com/client/v4/zones/$zoneId/dns_records/$($existing.id)"
+            $response = Invoke-RestMethod -Uri $updateUri -Method Patch -Headers $headers -ContentType 'application/json' -Body $body -TimeoutSec 8 -ErrorAction Stop
+        }
+        else {
+            $createUri = "https://api.cloudflare.com/client/v4/zones/$zoneId/dns_records"
+            $response = Invoke-RestMethod -Uri $createUri -Method Post -Headers $headers -ContentType 'application/json' -Body $body -TimeoutSec 8 -ErrorAction Stop
+        }
+
+        if ($response.success) {
+            Append-Log "DDNS (Cloudflare): updated $recordHostname -> $IpAddress."
+            if ($lblDdnsStatus) {
+                $lblDdnsStatus.Text = "DDNS: $recordHostname -> $IpAddress (Cloudflare)"
                 $lblDdnsStatus.ForeColor = [System.Drawing.Color]::DarkGreen
             }
             return $true
@@ -155,7 +298,7 @@ function Update-DdnsRecordCloudflare {
         return $false
     }
     catch {
-        Append-Log "DDNS (Cloudflare): update failed: $($_.Exception.Message)"
+        Append-Log "DDNS (Cloudflare): update failed: $(Get-DdnsHttpErrorDetail $_)"
         if ($lblDdnsStatus) {
             $lblDdnsStatus.Text = 'DDNS: Cloudflare update failed; see log'
             $lblDdnsStatus.ForeColor = [System.Drawing.Color]::DarkRed
@@ -199,7 +342,7 @@ function Update-DdnsRecordCustom {
         return $true
     }
     catch {
-        Append-Log "DDNS (Custom): update failed: $($_.Exception.Message)"
+        Append-Log "DDNS (Custom): update failed: $(Get-DdnsHttpErrorDetail $_)"
         if ($lblDdnsStatus) {
             $lblDdnsStatus.Text = 'DDNS: custom update failed; see log'
             $lblDdnsStatus.ForeColor = [System.Drawing.Color]::DarkRed
@@ -267,9 +410,14 @@ function Update-DdnsRecord {
     }
 }
 
-# Master/detail UI toggling, following the same .Enabled-only convention as
-# Update-MediaMtxUi -- provider-specific fields stay laid out and just gray
-# out when irrelevant rather than collapsing the pane.
+# Master/detail UI toggling. The provider dropdown already tells the user
+# which service is selected, so there is no need to list every provider's
+# fields at once -- only the group(s) relevant to the selected provider are
+# shown at all (their containing section's .Visible is toggled, which also
+# collapses the FlowLayoutPanel space they would otherwise take up), and a
+# field is reused across providers whenever it is the same kind of value
+# (one shared Token/API Token field for DuckDNS + Cloudflare, one shared
+# Username/Password pair for dyndns2 + Custom URL basic auth).
 function Update-DdnsUi {
     $enabled = [bool]($chkDdnsEnabled -and $chkDdnsEnabled.Checked)
     $provider = if ($cmbDdnsProvider) { [string]$cmbDdnsProvider.SelectedItem } else { '' }
@@ -278,23 +426,31 @@ function Update-DdnsUi {
         if ($control) { $control.Enabled = $enabled }
     }
 
-    $isDuckDns    = $enabled -and $provider -eq 'DuckDNS'
-    $isDynV2      = $enabled -and $provider -eq 'No-IP / Dynu / FreeDNS (dyndns2)'
-    $isCloudflare = $enabled -and $provider -eq 'Cloudflare'
-    $isCustom     = $enabled -and $provider -eq 'Custom URL'
+    $isDuckDns    = $provider -eq 'DuckDNS'
+    $isDynV2      = $provider -eq 'No-IP / Dynu / FreeDNS (dyndns2)'
+    $isCloudflare = $provider -eq 'Cloudflare'
+    $isCustom     = $provider -eq 'Custom URL'
 
-    if ($txtDdnsToken) { $txtDdnsToken.Enabled = $isDuckDns }
-    if ($txtDdnsDynV2UpdateHost) { $txtDdnsDynV2UpdateHost.Enabled = $isDynV2 }
+    if ($lblDdnsTokenCaption) { $lblDdnsTokenCaption.Text = if ($isCloudflare) { 'API Token' } else { 'Token' } }
 
-    foreach ($control in @($txtDdnsUsername, $txtDdnsPassword)) {
-        if ($control) { $control.Enabled = ($isDynV2 -or $isCustom) }
+    if ($script:paneDdnsToken) {
+        $script:paneDdnsToken.Visible = ($isDuckDns -or $isCloudflare)
+        $script:paneDdnsToken.Enabled = $enabled
     }
-
-    foreach ($control in @($txtDdnsCloudflareApiToken, $txtDdnsCloudflareZoneId, $txtDdnsCloudflareRecordId, $chkDdnsCloudflareProxied)) {
-        if ($control) { $control.Enabled = $isCloudflare }
+    if ($script:paneDdnsDynV2) {
+        $script:paneDdnsDynV2.Visible = $isDynV2
+        $script:paneDdnsDynV2.Enabled = $enabled
     }
-
-    foreach ($control in @($txtDdnsCustomUrlTemplate, $cmbDdnsCustomMethod)) {
-        if ($control) { $control.Enabled = $isCustom }
+    if ($script:paneDdnsCloudflareExtra) {
+        $script:paneDdnsCloudflareExtra.Visible = $isCloudflare
+        $script:paneDdnsCloudflareExtra.Enabled = $enabled
+    }
+    if ($script:paneDdnsCustom) {
+        $script:paneDdnsCustom.Visible = $isCustom
+        $script:paneDdnsCustom.Enabled = $enabled
+    }
+    if ($script:paneDdnsAccount) {
+        $script:paneDdnsAccount.Visible = ($isDynV2 -or $isCustom)
+        $script:paneDdnsAccount.Enabled = $enabled
     }
 }

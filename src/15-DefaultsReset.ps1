@@ -214,12 +214,11 @@ function Reset-DdnsDefaults {
     $txtDdnsDynV2UpdateHost.Text = $script:DefaultDdnsDynV2UpdateHost
     $txtDdnsUsername.Text = $script:DefaultDdnsUsername
     $txtDdnsPassword.Text = $script:DefaultDdnsPassword
-    $txtDdnsCloudflareApiToken.Text = $script:DefaultDdnsCloudflareApiToken
     $txtDdnsCloudflareZoneId.Text = $script:DefaultDdnsCloudflareZoneId
-    $txtDdnsCloudflareRecordId.Text = $script:DefaultDdnsCloudflareRecordId
     $chkDdnsCloudflareProxied.Checked = $script:DefaultDdnsCloudflareProxied
     $txtDdnsCustomUrlTemplate.Text = $script:DefaultDdnsCustomUrlTemplate
     if ($cmbDdnsCustomMethod.Items.Contains($script:DefaultDdnsCustomMethod)) { $cmbDdnsCustomMethod.SelectedItem = $script:DefaultDdnsCustomMethod }
+    $script:DdnsCloudflareZoneManuallySet = $false
     Update-DdnsUi
 }
 

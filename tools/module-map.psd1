@@ -380,6 +380,8 @@
 
     '32-Ddns.ps1' = @(
         'Get-DdnsPublicIPv4Address'
+        'Get-DdnsHttpErrorDetail'
+        'Resolve-CloudflareZoneId'
         'Update-DdnsRecordDuckDns'
         'Update-DdnsRecordDynV2'
         'Update-DdnsRecordCloudflare'

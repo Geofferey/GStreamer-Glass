@@ -1134,34 +1134,36 @@ function Apply-ModernDashboardUi {
     $r = Add-Row $s
     Add-Field $r -Control $lblDdnsStatus -Width 460 | Out-Null
     $r = Add-Row $s
-    Add-Field $r -Label 'Hostname' -Control $txtDdnsHostname -Width 260 | Out-Null
-    $r = Add-Row $s
     Add-Field $r -Label 'Provider' -Control $cmbDdnsProvider -Width 260 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Label 'Hostname' -Control $txtDdnsHostname -Width 260 | Out-Null
 
-    $sub = Add-Section $s 'DuckDNS'
-    $r = Add-Row $sub
-    Add-Field $r -Label 'Token' -Control $txtDdnsToken -Width 260 | Out-Null
+    # Only the group(s) matching the selected provider are shown at all --
+    # Update-DdnsUi toggles each section's .Visible, so unused providers'
+    # fields don't just gray out, they take up no space either. Shared
+    # concepts (a token, an account username/password) reuse one field
+    # instead of one copy per provider.
+    $script:paneDdnsToken = Add-Section $s ''
+    $r = Add-Row $script:paneDdnsToken
+    Add-Field $r -LabelControl $lblDdnsTokenCaption -Control $txtDdnsToken -Width 260 | Out-Null
 
-    $sub = Add-Section $s 'No-IP / Dynu / FreeDNS'
-    $r = Add-Row $sub
+    $script:paneDdnsDynV2 = Add-Section $s ''
+    $r = Add-Row $script:paneDdnsDynV2
     Add-Field $r -Label 'Update host' -Control $txtDdnsDynV2UpdateHost -Width 260 | Out-Null
 
-    $sub = Add-Section $s 'Cloudflare'
-    $r = Add-Row $sub
-    Add-Field $r -Label 'API token' -Control $txtDdnsCloudflareApiToken -Width 260 | Out-Null
-    $r = Add-Row $sub
+    $script:paneDdnsCloudflareExtra = Add-Section $s ''
+    $r = Add-Row $script:paneDdnsCloudflareExtra
     Add-Field $r -Label 'Zone ID' -Control $txtDdnsCloudflareZoneId -Width 260 | Out-Null
-    Add-Field $r -Label 'Record ID' -Control $txtDdnsCloudflareRecordId -Width 260 | Out-Null
-    $r = Add-Row $sub
+    $r = Add-Row $script:paneDdnsCloudflareExtra
     Add-Field $r -Control $chkDdnsCloudflareProxied -Width 260 | Out-Null
 
-    $sub = Add-Section $s 'Custom URL'
-    $r = Add-Row $sub
+    $script:paneDdnsCustom = Add-Section $s ''
+    $r = Add-Row $script:paneDdnsCustom
     Add-Field $r -Label 'URL template' -Control $txtDdnsCustomUrlTemplate -Width 400 | Out-Null
     Add-Field $r -Label 'Method' -Control $cmbDdnsCustomMethod -Width 90 | Out-Null
 
-    $sub = Add-Section $s 'Account (No-IP / Dynu / FreeDNS / Custom URL basic auth)'
-    $r = Add-Row $sub
+    $script:paneDdnsAccount = Add-Section $s 'Account'
+    $r = Add-Row $script:paneDdnsAccount
     Add-Field $r -Label 'Username' -Control $txtDdnsUsername -Width 260 | Out-Null
     Add-Field $r -Label 'Password' -Control $txtDdnsPassword -Width 260 | Out-Null
 
@@ -1371,8 +1373,8 @@ function Apply-ModernDashboardUi {
         $numRecordingVbvBuffer, $txtRecordingCustomEncoderOptions,
         $chkRecordingDesktopAudio, $chkRecordingMic, $numRecordingAudioBitrate,
         $chkDdnsEnabled, $lblDdnsStatus, $txtDdnsHostname, $cmbDdnsProvider,
-        $txtDdnsToken, $txtDdnsDynV2UpdateHost, $txtDdnsUsername, $txtDdnsPassword,
-        $txtDdnsCloudflareApiToken, $txtDdnsCloudflareZoneId, $txtDdnsCloudflareRecordId,
+        $lblDdnsTokenCaption, $txtDdnsToken, $txtDdnsDynV2UpdateHost, $txtDdnsUsername, $txtDdnsPassword,
+        $txtDdnsCloudflareZoneId,
         $chkDdnsCloudflareProxied, $txtDdnsCustomUrlTemplate, $cmbDdnsCustomMethod,
         $btnDdnsUpdateNow,
         $btnResetTransport, $btnResetWebRtcSane, $btnResetVideo, $btnResetAudio,

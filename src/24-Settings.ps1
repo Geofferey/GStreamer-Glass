@@ -68,9 +68,7 @@ function Save-Settings {
             DdnsDynV2UpdateHost = [string]$txtDdnsDynV2UpdateHost.Text
             DdnsUsername      = [string]$txtDdnsUsername.Text
             DdnsPassword      = [string]$txtDdnsPassword.Text
-            DdnsCloudflareApiToken = [string]$txtDdnsCloudflareApiToken.Text
             DdnsCloudflareZoneId = [string]$txtDdnsCloudflareZoneId.Text
-            DdnsCloudflareRecordId = [string]$txtDdnsCloudflareRecordId.Text
             DdnsCloudflareProxied = [bool]$chkDdnsCloudflareProxied.Checked
             DdnsCustomUrlTemplate = [string]$txtDdnsCustomUrlTemplate.Text
             DdnsCustomMethod  = [string]$cmbDdnsCustomMethod.SelectedItem
@@ -355,6 +353,12 @@ function Load-Settings {
         Update-DirectWebRtcUi
         Update-EncoderUi
         Update-RecordingUi
+        # A non-blank persisted Zone counts as "the user already set this
+        # deliberately" -- otherwise a later Hostname edit in this session
+        # would silently clobber a saved Zone ID/domain that just hasn't
+        # been touched yet this run. See the Hostname/Zone auto-fill wiring
+        # in 90-MainWindow.ps1.
+        $script:DdnsCloudflareZoneManuallySet = -not [string]::IsNullOrWhiteSpace($txtDdnsCloudflareZoneId.Text)
         Update-DdnsUi
         Update-SceneUi
     }
@@ -451,9 +455,7 @@ function Restore-SettingsFromObject {
         if ($null -ne $settings.DdnsDynV2UpdateHost) { $txtDdnsDynV2UpdateHost.Text = [string]$settings.DdnsDynV2UpdateHost }
         if ($null -ne $settings.DdnsUsername) { $txtDdnsUsername.Text = [string]$settings.DdnsUsername }
         if ($null -ne $settings.DdnsPassword) { $txtDdnsPassword.Text = [string]$settings.DdnsPassword }
-        if ($null -ne $settings.DdnsCloudflareApiToken) { $txtDdnsCloudflareApiToken.Text = [string]$settings.DdnsCloudflareApiToken }
         if ($null -ne $settings.DdnsCloudflareZoneId) { $txtDdnsCloudflareZoneId.Text = [string]$settings.DdnsCloudflareZoneId }
-        if ($null -ne $settings.DdnsCloudflareRecordId) { $txtDdnsCloudflareRecordId.Text = [string]$settings.DdnsCloudflareRecordId }
         if ($null -ne $settings.DdnsCloudflareProxied) { $chkDdnsCloudflareProxied.Checked = [bool]$settings.DdnsCloudflareProxied }
         if ($null -ne $settings.DdnsCustomUrlTemplate) { $txtDdnsCustomUrlTemplate.Text = [string]$settings.DdnsCustomUrlTemplate }
         if ($settings.DdnsCustomMethod -and $cmbDdnsCustomMethod.Items.Contains([string]$settings.DdnsCustomMethod)) { $cmbDdnsCustomMethod.SelectedItem = [string]$settings.DdnsCustomMethod }

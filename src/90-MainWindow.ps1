@@ -659,13 +659,14 @@ $txtDdnsHostname.Text = $script:DefaultDdnsHostname
 $settingsGroup.Controls.Add($txtDdnsHostname)
 $toolTip.SetToolTip($txtDdnsHostname, 'The hostname to keep current, e.g. myname.duckdns.org, myhost.ddns.net, or stream.example.com.')
 
+$lblDdnsTokenCaption = Add-Label $settingsGroup 'Token' 15 548 90
 $txtDdnsToken = New-Object System.Windows.Forms.TextBox
 $txtDdnsToken.Location = New-Object System.Drawing.Point(15, 548)
 $txtDdnsToken.Size = New-Object System.Drawing.Size(260, 23)
 $txtDdnsToken.UseSystemPasswordChar = $true
 $txtDdnsToken.Text = $script:DefaultDdnsToken
 $settingsGroup.Controls.Add($txtDdnsToken)
-$toolTip.SetToolTip($txtDdnsToken, 'DuckDNS only. The token shown on your DuckDNS account page.')
+$toolTip.SetToolTip($txtDdnsToken, 'DuckDNS: the token shown on your DuckDNS account page. Cloudflare: an API token scoped to Zone : DNS : Edit for the target zone. Shared between both providers since each only needs one secret token.')
 
 $txtDdnsDynV2UpdateHost = New-Object System.Windows.Forms.TextBox
 $txtDdnsDynV2UpdateHost.Location = New-Object System.Drawing.Point(15, 548)
@@ -689,27 +690,12 @@ $txtDdnsPassword.Text = $script:DefaultDdnsPassword
 $settingsGroup.Controls.Add($txtDdnsPassword)
 $toolTip.SetToolTip($txtDdnsPassword, 'No-IP / Dynu / FreeDNS: account password. Custom URL: optional HTTP Basic auth password (only sent if both username and password are set).')
 
-$txtDdnsCloudflareApiToken = New-Object System.Windows.Forms.TextBox
-$txtDdnsCloudflareApiToken.Location = New-Object System.Drawing.Point(15, 548)
-$txtDdnsCloudflareApiToken.Size = New-Object System.Drawing.Size(260, 23)
-$txtDdnsCloudflareApiToken.UseSystemPasswordChar = $true
-$txtDdnsCloudflareApiToken.Text = $script:DefaultDdnsCloudflareApiToken
-$settingsGroup.Controls.Add($txtDdnsCloudflareApiToken)
-$toolTip.SetToolTip($txtDdnsCloudflareApiToken, 'Cloudflare only. An API token scoped to Zone : DNS : Edit for the target zone.')
-
 $txtDdnsCloudflareZoneId = New-Object System.Windows.Forms.TextBox
 $txtDdnsCloudflareZoneId.Location = New-Object System.Drawing.Point(15, 548)
 $txtDdnsCloudflareZoneId.Size = New-Object System.Drawing.Size(260, 23)
 $txtDdnsCloudflareZoneId.Text = $script:DefaultDdnsCloudflareZoneId
 $settingsGroup.Controls.Add($txtDdnsCloudflareZoneId)
-$toolTip.SetToolTip($txtDdnsCloudflareZoneId, 'Cloudflare only. The Zone ID shown on the domain''s Cloudflare dashboard overview page.')
-
-$txtDdnsCloudflareRecordId = New-Object System.Windows.Forms.TextBox
-$txtDdnsCloudflareRecordId.Location = New-Object System.Drawing.Point(15, 548)
-$txtDdnsCloudflareRecordId.Size = New-Object System.Drawing.Size(260, 23)
-$txtDdnsCloudflareRecordId.Text = $script:DefaultDdnsCloudflareRecordId
-$settingsGroup.Controls.Add($txtDdnsCloudflareRecordId)
-$toolTip.SetToolTip($txtDdnsCloudflareRecordId, 'Cloudflare only. The existing A record''s ID (create the record once in the Cloudflare dashboard first; this only updates its content, it does not create records). Retrievable via Cloudflare''s "List DNS records" API.')
+$toolTip.SetToolTip($txtDdnsCloudflareZoneId, 'Cloudflare only. The Zone ID from the domain''s Cloudflare dashboard overview page (right-hand "API" panel) -- NOT the Account ID shown just above it, a common mixup since both look like similar hex strings. The exact registered domain name (e.g. example.com) is also accepted and resolved to its Zone ID automatically. No record ID is needed -- the matching A record for the hostname above is looked up automatically, and created if it does not exist yet.')
 
 $chkDdnsCloudflareProxied = New-Object System.Windows.Forms.CheckBox
 $chkDdnsCloudflareProxied.Text = 'Proxy through Cloudflare (orange cloud)'
@@ -3979,6 +3965,25 @@ $btnDdnsUpdateNow.Add_Click({
     $lowerTabs.SelectedTab = $tabLog
     try { Update-DdnsRecord } catch { Append-Log "DDNS: $($_.Exception.Message)" }
     Save-Settings
+})
+# Live-typing convenience for Cloudflare: auto-fill Zone from everything
+# after Hostname's first dot, but only until the user types into Zone
+# directly (or Load-Settings finds a saved Zone already on disk -- see
+# 24-Settings.ps1), at which point their value always wins.
+$txtDdnsHostname.Add_TextChanged({
+    if ($script:LoadingSettings -or $script:DdnsCloudflareZoneManuallySet) { return }
+    $dotIndex = $txtDdnsHostname.Text.IndexOf('.')
+    if ($dotIndex -lt 0) { return }
+    $derivedZone = $txtDdnsHostname.Text.Substring($dotIndex + 1)
+    if ($txtDdnsCloudflareZoneId.Text -ne $derivedZone) {
+        $script:DdnsSuppressZoneAutoFill = $true
+        $txtDdnsCloudflareZoneId.Text = $derivedZone
+        $script:DdnsSuppressZoneAutoFill = $false
+    }
+})
+$txtDdnsCloudflareZoneId.Add_TextChanged({
+    if ($script:LoadingSettings -or $script:DdnsSuppressZoneAutoFill) { return }
+    $script:DdnsCloudflareZoneManuallySet = -not [string]::IsNullOrWhiteSpace($txtDdnsCloudflareZoneId.Text)
 })
 
 foreach ($control in @(
