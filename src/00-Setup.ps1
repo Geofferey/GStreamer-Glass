@@ -2480,6 +2480,7 @@ public class TlsTerminatingProxy
             string pendingToken = verifyForm.ContainsKey("pending") ? verifyForm["pending"] : "";
             string code = verifyForm.ContainsKey("code") ? verifyForm["code"] : "";
             string verifyReturnTarget = verifyForm.ContainsKey("return") ? verifyForm["return"] : GetMountedViewerPath();
+            bool rememberDevice = verifyForm.ContainsKey("remember") && verifyForm["remember"] == "1";
 
             // The same per-IP lockout that guards password attempts also
             // covers the code step, so the second factor can't be brute
@@ -2515,12 +2516,16 @@ public class TlsTerminatingProxy
 
             AuthenticationFailureState verifyRemovedFailureState;
             authenticationFailures.TryRemove(remoteAddress, out verifyRemovedFailureState);
-            string verifyToken = CreateAuthenticationSessionToken(verifyAccount.Username);
-            Dictionary<string, string> verifySuccessHeaders = new Dictionary<string, string>();
-            verifySuccessHeaders["Set-Cookie"] = "GstGlassAuth=" + verifyToken + "; Path=/; HttpOnly" + CookieSecureAttribute + "; SameSite=Lax; Max-Age=" + (authenticationSessionHours * 3600).ToString();
-            verifySuccessHeaders["Location"] = GetSafeReturnTarget(verifyReturnTarget);
-            pendingLog.Enqueue("viewer '" + verifyAccount.Username + "' authenticated (2FA) from " + remoteAddress);
-            await WriteHttpResponseAsync(stream, 303, "See Other", "text/plain; charset=utf-8", "Authenticated.", verifySuccessHeaders);
+            List<string> verifyExtraCookies = null;
+            if (rememberDevice)
+            {
+                string trustToken = CreateTrustedDeviceToken(verifyAccount.Username);
+                verifyExtraCookies = new List<string> {
+                    TrustedDeviceCookieName + "=" + trustToken + "; Path=/; HttpOnly" + CookieSecureAttribute +
+                    "; SameSite=Lax; Max-Age=" + (TrustedDeviceDays * 86400).ToString()
+                };
+            }
+            await IssueAuthenticationSessionResponseAsync(stream, verifyAccount.Username, verifyReturnTarget, remoteAddress, " (2FA)" + (rememberDevice ? ", device remembered" : ""), verifyExtraCookies);
             return true;
         }
 
@@ -2693,6 +2698,19 @@ public class TlsTerminatingProxy
 
             if (!string.IsNullOrEmpty(matchedAccount.TotpSecret))
             {
+                // A device that already completed 2FA for this exact
+                // account recently gets to skip straight to a real session,
+                // same as an account with no TOTP secret at all -- the
+                // password above was still required either way, this only
+                // ever skips the second factor.
+                if (ValidateTrustedDeviceToken(GetCookieValue(headers, TrustedDeviceCookieName), matchedAccount.Username))
+                {
+                    AuthenticationFailureState trustedFailureState;
+                    authenticationFailures.TryRemove(remoteAddress, out trustedFailureState);
+                    await IssueAuthenticationSessionResponseAsync(stream, matchedAccount.Username, returnTarget, remoteAddress, " (2FA skipped, trusted device)", null);
+                    return true;
+                }
+
                 // Password alone was correct but is not sufficient for this
                 // account -- do not clear the failure counter or issue a
                 // session yet. A wrong code on the next step is tracked by
@@ -2706,25 +2724,7 @@ public class TlsTerminatingProxy
 
             AuthenticationFailureState removedFailureState;
             authenticationFailures.TryRemove(remoteAddress, out removedFailureState);
-            string token = CreateAuthenticationSessionToken(matchedAccount.Username);
-            Dictionary<string, string> successHeaders = new Dictionary<string, string>();
-            // SameSite=Lax, not Strict: an installed Android PWA relaunched
-            // from its home-screen icon (no live browser tab, cold WebAPK
-            // start) is treated by Chrome as enough of a boundary that a
-            // Strict cookie doesn't survive it -- a well-documented, widely
-            // reported class of bug across unrelated PWA projects (e.g.
-            // github.com/pocketbase/pocketbase discussions/2972,
-            // github.com/miniflux/v2 issues/3614), not specific to this app,
-            // and switching to Lax is the confirmed fix in both. Lax still
-            // withholds the cookie from cross-site POSTs/iframes/subresource
-            // requests -- every state-changing action here (login, verify)
-            // is POST-only, so this does not meaningfully change the CSRF
-            // surface, only lets the cookie survive a same-site top-level
-            // GET/app-launch navigation the way Strict never could.
-            successHeaders["Set-Cookie"] = "GstGlassAuth=" + token + "; Path=/; HttpOnly" + CookieSecureAttribute + "; SameSite=Lax; Max-Age=" + (authenticationSessionHours * 3600).ToString();
-            successHeaders["Location"] = GetSafeReturnTarget(returnTarget);
-            pendingLog.Enqueue("viewer '" + matchedAccount.Username + "' authenticated from " + remoteAddress);
-            await WriteHttpResponseAsync(stream, 303, "See Other", "text/plain; charset=utf-8", "Authenticated.", successHeaders);
+            await IssueAuthenticationSessionResponseAsync(stream, matchedAccount.Username, returnTarget, remoteAddress, "", null);
             return true;
         }
 
@@ -2927,11 +2927,12 @@ public class TlsTerminatingProxy
             "radial-gradient(640px circle at 60% 100%,rgba(255,93,108,.20),transparent 60%)," +
             "#05070b}" +
             "main{width:min(92vw,420px);padding:32px;border:1px solid rgba(255,255,255,.12);border-radius:16px;background:linear-gradient(180deg,rgba(10,14,22,.82),rgba(10,14,22,.48));backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);box-shadow:0 14px 44px rgba(0,0,0,.35)}h1{margin:0 0 8px;font-size:1.55rem}p{color:#aab6c8}.error{color:#ff9b9b}" +
-            "label{display:block;margin:18px 0 6px;font-weight:650}input{width:100%;padding:12px;border:1px solid #35435a;border-radius:9px;background:#090f19;color:#fff;font:inherit;letter-spacing:.3em;text-align:center}button{width:100%;margin-top:22px;padding:12px;border:0;border-radius:9px;background:#4f8cff;color:white;font:inherit;font-weight:750;cursor:pointer}</style></head>" +
+            "label{display:block;margin:18px 0 6px;font-weight:650}input{width:100%;padding:12px;border:1px solid #35435a;border-radius:9px;background:#090f19;color:#fff;font:inherit;letter-spacing:.3em;text-align:center}button{width:100%;margin-top:22px;padding:12px;border:0;border-radius:9px;background:#4f8cff;color:white;font:inherit;font-weight:750;cursor:pointer}.remember{display:flex;align-items:center;gap:8px;margin-top:18px;font-weight:500;letter-spacing:normal;cursor:pointer}.remember input{width:auto}</style></head>" +
             "<body><main><h1>Verification code</h1><p>Enter the 6-digit code from your authenticator app.</p>" + error +
             "<form method=\"post\" action=\"./verify\"><input type=\"hidden\" name=\"pending\" value=\"" + WebUtility.HtmlEncode(pendingToken ?? "") + "\">" +
             "<input type=\"hidden\" name=\"return\" value=\"" + WebUtility.HtmlEncode(safeReturn) + "\">" +
             "<label for=\"code\">Code</label><input id=\"code\" name=\"code\" inputmode=\"numeric\" pattern=\"[0-9]{6}\" maxlength=\"6\" autocomplete=\"one-time-code\" required autofocus>" +
+            "<label class=\"remember\"><input type=\"checkbox\" name=\"remember\" value=\"1\"> Remember this device for " + TrustedDeviceDays + " days</label>" +
             "<button type=\"submit\">Verify</button></form></main></body></html>";
         await WriteHttpResponseAsync(stream, statusCode, reason, "text/html; charset=utf-8", html, additionalHeaders);
     }
@@ -2943,7 +2944,7 @@ public class TlsTerminatingProxy
         await WriteHttpResponseAsync(stream, 303, "See Other", "text/plain; charset=utf-8", "Redirecting.", headers);
     }
 
-    private static async Task WriteHttpResponseAsync(Stream stream, int statusCode, string reason, string contentType, string body, Dictionary<string, string> additionalHeaders, string scriptNonce = null)
+    private static async Task WriteHttpResponseAsync(Stream stream, int statusCode, string reason, string contentType, string body, Dictionary<string, string> additionalHeaders, string scriptNonce = null, IEnumerable<string> extraSetCookieHeaders = null)
     {
         byte[] bodyBytes = Encoding.UTF8.GetBytes(body ?? "");
         StringBuilder response = new StringBuilder();
@@ -2972,6 +2973,18 @@ public class TlsTerminatingProxy
                 response.Append(header.Key).Append(": ").Append(header.Value).Append("\r\n");
             }
         }
+        // A Dictionary<string,string> additionalHeaders can only ever carry
+        // one Set-Cookie -- the trusted-device cookie needs to ride alongside
+        // the ordinary session cookie on the same response, so it comes
+        // through this separate list instead of fighting the dictionary for
+        // the same key.
+        if (extraSetCookieHeaders != null)
+        {
+            foreach (string cookieHeader in extraSetCookieHeaders)
+            {
+                response.Append("Set-Cookie: ").Append(cookieHeader).Append("\r\n");
+            }
+        }
         response.Append("Connection: close\r\n\r\n");
         byte[] headerBytes = Encoding.ASCII.GetBytes(response.ToString());
         await stream.WriteAsync(headerBytes, 0, headerBytes.Length);
@@ -2979,7 +2992,7 @@ public class TlsTerminatingProxy
         await stream.FlushAsync();
     }
 
-    private static string GetAuthenticationCookie(Dictionary<string, string> headers)
+    private static string GetCookieValue(Dictionary<string, string> headers, string cookieName)
     {
         string cookieHeader;
         if (!headers.TryGetValue("Cookie", out cookieHeader)) return "";
@@ -2988,10 +3001,15 @@ public class TlsTerminatingProxy
         {
             int separator = cookie.IndexOf('=');
             if (separator <= 0) continue;
-            if (!string.Equals(cookie.Substring(0, separator).Trim(), "GstGlassAuth", StringComparison.Ordinal)) continue;
+            if (!string.Equals(cookie.Substring(0, separator).Trim(), cookieName, StringComparison.Ordinal)) continue;
             return cookie.Substring(separator + 1).Trim();
         }
         return "";
+    }
+
+    private static string GetAuthenticationCookie(Dictionary<string, string> headers)
+    {
+        return GetCookieValue(headers, "GstGlassAuth");
     }
 
     private bool HasValidAuthenticationCookie(Dictionary<string, string> headers)
@@ -3017,6 +3035,101 @@ public class TlsTerminatingProxy
         activeAuthenticationSessions[token] = expires;
         if (activeAuthenticationSessions.Count > 4096) RemoveExpiredAuthenticationSessions();
         return token;
+    }
+
+    private const string TrustedDeviceCookieName = "GstGlassTrustedDevice";
+    private const int TrustedDeviceDays = 30;
+
+    // Derived from authenticationSessionKey rather than reusing it directly,
+    // so a trusted-device token can never be replayed as (or forged from) a
+    // real session token even though both are HMAC-signed payloads of the
+    // same shape -- domain separation via HKDF-style key derivation, not
+    // format differences that would need careful parsing to enforce.
+    private byte[] GetTrustedDeviceSigningKey()
+    {
+        using (HMACSHA256 hmac = new HMACSHA256(authenticationSessionKey))
+        {
+            return hmac.ComputeHash(Encoding.UTF8.GetBytes("gstglass-trusted-device-v1"));
+        }
+    }
+
+    // "Remember this device" for 2FA: only ever skips the SECOND factor --
+    // the password is still verified on every single login regardless, so a
+    // stolen/expired trust cookie alone grants nothing. Deliberately
+    // stateless (no activeAuthenticationSessions entry, unlike a real
+    // session token) so it survives RevokeAllSessions clearing that table
+    // on a stream stop/restart -- the whole point is that remembered 2FA
+    // outlives those events even though regular viewer sessions do not.
+    private string CreateTrustedDeviceToken(string username)
+    {
+        long expires = ToUnixTimeSeconds(DateTime.UtcNow.AddDays(TrustedDeviceDays));
+        byte[] nonce = new byte[24];
+        using (RandomNumberGenerator random = RandomNumberGenerator.Create())
+        {
+            random.GetBytes(nonce);
+        }
+        string payload = expires.ToString() + "." + Base64UrlEncode(nonce) + "." + Base64UrlEncode(Encoding.UTF8.GetBytes(username));
+        byte[] signature;
+        using (HMACSHA256 hmac = new HMACSHA256(GetTrustedDeviceSigningKey()))
+        {
+            signature = hmac.ComputeHash(Encoding.UTF8.GetBytes(payload));
+        }
+        return payload + "." + Base64UrlEncode(signature);
+    }
+
+    private bool ValidateTrustedDeviceToken(string token, string expectedUsername)
+    {
+        if (authenticationSessionKey == null || authenticationSessionKey.Length < 32 || string.IsNullOrWhiteSpace(token)) return false;
+        string[] parts = token.Split('.');
+        if (parts.Length != 4) return false;
+        long expires;
+        if (!long.TryParse(parts[0], out expires) || expires < ToUnixTimeSeconds(DateTime.UtcNow)) return false;
+        string payload = parts[0] + "." + parts[1] + "." + parts[2];
+        byte[] expected;
+        using (HMACSHA256 hmac = new HMACSHA256(GetTrustedDeviceSigningKey()))
+        {
+            expected = hmac.ComputeHash(Encoding.UTF8.GetBytes(payload));
+        }
+        byte[] supplied;
+        try { supplied = Base64UrlDecode(parts[3]); }
+        catch { return false; }
+        if (!FixedTimeEquals(expected, supplied)) return false;
+        try
+        {
+            string username = Encoding.UTF8.GetString(Base64UrlDecode(parts[2]));
+            // Checked against the CURRENT account list, same reasoning as
+            // ValidateAuthenticationSessionToken -- removing the account
+            // revokes trust immediately too.
+            return string.Equals(username, expectedUsername, StringComparison.Ordinal) && FindAuthenticationAccount(username) != null;
+        }
+        catch { return false; }
+    }
+
+    // Shared by every path that lands a viewer in a full, real session --
+    // no-2FA login, a trusted-device 2FA skip, and a successful /auth/verify
+    // -- so the cookie attributes and success log line can never drift
+    // between them.
+    //
+    // SameSite=Lax, not Strict: an installed Android PWA relaunched from its
+    // home-screen icon (no live browser tab, cold WebAPK start) is treated
+    // by Chrome as enough of a boundary that a Strict cookie doesn't survive
+    // it -- this is a well-documented, widely-reported class of bug across
+    // unrelated PWA projects (e.g. github.com/pocketbase/pocketbase
+    // discussions/2972, github.com/miniflux/v2 issues/3614), not something
+    // specific to this app, and switching to Lax is the confirmed fix in
+    // both. Lax still withholds the cookie from cross-site POSTs/iframes/
+    // subresource requests -- the actual state-changing actions here
+    // (login, verify) are POST-only, so this does not meaningfully change
+    // the CSRF surface, only permits the cookie to survive a same-site
+    // top-level GET/app-launch navigation the way Strict was never able to.
+    private async Task IssueAuthenticationSessionResponseAsync(Stream stream, string username, string returnTarget, string remoteAddress, string logSuffix, List<string> extraSetCookieHeaders)
+    {
+        string token = CreateAuthenticationSessionToken(username);
+        Dictionary<string, string> headers = new Dictionary<string, string>();
+        headers["Set-Cookie"] = "GstGlassAuth=" + token + "; Path=/; HttpOnly" + CookieSecureAttribute + "; SameSite=Lax; Max-Age=" + (authenticationSessionHours * 3600).ToString();
+        headers["Location"] = GetSafeReturnTarget(returnTarget);
+        pendingLog.Enqueue("viewer '" + username + "' authenticated from " + remoteAddress + logSuffix);
+        await WriteHttpResponseAsync(stream, 303, "See Other", "text/plain; charset=utf-8", "Authenticated.", headers, null, extraSetCookieHeaders);
     }
 
     // Carries "password already verified for this username" across the

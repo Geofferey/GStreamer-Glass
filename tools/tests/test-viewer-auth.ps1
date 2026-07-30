@@ -461,6 +461,34 @@ try {
     Assert-ViewerAuth $response.StartsWith('HTTP/1.1 401') 'A wrong password for a 2FA account was not rejected outright.'
     Assert-ViewerAuth ($response -notmatch 'name="pending"') 'A wrong password leaked a pending 2FA token.'
 
+    # "Remember this device" -- checking the box on a correct 2FA code must
+    # issue a second, separate cookie that lets a LATER login for the same
+    # account skip straight past the code-entry challenge (password is still
+    # required every time either way).
+    $response = Send-TlsRequest $totpProxyPort "POST /auth/login HTTP/1.1`r`nHost: localhost`r`nContent-Type: application/x-www-form-urlencoded`r`nContent-Length: $totpLoginLength`r`nConnection: close`r`n`r`n$totpLoginBody"
+    Assert-ViewerAuth ($response -match 'name="pending" value="([^"]+)"') 'Second login for the 2FA account did not return a fresh pending token.'
+    $rememberPendingToken = [System.Uri]::UnescapeDataString(($Matches[1] -replace '&amp;', '&'))
+    $rememberCode = Get-CurrentTotpCode $totpSecret
+    $rememberBody = "pending=$([System.Uri]::EscapeDataString($rememberPendingToken))&code=$rememberCode&remember=1&return=%2Flive%2F"
+    $rememberLength = [System.Text.Encoding]::UTF8.GetByteCount($rememberBody)
+    $response = Send-TlsRequest $totpProxyPort "POST /auth/verify HTTP/1.1`r`nHost: localhost`r`nContent-Type: application/x-www-form-urlencoded`r`nContent-Length: $rememberLength`r`nConnection: close`r`n`r`n$rememberBody"
+    Assert-ViewerAuth $response.StartsWith('HTTP/1.1 303') 'Checking "remember this device" broke a correct 2FA code.'
+    $rememberCookieHeaders = [regex]::Matches($response, '(?im)^Set-Cookie:\s*(.+)$') | ForEach-Object { $_.Groups[1].Value.Trim() }
+    Assert-ViewerAuth ($rememberCookieHeaders.Count -eq 2) 'Checking "remember this device" did not issue both a session and a trusted-device cookie.'
+    $trustedCookiePair = ($rememberCookieHeaders | Where-Object { $_ -like 'GstGlassTrustedDevice=*' }) -replace ';.*$', ''
+    Assert-ViewerAuth ($trustedCookiePair.Length -gt 0) 'No GstGlassTrustedDevice cookie was found among the response cookies.'
+    Assert-ViewerAuth (($rememberCookieHeaders | Where-Object { $_ -like 'GstGlassTrustedDevice=*' }) -match 'HttpOnly.*SameSite=Lax.*Max-Age=') 'Trusted-device cookie was missing expected security attributes.'
+
+    $response = Send-TlsRequest $totpProxyPort "POST /auth/login HTTP/1.1`r`nHost: localhost`r`nContent-Type: application/x-www-form-urlencoded`r`nContent-Length: $totpLoginLength`r`nConnection: close`r`nCookie: $trustedCookiePair`r`n`r`n$totpLoginBody"
+    Assert-ViewerAuth $response.StartsWith('HTTP/1.1 303') 'A trusted device still had to complete the 2FA challenge again.'
+    Assert-ViewerAuth ($response -match 'Set-Cookie: GstGlassAuth=') 'A trusted-device login did not issue a real session cookie.'
+
+    # Without the trust cookie, the SAME account must still be challenged --
+    # remembering one device must never weaken the account globally.
+    $response = Send-TlsRequest $totpProxyPort "POST /auth/login HTTP/1.1`r`nHost: localhost`r`nContent-Type: application/x-www-form-urlencoded`r`nContent-Length: $totpLoginLength`r`nConnection: close`r`n`r`n$totpLoginBody"
+    Assert-ViewerAuth $response.StartsWith('HTTP/1.1 200') 'A login without the trusted-device cookie skipped the 2FA challenge.'
+    Assert-ViewerAuth ($response -match 'name="pending"') 'A login without the trusted-device cookie did not return a fresh pending token.'
+
     $plainLoginBody = 'username=plain-viewer&password=plain-test-password&return=%2Flive%2F'
     $plainLoginLength = [System.Text.Encoding]::UTF8.GetByteCount($plainLoginBody)
     $response = Send-TlsRequest $totpProxyPort "POST /auth/login HTTP/1.1`r`nHost: localhost`r`nContent-Type: application/x-www-form-urlencoded`r`nContent-Length: $plainLoginLength`r`nConnection: close`r`n`r`n$plainLoginBody"
