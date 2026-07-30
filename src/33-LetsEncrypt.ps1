@@ -659,7 +659,7 @@ function Test-EmbeddedTlsActive {
 #    webrtcsink would otherwise use (Start-PlaintextAuthProxies), and two
 #    listeners can't both bind 0.0.0.0 on that same port.
 #  - Embedded TLS / TLS-enforced viewer auth only forces loopback when
-#    "Allow insecure ports" is UNCHECKED. Checking it lets the plain
+#    "Allow insecure listeners" is UNCHECKED. Checking it lets the plain
 #    servers keep listening on 0.0.0.0 (or whatever's configured) even
 #    while the TLS proxy also runs, e.g. because the broadcaster still
 #    wants that plain path reachable/proxied some other way -- the TLS
@@ -876,22 +876,27 @@ function Update-LetsEncryptUi {
 }
 
 # Master/detail UI toggling for the SSL/TLS Security section -- the "Use
-# embedded TLS" master switch gates everything else in that section
-# (custom cert/key path overrides, the three proxy port fields, and the
-# insecure-port lockdown), independent of whether Let's Encrypt is also
-# enabled. Also surfaces whether a certificate actually resolves right
-# now, so a broadcaster who checked the box without pointing it at a real
-# cert/key or turning on Let's Encrypt sees why nothing started, rather
-# than a silent no-op.
+# embedded TLS" master switch gates the custom cert/key path overrides and
+# the three proxy port fields, independent of whether Let's Encrypt is
+# also enabled. "Allow insecure listeners" is deliberately NOT gated here
+# (see below) -- it also matters for "Allow plaintext auth", which is
+# independent of embedded TLS. Also surfaces whether a certificate
+# actually resolves right now, so a broadcaster who checked the box
+# without pointing it at a real cert/key or turning on Let's Encrypt sees
+# why nothing started, rather than a silent no-op.
 function Update-EmbeddedTlsUi {
     $enabled = [bool]($chkEmbeddedTlsEnabled -and $chkEmbeddedTlsEnabled.Checked)
     foreach ($control in @(
         $txtTlsCertificatePath, $btnBrowseTlsCertificatePath, $txtTlsPrivateKeyPath, $btnBrowseTlsPrivateKeyPath,
-        $chkTlsAllowInsecurePorts,
         $numLetsEncryptSignalingExternalPort, $numLetsEncryptSplitAudioExternalPort, $numLetsEncryptWebServerExternalPort
     )) {
         if ($control) { $control.Enabled = $enabled }
     }
+    # Not gated by "Use embedded TLS" -- this also matters for "Allow
+    # plaintext auth" (Test-PlaintextAuthActive), which is independent of
+    # embedded TLS being on, so it must stay interactive even while
+    # embedded TLS is off.
+    if ($chkTlsAllowInsecurePorts) { $chkTlsAllowInsecurePorts.Enabled = $true }
 
     if (-not $lblEmbeddedTlsStatus) { return }
     if (-not $enabled) {

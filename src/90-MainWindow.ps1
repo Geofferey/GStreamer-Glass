@@ -771,12 +771,12 @@ $btnBrowseTlsPrivateKeyPath.Size = New-Object System.Drawing.Size(80, 27)
 $settingsGroup.Controls.Add($btnBrowseTlsPrivateKeyPath)
 
 $chkTlsAllowInsecurePorts = New-Object System.Windows.Forms.CheckBox
-$chkTlsAllowInsecurePorts.Text = 'Allow insecure ports (keep them on 0.0.0.0 while embedded TLS is active)'
+$chkTlsAllowInsecurePorts.Text = 'Allow insecure listeners (0.0.0.0 if embedded TLS/auth proxy is active)'
 $chkTlsAllowInsecurePorts.Location = New-Object System.Drawing.Point(15, 548)
 $chkTlsAllowInsecurePorts.Size = New-Object System.Drawing.Size(420, 24)
 $chkTlsAllowInsecurePorts.Checked = $script:DefaultTlsAllowInsecurePorts
 $settingsGroup.Controls.Add($chkTlsAllowInsecurePorts)
-$toolTip.SetToolTip($chkTlsAllowInsecurePorts, "On by default -- has no effect at all unless embedded TLS (or TLS-enforced viewer auth) is active; the plain HTTP/WS web, signalling, and split-audio-signalling servers always just listen on whatever's configured (0.0.0.0 by default) otherwise. When one of those IS active: checked keeps those plain servers reachable on every interface anyway (e.g. because you still want that plain path proxied some other way) -- each service's external TLS port must then be a different number than its internal port (two listeners can't share a port on 0.0.0.0). Uncheck to restrict those plain servers to 127.0.0.1 (reachable only through the TLS proxy) -- once restricted, the TLS port is free to match the internal port if you want. Always restricted to loopback regardless of this setting when 'Allow plaintext auth' is active, since that relay transparently takes over the same port number.")
+$toolTip.SetToolTip($chkTlsAllowInsecurePorts, "Off by default - no effect unless embedded TLS/AUTH proxy is active; allows port/listeners to continue using non-loopback address")
 
 $chkLetsEncryptEnabled = New-Object System.Windows.Forms.CheckBox
 $chkLetsEncryptEnabled.Text = "Get a Let's Encrypt certificate (DNS-01)"
