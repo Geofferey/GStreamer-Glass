@@ -602,7 +602,12 @@ function Start-GstStream {
         }
         Close-WebRtcPortRangeWorkerPipe
         try { Remove-UpnpPortMappings } catch {}
-        if (-not (Test-KeepAuthenticationProxiesOnRestart)) {
+        # Only signal/revoke when viewer auth is actually required --
+        # Test-KeepAuthenticationProxiesOnRestart alone is always false when
+        # auth is disabled entirely (nothing to keep alive), which used to
+        # make this fire on every plain, auth-less restart and send viewers
+        # to a /auth/login that no proxy was even running to answer.
+        if ((Test-ViewerAuthenticationEnabled) -and -not (Test-KeepAuthenticationProxiesOnRestart)) {
             # Signal every connected viewer to head to the login page BEFORE
             # actually revoking sessions -- see Set-DirectWebRtcAuthRevokedMarker's
             # comment for why the order matters. Revoke-ActiveAuthenticationProxySessions
@@ -709,8 +714,10 @@ function Stop-ControlledLiveStream {
     # of just revoking sessions would mean a stale client's next request
     # gets a hard connection refusal forever rather than ever being
     # redirected to login -- see Revoke-ActiveAuthenticationProxySessions's
-    # comment.
-    if (-not (Test-KeepAuthenticationProxiesOnRestart)) {
+    # comment. Also requires Test-ViewerAuthenticationEnabled -- that alone
+    # is always false when auth is disabled entirely, which used to send
+    # auth-less viewers to a /auth/login nothing was running to answer.
+    if ((Test-ViewerAuthenticationEnabled) -and -not (Test-KeepAuthenticationProxiesOnRestart)) {
         try { Set-DirectWebRtcAuthRevokedMarker } catch {}
         try { Revoke-ActiveAuthenticationProxySessions } catch {}
     }
@@ -907,8 +914,11 @@ function Stop-GstStream {
     # $Restart)` above (see the matching comment in Stop-ControlledLiveStream's
     # teardown, a few hundred lines up). Revoke-ActiveAuthenticationProxySessions
     # keeps the proxy listeners running -- see its comment for why stopping
-    # them here would defeat the login redirect entirely.
-    if (-not (Test-KeepAuthenticationProxiesOnRestart)) {
+    # them here would defeat the login redirect entirely. Also requires
+    # Test-ViewerAuthenticationEnabled -- that alone is always false when
+    # auth is disabled entirely, which used to send auth-less viewers to a
+    # /auth/login nothing was running to answer.
+    if ((Test-ViewerAuthenticationEnabled) -and -not (Test-KeepAuthenticationProxiesOnRestart)) {
         try { Set-DirectWebRtcAuthRevokedMarker } catch {}
         try { Revoke-ActiveAuthenticationProxySessions } catch {}
     }
