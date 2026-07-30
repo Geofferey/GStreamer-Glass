@@ -3445,6 +3445,7 @@ $script:DefaultTlsAllowInsecurePorts = $false
 $script:DefaultViewerAuthenticationEnabled = $false
 $script:DefaultViewerAuthenticationSessionHours = 12
 $script:DefaultViewerAuthenticationAllowPlaintext = $false
+$script:DefaultViewerAuthenticationKeepOnRestart = $false
 # Named accounts, each @{ Username; PasswordHash }. Only the salted
 # PBKDF2-HMAC-SHA256 hash is ever persisted -- see Add-ViewerAuthenticationAccount
 # in src/33-LetsEncrypt.ps1.

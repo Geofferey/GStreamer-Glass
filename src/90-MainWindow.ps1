@@ -943,6 +943,14 @@ $chkViewerAuthenticationAllowPlaintext.Checked = $script:DefaultViewerAuthentica
 $settingsGroup.Controls.Add($chkViewerAuthenticationAllowPlaintext)
 $toolTip.SetToolTip($chkViewerAuthenticationAllowPlaintext, "Off by default. Enforces the same login gate directly on the plain HTTP/WS ports, without embedded TLS -- for when something else (an external reverse proxy, etc.) is proxying those insecure ports and you still want Glass's own login to apply. The session cookie travels in cleartext on this path; only enable this if something else already provides transport security, or you've accepted that risk. Forces the plain servers to loopback-only on the ports this covers, regardless of 'Disable insecure ports'.")
 
+$chkViewerAuthenticationKeepOnRestart = New-Object System.Windows.Forms.CheckBox
+$chkViewerAuthenticationKeepOnRestart.Text = 'Keep auth on restarts (Start/Stop/Restart do not deauthorize viewers)'
+$chkViewerAuthenticationKeepOnRestart.Location = New-Object System.Drawing.Point(15, 548)
+$chkViewerAuthenticationKeepOnRestart.Size = New-Object System.Drawing.Size(420, 24)
+$chkViewerAuthenticationKeepOnRestart.Checked = $script:DefaultViewerAuthenticationKeepOnRestart
+$settingsGroup.Controls.Add($chkViewerAuthenticationKeepOnRestart)
+$toolTip.SetToolTip($chkViewerAuthenticationKeepOnRestart, "Off by default. Only applies while 'Require viewer login' is also checked. Normally, stopping the stream (including a Start/Stop/Restart cycle) also stops the TLS/plaintext-auth proxies, which drops every viewer's session -- they have to log in again once you go live again. Check this to keep those proxies running across Start/Stop/Restart instead, so already-authenticated viewers stay logged in the whole time; their browser just sees the stream go offline and come back.")
+
 $txtDirectWebRtcWebPath = New-Object System.Windows.Forms.TextBox
 $txtDirectWebRtcWebPath.Location = New-Object System.Drawing.Point(15, 548)
 $txtDirectWebRtcWebPath.Size = New-Object System.Drawing.Size(120, 23)
@@ -4186,6 +4194,7 @@ $chkEmbeddedTlsEnabled.Add_CheckedChanged({ Update-EmbeddedTlsUi })
 $chkTlsAllowInsecurePorts.Add_CheckedChanged({ Update-EmbeddedTlsUi })
 $chkViewerAuthenticationEnabled.Add_CheckedChanged({ Update-ViewerAuthenticationUi; Update-PlayerConfigFromUi })
 $chkViewerAuthenticationAllowPlaintext.Add_CheckedChanged({ Update-ViewerAuthenticationUi })
+$chkViewerAuthenticationKeepOnRestart.Add_CheckedChanged({ Update-ViewerAuthenticationUi })
 $btnViewerAuthenticationAddAccount.Add_Click({ Add-ViewerAuthenticationAccount })
 $btnViewerAuthenticationRemoveAccount.Add_Click({ Remove-ViewerAuthenticationAccount })
 $btnViewerAuthenticationEnableTotp.Add_Click({ Enable-ViewerAuthenticationTotp })

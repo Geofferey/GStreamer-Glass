@@ -307,6 +307,7 @@
         'Export-LabConfiguration'
         'Load-Settings'
         'Restore-SettingsFromObject'
+        'Show-ValidationFailure'
         'Validate-Configuration'
     )
 
@@ -449,6 +450,7 @@
         'Update-EmbeddedTlsUi'
         'Test-ViewerAuthenticationEnabled'
         'Test-PlaintextAuthActive'
+        'Test-KeepAuthenticationProxiesOnRestart'
         'Update-ViewerAuthenticationUi'
         'Sync-ViewerAuthenticationAccountsListBox'
         'Add-ViewerAuthenticationAccount'
@@ -457,6 +459,7 @@
         'Get-LetsEncryptSplitAudioProxyPort'
         'Get-LetsEncryptWebServerProxyPort'
         'Get-ViewerAuthenticationAccountObjects'
+        'Sync-ViewerAuthenticationAccountsToLiveProxies'
         'Start-LetsEncryptTlsProxies'
         'Get-EmbeddedTlsPortConflicts'
         'Start-PlaintextAuthProxies'

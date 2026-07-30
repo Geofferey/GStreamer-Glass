@@ -25,6 +25,13 @@
 # one per externally-exposed port. Empty when TLS termination isn't active.
 $script:LetsEncryptTlsProxies = @()
 $script:LetsEncryptTlsProxyConfigurationSignature = ''
+# The exact session-signing key currently live on $script:LetsEncryptTlsProxies
+# -- retained so Sync-ViewerAuthenticationAccountsToLiveProxies can push an
+# updated account list into already-running proxies via ConfigureAuthentication
+# without generating a new key (which would silently log out every viewer,
+# not just whichever account actually changed). Empty whenever those
+# proxies aren't running authentication.
+$script:LetsEncryptAuthenticationSessionKey = $null
 
 # Plaintext-mode (certificate = null) TlsTerminatingProxy instances for
 # "Allow plaintext auth" -- see Start-PlaintextAuthProxies. Kept separate
@@ -33,6 +40,7 @@ $script:LetsEncryptTlsProxyConfigurationSignature = ''
 # leaves open).
 $script:PlaintextAuthProxies = @()
 $script:PlaintextAuthProxyConfigurationSignature = ''
+$script:PlaintextAuthenticationSessionKey = $null
 
 function ConvertTo-AcmeBase64Url {
     param([byte[]]$Bytes)
@@ -931,6 +939,18 @@ function Test-PlaintextAuthActive {
     return [bool]($chkViewerAuthenticationAllowPlaintext -and $chkViewerAuthenticationAllowPlaintext.Checked -and (Test-ViewerAuthenticationEnabled))
 }
 
+# Whether the embedded-TLS/plaintext-auth proxies should stay running
+# across a stream Start/Stop/Restart cycle, instead of being torn down and
+# rebuilt with a fresh session-signing key each time (which logs every
+# viewer out, forcing a fresh login the next time the stream comes back
+# up). Checked at every Stop-GstStream call site that would otherwise
+# call Stop-LetsEncryptTlsProxies/Stop-PlaintextAuthProxies
+# (27-StreamLifecycle.ps1). Only meaningful while "Require viewer login"
+# is also checked -- without it there's no session to preserve.
+function Test-KeepAuthenticationProxiesOnRestart {
+    return [bool]($chkViewerAuthenticationKeepOnRestart -and $chkViewerAuthenticationKeepOnRestart.Checked -and (Test-ViewerAuthenticationEnabled))
+}
+
 function Update-ViewerAuthenticationUi {
     # The "Require viewer login" checkbox itself is never grayed out by TLS
     # state -- a broadcaster can check it and set up accounts at any time.
@@ -942,7 +962,8 @@ function Update-ViewerAuthenticationUi {
         $lstViewerAuthenticationAccounts, $txtViewerAuthenticationNewUsername, $txtViewerAuthenticationNewPassword,
         $btnViewerAuthenticationAddAccount, $btnViewerAuthenticationRemoveAccount,
         $btnViewerAuthenticationEnableTotp, $btnViewerAuthenticationDisableTotp,
-        $numViewerAuthenticationSessionHours, $chkViewerAuthenticationAllowPlaintext
+        $numViewerAuthenticationSessionHours, $chkViewerAuthenticationAllowPlaintext,
+        $chkViewerAuthenticationKeepOnRestart
     )) {
         if ($control) { $control.Enabled = $authenticationEnabled }
     }
@@ -1014,6 +1035,7 @@ function Add-ViewerAuthenticationAccount {
     $txtViewerAuthenticationNewUsername.Clear()
     $txtViewerAuthenticationNewPassword.Clear()
     Sync-ViewerAuthenticationAccountsListBox
+    Sync-ViewerAuthenticationAccountsToLiveProxies
     Save-Settings
 }
 
@@ -1021,6 +1043,7 @@ function Remove-ViewerAuthenticationAccount {
     $selected = Get-SelectedViewerAuthenticationUsername
     if ([string]::IsNullOrWhiteSpace($selected)) { return }
     $script:ViewerAuthenticationAccounts = @(@($script:ViewerAuthenticationAccounts) | Where-Object { $_.Username -ne $selected })
+    Sync-ViewerAuthenticationAccountsToLiveProxies
     Append-Log "AUTH: removed viewer account '$selected'; its active sessions are now revoked."
     Sync-ViewerAuthenticationAccountsListBox
     Save-Settings
@@ -1063,6 +1086,7 @@ function Enable-ViewerAuthenticationTotp {
     $account.TotpSecret = $secret
     Append-Log "AUTH: 2FA enabled for viewer account '$selected'."
     Sync-ViewerAuthenticationAccountsListBox
+    Sync-ViewerAuthenticationAccountsToLiveProxies
     Save-Settings
 }
 
@@ -1077,6 +1101,7 @@ function Disable-ViewerAuthenticationTotp {
     $account.TotpSecret = ''
     Append-Log "AUTH: 2FA disabled for viewer account '$selected'."
     Sync-ViewerAuthenticationAccountsListBox
+    Sync-ViewerAuthenticationAccountsToLiveProxies
     Save-Settings
 }
 
@@ -1177,6 +1202,39 @@ function Get-ViewerAuthenticationAccountObjects {
     )
 }
 
+# Pushes the current $script:ViewerAuthenticationAccounts into any
+# already-running proxies immediately, without a listener restart --
+# ConfigureAuthentication just swaps the proxy's in-memory account list,
+# and ValidateAuthenticationSessionToken re-checks every session against
+# that CURRENT list on every request. So a removed account's sessions stop
+# validating right away (FindAuthenticationAccount no longer finds it),
+# while every other viewer's session stays untouched -- unlike restarting
+# the proxies (which regenerates the session-signing key and would log
+# everyone out). Reuses the session key each proxy family is already
+# running with (see $script:LetsEncryptAuthenticationSessionKey /
+# $script:PlaintextAuthenticationSessionKey) rather than generating a new
+# one, for exactly that reason. A no-op wherever a proxy family isn't
+# currently running authentication (nothing to push to yet -- the next
+# Start-*Proxies call will pick up current accounts on its own).
+function Sync-ViewerAuthenticationAccountsToLiveProxies {
+    $validAccounts = @($script:ViewerAuthenticationAccounts) | Where-Object {
+        $_.Username -and [TlsTerminatingProxy]::IsAuthenticationPasswordHashValid([string]$_.PasswordHash)
+    }
+    $accountObjects = Get-ViewerAuthenticationAccountObjects -Accounts $validAccounts
+    $sessionHours = [int]$numViewerAuthenticationSessionHours.Value
+
+    if ($script:LetsEncryptAuthenticationSessionKey -and @($script:LetsEncryptTlsProxies).Count -gt 0) {
+        foreach ($proxy in $script:LetsEncryptTlsProxies) {
+            try { $proxy.ConfigureAuthentication($true, $accountObjects, $script:LetsEncryptAuthenticationSessionKey, $sessionHours) } catch {}
+        }
+    }
+    if ($script:PlaintextAuthenticationSessionKey -and @($script:PlaintextAuthProxies).Count -gt 0) {
+        foreach ($proxy in $script:PlaintextAuthProxies) {
+            try { $proxy.ConfigureAuthentication($true, $accountObjects, $script:PlaintextAuthenticationSessionKey, $sessionHours) } catch {}
+        }
+    }
+}
+
 function Start-LetsEncryptTlsProxies {
     if (-not (Test-EmbeddedTlsActive)) { return }
 
@@ -1197,12 +1255,16 @@ function Start-LetsEncryptTlsProxies {
     $viewerMountSegment = [string](Get-DirectWebRtcWebServerPathSegment)
     $authenticationMountPath = if ([string]::IsNullOrWhiteSpace($viewerMountSegment)) { '' } else { "/$($viewerMountSegment.Trim('/'))" }
 
-    $accountsSignature = (@($authenticationAccounts) | ForEach-Object { "$($_.Username)=$($_.PasswordHash)=$($_.TotpSecret)" }) -join ','
+    # Account data is deliberately NOT part of this signature -- adding,
+    # removing, or editing viewer accounts is handled live via
+    # Sync-ViewerAuthenticationAccountsToLiveProxies (ConfigureAuthentication
+    # on the already-running proxies, no restart), specifically so it never
+    # regenerates the session-signing key and logs every other viewer out
+    # just because one account changed.
     $configurationSignature = @(
         [string]$certificate.Thumbprint,
         [string]$authenticationEnabled,
         [string]$authenticationMountPath,
-        $accountsSignature,
         [string]$numViewerAuthenticationSessionHours.Value,
         [string]$numDirectWebRtcSignalingPort.Value,
         [string](Get-DirectWebRtcSplitAudioSignalingPort),
@@ -1295,6 +1357,7 @@ function Start-LetsEncryptTlsProxies {
     }
     $script:LetsEncryptTlsProxies = $started
     $script:LetsEncryptTlsProxyConfigurationSignature = if (@($started).Count -gt 0) { $configurationSignature } else { '' }
+    $script:LetsEncryptAuthenticationSessionKey = if (@($started).Count -gt 0 -and $authenticationEnabled) { $authenticationSessionKey } else { $null }
     if ($authenticationEnabled -and @($started).Count -gt 0) {
         Append-Log "AUTH: viewer login required on all TLS viewer/signaling endpoints; sessions expire after $([int]$numViewerAuthenticationSessionHours.Value) hour(s)."
     }
@@ -1327,10 +1390,10 @@ function Start-PlaintextAuthProxies {
     $viewerMountSegment = [string](Get-DirectWebRtcWebServerPathSegment)
     $authenticationMountPath = if ([string]::IsNullOrWhiteSpace($viewerMountSegment)) { '' } else { "/$($viewerMountSegment.Trim('/'))" }
 
-    $accountsSignature = (@($authenticationAccounts) | ForEach-Object { "$($_.Username)=$($_.PasswordHash)=$($_.TotpSecret)" }) -join ','
+    # Account data deliberately excluded -- see the matching comment in
+    # Start-LetsEncryptTlsProxies.
     $configurationSignature = @(
         [string]$authenticationMountPath,
-        $accountsSignature,
         [string]$numViewerAuthenticationSessionHours.Value,
         [string]$numDirectWebRtcSignalingPort.Value,
         [string](Get-DirectWebRtcSplitAudioSignalingPort),
@@ -1399,6 +1462,7 @@ function Start-PlaintextAuthProxies {
     }
     $script:PlaintextAuthProxies = $started
     $script:PlaintextAuthProxyConfigurationSignature = if (@($started).Count -gt 0) { $configurationSignature } else { '' }
+    $script:PlaintextAuthenticationSessionKey = if (@($started).Count -gt 0) { $authenticationSessionKey } else { $null }
 }
 
 # Called from the UI poll timer (90-MainWindow.ps1), same cadence as the
@@ -1422,6 +1486,7 @@ function Stop-PlaintextAuthProxies {
     }
     $script:PlaintextAuthProxies = @()
     $script:PlaintextAuthProxyConfigurationSignature = ''
+    $script:PlaintextAuthenticationSessionKey = $null
 }
 
 function Stop-LetsEncryptTlsProxies {
@@ -1431,4 +1496,5 @@ function Stop-LetsEncryptTlsProxies {
     }
     $script:LetsEncryptTlsProxies = @()
     $script:LetsEncryptTlsProxyConfigurationSignature = ''
+    $script:LetsEncryptAuthenticationSessionKey = $null
 }

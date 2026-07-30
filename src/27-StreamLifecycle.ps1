@@ -52,7 +52,14 @@ function Start-GstStream {
     $script:ForceLocalPreviewMode = [bool]($PreviewOnly -or $RecordingOnly)
     $customGstArgumentsOverride = Test-CustomGstArgumentsOverride
 
-    if (-not (Validate-Configuration)) {
+    # -Silent whenever this is a timer-driven restart (every restart, manual
+    # button or truly automatic, funnels through Start-GstStream -Automatic
+    # via the poll timer -- see 90-MainWindow.ps1) rather than a direct
+    # Start-button click: a validation failure here has no one watching for
+    # a modal dialog, which would otherwise block the whole UI message loop
+    # until someone happens to notice and dismiss it -- exactly what looked
+    # like the UI "locking up" after removing a viewer account mid-stream.
+    if (-not (Validate-Configuration -Silent:$Automatic)) {
         $script:WaitingForFullscreen = $false
         $script:RestartAt = $null
         $script:PreviewOnlyMode = $false
@@ -593,8 +600,10 @@ function Start-GstStream {
         }
         Close-WebRtcPortRangeWorkerPipe
         try { Remove-UpnpPortMappings } catch {}
-        try { Stop-LetsEncryptTlsProxies } catch {}
-        try { Stop-PlaintextAuthProxies } catch {}
+        if (-not (Test-KeepAuthenticationProxiesOnRestart)) {
+            try { Stop-LetsEncryptTlsProxies } catch {}
+            try { Stop-PlaintextAuthProxies } catch {}
+        }
         $script:GstProcess = $null
         $script:GstVideoProcess = $null
         $script:GstAudioProcess = $null
@@ -670,6 +679,16 @@ function Stop-ControlledLiveStream {
     # -- see the identical comment in Stop-GstStream's plain-path teardown.
     if (-not $Restart) {
         try { Remove-UpnpPortMappings } catch {}
+    }
+    # Torn down on EVERY stop, restart included, unless "Keep auth on
+    # restarts" is checked -- this must NOT be nested inside `if (-not
+    # $Restart)` above. An active, already-authenticated viewer connection
+    # is still being pumped through these proxies at this exact moment;
+    # leaving the proxy's listener (and that live connection) untouched
+    # while the GST process underneath gets killed is what caused the UI
+    # to freeze on Restart specifically (Stop tore these down and never
+    # froze; Restart silently kept them alive and did).
+    if (-not (Test-KeepAuthenticationProxiesOnRestart)) {
         try { Stop-LetsEncryptTlsProxies } catch {}
         try { Stop-PlaintextAuthProxies } catch {}
     }
@@ -848,6 +867,14 @@ function Stop-GstStream {
     # a restart is about to re-map the exact same ports moments later anyway.
     if (-not $Restart) {
         try { Remove-UpnpPortMappings } catch {}
+    }
+    # Torn down on EVERY stop, restart included, unless "Keep auth on
+    # restarts" is checked -- deliberately NOT nested inside `if (-not
+    # $Restart)` above (see the matching comment in Stop-ControlledLiveStream's
+    # teardown, a few hundred lines up). Leaving an active, authenticated
+    # viewer connection's proxy alive while the GST process underneath it
+    # gets killed is what caused Restart specifically to freeze the UI.
+    if (-not (Test-KeepAuthenticationProxiesOnRestart)) {
         try { Stop-LetsEncryptTlsProxies } catch {}
         try { Stop-PlaintextAuthProxies } catch {}
     }

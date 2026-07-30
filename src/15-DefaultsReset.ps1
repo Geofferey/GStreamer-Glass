@@ -242,6 +242,7 @@ function Reset-LetsEncryptDefaults {
     $txtViewerAuthenticationNewPassword.Clear()
     $numViewerAuthenticationSessionHours.Value = $script:DefaultViewerAuthenticationSessionHours
     $chkViewerAuthenticationAllowPlaintext.Checked = $script:DefaultViewerAuthenticationAllowPlaintext
+    $chkViewerAuthenticationKeepOnRestart.Checked = $script:DefaultViewerAuthenticationKeepOnRestart
     Update-LetsEncryptUi
 }
 

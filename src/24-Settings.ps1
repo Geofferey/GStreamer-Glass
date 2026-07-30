@@ -87,6 +87,7 @@ function Save-Settings {
             ViewerAuthenticationAccounts = @(@($script:ViewerAuthenticationAccounts) | ForEach-Object { [ordered]@{ Username = [string]$_.Username; PasswordHash = [string]$_.PasswordHash; TotpSecret = [string]$_.TotpSecret } })
             ViewerAuthenticationSessionHours = [int]$numViewerAuthenticationSessionHours.Value
             ViewerAuthenticationAllowPlaintext = [bool]$chkViewerAuthenticationAllowPlaintext.Checked
+            ViewerAuthenticationKeepOnRestart = [bool]$chkViewerAuthenticationKeepOnRestart.Checked
             DirectWebRtcWebPath = $txtDirectWebRtcWebPath.Text
             DirectWebRtcBundledWebMode = [string]$cmbDirectWebRtcBundledWebMode.SelectedItem
             DirectWebRtcBundledWebDirectory = $txtDirectWebRtcBundledWebDirectory.Text
@@ -508,6 +509,7 @@ function Restore-SettingsFromObject {
         Sync-ViewerAuthenticationAccountsListBox
         if ($null -ne $settings.ViewerAuthenticationSessionHours) { $numViewerAuthenticationSessionHours.Value = [decimal]([Math]::Min(168, [Math]::Max(1, [int]$settings.ViewerAuthenticationSessionHours))) }
         if ($null -ne $settings.ViewerAuthenticationAllowPlaintext) { $chkViewerAuthenticationAllowPlaintext.Checked = [bool]$settings.ViewerAuthenticationAllowPlaintext }
+        if ($null -ne $settings.ViewerAuthenticationKeepOnRestart) { $chkViewerAuthenticationKeepOnRestart.Checked = [bool]$settings.ViewerAuthenticationKeepOnRestart }
         $txtViewerAuthenticationNewUsername.Clear()
         $txtViewerAuthenticationNewPassword.Clear()
         if ($null -ne $settings.DirectWebRtcWebPath) { $txtDirectWebRtcWebPath.Text = [string]$settings.DirectWebRtcWebPath }
@@ -774,15 +776,28 @@ function Restore-SettingsFromObject {
         $txtDestination.Text = [string]$script:ProtocolDestinations[$protocol]
 }
 
+# Shows a validation-failure message, or just logs it when validation is
+# running non-interactively (Validate-Configuration -Silent, used for the
+# timer-driven Start-GstStream -Automatic restart path). A modal dialog
+# popped up from that context isn't something the user is watching for --
+# it blocks the whole UI message loop until someone happens to notice and
+# dismiss it, which looks exactly like the app hanging. Interactive
+# callers (the Start/Restart buttons) still get the dialog immediately.
+function Show-ValidationFailure {
+    param([Parameter(Mandatory)][string]$Message, [switch]$Silent)
+    if ($Silent) {
+        Append-Log "Validation: $Message"
+        return
+    }
+    [System.Windows.Forms.MessageBox]::Show($Message, $script:AppName, 'OK', 'Warning') | Out-Null
+}
+
 function Validate-Configuration {
+    param([switch]$Silent)
+
     $gstPath = Resolve-GstLaunchSelection -RequestedPath $txtGstPath.Text -UpdateControl
     if (-not (Test-GstLaunchPath $gstPath)) {
-        [System.Windows.Forms.MessageBox]::Show(
-            'Select a valid gst-launch-1.0.exe path.',
-            $script:AppName,
-            'OK',
-            'Warning'
-        ) | Out-Null
+        Show-ValidationFailure -Silent:$Silent -Message 'Select a valid gst-launch-1.0.exe path.'
         return $false
     }
 
@@ -792,23 +807,13 @@ function Validate-Configuration {
             [void](Get-CustomGstArguments)
         }
         catch {
-            [System.Windows.Forms.MessageBox]::Show(
-                $_.Exception.Message,
-                $script:AppName,
-                'OK',
-                'Warning'
-            ) | Out-Null
+            Show-ValidationFailure -Silent:$Silent -Message $_.Exception.Message
             return $false
         }
     }
 
     if ((-not $customGstArgumentsOverride) -and -not (Test-TransportEnabled) -and -not (Test-RecordingEnabled) -and -not $chkPreview.Checked) {
-        [System.Windows.Forms.MessageBox]::Show(
-            'Enable transport, recording, or preview before starting.',
-            $script:AppName,
-            'OK',
-            'Warning'
-        ) | Out-Null
+        Show-ValidationFailure -Silent:$Silent -Message 'Enable transport, recording, or preview before starting.'
         return $false
     }
 
@@ -829,12 +834,7 @@ function Validate-Configuration {
                 $_.Username -and [TlsTerminatingProxy]::IsAuthenticationPasswordHashValid([string]$_.PasswordHash)
             }).Count
             if ($validAccountCount -eq 0) {
-                [System.Windows.Forms.MessageBox]::Show(
-                    'Add at least one viewer account before enabling viewer authentication.',
-                    $script:AppName,
-                    'OK',
-                    'Warning'
-                ) | Out-Null
+                Show-ValidationFailure -Silent:$Silent -Message 'Add at least one viewer account before enabling viewer authentication.'
                 return $false
             }
         }
@@ -843,12 +843,7 @@ function Validate-Configuration {
     if ($chkEmbeddedTlsEnabled -and $chkEmbeddedTlsEnabled.Checked -and (Test-TransportEnabled) -and ([string]$cmbProtocol.SelectedItem -eq $script:DirectWebRtcProtocolName)) {
         $portConflicts = @(Get-EmbeddedTlsPortConflicts)
         if ($portConflicts.Count -gt 0) {
-            [System.Windows.Forms.MessageBox]::Show(
-                "SSL/TLS Security port configuration conflicts:`n`n$($portConflicts -join "`n")`n`nEither check 'Disable insecure ports' (so the insecure server moves to loopback-only), or set a distinct external port for each service under SSL/TLS Security.",
-                $script:AppName,
-                'OK',
-                'Warning'
-            ) | Out-Null
+            Show-ValidationFailure -Silent:$Silent -Message "SSL/TLS Security port configuration conflicts:`n`n$($portConflicts -join "`n")`n`nEither check 'Disable insecure ports' (so the insecure server moves to loopback-only), or set a distinct external port for each service under SSL/TLS Security."
             return $false
         }
     }
@@ -859,12 +854,7 @@ function Validate-Configuration {
             [string]::IsNullOrWhiteSpace($mediaMtxPath) -or
             -not (Test-Path -LiteralPath $mediaMtxPath)
         ) {
-            [System.Windows.Forms.MessageBox]::Show(
-                'Select a valid mediamtx.exe path or disable MediaMTX management.',
-                $script:AppName,
-                'OK',
-                'Warning'
-            ) | Out-Null
+            Show-ValidationFailure -Silent:$Silent -Message 'Select a valid mediamtx.exe path or disable MediaMTX management.'
             return $false
         }
 
@@ -874,15 +864,24 @@ function Validate-Configuration {
                 [System.StringComparison]::OrdinalIgnoreCase
             )
         ) {
-            $result = [System.Windows.Forms.MessageBox]::Show(
-                "The selected MediaMTX executable is not named mediamtx.exe.`r`n`r`nContinue anyway?",
-                $script:AppName,
-                [System.Windows.Forms.MessageBoxButtons]::YesNo,
-                [System.Windows.Forms.MessageBoxIcon]::Question
-            )
+            # A confirm-to-proceed prompt, not a hard failure -- in Silent
+            # mode (an automatic restart) there's no one to ask, and this
+            # exact path was already accepted on the original interactive
+            # start, so proceed rather than block the restart on it.
+            if ($Silent) {
+                Append-Log "Validation: proceeding with a non-standard MediaMTX executable name ($([System.IO.Path]::GetFileName($mediaMtxPath)))."
+            }
+            else {
+                $result = [System.Windows.Forms.MessageBox]::Show(
+                    "The selected MediaMTX executable is not named mediamtx.exe.`r`n`r`nContinue anyway?",
+                    $script:AppName,
+                    [System.Windows.Forms.MessageBoxButtons]::YesNo,
+                    [System.Windows.Forms.MessageBoxIcon]::Question
+                )
 
-            if ($result -ne [System.Windows.Forms.DialogResult]::Yes) {
-                return $false
+                if ($result -ne [System.Windows.Forms.DialogResult]::Yes) {
+                    return $false
+                }
             }
         }
     }
@@ -905,24 +904,14 @@ function Validate-Configuration {
     }
 
     if (-not $valid) {
-        [System.Windows.Forms.MessageBox]::Show(
-            "The destination does not match the selected $protocol protocol.",
-            $script:AppName,
-            'OK',
-            'Warning'
-        ) | Out-Null
+        Show-ValidationFailure -Silent:$Silent -Message "The destination does not match the selected $protocol protocol."
         return $false
     }
 
     $definition = Get-SelectedEncoderDefinition
     $codec = [string]$definition.Codec
     if (-not (Test-CodecProtocolCompatibility -Codec $codec -Protocol $protocol)) {
-        [System.Windows.Forms.MessageBox]::Show(
-            "$codec is not supported by the $protocol pipeline template.`r`n`r`nSelect another encoder or protocol.",
-            $script:AppName,
-            'OK',
-            'Warning'
-        ) | Out-Null
+        Show-ValidationFailure -Silent:$Silent -Message "$codec is not supported by the $protocol pipeline template.`r`n`r`nSelect another encoder or protocol."
         return $false
     }
 
@@ -931,78 +920,38 @@ function Validate-Configuration {
         $audioMsid = Get-DirectWebRtcMediaStreamId -Kind audio
         $validMsidPattern = '^[A-Za-z0-9_.-]+$'
         if ($videoMsid -notmatch $validMsidPattern -or $audioMsid -notmatch $validMsidPattern) {
-            [System.Windows.Forms.MessageBox]::Show(
-                'Video and audio MediaStream IDs may contain only letters, numbers, underscore, period, and hyphen.',
-                $script:AppName,
-                'OK',
-                'Warning'
-            ) | Out-Null
+            Show-ValidationFailure -Silent:$Silent -Message 'Video and audio MediaStream IDs may contain only letters, numbers, underscore, period, and hyphen.'
             return $false
         }
         if ($videoMsid.Equals($audioMsid, [System.StringComparison]::Ordinal)) {
-            [System.Windows.Forms.MessageBox]::Show(
-                'Separate audio/video MediaStreams requires different Video and Audio MediaStream IDs.',
-                $script:AppName,
-                'OK',
-                'Warning'
-            ) | Out-Null
+            Show-ValidationFailure -Silent:$Silent -Message 'Separate audio/video MediaStreams requires different Video and Audio MediaStream IDs.'
             return $false
         }
     }
 
     if (Test-DirectWebRtcUnifiedPublisher) {
         if ($protocol -ne $script:DirectWebRtcProtocolName -or -not (Test-DirectWebRtcSplitAvPipelines)) {
-            [System.Windows.Forms.MessageBox]::Show(
-                'Unified A/V publisher requires GST WebRTC with Split A/V pipelines selected.',
-                $script:AppName,
-                'OK',
-                'Warning'
-            ) | Out-Null
+            Show-ValidationFailure -Silent:$Silent -Message 'Unified A/V publisher requires GST WebRTC with Split A/V pipelines selected.'
             return $false
         }
         if ($codec -notin @('H264','H265')) {
-            [System.Windows.Forms.MessageBox]::Show(
-                "Unified A/V publisher currently supports H.264 and H.265 RTP bridge payloaders only. Selected codec: $codec.",
-                $script:AppName,
-                'OK',
-                'Warning'
-            ) | Out-Null
+            Show-ValidationFailure -Silent:$Silent -Message "Unified A/V publisher currently supports H.264 and H.265 RTP bridge payloaders only. Selected codec: $codec."
             return $false
         }
         if ((Get-ComboSelectedOrDefault $cmbAudioTransportMode $script:DefaultAudioTransportMode) -ne 'Normal audio' -or -not ($chkDesktopAudio.Checked -or $chkMic.Checked)) {
-            [System.Windows.Forms.MessageBox]::Show(
-                'Unified A/V publisher requires Normal audio with Desktop audio or Microphone enabled.',
-                $script:AppName,
-                'OK',
-                'Warning'
-            ) | Out-Null
+            Show-ValidationFailure -Silent:$Silent -Message 'Unified A/V publisher requires Normal audio with Desktop audio or Microphone enabled.'
             return $false
         }
         if ((Get-ComboSelectedOrDefault $cmbDirectWebRtcOpusMode $script:DefaultDirectWebRtcOpusMode) -eq 'Raw audio to webrtcsink') {
-            [System.Windows.Forms.MessageBox]::Show(
-                'Unified A/V publisher requires Explicit Opus encoder mode so audio can cross the local RTP bridge as Opus.',
-                $script:AppName,
-                'OK',
-                'Warning'
-            ) | Out-Null
+            Show-ValidationFailure -Silent:$Silent -Message 'Unified A/V publisher requires Explicit Opus encoder mode so audio can cross the local RTP bridge as Opus.'
             return $false
         }
         if ((Test-RecordingEnabled) -and ($chkRecordingDesktopAudio.Checked -or $chkRecordingMic.Checked)) {
-            [System.Windows.Forms.MessageBox]::Show(
-                'Unified A/V publisher lab currently supports local video-only recording. Disable Recording desktop/microphone audio so a second WASAPI source is not injected into the video capture process and allowed to contaminate this timing experiment.',
-                $script:AppName,
-                'OK',
-                'Warning'
-            ) | Out-Null
+            Show-ValidationFailure -Silent:$Silent -Message 'Unified A/V publisher lab currently supports local video-only recording. Disable Recording desktop/microphone audio so a second WASAPI source is not injected into the video capture process and allowed to contaminate this timing experiment.'
             return $false
         }
         if ([int]$numDirectWebRtcBridgeVideoPort.Value -eq [int]$numDirectWebRtcBridgeAudioPort.Value) {
-            [System.Windows.Forms.MessageBox]::Show(
-                'Video and audio RTP bridge ports must be different.',
-                $script:AppName,
-                'OK',
-                'Warning'
-            ) | Out-Null
+            Show-ValidationFailure -Silent:$Silent -Message 'Video and audio RTP bridge ports must be different.'
             return $false
         }
     }
@@ -1014,12 +963,7 @@ function Validate-Configuration {
                 -AudioCodecName $audioCodecName `
                 -Protocol $protocol)
         ) {
-            [System.Windows.Forms.MessageBox]::Show(
-                "$audioCodecName is not compatible with $protocol.",
-                $script:AppName,
-                'OK',
-                'Warning'
-            ) | Out-Null
+            Show-ValidationFailure -Silent:$Silent -Message "$audioCodecName is not compatible with $protocol."
             return $false
         }
     }
@@ -1030,24 +974,28 @@ function Validate-Configuration {
         $numBFrames.Enabled -and
         [int]$numBFrames.Value -gt 0
     ) {
-        [System.Windows.Forms.MessageBox]::Show(
-            'H.264 B-frames are not compatible with normal WebRTC playback. Set B-frames to 0 for WebRTC.',
-            $script:AppName,
-            'OK',
-            'Warning'
-        ) | Out-Null
+        Show-ValidationFailure -Silent:$Silent -Message 'H.264 B-frames are not compatible with normal WebRTC playback. Set B-frames to 0 for WebRTC.'
         return $false
     }
 
     if ($protocol -eq 'RTMP' -and $codec -in @('H265', 'AV1')) {
-        $result = [System.Windows.Forms.MessageBox]::Show(
-            "$codec over RTMP uses Enhanced RTMP / eflvmux. The destination server and viewers must support that extension.`r`n`r`nContinue?",
-            $script:AppName,
-            [System.Windows.Forms.MessageBoxButtons]::YesNo,
-            [System.Windows.Forms.MessageBoxIcon]::Question
-        )
-        if ($result -ne [System.Windows.Forms.DialogResult]::Yes) {
-            return $false
+        # A confirm-to-proceed prompt -- in Silent mode (an automatic
+        # restart) there's no one to ask, and this exact codec/protocol
+        # combination was already accepted on the original interactive
+        # start, so proceed rather than block the restart on it.
+        if ($Silent) {
+            Append-Log "Validation: proceeding with $codec over RTMP (Enhanced RTMP / eflvmux)."
+        }
+        else {
+            $result = [System.Windows.Forms.MessageBox]::Show(
+                "$codec over RTMP uses Enhanced RTMP / eflvmux. The destination server and viewers must support that extension.`r`n`r`nContinue?",
+                $script:AppName,
+                [System.Windows.Forms.MessageBoxButtons]::YesNo,
+                [System.Windows.Forms.MessageBoxIcon]::Question
+            )
+            if ($result -ne [System.Windows.Forms.DialogResult]::Yes) {
+                return $false
+            }
         }
     }
     }
@@ -1057,12 +1005,7 @@ function Validate-Configuration {
             $script:ResolvedRecordingPath = Resolve-RecordingFilePath -EnsureDirectory -AvoidExisting
         }
         catch {
-            [System.Windows.Forms.MessageBox]::Show(
-                "Recording output could not be prepared.`r`n`r`n$($_.Exception.Message)",
-                $script:AppName,
-                'OK',
-                'Warning'
-            ) | Out-Null
+            Show-ValidationFailure -Silent:$Silent -Message "Recording output could not be prepared.`r`n`r`n$($_.Exception.Message)"
             return $false
         }
     }

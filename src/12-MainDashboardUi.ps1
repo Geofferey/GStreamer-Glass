@@ -1235,6 +1235,8 @@ function Apply-ModernDashboardUi {
     Add-Field $r -Label 'Session hours' -Control $numViewerAuthenticationSessionHours -Width 90 | Out-Null
     $r = Add-Row $s
     Add-Field $r -Control $chkViewerAuthenticationAllowPlaintext -Width 420 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Control $chkViewerAuthenticationKeepOnRestart -Width 420 | Out-Null
 
     $s = Add-Section $paneNetwork ''
     $r = Add-Row $s
@@ -1454,7 +1456,7 @@ function Apply-ModernDashboardUi {
         $txtViewerAuthenticationNewUsername, $txtViewerAuthenticationNewPassword,
         $btnViewerAuthenticationAddAccount, $btnViewerAuthenticationRemoveAccount,
         $btnViewerAuthenticationEnableTotp, $btnViewerAuthenticationDisableTotp,
-        $numViewerAuthenticationSessionHours, $chkViewerAuthenticationAllowPlaintext,
+        $numViewerAuthenticationSessionHours, $chkViewerAuthenticationAllowPlaintext, $chkViewerAuthenticationKeepOnRestart,
         $btnResetTransport, $btnResetWebRtcSane, $btnResetVideo, $btnResetAudio,
         $btnResetRecording, $btnResetNetwork, $btnResetOptions, $btnExportLabConfig, $btnResetAll,
         $txtGstPath, $btnBrowseGst, $btnDetectGst, $btnCheckGst,
@@ -1487,7 +1489,7 @@ function Apply-ModernDashboardUi {
         $chkRecordingTemporalAq, $chkRecordingDesktopAudio, $chkRecordingMic,
         $chkDdnsEnabled, $chkDdnsCloudflareProxied,
         $chkEmbeddedTlsEnabled, $chkTlsAllowInsecurePorts,
-        $chkLetsEncryptEnabled, $chkLetsEncryptStaging, $chkViewerAuthenticationEnabled, $chkViewerAuthenticationAllowPlaintext,
+        $chkLetsEncryptEnabled, $chkLetsEncryptStaging, $chkViewerAuthenticationEnabled, $chkViewerAuthenticationAllowPlaintext, $chkViewerAuthenticationKeepOnRestart,
         $chkPreview, $chkHidePreviewDuringStream, $chkAutoRestart, $chkVerbose, $chkDiskProcessLogging,
         $chkCustomGstArgumentsEnabled,
         $chkMinimizeToTray, $chkStartMinimized, $chkPsDebug

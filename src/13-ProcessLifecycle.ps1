@@ -110,13 +110,25 @@ function Stop-ProcessTreeById {
         return
     }
 
+    # Deliberately NOT -Wait: taskkill.exe /F only returns once the OS has
+    # actually confirmed every process in the tree is gone, and a process
+    # holding open network sockets with in-flight I/O (e.g. GST with an
+    # actively-streaming viewer connection through the auth proxy) can take
+    # the kernel noticeably longer to unwind than an idle one -- easily
+    # several seconds, sometimes more. Every caller of this function is on
+    # the UI thread (button clicks, the poll timer, form-closing), so
+    # -Wait here blocked the entire UI for however long that took, which is
+    # exactly what looked like "the UI locks up" when restarting a stream
+    # with an active viewer connected. Callers already have their own
+    # bounded Process.WaitForExit(...) immediately after this call (or are
+    # best-effort cleanup paths where a still-terminating process in the
+    # background is harmless) -- that bounded wait is the right place to
+    # cap how long this can take, not an unbounded wait on taskkill itself.
     try {
-        $arguments = "/PID $ProcessId /T /F"
         $null = Start-Process `
             -FilePath 'taskkill.exe' `
-            -ArgumentList $arguments `
+            -ArgumentList "/PID $ProcessId /T /F" `
             -WindowStyle Hidden `
-            -Wait `
             -PassThru
     }
     catch {
