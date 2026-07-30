@@ -565,7 +565,18 @@ function Apply-ModernDashboardUi {
                 $sender.Text = "$($state.ChevronE)  $($state.Title)"
                 $state.Section.Visible = $true
             }
-            if ($state.Section.Parent) { $state.Section.Parent.PerformLayout() }
+            $pane = $state.Section.Parent
+            if ($pane) {
+                $pane.PerformLayout()
+                # An AutoScroll FlowLayoutPanel doesn't reliably keep its scroll
+                # position sane after a child's Visible flips triggers a reflow --
+                # it can jump to show the bottom of the now taller/shorter content
+                # instead of staying on the section the user just clicked.
+                # Explicitly scroll the clicked header (and, when expanding, the
+                # revealed section) back into view to correct that.
+                $pane.ScrollControlIntoView($sender)
+                if (-not $state.Collapsed) { $pane.ScrollControlIntoView($state.Section) }
+            }
         })
         $header.Add_MouseEnter({ param($sender, $eventArgs) $sender.ForeColor = $script:ColorText })
         $header.Add_MouseLeave({ param($sender, $eventArgs) $sender.ForeColor = $script:ColorAccent })
