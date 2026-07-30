@@ -79,7 +79,7 @@ function Save-Settings {
             LetsEncryptSplitAudioExternalPort = [int]$numLetsEncryptSplitAudioExternalPort.Value
             LetsEncryptWebServerExternalPort = [int]$numLetsEncryptWebServerExternalPort.Value
             ViewerAuthenticationEnabled = [bool]$chkViewerAuthenticationEnabled.Checked
-            ViewerAuthenticationAccounts = @(@($script:ViewerAuthenticationAccounts) | ForEach-Object { [ordered]@{ Username = [string]$_.Username; PasswordHash = [string]$_.PasswordHash } })
+            ViewerAuthenticationAccounts = @(@($script:ViewerAuthenticationAccounts) | ForEach-Object { [ordered]@{ Username = [string]$_.Username; PasswordHash = [string]$_.PasswordHash; TotpSecret = [string]$_.TotpSecret } })
             ViewerAuthenticationSessionHours = [int]$numViewerAuthenticationSessionHours.Value
             DirectWebRtcWebPath = $txtDirectWebRtcWebPath.Text
             DirectWebRtcBundledWebMode = [string]$cmbDirectWebRtcBundledWebMode.SelectedItem
@@ -478,7 +478,7 @@ function Restore-SettingsFromObject {
         if ($null -ne $settings.ViewerAuthenticationEnabled) { $chkViewerAuthenticationEnabled.Checked = [bool]$settings.ViewerAuthenticationEnabled }
         if ($settings.ViewerAuthenticationAccounts) {
             $script:ViewerAuthenticationAccounts = @(@($settings.ViewerAuthenticationAccounts) | Where-Object { $_.Username -and $_.PasswordHash } | ForEach-Object {
-                [pscustomobject]@{ Username = [string]$_.Username; PasswordHash = [string]$_.PasswordHash }
+                [pscustomobject]@{ Username = [string]$_.Username; PasswordHash = [string]$_.PasswordHash; TotpSecret = [string]$_.TotpSecret }
             })
         }
         # Migrate a pre-multi-account settings.json (single shared
@@ -487,6 +487,7 @@ function Restore-SettingsFromObject {
             $script:ViewerAuthenticationAccounts = @([pscustomobject]@{
                 Username = [string]$settings.ViewerAuthenticationUsername
                 PasswordHash = [string]$settings.ViewerAuthenticationPasswordHash
+                TotpSecret = ''
             })
         }
         Sync-ViewerAuthenticationAccountsListBox

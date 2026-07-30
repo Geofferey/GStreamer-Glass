@@ -107,11 +107,24 @@ function Assert-ViewerAuth {
 }
 
 function New-TestAccount {
-    param([string]$Username, [string]$PasswordHash)
+    param([string]$Username, [string]$PasswordHash, [string]$TotpSecret = '')
     $account = [TlsTerminatingProxy+AuthenticationAccount]::new()
     $account.Username = $Username
     $account.PasswordHash = $PasswordHash
+    $account.TotpSecret = $TotpSecret
     return $account
+}
+
+# ComputeTotpCode/Base32Decode are private -- reflection is the only way to
+# compute "the code a real authenticator app would show right now" without
+# widening the class's public surface just for tests.
+function Get-CurrentTotpCode {
+    param([string]$Secret)
+    $decodeMethod = [TlsTerminatingProxy].GetMethod('Base32Decode', [System.Reflection.BindingFlags]::NonPublic -bor [System.Reflection.BindingFlags]::Static)
+    $computeMethod = [TlsTerminatingProxy].GetMethod('ComputeTotpCode', [System.Reflection.BindingFlags]::NonPublic -bor [System.Reflection.BindingFlags]::Static)
+    $secretBytes = $decodeMethod.Invoke($null, @($Secret))
+    $currentStep = [long]([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() / 30)
+    return $computeMethod.Invoke($null, @($secretBytes, $currentStep))
 }
 
 $csp = [System.Security.Cryptography.CspParameters]::new(24)
@@ -134,6 +147,7 @@ $proxy = [TlsTerminatingProxy]::new()
 $secondProxy = $null
 $transitionProxy = $null
 $multiAccountProxy = $null
+$totpProxy = $null
 $passwordHash = [TlsTerminatingProxy]::HashAuthenticationPassword('glass-auth-test-password')
 $sessionKey = [TlsTerminatingProxy]::CreateAuthenticationSessionKey()
 $accounts = [TlsTerminatingProxy+AuthenticationAccount[]]@((New-TestAccount 'viewer' $passwordHash))
@@ -328,6 +342,68 @@ try {
     $multiAccountProxy.Stop()
     $multiAccountProxy = $null
 
+    # Optional per-account TOTP second factor (RFC 6238). An account with a
+    # TotpSecret must never get a session from password alone; a wrong code
+    # must never issue one either; a correct code must; and an account with
+    # no TotpSecret must be completely unaffected (single-step login as before).
+    $totpProxyPort = Get-FreeTcpPort
+    $totpProxy = [TlsTerminatingProxy]::new()
+    $totpPasswordHash = [TlsTerminatingProxy]::HashAuthenticationPassword('totp-test-password')
+    $totpSecret = [TlsTerminatingProxy]::GenerateTotpSecret()
+    $plainPasswordHash = [TlsTerminatingProxy]::HashAuthenticationPassword('plain-test-password')
+    $totpProxy.ConfigureAuthentication(
+        $true,
+        [TlsTerminatingProxy+AuthenticationAccount[]]@(
+            (New-TestAccount 'totp-viewer' $totpPasswordHash $totpSecret),
+            (New-TestAccount 'plain-viewer' $plainPasswordHash)
+        ),
+        $sessionKey,
+        12
+    )
+    $totpProxy.Start($totpProxyPort, '127.0.0.1', $upstreamPort, $certificate)
+    Start-Sleep -Milliseconds 50
+
+    $totpLoginBody = 'username=totp-viewer&password=totp-test-password&return=%2Flive%2F'
+    $totpLoginLength = [System.Text.Encoding]::UTF8.GetByteCount($totpLoginBody)
+    $response = Send-TlsRequest $totpProxyPort "POST /auth/login HTTP/1.1`r`nHost: localhost`r`nContent-Type: application/x-www-form-urlencoded`r`nContent-Length: $totpLoginLength`r`nConnection: close`r`n`r`n$totpLoginBody"
+    Assert-ViewerAuth $response.StartsWith('HTTP/1.1 200') 'Correct password for a 2FA account did not return the code-entry challenge.'
+    Assert-ViewerAuth ($response -notmatch 'Set-Cookie') 'A session cookie was issued before the 2FA code was verified.'
+    Assert-ViewerAuth ($response -match 'name="pending" value="([^"]+)"') 'Challenge page did not contain a pending token.'
+    $totpPendingToken = [System.Uri]::UnescapeDataString(($Matches[1] -replace '&amp;', '&'))
+
+    $wrongCodeBody = "pending=$([System.Uri]::EscapeDataString($totpPendingToken))&code=000000&return=%2Flive%2F"
+    $wrongCodeLength = [System.Text.Encoding]::UTF8.GetByteCount($wrongCodeBody)
+    $response = Send-TlsRequest $totpProxyPort "POST /auth/verify HTTP/1.1`r`nHost: localhost`r`nContent-Type: application/x-www-form-urlencoded`r`nContent-Length: $wrongCodeLength`r`nConnection: close`r`n`r`n$wrongCodeBody"
+    Assert-ViewerAuth $response.StartsWith('HTTP/1.1 401') 'A wrong 2FA code was accepted.'
+    Assert-ViewerAuth ($response -notmatch 'Set-Cookie') 'A session cookie was issued for a wrong 2FA code.'
+
+    $currentCode = Get-CurrentTotpCode $totpSecret
+    $correctCodeBody = "pending=$([System.Uri]::EscapeDataString($totpPendingToken))&code=$currentCode&return=%2Flive%2F"
+    $correctCodeLength = [System.Text.Encoding]::UTF8.GetByteCount($correctCodeBody)
+    $response = Send-TlsRequest $totpProxyPort "POST /auth/verify HTTP/1.1`r`nHost: localhost`r`nContent-Type: application/x-www-form-urlencoded`r`nContent-Length: $correctCodeLength`r`nConnection: close`r`n`r`n$correctCodeBody"
+    Assert-ViewerAuth $response.StartsWith('HTTP/1.1 303') 'The correct 2FA code was not accepted.'
+    $totpCookieHeader = ([regex]::Match($response, '(?im)^Set-Cookie:\s*(.+)$')).Groups[1].Value.Trim()
+    Assert-ViewerAuth ($totpCookieHeader.Length -gt 0) 'No session cookie was issued after the correct 2FA code.'
+    $totpCookiePair = $totpCookieHeader.Split(';')[0]
+    $totpUpstream = [ViewerAuthTestUpstream]::ServeOne($upstreamPort, '2fa-session-ok')
+    $response = Send-TlsRequest $totpProxyPort "GET /live/ HTTP/1.1`r`nHost: localhost`r`nCookie: $totpCookiePair`r`nConnection: close`r`n`r`n"
+    Assert-ViewerAuth ($response -match '2fa-session-ok') 'The session issued after 2FA verification was not honored for a real request.'
+    Assert-ViewerAuth $totpUpstream.Result.StartsWith('GET /live/') '2FA-authenticated request did not reach the upstream.'
+
+    $wrongPasswordBody = 'username=totp-viewer&password=not-the-password&return=%2Flive%2F'
+    $wrongPasswordLength = [System.Text.Encoding]::UTF8.GetByteCount($wrongPasswordBody)
+    $response = Send-TlsRequest $totpProxyPort "POST /auth/login HTTP/1.1`r`nHost: localhost`r`nContent-Type: application/x-www-form-urlencoded`r`nContent-Length: $wrongPasswordLength`r`nConnection: close`r`n`r`n$wrongPasswordBody"
+    Assert-ViewerAuth $response.StartsWith('HTTP/1.1 401') 'A wrong password for a 2FA account was not rejected outright.'
+    Assert-ViewerAuth ($response -notmatch 'name="pending"') 'A wrong password leaked a pending 2FA token.'
+
+    $plainLoginBody = 'username=plain-viewer&password=plain-test-password&return=%2Flive%2F'
+    $plainLoginLength = [System.Text.Encoding]::UTF8.GetByteCount($plainLoginBody)
+    $response = Send-TlsRequest $totpProxyPort "POST /auth/login HTTP/1.1`r`nHost: localhost`r`nContent-Type: application/x-www-form-urlencoded`r`nContent-Length: $plainLoginLength`r`nConnection: close`r`n`r`n$plainLoginBody"
+    Assert-ViewerAuth $response.StartsWith('HTTP/1.1 303') 'An account with no TOTP secret was forced through the 2FA challenge.'
+    Assert-ViewerAuth ($response -match 'Set-Cookie') 'An account with no TOTP secret did not get a session on the correct password alone.'
+    $totpProxy.Stop()
+    $totpProxy = $null
+
     # A listener can briefly have auth enforcement off while its generated
     # player config still exposes Sign out. The TLS edge must continue to own
     # logout so it never falls through to GStreamer's static-server 404.
@@ -403,6 +479,7 @@ catch {
 finally {
     if ($transitionProxy) { $transitionProxy.Stop() }
     if ($multiAccountProxy) { $multiAccountProxy.Stop() }
+    if ($totpProxy) { $totpProxy.Stop() }
     if ($secondProxy) { $secondProxy.Stop() }
     $proxy.Stop()
     $certificate.Dispose()

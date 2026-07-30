@@ -1773,6 +1773,7 @@ public class TlsTerminatingProxy
     // HandleAuthenticationAsync (dispatch) so the two can never drift apart.
     private const string CanonicalLoginPath = "/auth/login";
     private const string CanonicalLogoutPath = "/auth/logout";
+    private const string CanonicalVerifyPath = "/auth/verify";
     private const string LegacyLoginPath = "/__gstglass/auth/login";
     private const string LegacyLogoutPath = "/__gstglass/auth/logout";
     private const string LegacySimpleLogoutPath = "/logout";
@@ -1786,6 +1787,9 @@ public class TlsTerminatingProxy
     {
         public string Username;
         public string PasswordHash;
+        // Base32-encoded TOTP secret (RFC 6238/4226). Null/empty means this
+        // account has no second factor and authenticates on password alone.
+        public string TotpSecret;
     }
 
     private TcpListener listener;
@@ -1850,7 +1854,7 @@ public class TlsTerminatingProxy
             foreach (AuthenticationAccount account in accounts)
             {
                 if (account == null || string.IsNullOrWhiteSpace(account.Username) || string.IsNullOrWhiteSpace(account.PasswordHash)) continue;
-                normalized.Add(new AuthenticationAccount { Username = account.Username.Trim(), PasswordHash = account.PasswordHash });
+                normalized.Add(new AuthenticationAccount { Username = account.Username.Trim(), PasswordHash = account.PasswordHash, TotpSecret = account.TotpSecret });
             }
         }
         authenticationAccounts = normalized;
@@ -1902,6 +1906,110 @@ public class TlsTerminatingProxy
             return Convert.FromBase64String(parts[2]).Length >= 16 && Convert.FromBase64String(parts[3]).Length == 32;
         }
         catch { return false; }
+    }
+
+    // TOTP (RFC 6238, built on the HOTP counter algorithm from RFC 4226):
+    // a 20-byte (160-bit) secret, SHA-1 HMAC, 30-second time steps, 6-digit
+    // codes -- the same parameters every mainstream authenticator app
+    // (Google Authenticator, Authy, 1Password, etc.) assumes by default, so
+    // no per-account configuration of algorithm/digits/period is exposed.
+    private const string Base32Alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+
+    public static string GenerateTotpSecret()
+    {
+        byte[] secretBytes = new byte[20];
+        using (RandomNumberGenerator random = RandomNumberGenerator.Create())
+        {
+            random.GetBytes(secretBytes);
+        }
+        return Base32Encode(secretBytes);
+    }
+
+    private static string Base32Encode(byte[] data)
+    {
+        if (data == null || data.Length == 0) return "";
+        StringBuilder result = new StringBuilder();
+        int bitBuffer = 0;
+        int bitCount = 0;
+        foreach (byte b in data)
+        {
+            bitBuffer = (bitBuffer << 8) | b;
+            bitCount += 8;
+            while (bitCount >= 5)
+            {
+                bitCount -= 5;
+                result.Append(Base32Alphabet[(bitBuffer >> bitCount) & 0x1F]);
+            }
+        }
+        if (bitCount > 0)
+        {
+            result.Append(Base32Alphabet[(bitBuffer << (5 - bitCount)) & 0x1F]);
+        }
+        return result.ToString();
+    }
+
+    private static byte[] Base32Decode(string input)
+    {
+        string clean = (input ?? "").Trim().ToUpperInvariant().Replace("-", "").Replace(" ", "").TrimEnd('=');
+        if (clean.Length == 0) return new byte[0];
+        List<byte> output = new List<byte>();
+        int bitBuffer = 0;
+        int bitCount = 0;
+        foreach (char c in clean)
+        {
+            int value = Base32Alphabet.IndexOf(c);
+            if (value < 0) throw new FormatException("Invalid Base32 character.");
+            bitBuffer = (bitBuffer << 5) | value;
+            bitCount += 5;
+            if (bitCount >= 8)
+            {
+                bitCount -= 8;
+                output.Add((byte)((bitBuffer >> bitCount) & 0xFF));
+            }
+        }
+        return output.ToArray();
+    }
+
+    // RFC 4226 SS5.3 dynamic truncation, fixed at 6 digits (10^6).
+    private static string ComputeTotpCode(byte[] secretBytes, long timeStep)
+    {
+        byte[] counter = BitConverter.GetBytes(timeStep);
+        if (BitConverter.IsLittleEndian) Array.Reverse(counter);
+        byte[] hash;
+        using (HMACSHA1 hmac = new HMACSHA1(secretBytes))
+        {
+            hash = hmac.ComputeHash(counter);
+        }
+        int offset = hash[hash.Length - 1] & 0x0F;
+        int binaryCode =
+            ((hash[offset] & 0x7F) << 24) |
+            ((hash[offset + 1] & 0xFF) << 16) |
+            ((hash[offset + 2] & 0xFF) << 8) |
+            (hash[offset + 3] & 0xFF);
+        return (binaryCode % 1000000).ToString("D6", System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    // Accepts the current 30s window plus one step on either side (a total
+    // 90s span) to tolerate ordinary clock drift between the viewer's phone
+    // and this machine without meaningfully widening the guessable window.
+    public static bool VerifyTotpCode(string base32Secret, string submittedCode)
+    {
+        if (string.IsNullOrWhiteSpace(base32Secret) || string.IsNullOrWhiteSpace(submittedCode)) return false;
+        string normalizedCode = submittedCode.Trim();
+        if (normalizedCode.Length != 6) return false;
+        foreach (char c in normalizedCode) { if (c < '0' || c > '9') return false; }
+        byte[] secretBytes;
+        try { secretBytes = Base32Decode(base32Secret); }
+        catch { return false; }
+        if (secretBytes.Length == 0) return false;
+        long currentStep = ToUnixTimeSeconds(DateTime.UtcNow) / 30;
+        byte[] suppliedBytes = Encoding.ASCII.GetBytes(normalizedCode);
+        for (long stepOffset = -1; stepOffset <= 1; stepOffset++)
+        {
+            string expected = ComputeTotpCode(secretBytes, currentStep + stepOffset);
+            if (FixedTimeEquals(Encoding.ASCII.GetBytes(expected), suppliedBytes)) return true;
+        }
+        return false;
     }
 
     public void Start(int externalPort, string targetHost, int targetPort, X509Certificate2 certificate)
@@ -2143,6 +2251,7 @@ public class TlsTerminatingProxy
             string.Equals(path, CanonicalLoginPath, StringComparison.OrdinalIgnoreCase) ||
             string.Equals(path, LegacyLoginPath, StringComparison.OrdinalIgnoreCase) ||
             string.Equals(path, mountedLegacyLoginPath, StringComparison.OrdinalIgnoreCase);
+        bool isVerifyEndpoint = string.Equals(path, CanonicalVerifyPath, StringComparison.OrdinalIgnoreCase);
         bool isAuthenticationRoot =
             string.Equals(path, "/auth", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(path, "/auth/", StringComparison.OrdinalIgnoreCase);
@@ -2192,6 +2301,77 @@ public class TlsTerminatingProxy
             return true;
         }
 
+        if (isVerifyEndpoint)
+        {
+            if (!string.Equals(method, "POST", StringComparison.OrdinalIgnoreCase))
+            {
+                Dictionary<string, string> methodHeaders = new Dictionary<string, string>();
+                methodHeaders["Allow"] = "POST";
+                await WriteHttpResponseAsync(stream, 405, "Method Not Allowed", "text/plain; charset=utf-8", "Method not allowed.", methodHeaders);
+                return true;
+            }
+
+            int verifyContentLength;
+            if (!TryGetContentLength(headers, out verifyContentLength) || verifyContentLength < 0 || verifyContentLength > 8192)
+            {
+                await WriteHttpResponseAsync(stream, 413, "Payload Too Large", "text/plain; charset=utf-8", "Invalid verification request.", null);
+                return true;
+            }
+            byte[] verifyBodyBytes = await ReadExactAsync(stream, verifyContentLength);
+            if (verifyBodyBytes.Length != verifyContentLength)
+            {
+                await WriteHttpResponseAsync(stream, 400, "Bad Request", "text/plain; charset=utf-8", "Incomplete verification request.", null);
+                return true;
+            }
+
+            Dictionary<string, string> verifyForm = ParseUrlEncoded(Encoding.UTF8.GetString(verifyBodyBytes));
+            string pendingToken = verifyForm.ContainsKey("pending") ? verifyForm["pending"] : "";
+            string code = verifyForm.ContainsKey("code") ? verifyForm["code"] : "";
+            string verifyReturnTarget = verifyForm.ContainsKey("return") ? verifyForm["return"] : GetMountedViewerPath();
+
+            // The same per-IP lockout that guards password attempts also
+            // covers the code step, so the second factor can't be brute
+            // forced by hammering only /auth/verify.
+            int verifyRetryAfter = GetAuthenticationRetryAfterSeconds(remoteAddress);
+            if (verifyRetryAfter > 0)
+            {
+                Dictionary<string, string> limitedHeaders = new Dictionary<string, string>();
+                limitedHeaders["Retry-After"] = verifyRetryAfter.ToString();
+                await WriteTotpChallengePageAsync(stream, pendingToken, verifyReturnTarget, true, 429, "Too Many Requests", limitedHeaders);
+                return true;
+            }
+
+            string pendingUsername = ValidatePendingTotpToken(pendingToken);
+            AuthenticationAccount verifyAccount = pendingUsername != null ? FindAuthenticationAccount(pendingUsername) : null;
+            bool codeValid = verifyAccount != null && !string.IsNullOrEmpty(verifyAccount.TotpSecret) && VerifyTotpCode(verifyAccount.TotpSecret, code);
+            if (!codeValid)
+            {
+                RecordAuthenticationFailure(remoteAddress);
+                pendingLog.Enqueue("2FA code rejected from " + remoteAddress);
+                if (verifyAccount == null)
+                {
+                    // The pending token expired, was tampered with, or its
+                    // account was removed mid-challenge -- send back to the
+                    // start of login rather than re-showing a challenge tied
+                    // to a token that can never validate.
+                    await WriteRedirectAsync(stream, CanonicalLoginPath + "?return=" + Uri.EscapeDataString(GetSafeReturnTarget(verifyReturnTarget)));
+                    return true;
+                }
+                await WriteTotpChallengePageAsync(stream, pendingToken, verifyReturnTarget, true, 401, "Unauthorized");
+                return true;
+            }
+
+            AuthenticationFailureState verifyRemovedFailureState;
+            authenticationFailures.TryRemove(remoteAddress, out verifyRemovedFailureState);
+            string verifyToken = CreateAuthenticationSessionToken(verifyAccount.Username);
+            Dictionary<string, string> verifySuccessHeaders = new Dictionary<string, string>();
+            verifySuccessHeaders["Set-Cookie"] = "GstGlassAuth=" + verifyToken + "; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=" + (authenticationSessionHours * 3600).ToString();
+            verifySuccessHeaders["Location"] = GetSafeReturnTarget(verifyReturnTarget);
+            pendingLog.Enqueue("viewer '" + verifyAccount.Username + "' authenticated (2FA) from " + remoteAddress);
+            await WriteHttpResponseAsync(stream, 303, "See Other", "text/plain; charset=utf-8", "Authenticated.", verifySuccessHeaders);
+            return true;
+        }
+
         if (isAuthenticationRoot)
         {
             if (authenticationEnabled && !HasValidAuthenticationCookie(headers))
@@ -2211,7 +2391,7 @@ public class TlsTerminatingProxy
         // /auth/ is a permanently reserved gate namespace. Unknown children
         // are answered locally and are never eligible for authenticated
         // forwarding to the viewer or signaling upstreams.
-        if (isCanonicalAuthenticationPath && !isLoginEndpoint)
+        if (isCanonicalAuthenticationPath && !isLoginEndpoint && !isVerifyEndpoint)
         {
             await WriteHttpResponseAsync(
                 stream,
@@ -2323,6 +2503,19 @@ public class TlsTerminatingProxy
                 RecordAuthenticationFailure(remoteAddress);
                 pendingLog.Enqueue("authentication rejected from " + remoteAddress);
                 await WriteLoginPageAsync(stream, returnTarget, true, 401, "Unauthorized");
+                return true;
+            }
+
+            if (!string.IsNullOrEmpty(matchedAccount.TotpSecret))
+            {
+                // Password alone was correct but is not sufficient for this
+                // account -- do not clear the failure counter or issue a
+                // session yet. A wrong code on the next step is tracked by
+                // the SAME per-IP lockout as a wrong password (see
+                // isVerifyEndpoint above), so the second factor can't be
+                // brute-forced by skipping straight to /auth/verify either.
+                string pendingToken = CreatePendingTotpToken(matchedAccount.Username);
+                await WriteTotpChallengePageAsync(stream, pendingToken, returnTarget, false, 200, "OK");
                 return true;
             }
 
@@ -2487,6 +2680,38 @@ public class TlsTerminatingProxy
         await WriteHttpResponseAsync(stream, statusCode, reason, "text/html; charset=utf-8", html, additionalHeaders);
     }
 
+    private async Task WriteTotpChallengePageAsync(Stream stream, string pendingToken, string returnTarget, bool invalid, int statusCode, string reason)
+    {
+        await WriteTotpChallengePageAsync(stream, pendingToken, returnTarget, invalid, statusCode, reason, null);
+    }
+
+    // Same visual shell as WriteLoginPageAsync (kept in sync by hand -- this
+    // is simple enough that factoring out the shared chrome would cost more
+    // clarity than it saves) so the two steps of a 2FA login read as one
+    // continuous flow rather than a jarring page-style change partway
+    // through.
+    private async Task WriteTotpChallengePageAsync(Stream stream, string pendingToken, string returnTarget, bool invalid, int statusCode, string reason, Dictionary<string, string> additionalHeaders)
+    {
+        string safeReturn = GetSafeReturnTarget(returnTarget);
+        string error = invalid ? "<p class=\"error\">That code was not accepted. Check your authenticator app and try again.</p>" : "";
+        string html = "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">" +
+            "<title>GStreamer Glass - Verification Code</title><style>html{color-scheme:dark}*{box-sizing:border-box}" +
+            "body{margin:0;min-height:100vh;display:grid;place-items:center;background:#05070b;color:#e8edf5;font:16px system-ui,-apple-system,Segoe UI,sans-serif}" +
+            "body::before{content:\"\";position:fixed;inset:0;z-index:-1;background:" +
+            "radial-gradient(560px circle at 18% 20%,rgba(79,140,255,.40),transparent 60%)," +
+            "radial-gradient(520px circle at 85% 75%,rgba(53,215,137,.30),transparent 58%)," +
+            "radial-gradient(640px circle at 60% 100%,rgba(255,93,108,.20),transparent 60%)," +
+            "#05070b}" +
+            "main{width:min(92vw,420px);padding:32px;border:1px solid rgba(255,255,255,.12);border-radius:16px;background:linear-gradient(180deg,rgba(10,14,22,.82),rgba(10,14,22,.48));backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);box-shadow:0 14px 44px rgba(0,0,0,.35)}h1{margin:0 0 8px;font-size:1.55rem}p{color:#aab6c8}.error{color:#ff9b9b}" +
+            "label{display:block;margin:18px 0 6px;font-weight:650}input{width:100%;padding:12px;border:1px solid #35435a;border-radius:9px;background:#090f19;color:#fff;font:inherit;letter-spacing:.3em;text-align:center}button{width:100%;margin-top:22px;padding:12px;border:0;border-radius:9px;background:#4f8cff;color:white;font:inherit;font-weight:750;cursor:pointer}</style></head>" +
+            "<body><main><h1>Verification code</h1><p>Enter the 6-digit code from your authenticator app.</p>" + error +
+            "<form method=\"post\" action=\"./verify\"><input type=\"hidden\" name=\"pending\" value=\"" + WebUtility.HtmlEncode(pendingToken ?? "") + "\">" +
+            "<input type=\"hidden\" name=\"return\" value=\"" + WebUtility.HtmlEncode(safeReturn) + "\">" +
+            "<label for=\"code\">Code</label><input id=\"code\" name=\"code\" inputmode=\"numeric\" pattern=\"[0-9]{6}\" maxlength=\"6\" autocomplete=\"one-time-code\" required autofocus>" +
+            "<button type=\"submit\">Verify</button></form></main></body></html>";
+        await WriteHttpResponseAsync(stream, statusCode, reason, "text/html; charset=utf-8", html, additionalHeaders);
+    }
+
     private static async Task WriteRedirectAsync(Stream stream, string location)
     {
         Dictionary<string, string> headers = new Dictionary<string, string>();
@@ -2558,6 +2783,58 @@ public class TlsTerminatingProxy
         activeAuthenticationSessions[token] = expires;
         if (activeAuthenticationSessions.Count > 4096) RemoveExpiredAuthenticationSessions();
         return token;
+    }
+
+    // Carries "password already verified for this username" across the
+    // login -> code-entry round trip without a session cookie. Signed with
+    // the same key as real session tokens but in a structurally distinct,
+    // shorter-lived shape (5 leading "totp." segments vs. a session token's
+    // 4) -- ValidateAuthenticationSessionToken's 4-part check alone already
+    // rejects this shape, and this method is never consulted by the normal
+    // cookie-gate path, so a pending token can never be replayed as a
+    // session credential.
+    private string CreatePendingTotpToken(string username)
+    {
+        long expires = ToUnixTimeSeconds(DateTime.UtcNow.AddMinutes(5));
+        byte[] nonce = new byte[24];
+        using (RandomNumberGenerator random = RandomNumberGenerator.Create())
+        {
+            random.GetBytes(nonce);
+        }
+        string payload = "totp." + expires.ToString() + "." + Base64UrlEncode(nonce) + "." + Base64UrlEncode(Encoding.UTF8.GetBytes(username));
+        byte[] signature;
+        using (HMACSHA256 hmac = new HMACSHA256(authenticationSessionKey))
+        {
+            signature = hmac.ComputeHash(Encoding.UTF8.GetBytes(payload));
+        }
+        return payload + "." + Base64UrlEncode(signature);
+    }
+
+    // Returns the embedded username when the token is a validly signed,
+    // unexpired pending-2FA challenge; null otherwise. Deliberately stops
+    // short of checking anything about the account itself (existence, TOTP
+    // secret) -- callers combine this with FindAuthenticationAccount so a
+    // removed-mid-challenge account is treated the same as any other
+    // invalid token.
+    private string ValidatePendingTotpToken(string token)
+    {
+        if (authenticationSessionKey == null || authenticationSessionKey.Length < 32 || string.IsNullOrWhiteSpace(token)) return null;
+        string[] parts = token.Split('.');
+        if (parts.Length != 5 || parts[0] != "totp") return null;
+        long expires;
+        if (!long.TryParse(parts[1], out expires) || expires < ToUnixTimeSeconds(DateTime.UtcNow)) return null;
+        string payload = parts[0] + "." + parts[1] + "." + parts[2] + "." + parts[3];
+        byte[] expected;
+        using (HMACSHA256 hmac = new HMACSHA256(authenticationSessionKey))
+        {
+            expected = hmac.ComputeHash(Encoding.UTF8.GetBytes(payload));
+        }
+        byte[] supplied;
+        try { supplied = Base64UrlDecode(parts[4]); }
+        catch { return null; }
+        if (!FixedTimeEquals(expected, supplied)) return null;
+        try { return Encoding.UTF8.GetString(Base64UrlDecode(parts[3])); }
+        catch { return null; }
     }
 
     // Best-effort, unvalidated extraction of a token's embedded username for

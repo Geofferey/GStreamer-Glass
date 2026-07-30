@@ -644,7 +644,9 @@ function Update-ViewerAuthenticationUi {
     if ($chkViewerAuthenticationEnabled) { $chkViewerAuthenticationEnabled.Enabled = $tlsEnabled }
     foreach ($control in @(
         $lstViewerAuthenticationAccounts, $txtViewerAuthenticationNewUsername, $txtViewerAuthenticationNewPassword,
-        $btnViewerAuthenticationAddAccount, $btnViewerAuthenticationRemoveAccount, $numViewerAuthenticationSessionHours
+        $btnViewerAuthenticationAddAccount, $btnViewerAuthenticationRemoveAccount,
+        $btnViewerAuthenticationEnableTotp, $btnViewerAuthenticationDisableTotp,
+        $numViewerAuthenticationSessionHours
     )) {
         if ($control) { $control.Enabled = $authenticationEnabled }
     }
@@ -656,20 +658,38 @@ function Update-ViewerAuthenticationUi {
 # is cleared immediately after hashing.
 function Sync-ViewerAuthenticationAccountsListBox {
     if (-not $lstViewerAuthenticationAccounts) { return }
-    $selectedUsername = [string]$lstViewerAuthenticationAccounts.SelectedItem
+    $selectedUsername = Get-SelectedViewerAuthenticationUsername
     $lstViewerAuthenticationAccounts.BeginUpdate()
     try {
         $lstViewerAuthenticationAccounts.Items.Clear()
+        $selectedLabel = $null
         foreach ($account in @($script:ViewerAuthenticationAccounts)) {
-            [void]$lstViewerAuthenticationAccounts.Items.Add([string]$account.Username)
+            $label = Get-ViewerAuthenticationAccountLabel $account
+            [void]$lstViewerAuthenticationAccounts.Items.Add($label)
+            if ($selectedUsername -and [string]$account.Username -eq $selectedUsername) { $selectedLabel = $label }
         }
-        if (-not [string]::IsNullOrEmpty($selectedUsername) -and $lstViewerAuthenticationAccounts.Items.Contains($selectedUsername)) {
-            $lstViewerAuthenticationAccounts.SelectedItem = $selectedUsername
-        }
+        if ($selectedLabel) { $lstViewerAuthenticationAccounts.SelectedItem = $selectedLabel }
     }
     finally {
         $lstViewerAuthenticationAccounts.EndUpdate()
     }
+}
+
+# The list box shows "username (2FA)" for accounts with a TOTP secret so
+# the broadcaster can see enrollment status at a glance -- these two
+# helpers keep that display label and the underlying raw username in sync
+# in exactly one place, since every handler below needs the raw username.
+function Get-ViewerAuthenticationAccountLabel {
+    param($Account)
+    $label = [string]$Account.Username
+    if (-not [string]::IsNullOrWhiteSpace([string]$Account.TotpSecret)) { $label += ' (2FA)' }
+    return $label
+}
+
+function Get-SelectedViewerAuthenticationUsername {
+    $selected = [string]$lstViewerAuthenticationAccounts.SelectedItem
+    if ([string]::IsNullOrWhiteSpace($selected)) { return $null }
+    return ($selected -replace '\s*\(2FA\)$', '')
 }
 
 function Add-ViewerAuthenticationAccount {
@@ -686,11 +706,13 @@ function Add-ViewerAuthenticationAccount {
     $passwordHash = [TlsTerminatingProxy]::HashAuthenticationPassword($password)
     $existing = @($script:ViewerAuthenticationAccounts) | Where-Object { $_.Username -eq $username }
     if ($existing) {
+        # A password change never touches an existing 2FA enrollment --
+        # TotpSecret is simply not part of this update.
         $existing[0].PasswordHash = $passwordHash
         Append-Log "AUTH: updated the password for viewer account '$username'."
     }
     else {
-        $script:ViewerAuthenticationAccounts = @(@($script:ViewerAuthenticationAccounts) + [pscustomobject]@{ Username = $username; PasswordHash = $passwordHash })
+        $script:ViewerAuthenticationAccounts = @(@($script:ViewerAuthenticationAccounts) + [pscustomobject]@{ Username = $username; PasswordHash = $passwordHash; TotpSecret = '' })
         Append-Log "AUTH: added viewer account '$username'."
     }
     $txtViewerAuthenticationNewUsername.Clear()
@@ -700,10 +722,64 @@ function Add-ViewerAuthenticationAccount {
 }
 
 function Remove-ViewerAuthenticationAccount {
-    $selected = [string]$lstViewerAuthenticationAccounts.SelectedItem
+    $selected = Get-SelectedViewerAuthenticationUsername
     if ([string]::IsNullOrWhiteSpace($selected)) { return }
     $script:ViewerAuthenticationAccounts = @(@($script:ViewerAuthenticationAccounts) | Where-Object { $_.Username -ne $selected })
     Append-Log "AUTH: removed viewer account '$selected'; its active sessions are now revoked."
+    Sync-ViewerAuthenticationAccountsListBox
+    Save-Settings
+}
+
+# Generates a fresh secret and requires the broadcaster to enter the CURRENT
+# code from their authenticator app before it's actually saved -- confirming
+# the app scanned/entered it correctly, so enabling 2FA can never lock the
+# account out from a typo or a misconfigured app.
+function Enable-ViewerAuthenticationTotp {
+    $selected = Get-SelectedViewerAuthenticationUsername
+    if ([string]::IsNullOrWhiteSpace($selected)) {
+        [System.Windows.Forms.MessageBox]::Show('Select an account first.', $script:AppName, 'OK', 'Warning') | Out-Null
+        return
+    }
+    $account = @($script:ViewerAuthenticationAccounts) | Where-Object { $_.Username -eq $selected } | Select-Object -First 1
+    if (-not $account) { return }
+
+    $secret = [TlsTerminatingProxy]::GenerateTotpSecret()
+    $issuer = 'GStreamer Glass'
+    $otpauthUri = "otpauth://totp/$([System.Uri]::EscapeDataString($issuer)):$([System.Uri]::EscapeDataString($selected))?secret=$secret&issuer=$([System.Uri]::EscapeDataString($issuer))"
+    [System.Windows.Forms.MessageBox]::Show(
+        "Add this to an authenticator app (Google Authenticator, Authy, 1Password, etc.) for '$selected':`n`nSecret key (manual entry): $secret`n`nOr paste this URI if your app supports it:`n$otpauthUri`n`nAfter adding it, click OK and enter the 6-digit code it shows to confirm.",
+        $script:AppName,
+        'OK',
+        'Information'
+    ) | Out-Null
+
+    Add-Type -AssemblyName Microsoft.VisualBasic
+    $confirmCode = [Microsoft.VisualBasic.Interaction]::InputBox("Enter the current 6-digit code for '$selected' to confirm 2FA setup:", 'Confirm 2FA Setup', '')
+    if ([string]::IsNullOrWhiteSpace($confirmCode)) {
+        Append-Log "AUTH: 2FA setup for '$selected' was cancelled before confirmation; not enabled."
+        return
+    }
+    if (-not [TlsTerminatingProxy]::VerifyTotpCode($secret, $confirmCode.Trim())) {
+        [System.Windows.Forms.MessageBox]::Show("That code did not match. 2FA was not enabled for '$selected' -- try again.", $script:AppName, 'OK', 'Warning') | Out-Null
+        return
+    }
+
+    $account.TotpSecret = $secret
+    Append-Log "AUTH: 2FA enabled for viewer account '$selected'."
+    Sync-ViewerAuthenticationAccountsListBox
+    Save-Settings
+}
+
+function Disable-ViewerAuthenticationTotp {
+    $selected = Get-SelectedViewerAuthenticationUsername
+    if ([string]::IsNullOrWhiteSpace($selected)) {
+        [System.Windows.Forms.MessageBox]::Show('Select an account first.', $script:AppName, 'OK', 'Warning') | Out-Null
+        return
+    }
+    $account = @($script:ViewerAuthenticationAccounts) | Where-Object { $_.Username -eq $selected } | Select-Object -First 1
+    if (-not $account -or [string]::IsNullOrWhiteSpace([string]$account.TotpSecret)) { return }
+    $account.TotpSecret = ''
+    Append-Log "AUTH: 2FA disabled for viewer account '$selected'."
     Sync-ViewerAuthenticationAccountsListBox
     Save-Settings
 }
@@ -765,7 +841,7 @@ function Start-LetsEncryptTlsProxies {
     $viewerMountSegment = [string](Get-DirectWebRtcWebServerPathSegment)
     $authenticationMountPath = if ([string]::IsNullOrWhiteSpace($viewerMountSegment)) { '' } else { "/$($viewerMountSegment.Trim('/'))" }
 
-    $accountsSignature = (@($authenticationAccounts) | ForEach-Object { "$($_.Username)=$($_.PasswordHash)" }) -join ','
+    $accountsSignature = (@($authenticationAccounts) | ForEach-Object { "$($_.Username)=$($_.PasswordHash)=$($_.TotpSecret)" }) -join ','
     $configurationSignature = @(
         [string]$certificate.Thumbprint,
         [string]$authenticationEnabled,
@@ -848,6 +924,7 @@ function Start-LetsEncryptTlsProxies {
                         $account = [TlsTerminatingProxy+AuthenticationAccount]::new()
                         $account.Username = [string]$_.Username
                         $account.PasswordHash = [string]$_.PasswordHash
+                        $account.TotpSecret = [string]$_.TotpSecret
                         $account
                     }
                 )

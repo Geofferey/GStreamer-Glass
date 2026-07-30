@@ -1199,6 +1199,9 @@ function Apply-ModernDashboardUi {
     Add-Field $r -Control $btnViewerAuthenticationAddAccount -Width 120 | Out-Null
     Add-Field $r -Control $btnViewerAuthenticationRemoveAccount -Width 120 | Out-Null
     $r = Add-Row $s
+    Add-Field $r -Control $btnViewerAuthenticationEnableTotp -Width 120 | Out-Null
+    Add-Field $r -Control $btnViewerAuthenticationDisableTotp -Width 120 | Out-Null
+    $r = Add-Row $s
     Add-Field $r -Label 'Session hours' -Control $numViewerAuthenticationSessionHours -Width 90 | Out-Null
 
     $s = Add-Section $paneNetwork ''
@@ -1414,6 +1417,7 @@ function Apply-ModernDashboardUi {
         $chkViewerAuthenticationEnabled, $lstViewerAuthenticationAccounts,
         $txtViewerAuthenticationNewUsername, $txtViewerAuthenticationNewPassword,
         $btnViewerAuthenticationAddAccount, $btnViewerAuthenticationRemoveAccount,
+        $btnViewerAuthenticationEnableTotp, $btnViewerAuthenticationDisableTotp,
         $numViewerAuthenticationSessionHours,
         $btnResetTransport, $btnResetWebRtcSane, $btnResetVideo, $btnResetAudio,
         $btnResetRecording, $btnResetNetwork, $btnResetOptions, $btnExportLabConfig, $btnResetAll,

@@ -835,6 +835,20 @@ $btnViewerAuthenticationRemoveAccount.Size = New-Object System.Drawing.Size(120,
 $settingsGroup.Controls.Add($btnViewerAuthenticationRemoveAccount)
 $toolTip.SetToolTip($btnViewerAuthenticationRemoveAccount, 'Removes the selected account and immediately revokes any of its active sessions.')
 
+$btnViewerAuthenticationEnableTotp = New-Object System.Windows.Forms.Button
+$btnViewerAuthenticationEnableTotp.Text = 'Set up 2FA'
+$btnViewerAuthenticationEnableTotp.Location = New-Object System.Drawing.Point(15, 548)
+$btnViewerAuthenticationEnableTotp.Size = New-Object System.Drawing.Size(120, 27)
+$settingsGroup.Controls.Add($btnViewerAuthenticationEnableTotp)
+$toolTip.SetToolTip($btnViewerAuthenticationEnableTotp, 'Adds a TOTP authenticator-app code requirement to the selected account, after confirming the current code.')
+
+$btnViewerAuthenticationDisableTotp = New-Object System.Windows.Forms.Button
+$btnViewerAuthenticationDisableTotp.Text = 'Disable 2FA'
+$btnViewerAuthenticationDisableTotp.Location = New-Object System.Drawing.Point(15, 548)
+$btnViewerAuthenticationDisableTotp.Size = New-Object System.Drawing.Size(120, 27)
+$settingsGroup.Controls.Add($btnViewerAuthenticationDisableTotp)
+$toolTip.SetToolTip($btnViewerAuthenticationDisableTotp, 'Removes the authenticator-app code requirement from the selected account.')
+
 $numViewerAuthenticationSessionHours = New-Object System.Windows.Forms.NumericUpDown
 $numViewerAuthenticationSessionHours.Location = New-Object System.Drawing.Point(15, 548)
 $numViewerAuthenticationSessionHours.Size = New-Object System.Drawing.Size(90, 23)
@@ -4086,6 +4100,8 @@ $chkLetsEncryptEnabled.Add_CheckedChanged({ Update-LetsEncryptUi })
 $chkViewerAuthenticationEnabled.Add_CheckedChanged({ Update-ViewerAuthenticationUi; Update-PlayerConfigFromUi })
 $btnViewerAuthenticationAddAccount.Add_Click({ Add-ViewerAuthenticationAccount })
 $btnViewerAuthenticationRemoveAccount.Add_Click({ Remove-ViewerAuthenticationAccount })
+$btnViewerAuthenticationEnableTotp.Add_Click({ Enable-ViewerAuthenticationTotp })
+$btnViewerAuthenticationDisableTotp.Add_Click({ Disable-ViewerAuthenticationTotp })
 $btnLetsEncryptIssueNow.Add_Click({
     $lowerTabs.SelectedTab = $tabLog
     try { Update-LetsEncryptCertificate } catch { Append-Log "ACME: $($_.Exception.Message)" }
