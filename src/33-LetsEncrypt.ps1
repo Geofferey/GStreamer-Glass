@@ -1479,6 +1479,47 @@ function Drain-LetsEncryptTlsProxyLogs {
     }
 }
 
+# Proactively disconnects every currently-pumping viewer connection on
+# every live proxy (both families), WITHOUT stopping the proxies
+# themselves -- for "Keep auth on restarts", where the proxies keep
+# accepting connections across a stream restart but the GST process behind
+# them is about to be killed. Call this immediately before killing GST so
+# already-connected viewers get a clean, immediate disconnect (their
+# browser's own reconnect logic fires right away) instead of leaving that
+# connection to eventually notice the upstream died on its own -- which is
+# what could leave the UI looking hung waiting on it. Safe to call even
+# when no proxies are running, or when they're about to be fully stopped
+# anyway (Keep-auth off) -- it's a no-op past that point either way.
+function Disconnect-ActiveAuthenticationProxyConnections {
+    foreach ($proxy in @($script:LetsEncryptTlsProxies) + @($script:PlaintextAuthProxies)) {
+        try { $proxy.DisconnectActiveConnections() } catch {}
+    }
+}
+
+# Call immediately before killing the upstream GST process for a restart
+# (alongside Disconnect-ActiveAuthenticationProxyConnections, and for the
+# same "Keep auth on restarts" reason: these proxies keep running and
+# accepting NEW connections through the whole restart). Without this, a
+# plaintext-auth relay -- external and internal port are the SAME number
+# by design, unlike the TLS proxy -- can end up connecting to its own
+# listener instead of failing when it tries to reach upstream while GST
+# is briefly down, and recurse into itself without bound, pegging a CPU
+# core and making the whole process look hung. See PauseForwarding's
+# comment on the C# side for the verified mechanism.
+function Suspend-ActiveAuthenticationProxyForwarding {
+    foreach ($proxy in @($script:LetsEncryptTlsProxies) + @($script:PlaintextAuthProxies)) {
+        try { $proxy.PauseForwarding() } catch {}
+    }
+}
+
+# Call once the new GST process has been (re)started -- see
+# Suspend-ActiveAuthenticationProxyForwarding.
+function Resume-ActiveAuthenticationProxyForwarding {
+    foreach ($proxy in @($script:LetsEncryptTlsProxies) + @($script:PlaintextAuthProxies)) {
+        try { $proxy.ResumeForwarding() } catch {}
+    }
+}
+
 function Stop-PlaintextAuthProxies {
     if (@($script:PlaintextAuthProxies).Count -eq 0) { return }
     foreach ($proxy in $script:PlaintextAuthProxies) {

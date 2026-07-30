@@ -1804,6 +1804,32 @@ public class TlsTerminatingProxy
     private string targetHost;
     private int targetPort;
     private volatile bool running;
+    // Every currently-open upstream (proxy -> webrtcsink) connection this
+    // instance is actively pumping, so a restart can proactively and
+    // cleanly disconnect them -- see DisconnectActiveConnections. Without
+    // this, a killed upstream process only gets noticed once the OS
+    // eventually surfaces the dead socket to the pump's next read/write,
+    // which is not bounded and is exactly what could leave a "Keep auth on
+    // restarts" viewer connection in limbo instead of failing fast.
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<TcpClient, byte> activeUpstreamConnections = new System.Collections.Concurrent.ConcurrentDictionary<TcpClient, byte>();
+    // Set right before the upstream (GST) process is killed for a restart,
+    // cleared once it's back up -- see PauseForwarding/ResumeForwarding.
+    // Exists specifically because a plaintext-auth relay's external and
+    // internal ports are the SAME number by design (transparent same-port
+    // takeover -- there's no override field for this, unlike the TLS
+    // proxy, which normally uses a different external port and doesn't
+    // hit this). This external listener binds IPAddress.Any (0.0.0.0),
+    // which on Windows also answers loopback connects for that port when
+    // nothing is bound to 127.0.0.1 specifically -- so while GST is down,
+    // this proxy's own attempt to reach "127.0.0.1:samePort" can be
+    // accepted by ITS OWN listener instead of failing, forwarding the
+    // request back into itself and recursing without bound, pegging a CPU
+    // core and making the whole host process (including Glass's own UI
+    // thread) look hung. Verified directly: a TcpListener on
+    // IPAddress.Any accepts a same-process connect to 127.0.0.1 on that
+    // port when nothing else is bound to it. Refusing new forwards while
+    // paused avoids ever attempting that connection in the first place.
+    private volatile bool forwardingPaused;
     private bool authenticationEnabled;
     private List<AuthenticationAccount> authenticationAccounts = new List<AuthenticationAccount>();
     private byte[] authenticationSessionKey = new byte[0];
@@ -2048,6 +2074,53 @@ public class TlsTerminatingProxy
         try { if (listener != null) listener.Stop(); } catch { }
     }
 
+    // Proactively and immediately severs every connection this instance is
+    // currently pumping to its upstream (webrtcsink), without stopping the
+    // listener itself -- for "Keep auth on restarts", where the proxy
+    // keeps accepting new connections across a stream restart but the
+    // upstream process is about to be killed. Called from PowerShell right
+    // before that kill, so already-connected viewers get a clean,
+    // immediate disconnect (their browser's reconnect logic kicks in
+    // right away) instead of waiting on the OS to eventually notice the
+    // killed process's socket died.
+    //
+    // Uses an abortive close (LingerState with a zero timeout, which sends
+    // an immediate RST) rather than the default graceful close/FIN --
+    // graceful close can block waiting for an ACK that will never come
+    // once the upstream process is gone, which is exactly the kind of
+    // indefinite wait this exists to avoid.
+    public void DisconnectActiveConnections()
+    {
+        foreach (TcpClient upstream in activeUpstreamConnections.Keys)
+        {
+            try
+            {
+                upstream.LingerState = new LingerOption(true, 0);
+                upstream.Close();
+            }
+            catch { }
+        }
+    }
+
+    // Call right before killing the upstream (GST) process for a restart.
+    // While paused, new requests get an immediate 503 instead of this
+    // instance attempting to reach upstream at all -- see the comment on
+    // forwardingPaused for why that connection attempt itself is unsafe
+    // during this window. Does not affect already-open pumped connections
+    // (see DisconnectActiveConnections for those) or the listener itself
+    // -- new connections are still accepted, just answered locally.
+    public void PauseForwarding()
+    {
+        forwardingPaused = true;
+    }
+
+    // Call once the upstream process is confirmed back up (or at least
+    // has been given a moment to start listening again).
+    public void ResumeForwarding()
+    {
+        forwardingPaused = false;
+    }
+
     public string PollLogMessage()
     {
         string message;
@@ -2199,6 +2272,24 @@ public class TlsTerminatingProxy
                         }
                     }
 
+                    // Refuse to forward at all while paused (see PauseForwarding) --
+                    // upstream is about to be/is being killed for a restart, and for
+                    // a same-port relay (plaintext auth), even attempting this
+                    // connection right now risks looping back into this instance's
+                    // own listener instead of failing cleanly.
+                    if (forwardingPaused)
+                    {
+                        await WriteHttpResponseAsync(
+                            stream,
+                            503,
+                            "Service Unavailable",
+                            "text/plain; charset=utf-8",
+                            "Stream is restarting.",
+                            new Dictionary<string, string> { { "Retry-After", "2" } }
+                        );
+                        return;
+                    }
+
                     using (TcpClient upstream = new TcpClient())
                     {
                         upstream.NoDelay = true;
@@ -2211,12 +2302,21 @@ public class TlsTerminatingProxy
                             pendingLog.Enqueue("could not reach upstream " + targetHost + ":" + effectivePort + ": " + ex.Message);
                             return;
                         }
-                        using (NetworkStream upstreamStream = upstream.GetStream())
+                        activeUpstreamConnections.TryAdd(upstream, 0);
+                        try
                         {
-                            if (headerBytes.Length > 0) await upstreamStream.WriteAsync(headerBytes, 0, headerBytes.Length);
-                            Task toUpstream = PumpAsync(stream, upstreamStream);
-                            Task toClient = PumpAsync(upstreamStream, stream);
-                            await Task.WhenAny(toUpstream, toClient);
+                            using (NetworkStream upstreamStream = upstream.GetStream())
+                            {
+                                if (headerBytes.Length > 0) await upstreamStream.WriteAsync(headerBytes, 0, headerBytes.Length);
+                                Task toUpstream = PumpAsync(stream, upstreamStream);
+                                Task toClient = PumpAsync(upstreamStream, stream);
+                                await Task.WhenAny(toUpstream, toClient);
+                            }
+                        }
+                        finally
+                        {
+                            byte removedMarker;
+                            activeUpstreamConnections.TryRemove(upstream, out removedMarker);
                         }
                     }
                 }

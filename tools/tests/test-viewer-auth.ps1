@@ -543,6 +543,106 @@ try {
     Assert-ViewerAuth ($response -match 'plaintext-ok') 'Plaintext mode: an authenticated session was not let through to upstream.'
     Assert-ViewerAuth $plaintextUpstream.Result.StartsWith('GET /') 'Plaintext mode: unexpected request reached the upstream.'
 
+    # DisconnectActiveConnections ("Keep auth on restarts"): a viewer's
+    # already-open, pumping connection to upstream must be severed
+    # promptly and cleanly on demand, without stopping the proxy's own
+    # listener -- simulating "sever this viewer before we kill the real
+    # GST process underneath it" during a restart.
+    $disconnectUpstreamPort = Get-FreeTcpPort
+    $disconnectProxyPort = Get-FreeTcpPort
+    $disconnectProxy = [TlsTerminatingProxy]::new()
+    $disconnectProxy.ConfigureAuthentication($true, $accounts, $sessionKey, 12)
+    $disconnectUpstreamListener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $disconnectUpstreamPort)
+    $disconnectUpstreamListener.Start()
+    $disconnectProxy.Start($disconnectProxyPort, '127.0.0.1', $disconnectUpstreamPort, $certificate)
+    Start-Sleep -Milliseconds 100
+    try {
+        $disconnectAcceptTask = $disconnectUpstreamListener.AcceptTcpClientAsync()
+        $disconnectValidation = [System.Net.Security.RemoteCertificateValidationCallback]{ param($s,$c,$ch,$e) return $true }
+        $disconnectClient = [System.Net.Sockets.TcpClient]::new('127.0.0.1', $disconnectProxyPort)
+        $disconnectSsl = [System.Net.Security.SslStream]::new($disconnectClient.GetStream(), $false, $disconnectValidation)
+        $disconnectSsl.AuthenticateAsClient('localhost')
+        $disconnectRequest = "GET /live/ HTTP/1.1`r`nHost: localhost`r`nCookie: $cookiePair`r`nConnection: Upgrade`r`nUpgrade: websocket`r`nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==`r`nSec-WebSocket-Version: 13`r`n`r`n"
+        $disconnectRequestBytes = [System.Text.Encoding]::UTF8.GetBytes($disconnectRequest)
+        $disconnectSsl.Write($disconnectRequestBytes, 0, $disconnectRequestBytes.Length)
+        $disconnectSsl.Flush()
+
+        # Bounded wait, not GetAwaiter().GetResult() -- fail fast with a
+        # clear message rather than hang if the proxy never forwards.
+        Assert-ViewerAuth ($disconnectAcceptTask.Wait(5000)) 'DisconnectActiveConnections setup: upstream never saw the forwarded connection.'
+        $null = $disconnectAcceptTask.GetAwaiter().GetResult()
+        Start-Sleep -Milliseconds 150
+
+        $disconnectStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+        $disconnectProxy.DisconnectActiveConnections()
+        $disconnectStopwatch.Stop()
+        Assert-ViewerAuth ($disconnectStopwatch.ElapsedMilliseconds -lt 1000) "DisconnectActiveConnections took $($disconnectStopwatch.ElapsedMilliseconds) ms -- expected a near-instant local call."
+
+        $disconnectSsl.ReadTimeout = 3000
+        $disconnectBuffer = New-Object byte[] 4096
+        $disconnectReadCount = -1
+        try { $disconnectReadCount = $disconnectSsl.Read($disconnectBuffer, 0, $disconnectBuffer.Length) } catch { $disconnectReadCount = 0 }
+        Assert-ViewerAuth ($disconnectReadCount -eq 0) 'Viewer connection was not closed by DisconnectActiveConnections.'
+
+        # The proxy's own listener must still be alive afterward --
+        # disconnecting active connections must never tear down the proxy
+        # itself (that's the whole point of "Keep auth on restarts"). Stop
+        # the manually-managed upstream listener FIRST -- ServeOne binds a
+        # brand new TcpListener on the same port, and two listeners
+        # contending for one port makes new connections behave
+        # unpredictably (this is what looked like a hang here before).
+        try { $disconnectUpstreamListener.Stop() } catch {}
+        $disconnectSecondUpstream = [ViewerAuthTestUpstream]::ServeOne($disconnectUpstreamPort, 'still-listening-ok')
+        $response = Send-TlsRequest $disconnectProxyPort "GET /live/ HTTP/1.1`r`nHost: localhost`r`nCookie: $cookiePair`r`nConnection: close`r`n`r`n"
+        Assert-ViewerAuth ($response -match 'still-listening-ok') 'Proxy listener did not survive DisconnectActiveConnections.'
+        $null = $disconnectSecondUpstream.Result
+    }
+    finally {
+        try { $disconnectSsl.Dispose() } catch {}
+        try { $disconnectClient.Dispose() } catch {}
+        try { $disconnectProxy.Stop() } catch {}
+        try { $disconnectUpstreamListener.Stop() } catch {}
+    }
+
+    # PauseForwarding/ResumeForwarding: the actual root cause of the
+    # reported UI freeze. A plaintext-auth relay's external and internal
+    # ports are the SAME number by design (transparent same-port takeover
+    # -- no override field exists for this, unlike the TLS proxy, which
+    # normally uses a different external port and never hits this). Its
+    # external listener binds 0.0.0.0, which on Windows also answers a
+    # loopback connect to that port when nothing is bound to 127.0.0.1
+    # specifically (verified directly against a real TcpListener) -- so
+    # while GST is briefly down mid-restart, this proxy's own attempt to
+    # reach "127.0.0.1:samePort" could be accepted by its OWN listener,
+    # forwarding the request back into itself and recursing without bound
+    # (pegging a CPU core and making the whole host process, including
+    # Glass's own UI thread, look hung). While paused, a request that
+    # would otherwise be forwarded must get an immediate 503 instead of
+    # ever attempting that connection.
+    $pausePort = Get-FreeTcpPort
+    $pauseProxy = [TlsTerminatingProxy]::new()
+    $pauseProxy.ConfigureAuthentication($true, $accounts, $sessionKey, 12)
+    # External == internal, same port number -- the exact same-port
+    # transparent takeover Start-PlaintextAuthProxies uses. No upstream
+    # listener is started at all: this simulates GST being down.
+    $pauseProxy.Start($pausePort, '127.0.0.1', $pausePort, $null)
+    Start-Sleep -Milliseconds 100
+    try {
+        $pauseLoginResponse = Send-PlainRequest $pausePort "POST /auth/login HTTP/1.1`r`nHost: localhost`r`nContent-Type: application/x-www-form-urlencoded`r`nContent-Length: $loginLength`r`nConnection: close`r`n`r`n$loginBody"
+        Assert-ViewerAuth $pauseLoginResponse.StartsWith('HTTP/1.1 303') 'PauseForwarding setup: login did not succeed.'
+        $pauseCookiePair = (([regex]::Match($pauseLoginResponse, '(?im)^Set-Cookie:\s*(.+)$')).Groups[1].Value.Trim()).Split(';')[0]
+
+        $pauseProxy.PauseForwarding()
+        $pauseStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+        $pauseResponse = Send-PlainRequest $pausePort "GET /live/ HTTP/1.1`r`nHost: localhost`r`nCookie: $pauseCookiePair`r`nConnection: close`r`n`r`n"
+        $pauseStopwatch.Stop()
+        Assert-ViewerAuth $pauseResponse.StartsWith('HTTP/1.1 503') 'Paused forwarding did not return 503 -- it may have attempted the unsafe same-port connection instead.'
+        Assert-ViewerAuth ($pauseStopwatch.ElapsedMilliseconds -lt 2000) "Paused forwarding took $($pauseStopwatch.ElapsedMilliseconds) ms -- expected an immediate local response, not an attempted connection."
+    }
+    finally {
+        try { $pauseProxy.Stop() } catch {}
+    }
+
     'TLS authentication integration checks passed.'
 }
 catch {

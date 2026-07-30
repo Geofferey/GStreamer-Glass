@@ -397,6 +397,7 @@ function Start-GstStream {
             if ($chkViewerAuthenticationAllowPlaintext -and $chkViewerAuthenticationAllowPlaintext.Checked -and $transportEnabled) {
                 try { Start-PlaintextAuthProxies } catch { Append-Log "AUTH: $($_.Exception.Message)" }
             }
+            try { Resume-ActiveAuthenticationProxyForwarding } catch {}
 
             $mediaSuffix = if ($script:MediaMtxProcess -and -not $script:MediaMtxProcess.HasExited) { " + MediaMTX PID $($script:MediaMtxProcess.Id)" } else { '' }
             if ($transportEnabled) {
@@ -498,6 +499,7 @@ function Start-GstStream {
         if ($chkViewerAuthenticationAllowPlaintext -and $chkViewerAuthenticationAllowPlaintext.Checked -and $transportEnabled) {
             try { Start-PlaintextAuthProxies } catch { Append-Log "AUTH: $($_.Exception.Message)" }
         }
+        try { Resume-ActiveAuthenticationProxyForwarding } catch {}
 
         if ($script:JobHandle -ne [IntPtr]::Zero) {
             try {
@@ -668,6 +670,15 @@ function Stop-ControlledLiveStream {
             "[$(Get-Date -Format 'HH:mm:ss')] Stopping complete controlled live " +
             "process tree - PID $($workerProcess.Id)..."
         )
+        # Sever any live viewer connections through the auth proxies FIRST,
+        # and stop them from accepting any forwarding work until the new
+        # process is up (only meaningful with "Keep auth on restarts", where
+        # those proxies are about to keep running through this kill) -- a
+        # clean, immediate disconnect now, rather than leaving that
+        # connection to eventually notice this process died on its own, and
+        # no new forwarding attempts that could race the restart.
+        try { Suspend-ActiveAuthenticationProxyForwarding } catch {}
+        try { Disconnect-ActiveAuthenticationProxyConnections } catch {}
         # Intentionally identical to every legacy publisher stop. Do not send a
         # pipe Stop command or transition the graph to NULL first: terminating
         # this process is the signalling/socket boundary the web player expects.
@@ -814,6 +825,18 @@ function Stop-GstStream {
     if ($hadGst -or $hadVideoGst -or $hadAudioGst -or $hadMedia) {
         $statusLabel.Text = 'Stopping...'
         $statusLabel.ForeColor = [System.Drawing.Color]::DarkOrange
+    }
+
+    # Sever any live viewer connections through the auth proxies FIRST, and
+    # stop them from accepting any forwarding work until the new process is
+    # up (only meaningful with "Keep auth on restarts", where those proxies
+    # are about to keep running through this kill) -- a clean, immediate
+    # disconnect now, rather than leaving that connection to eventually
+    # notice these processes died on their own, and no new forwarding
+    # attempts that could race the restart.
+    if ($hadGst -or $hadVideoGst -or $hadAudioGst) {
+        try { Suspend-ActiveAuthenticationProxyForwarding } catch {}
+        try { Disconnect-ActiveAuthenticationProxyConnections } catch {}
     }
 
     # Stop the publisher first so MediaMTX sees a clean publisher disconnect,

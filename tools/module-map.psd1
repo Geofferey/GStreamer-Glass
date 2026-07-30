@@ -464,6 +464,9 @@
         'Get-EmbeddedTlsPortConflicts'
         'Start-PlaintextAuthProxies'
         'Drain-LetsEncryptTlsProxyLogs'
+        'Disconnect-ActiveAuthenticationProxyConnections'
+        'Suspend-ActiveAuthenticationProxyForwarding'
+        'Resume-ActiveAuthenticationProxyForwarding'
         'Stop-PlaintextAuthProxies'
         'Stop-LetsEncryptTlsProxies'
     )
