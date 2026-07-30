@@ -233,6 +233,33 @@ try {
     Assert-ViewerAuth ($response -match 'viewer-ok') 'Authorized viewer request did not reach the upstream.'
     Assert-ViewerAuth $viewerUpstream.Result.StartsWith('GET /live/') 'Unexpected authorized viewer request reached the upstream.'
 
+    # /auth/status: the dedicated session heartbeat player.js polls directly,
+    # always answered locally regardless of upstream/GST state.
+    $response = Send-TlsRequest $proxyPort "GET /auth/status HTTP/1.1`r`nHost: localhost`r`nConnection: close`r`n`r`n"
+    Assert-ViewerAuth $response.StartsWith('HTTP/1.1 200') '/auth/status did not answer locally.'
+    Assert-ViewerAuth ($response -match '\{"authenticated":false\}') '/auth/status did not report false for a missing session.'
+
+    $response = Send-TlsRequest $proxyPort "GET /auth/status HTTP/1.1`r`nHost: localhost`r`nCookie: $cookiePair`r`nConnection: close`r`n`r`n"
+    Assert-ViewerAuth ($response -match '\{"authenticated":true\}') '/auth/status did not report true for a valid session.'
+
+    # RevokeAllSessions: used in place of tearing down the proxy entirely on
+    # a Stop/Restart with "Keep auth on restarts" unchecked -- the listener
+    # must stay up and answer, just with every existing session now invalid.
+    $proxy.RevokeAllSessions()
+    $response = Send-TlsRequest $proxyPort "GET /auth/status HTTP/1.1`r`nHost: localhost`r`nCookie: $cookiePair`r`nConnection: close`r`n`r`n"
+    Assert-ViewerAuth ($response -match '\{"authenticated":false\}') 'RevokeAllSessions did not invalidate an existing session.'
+
+    $response = Send-TlsRequest $proxyPort "GET /live/ HTTP/1.1`r`nHost: localhost`r`nCookie: $cookiePair`r`nConnection: close`r`n`r`n"
+    Assert-ViewerAuth $response.StartsWith('HTTP/1.1 303') 'A revoked session was not redirected away from the viewer.'
+    Assert-ViewerAuth ($response -match 'Location: /auth/login\?return=') 'Revoked-session redirect did not target the login route.'
+
+    # Re-authenticate so the remaining tests below (which still expect
+    # $cookiePair to be valid) are unaffected by the revocation above.
+    $response = Send-TlsRequest $proxyPort "POST /auth/login HTTP/1.1`r`nHost: localhost`r`nContent-Type: application/x-www-form-urlencoded`r`nContent-Length: $loginLength`r`nConnection: close`r`n`r`n$loginBody"
+    Assert-ViewerAuth $response.StartsWith('HTTP/1.1 303') 'Re-authentication after RevokeAllSessions failed.'
+    $cookieHeader = ([regex]::Match($response, '(?im)^Set-Cookie:\s*(.+)$')).Groups[1].Value.Trim()
+    $cookiePair = $cookieHeader.Split(';')[0]
+
     $secondProxyPort = Get-FreeTcpPort
     $secondProxy = [TlsTerminatingProxy]::new()
     $secondProxy.ConfigureAuthentication($true, $accounts, $sessionKey, 12)

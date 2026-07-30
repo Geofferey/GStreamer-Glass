@@ -1774,6 +1774,7 @@ public class TlsTerminatingProxy
     private const string CanonicalLoginPath = "/auth/login";
     private const string CanonicalLogoutPath = "/auth/logout";
     private const string CanonicalVerifyPath = "/auth/verify";
+    private const string CanonicalStatusPath = "/auth/status";
     private const string LegacyLoginPath = "/__gstglass/auth/login";
     private const string LegacyLogoutPath = "/__gstglass/auth/logout";
     private const string LegacySimpleLogoutPath = "/logout";
@@ -2121,6 +2122,22 @@ public class TlsTerminatingProxy
         forwardingPaused = false;
     }
 
+    // Invalidates every currently-issued session token immediately (across
+    // ALL proxy instances -- activeAuthenticationSessions is static/shared
+    // by design, same as the rate limiter). Deliberately does NOT touch the
+    // listener: HasValidAuthenticationCookie starts failing for everyone on
+    // their very next request, which the existing ordinary-request path in
+    // HandleAuthenticationAsync already turns into a 303 to /auth/login --
+    // no new redirect logic needed. Stopping the listener instead (as this
+    // used to do) meant that redirect could never actually reach a client:
+    // once torn down, every subsequent request just gets a hard connection
+    // refusal, forever, which is indistinguishable from the server being
+    // gone and leaves a stale tab stuck rather than bounced to login.
+    public void RevokeAllSessions()
+    {
+        activeAuthenticationSessions.Clear();
+    }
+
     public string PollLogMessage()
     {
         string message;
@@ -2386,6 +2403,7 @@ public class TlsTerminatingProxy
             string.Equals(path, LegacyLoginPath, StringComparison.OrdinalIgnoreCase) ||
             string.Equals(path, mountedLegacyLoginPath, StringComparison.OrdinalIgnoreCase);
         bool isVerifyEndpoint = string.Equals(path, CanonicalVerifyPath, StringComparison.OrdinalIgnoreCase);
+        bool isStatusEndpoint = string.Equals(path, CanonicalStatusPath, StringComparison.OrdinalIgnoreCase);
         bool isAuthenticationRoot =
             string.Equals(path, "/auth", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(path, "/auth/", StringComparison.OrdinalIgnoreCase);
@@ -2503,6 +2521,39 @@ public class TlsTerminatingProxy
             verifySuccessHeaders["Location"] = GetSafeReturnTarget(verifyReturnTarget);
             pendingLog.Enqueue("viewer '" + verifyAccount.Username + "' authenticated (2FA) from " + remoteAddress);
             await WriteHttpResponseAsync(stream, 303, "See Other", "text/plain; charset=utf-8", "Authenticated.", verifySuccessHeaders);
+            return true;
+        }
+
+        if (isStatusEndpoint)
+        {
+            // A dedicated, lightweight session heartbeat -- unlike the
+            // ordinary viewer/signalling paths (which only redirect a
+            // *specific request that happened to come in* once a session is
+            // gone), this exists so the player can poll the auth mechanism
+            // itself directly, on its own schedule, and act the moment a
+            // session is revoked rather than waiting on some other fetch to
+            // incidentally notice. Always answered locally, same as every
+            // other /auth/* path -- never forwarded, never affected by
+            // whether GST/webrtcsink is even running. Must run before the
+            // "unknown /auth/* child" 404 catch-all below, and works
+            // regardless of authenticationEnabled (an unauthenticated proxy
+            // has nothing to be revoked, so it always reports true).
+            if (!string.Equals(method, "GET", StringComparison.OrdinalIgnoreCase))
+            {
+                Dictionary<string, string> statusMethodHeaders = new Dictionary<string, string>();
+                statusMethodHeaders["Allow"] = "GET";
+                await WriteHttpResponseAsync(stream, 405, "Method Not Allowed", "text/plain; charset=utf-8", "Method not allowed.", statusMethodHeaders);
+                return true;
+            }
+            bool authenticated = !authenticationEnabled || HasValidAuthenticationCookie(headers);
+            await WriteHttpResponseAsync(
+                stream,
+                200,
+                "OK",
+                "application/json; charset=utf-8",
+                "{\"authenticated\":" + (authenticated ? "true" : "false") + "}",
+                null
+            );
             return true;
         }
 

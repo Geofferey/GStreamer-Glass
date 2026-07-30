@@ -679,13 +679,16 @@ function Set-DirectWebRtcStreamStopMarker {
         $statePath = Join-Path $webDir 'gstglass-stream-state.json'
         $transition = ''
         $transitionToken = ''
+        $authRevokedToken = ''
         if (Test-Path -LiteralPath $statePath -PathType Leaf) {
             try {
                 $existingState = Get-Content -LiteralPath $statePath -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
                 $transitionProperty = $existingState.PSObject.Properties['transition']
                 $transitionTokenProperty = $existingState.PSObject.Properties['transitionToken']
+                $authRevokedTokenProperty = $existingState.PSObject.Properties['authRevokedToken']
                 if ($transitionProperty) { $transition = [string]$transitionProperty.Value }
                 if ($transitionTokenProperty) { $transitionToken = [string]$transitionTokenProperty.Value }
+                if ($authRevokedTokenProperty) { $authRevokedToken = [string]$authRevokedTokenProperty.Value }
             }
             catch {}
         }
@@ -694,16 +697,70 @@ function Set-DirectWebRtcStreamStopMarker {
             $transitionToken = [Guid]::NewGuid().ToString('N')
         }
         $data = [ordered]@{
-            intentionalStop = $IntentionalStop
-            restarting      = [bool]$Restarting
-            transition      = $transition
-            transitionToken = $transitionToken
-            writtenUtc      = [DateTime]::UtcNow.ToString('o')
+            intentionalStop  = $IntentionalStop
+            restarting       = [bool]$Restarting
+            transition       = $transition
+            transitionToken  = $transitionToken
+            authRevokedToken = $authRevokedToken
+            writtenUtc       = [DateTime]::UtcNow.ToString('o')
         }
         Set-Content -LiteralPath $statePath -Value ($data | ConvertTo-Json -Compress) -Encoding UTF8
     }
     catch {
         Append-Log "Stream stop-state marker could not be written: $($_.Exception.Message)"
+    }
+}
+
+# Signals every connected viewer's browser to navigate to the login page,
+# via the SAME state file player.js already polls every second for
+# stop/restart transitions -- reusing that channel rather than inventing a
+# new one. Must be called BEFORE actually revoking/invalidating sessions
+# (stopping the auth proxies to regenerate their session-signing key):
+# the client can only react to this signal by successfully NAVIGATING
+# there while the current session/proxy is still up. If sessions were
+# already revoked first, the viewer's next request (including the poll
+# for this very file) would just get redirected server-side without ever
+# updating the visible page -- a background fetch() silently follows an
+# HTTP redirect and returns the login page's HTML as "content" instead of
+# actually moving the browser there. Preserves the existing
+# transition/transitionToken fields via the same read-merge-write as
+# Set-DirectWebRtcStreamStopMarker so the two signals never clobber each
+# other.
+function Set-DirectWebRtcAuthRevokedMarker {
+    try {
+        $webDir = Get-DirectWebRtcWebDirectory
+        if ([string]::IsNullOrWhiteSpace($webDir)) { return }
+        $statePath = Join-Path $webDir 'gstglass-stream-state.json'
+        $intentionalStop = $false
+        $restarting = $false
+        $transition = ''
+        $transitionToken = ''
+        if (Test-Path -LiteralPath $statePath -PathType Leaf) {
+            try {
+                $existingState = Get-Content -LiteralPath $statePath -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+                $intentionalStopProperty = $existingState.PSObject.Properties['intentionalStop']
+                $restartingProperty = $existingState.PSObject.Properties['restarting']
+                $transitionProperty = $existingState.PSObject.Properties['transition']
+                $transitionTokenProperty = $existingState.PSObject.Properties['transitionToken']
+                if ($intentionalStopProperty) { $intentionalStop = [bool]$intentionalStopProperty.Value }
+                if ($restartingProperty) { $restarting = [bool]$restartingProperty.Value }
+                if ($transitionProperty) { $transition = [string]$transitionProperty.Value }
+                if ($transitionTokenProperty) { $transitionToken = [string]$transitionTokenProperty.Value }
+            }
+            catch {}
+        }
+        $data = [ordered]@{
+            intentionalStop  = $intentionalStop
+            restarting       = $restarting
+            transition       = $transition
+            transitionToken  = $transitionToken
+            authRevokedToken = [Guid]::NewGuid().ToString('N')
+            writtenUtc       = [DateTime]::UtcNow.ToString('o')
+        }
+        Set-Content -LiteralPath $statePath -Value ($data | ConvertTo-Json -Compress) -Encoding UTF8
+    }
+    catch {
+        Append-Log "Auth-revoked state marker could not be written: $($_.Exception.Message)"
     }
 }
 

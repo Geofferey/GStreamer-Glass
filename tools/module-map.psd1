@@ -174,6 +174,7 @@
         'Get-DirectWebRtcPacingQueue'
         'Write-DirectWebRtcWebClientConfig'
         'Set-DirectWebRtcStreamStopMarker'
+        'Set-DirectWebRtcAuthRevokedMarker'
         'Build-DirectWebRtcEncodedVideoBranch'
         'Get-DirectWebRtcWebServerPathSegment'
         'Get-DirectWebRtcUnifiedRtpVideoDefinition'
@@ -467,6 +468,7 @@
         'Disconnect-ActiveAuthenticationProxyConnections'
         'Suspend-ActiveAuthenticationProxyForwarding'
         'Resume-ActiveAuthenticationProxyForwarding'
+        'Revoke-ActiveAuthenticationProxySessions'
         'Stop-PlaintextAuthProxies'
         'Stop-LetsEncryptTlsProxies'
     )

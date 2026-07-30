@@ -1,5 +1,5 @@
 (() => {
-  const FRONTEND_VERSION = '3.8-viewer-auth-36';
+  const FRONTEND_VERSION = '3.8-viewer-auth-38';
   console.info(`[GStreamer Glass Live] frontend ${FRONTEND_VERSION}`);
   const playerRoot = document.getElementById('playerRoot');
   const video = document.getElementById('video');
@@ -62,6 +62,7 @@
     streamStateKnown: false,
     streamStateRequestToken: 0,
     streamTransitionToken: null,
+    authRevokedToken: null,
     restartPending: false,
     manualResumeRequired: false,
     stopResumeLocked: false,
@@ -261,6 +262,46 @@
     connect();
   }
 
+  // Authentication is a permanent origin-level gate, independent of the
+  // viewer mount (see logout.js) -- /auth/login always lives at the
+  // origin root, never relative to wherever this page happens to be
+  // served from. Mirrors logout.js's own redirect construction.
+  function redirectToLogin() {
+    const loginUrl = new URL('/auth/login', window.location.href);
+    loginUrl.searchParams.set('return', window.location.pathname + window.location.search);
+    location.replace(loginUrl.href);
+  }
+
+  // Dedicated auth session heartbeat. reloadRuntimeConfig/fetchStreamStopMarker
+  // only ever notice a revoked session as a side effect of some other fetch
+  // happening to get redirected -- this instead polls the auth mechanism
+  // itself, directly, on its own schedule. /auth/status is always answered
+  // locally by the TLS/plaintext-auth proxy (see its comment on the C# side),
+  // regardless of whether GST/webrtcsink is even running, so this keeps
+  // working through a stream stop/restart exactly when it matters most.
+  // Absolute origin-relative URL, same reasoning as redirectToLogin() --
+  // /auth/* is a permanent origin-level gate, never relative to this page's
+  // own mount path.
+  async function checkAuthStatus() {
+    try {
+      const statusUrl = new URL('/auth/status', window.location.href);
+      const res = await fetch(`${statusUrl.pathname}?reload=${Date.now()}`, { cache: 'no-store' });
+      if (res.redirected && res.url && !res.url.includes('/auth/status')) {
+        location.replace(res.url);
+        return;
+      }
+      if (!res.ok) return;
+      const data = await res.json();
+      if (data && data.authenticated === false) {
+        redirectToLogin();
+      }
+    } catch (_) {
+      // Best-effort heartbeat -- a transient network hiccup here must never
+      // itself trigger a redirect; a genuinely dead server is already
+      // handled by fetchStreamStopMarker's own error path.
+    }
+  }
+
   async function fetchStreamStopMarker() {
     const requestToken = ++state.streamStateRequestToken;
     const abortController = typeof AbortController === 'function' ? new AbortController() : null;
@@ -270,16 +311,50 @@
         cache: 'no-store',
         ...(abortController ? { signal: abortController.signal } : {})
       });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
       if (abortTimer) clearTimeout(abortTimer);
       if (requestToken !== state.streamStateRequestToken) return;
+
+      // This request is auth-gated exactly like the live page itself, and
+      // that check happens entirely INSIDE the TLS/plaintext-auth proxy,
+      // before it ever tries to reach GST -- so it applies whether GST is
+      // up or not (mid-restart included). If the session was revoked
+      // (explicitly, or a restart regenerated the session-signing key),
+      // the proxy has already redirected this fetch to the login page by
+      // the time control reaches here. fetch() follows that redirect on
+      // its own and would otherwise just hand back the login page's HTML
+      // as "content" for what was expected to be JSON -- res.redirected
+      // and res.url expose where it actually landed, so a real navigation
+      // can happen instead of a silent, invisible swap.
+      if (res.redirected && res.url && !res.url.includes('gstglass-stream-state.json')) {
+        location.replace(res.url);
+        return;
+      }
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
       const transition = String(data.transition || '');
       const transitionToken = String(data.transitionToken || '');
       const transitionChanged = state.streamTransitionToken !== null &&
         !!transitionToken &&
         transitionToken !== state.streamTransitionToken;
       state.streamTransitionToken = transitionToken;
+
+      // Viewer sessions are about to be revoked (stream end/restart with
+      // "Keep auth on restarts" unchecked) -- written to this file BEFORE
+      // the server actually revokes anything, specifically so this fetch
+      // still succeeds normally and this redirect still lands on a live,
+      // responding server. Checked -- and acted on -- before anything
+      // else below, since there is no point reconciling stream/restart
+      // state for a session that is about to stop being valid anyway.
+      const authRevokedToken = String(data.authRevokedToken || '');
+      const authRevoked = state.authRevokedToken !== null &&
+        !!authRevokedToken &&
+        authRevokedToken !== state.authRevokedToken;
+      state.authRevokedToken = authRevokedToken;
+      if (authRevoked) {
+        redirectToLogin();
+        return;
+      }
+
       state.streamStateKnown = true;
       state.intentionalStopMarker = !!data.intentionalStop;
 
@@ -330,9 +405,11 @@
     state.configReloadTimer = setInterval(() => {
       reloadRuntimeConfig('poll');
       fetchStreamStopMarker();
+      checkAuthStatus();
     }, 1000);
     setTimeout(() => reloadRuntimeConfig('startup'), 250);
     setTimeout(() => fetchStreamStopMarker(), 250);
+    setTimeout(() => checkAuthStatus(), 250);
   }
 
   function stopConfigReloadTimer() {

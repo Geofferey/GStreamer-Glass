@@ -1520,6 +1520,26 @@ function Resume-ActiveAuthenticationProxyForwarding {
     }
 }
 
+# Invalidates every currently-issued viewer session, used in place of
+# Stop-LetsEncryptTlsProxies/Stop-PlaintextAuthProxies at every
+# Test-KeepAuthenticationProxiesOnRestart-gated Stop/Restart call site
+# (27-StreamLifecycle.ps1). Deliberately does NOT stop the proxies --
+# activeAuthenticationSessions is static/shared across every instance, so
+# clearing it via any one of them signs every viewer out everywhere, and
+# the auth gate's existing ordinary-request handling already turns that
+# into a 303 to /auth/login on each viewer's very next request, all on its
+# own (see RevokeAllSessions's C# comment). Leaving the listener running is
+# the whole point: a stopped listener answers nothing at all, so a client
+# sitting on a stale cached page would just see every request refused
+# forever instead of ever being bounced to login. Player.js also polls
+# /auth/status directly on its own schedule as a dedicated heartbeat,
+# rather than only noticing this as a side effect of some other fetch.
+function Revoke-ActiveAuthenticationProxySessions {
+    foreach ($proxy in @($script:LetsEncryptTlsProxies) + @($script:PlaintextAuthProxies)) {
+        try { $proxy.RevokeAllSessions() } catch {}
+    }
+}
+
 function Stop-PlaintextAuthProxies {
     if (@($script:PlaintextAuthProxies).Count -eq 0) { return }
     foreach ($proxy in $script:PlaintextAuthProxies) {

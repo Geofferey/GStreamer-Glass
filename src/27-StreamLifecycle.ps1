@@ -603,8 +603,14 @@ function Start-GstStream {
         Close-WebRtcPortRangeWorkerPipe
         try { Remove-UpnpPortMappings } catch {}
         if (-not (Test-KeepAuthenticationProxiesOnRestart)) {
-            try { Stop-LetsEncryptTlsProxies } catch {}
-            try { Stop-PlaintextAuthProxies } catch {}
+            # Signal every connected viewer to head to the login page BEFORE
+            # actually revoking sessions -- see Set-DirectWebRtcAuthRevokedMarker's
+            # comment for why the order matters. Revoke-ActiveAuthenticationProxySessions
+            # (not Stop-*Proxies) deliberately keeps the proxy listeners running --
+            # see its own comment for why stopping them defeats the redirect
+            # entirely.
+            try { Set-DirectWebRtcAuthRevokedMarker } catch {}
+            try { Revoke-ActiveAuthenticationProxySessions } catch {}
         }
         $script:GstProcess = $null
         $script:GstVideoProcess = $null
@@ -691,17 +697,22 @@ function Stop-ControlledLiveStream {
     if (-not $Restart) {
         try { Remove-UpnpPortMappings } catch {}
     }
-    # Torn down on EVERY stop, restart included, unless "Keep auth on
+    # Sessions revoked on EVERY stop, restart included, unless "Keep auth on
     # restarts" is checked -- this must NOT be nested inside `if (-not
-    # $Restart)` above. An active, already-authenticated viewer connection
-    # is still being pumped through these proxies at this exact moment;
-    # leaving the proxy's listener (and that live connection) untouched
-    # while the GST process underneath gets killed is what caused the UI
-    # to freeze on Restart specifically (Stop tore these down and never
-    # froze; Restart silently kept them alive and did).
+    # $Restart)` above. Revoke-ActiveAuthenticationProxySessions (not
+    # Stop-LetsEncryptTlsProxies/Stop-PlaintextAuthProxies) keeps the proxy
+    # listeners themselves running -- disconnecting an active connection
+    # while the GST process underneath gets killed is handled separately,
+    # a few lines up, via Suspend-ActiveAuthenticationProxyForwarding /
+    # Disconnect-ActiveAuthenticationProxyConnections (that pairing is what
+    # fixed the UI freeze on Restart). Stopping the listener here instead
+    # of just revoking sessions would mean a stale client's next request
+    # gets a hard connection refusal forever rather than ever being
+    # redirected to login -- see Revoke-ActiveAuthenticationProxySessions's
+    # comment.
     if (-not (Test-KeepAuthenticationProxiesOnRestart)) {
-        try { Stop-LetsEncryptTlsProxies } catch {}
-        try { Stop-PlaintextAuthProxies } catch {}
+        try { Set-DirectWebRtcAuthRevokedMarker } catch {}
+        try { Revoke-ActiveAuthenticationProxySessions } catch {}
     }
     try { if ($workerProcess) { $workerProcess.Dispose() } } catch {}
     $script:GstProcess = $null
@@ -891,15 +902,15 @@ function Stop-GstStream {
     if (-not $Restart) {
         try { Remove-UpnpPortMappings } catch {}
     }
-    # Torn down on EVERY stop, restart included, unless "Keep auth on
+    # Sessions revoked on EVERY stop, restart included, unless "Keep auth on
     # restarts" is checked -- deliberately NOT nested inside `if (-not
     # $Restart)` above (see the matching comment in Stop-ControlledLiveStream's
-    # teardown, a few hundred lines up). Leaving an active, authenticated
-    # viewer connection's proxy alive while the GST process underneath it
-    # gets killed is what caused Restart specifically to freeze the UI.
+    # teardown, a few hundred lines up). Revoke-ActiveAuthenticationProxySessions
+    # keeps the proxy listeners running -- see its comment for why stopping
+    # them here would defeat the login redirect entirely.
     if (-not (Test-KeepAuthenticationProxiesOnRestart)) {
-        try { Stop-LetsEncryptTlsProxies } catch {}
-        try { Stop-PlaintextAuthProxies } catch {}
+        try { Set-DirectWebRtcAuthRevokedMarker } catch {}
+        try { Revoke-ActiveAuthenticationProxySessions } catch {}
     }
     $script:GstProcess = $null
     $script:GstVideoProcess = $null
