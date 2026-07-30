@@ -1,11 +1,11 @@
-const CACHE_NAME = 'gstglass-pwa-3.8-viewer-auth-36';
+const CACHE_NAME = 'gstglass-pwa-3.8-viewer-auth-40';
 const SHELL_KEY = new URL('./index.html', self.registration.scope).href;
 const APP_SHELL = [
   './index.html',
   './logout.js',
   './player.js',
   './player.css?v=3.8.25',
-  './manifest.webmanifest?v=3.8',
+  './manifest.webmanifest?v=3.8.40',
   './icons/gstreamer-glass-192.png',
   './icons/gstreamer-glass-512.png',
   './icons/gstreamer-glass-maskable-192.png',
@@ -35,9 +35,20 @@ function isRuntimeConfig(url) {
 }
 
 function isAuthenticationAction(url) {
-  const path = url.pathname.replace(/\/+$/, '');
-  return path === '/auth/login' ||
-    path === '/auth/logout' ||
+  const path = url.pathname.replace(/\/+$/, '') || '/';
+  // /auth is a permanently reserved gate namespace at the origin root (see
+  // Glass's own IsAuthenticationEndpointPath) -- every child must bypass the
+  // service worker, not just the specific login/logout routes this used to
+  // enumerate. Bare /auth or /auth/ (no /login) is exactly what an installed
+  // PWA can end up showing after being redirected there, and missing it here
+  // was the actual bug: a service-worker fetch() follows Glass's redirect
+  // (e.g. a still-valid session hitting /auth/) internally, so the *content*
+  // ends up correct but the address bar -- and an installed PWA's own
+  // last-known-URL, which is what gets restored on relaunch -- never moves
+  // to /live/. Native network navigation is required so the address bar,
+  // cookie mutation, and redirect all complete together.
+  return path === '/auth' ||
+    path.startsWith('/auth/') ||
     path.endsWith('/__gstglass/auth/login') ||
     path.endsWith('/__gstglass/auth/logout') ||
     path.endsWith('/logout');
@@ -67,10 +78,8 @@ self.addEventListener('fetch', (event) => {
   const url = new URL(request.url);
   if (url.origin !== self.location.origin) return;
 
-  // Do not wrap authentication navigations in respondWith(fetch(...)).
-  // A service-worker fetch follows Glass's 303 internally and can leave the
-  // browser on the original auth URL. Native network navigation is required
-  // so the address bar, cookie mutation, and redirect all complete together.
+  // Do not wrap /auth/* navigations in respondWith(fetch(...)) -- see
+  // isAuthenticationAction's comment.
   if (isAuthenticationAction(url)) return;
 
   // This file is generated from the current Glass settings and may change

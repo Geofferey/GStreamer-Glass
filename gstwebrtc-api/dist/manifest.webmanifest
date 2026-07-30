@@ -4,7 +4,7 @@
   "description": "Low-latency GStreamer Glass WebRTC player",
   "id": "./",
   "start_url": "./?source=pwa",
-  "scope": "./",
+  "scope": "/",
   "display": "standalone",
   "orientation": "any",
   "background_color": "#000000",

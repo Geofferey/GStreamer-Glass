@@ -2436,7 +2436,7 @@ public class TlsTerminatingProxy
                 !string.IsNullOrWhiteSpace(logoutToken) &&
                 activeAuthenticationSessions.TryRemove(logoutToken, out removedSessionExpiry);
             Dictionary<string, string> logoutHeaders = new Dictionary<string, string>();
-            logoutHeaders["Set-Cookie"] = "GstGlassAuth=; Path=/; HttpOnly" + CookieSecureAttribute + "; SameSite=Strict; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT";
+            logoutHeaders["Set-Cookie"] = "GstGlassAuth=; Path=/; HttpOnly" + CookieSecureAttribute + "; SameSite=Lax; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT";
             logoutHeaders["Clear-Site-Data"] = "\"cookies\", \"storage\"";
             // Straight to the login page, not the viewer -- redirecting to the
             // viewer here just means that request immediately gets challenged
@@ -2517,7 +2517,7 @@ public class TlsTerminatingProxy
             authenticationFailures.TryRemove(remoteAddress, out verifyRemovedFailureState);
             string verifyToken = CreateAuthenticationSessionToken(verifyAccount.Username);
             Dictionary<string, string> verifySuccessHeaders = new Dictionary<string, string>();
-            verifySuccessHeaders["Set-Cookie"] = "GstGlassAuth=" + verifyToken + "; Path=/; HttpOnly" + CookieSecureAttribute + "; SameSite=Strict; Max-Age=" + (authenticationSessionHours * 3600).ToString();
+            verifySuccessHeaders["Set-Cookie"] = "GstGlassAuth=" + verifyToken + "; Path=/; HttpOnly" + CookieSecureAttribute + "; SameSite=Lax; Max-Age=" + (authenticationSessionHours * 3600).ToString();
             verifySuccessHeaders["Location"] = GetSafeReturnTarget(verifyReturnTarget);
             pendingLog.Enqueue("viewer '" + verifyAccount.Username + "' authenticated (2FA) from " + remoteAddress);
             await WriteHttpResponseAsync(stream, 303, "See Other", "text/plain; charset=utf-8", "Authenticated.", verifySuccessHeaders);
@@ -2708,7 +2708,20 @@ public class TlsTerminatingProxy
             authenticationFailures.TryRemove(remoteAddress, out removedFailureState);
             string token = CreateAuthenticationSessionToken(matchedAccount.Username);
             Dictionary<string, string> successHeaders = new Dictionary<string, string>();
-            successHeaders["Set-Cookie"] = "GstGlassAuth=" + token + "; Path=/; HttpOnly" + CookieSecureAttribute + "; SameSite=Strict; Max-Age=" + (authenticationSessionHours * 3600).ToString();
+            // SameSite=Lax, not Strict: an installed Android PWA relaunched
+            // from its home-screen icon (no live browser tab, cold WebAPK
+            // start) is treated by Chrome as enough of a boundary that a
+            // Strict cookie doesn't survive it -- a well-documented, widely
+            // reported class of bug across unrelated PWA projects (e.g.
+            // github.com/pocketbase/pocketbase discussions/2972,
+            // github.com/miniflux/v2 issues/3614), not specific to this app,
+            // and switching to Lax is the confirmed fix in both. Lax still
+            // withholds the cookie from cross-site POSTs/iframes/subresource
+            // requests -- every state-changing action here (login, verify)
+            // is POST-only, so this does not meaningfully change the CSRF
+            // surface, only lets the cookie survive a same-site top-level
+            // GET/app-launch navigation the way Strict never could.
+            successHeaders["Set-Cookie"] = "GstGlassAuth=" + token + "; Path=/; HttpOnly" + CookieSecureAttribute + "; SameSite=Lax; Max-Age=" + (authenticationSessionHours * 3600).ToString();
             successHeaders["Location"] = GetSafeReturnTarget(returnTarget);
             pendingLog.Enqueue("viewer '" + matchedAccount.Username + "' authenticated from " + remoteAddress);
             await WriteHttpResponseAsync(stream, 303, "See Other", "text/plain; charset=utf-8", "Authenticated.", successHeaders);
@@ -2837,6 +2850,32 @@ public class TlsTerminatingProxy
     {
         string safeReturn = GetSafeReturnTarget(returnTarget);
         string error = invalid ? "<p class=\"error\">That login was not accepted. Check the credentials or wait a moment and try again.</p>" : "";
+        // A tab/PWA can end up sitting on this page while already holding a
+        // valid session -- logged in from elsewhere with the same shared
+        // account, or a still-valid cookie the platform just didn't route a
+        // fresh navigation through (observed specifically on installed
+        // Android PWAs). Poll the always-locally-answered /auth/status
+        // heartbeat (same endpoint player.js's checkAuthStatus polls) and
+        // bounce to the return target the moment it reports authenticated,
+        // without waiting for a manual reload. CSP blocks scripts by default
+        // (see WriteHttpResponseAsync); this is the one nonce-tagged inline
+        // script allowed through for this response. The return target is
+        // passed via an HTML-encoded data attribute (reusing the same
+        // WebUtility.HtmlEncode already trusted for the form field below)
+        // rather than interpolated into the script body, so it never needs
+        // its own separate JS-string escaping.
+        byte[] scriptNonceBytes = new byte[16];
+        using (RandomNumberGenerator random = RandomNumberGenerator.Create())
+        {
+            random.GetBytes(scriptNonceBytes);
+        }
+        string scriptNonce = Base64UrlEncode(scriptNonceBytes);
+        string heartbeatScript =
+            "<script nonce=\"" + scriptNonce + "\" data-return=\"" + WebUtility.HtmlEncode(safeReturn) + "\">" +
+            "(function(){var t=document.currentScript.getAttribute('data-return')||'/live/';" +
+            "function check(){fetch('/auth/status',{cache:'no-store'}).then(function(r){return r.ok?r.json():null;})" +
+            ".then(function(d){if(d&&d.authenticated){location.replace(t);}}).catch(function(){});}" +
+            "check();setInterval(check,2000);})();</script>";
         string html = "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">" +
             "<title>GStreamer Glass - Viewer Login</title><style>html{color-scheme:dark}*{box-sizing:border-box}" +
             // backdrop-filter blur only produces a visible effect when there is
@@ -2861,8 +2900,8 @@ public class TlsTerminatingProxy
             "<form method=\"post\" action=\"./login\"><input type=\"hidden\" name=\"return\" value=\"" + WebUtility.HtmlEncode(safeReturn) + "\">" +
             "<label for=\"username\">Username</label><input id=\"username\" name=\"username\" autocomplete=\"username\" required autofocus>" +
             "<label for=\"password\">Password</label><input id=\"password\" name=\"password\" type=\"password\" autocomplete=\"current-password\" required>" +
-            "<button type=\"submit\">Watch broadcast</button></form></main></body></html>";
-        await WriteHttpResponseAsync(stream, statusCode, reason, "text/html; charset=utf-8", html, additionalHeaders);
+            "<button type=\"submit\">Watch broadcast</button></form></main>" + heartbeatScript + "</body></html>";
+        await WriteHttpResponseAsync(stream, statusCode, reason, "text/html; charset=utf-8", html, additionalHeaders, scriptNonce);
     }
 
     private async Task WriteTotpChallengePageAsync(Stream stream, string pendingToken, string returnTarget, bool invalid, int statusCode, string reason)
@@ -2904,7 +2943,7 @@ public class TlsTerminatingProxy
         await WriteHttpResponseAsync(stream, 303, "See Other", "text/plain; charset=utf-8", "Redirecting.", headers);
     }
 
-    private static async Task WriteHttpResponseAsync(Stream stream, int statusCode, string reason, string contentType, string body, Dictionary<string, string> additionalHeaders)
+    private static async Task WriteHttpResponseAsync(Stream stream, int statusCode, string reason, string contentType, string body, Dictionary<string, string> additionalHeaders, string scriptNonce = null)
     {
         byte[] bodyBytes = Encoding.UTF8.GetBytes(body ?? "");
         StringBuilder response = new StringBuilder();
@@ -2912,7 +2951,17 @@ public class TlsTerminatingProxy
         response.Append("Content-Type: ").Append(contentType).Append("\r\n");
         response.Append("Content-Length: ").Append(bodyBytes.Length).Append("\r\n");
         response.Append("Cache-Control: no-store\r\n");
-        response.Append("Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'\r\n");
+        // script-src is omitted (falling back to default-src 'none', blocking
+        // all script execution) unless a caller explicitly opts a specific
+        // response into running one nonce-tagged inline script -- see
+        // WriteLoginPageAsync's session-heartbeat script for the only current
+        // user of this.
+        string contentSecurityPolicy = "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'";
+        if (!string.IsNullOrEmpty(scriptNonce))
+        {
+            contentSecurityPolicy += "; script-src 'nonce-" + scriptNonce + "'";
+        }
+        response.Append("Content-Security-Policy: ").Append(contentSecurityPolicy).Append("\r\n");
         response.Append("Referrer-Policy: no-referrer\r\n");
         response.Append("X-Content-Type-Options: nosniff\r\n");
         response.Append("X-Frame-Options: DENY\r\n");

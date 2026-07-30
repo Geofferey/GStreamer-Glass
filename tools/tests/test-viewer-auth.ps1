@@ -208,6 +208,18 @@ try {
     Assert-ViewerAuth ($response -match 'type="password"') 'Login page password field was missing.'
     Assert-ViewerAuth ($response -match 'action="./login"') 'Login form did not preserve the /auth route.'
 
+    # A tab/PWA sitting on the login page must self-correct if it turns out
+    # to already hold a valid session (e.g. logged in elsewhere) -- verify
+    # the heartbeat script and its matching CSP nonce are both present and
+    # actually agree with each other.
+    Assert-ViewerAuth ($response -match "fetch\('/auth/status'") 'Login page was missing the session heartbeat script.'
+    Assert-ViewerAuth ($response -match 'data-return="/live/"') 'Login page heartbeat script did not carry the return target.'
+    $cspNonceMatch = [regex]::Match($response, "(?im)^Content-Security-Policy:.*script-src 'nonce-([^']+)'")
+    Assert-ViewerAuth $cspNonceMatch.Success 'Login page response did not send a script-src nonce.'
+    $scriptNonceMatch = [regex]::Match($response, '<script nonce="([^"]+)"')
+    Assert-ViewerAuth $scriptNonceMatch.Success 'Login page heartbeat script tag was missing a nonce attribute.'
+    Assert-ViewerAuth ($cspNonceMatch.Groups[1].Value -eq $scriptNonceMatch.Groups[1].Value) 'CSP nonce did not match the script tag nonce.'
+
     $response = Send-TlsRequest $proxyPort "GET /__gstglass/auth/login?return=%2Flive%2F HTTP/1.1`r`nHost: localhost`r`nConnection: close`r`n`r`n"
     Assert-ViewerAuth $response.StartsWith('HTTP/1.1 200') 'Legacy root login alias was not served.'
     $response = Send-TlsRequest $proxyPort "GET /live/__gstglass/auth/login?return=%2Flive%2F HTTP/1.1`r`nHost: localhost`r`nConnection: close`r`n`r`n"
@@ -225,7 +237,7 @@ try {
     $cookieHeader = ([regex]::Match($response, '(?im)^Set-Cookie:\s*(.+)$')).Groups[1].Value.Trim()
     Assert-ViewerAuth ($cookieHeader -match 'HttpOnly') 'Authentication cookie was not HttpOnly.'
     Assert-ViewerAuth ($cookieHeader -match 'Secure') 'Authentication cookie was not Secure.'
-    Assert-ViewerAuth ($cookieHeader -match 'SameSite=Strict') 'Authentication cookie was not SameSite=Strict.'
+    Assert-ViewerAuth ($cookieHeader -match 'SameSite=Lax') 'Authentication cookie was not SameSite=Lax.'
     $cookiePair = $cookieHeader.Split(';')[0]
 
     $viewerUpstream = [ViewerAuthTestUpstream]::ServeOne($upstreamPort, 'viewer-ok')
@@ -562,7 +574,7 @@ try {
     $plaintextCookieHeader = ([regex]::Match($response, '(?im)^Set-Cookie:\s*(.+)$')).Groups[1].Value.Trim()
     Assert-ViewerAuth ($plaintextCookieHeader -match 'HttpOnly') 'Plaintext mode: authentication cookie was not HttpOnly.'
     Assert-ViewerAuth ($plaintextCookieHeader -notmatch 'Secure') 'Plaintext mode: authentication cookie was marked Secure -- the browser would never send it back over this plain connection.'
-    Assert-ViewerAuth ($plaintextCookieHeader -match 'SameSite=Strict') 'Plaintext mode: authentication cookie was not SameSite=Strict.'
+    Assert-ViewerAuth ($plaintextCookieHeader -match 'SameSite=Lax') 'Plaintext mode: authentication cookie was not SameSite=Lax.'
     $plaintextCookiePair = $plaintextCookieHeader.Split(';')[0]
 
     $plaintextUpstream = [ViewerAuthTestUpstream]::ServeOne($plaintextUpstreamPort, 'plaintext-ok')
