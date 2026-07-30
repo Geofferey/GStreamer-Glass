@@ -1181,6 +1181,24 @@ function Apply-ModernDashboardUi {
     $r = Add-Row $s
     Add-Field $r -Control $btnDdnsUpdateNow -Width 150 | Out-Null
 
+    $s = Add-CollapsibleSection $paneNetwork 'SSL/TLS Security'
+    $r = Add-Row $s
+    Add-Field $r -Control $chkEmbeddedTlsEnabled -Width 340 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Control $lblEmbeddedTlsStatus -Width 460 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Label 'Certificate path (optional)' -Control $txtTlsCertificatePath -Width 320 | Out-Null
+    Add-Field $r -Control $btnBrowseTlsCertificatePath -Width 80 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Label 'Private key path (optional)' -Control $txtTlsPrivateKeyPath -Width 320 | Out-Null
+    Add-Field $r -Control $btnBrowseTlsPrivateKeyPath -Width 80 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Control $chkTlsAllowInsecurePorts -Width 420 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Label 'Video external (0=same)' -Control $numLetsEncryptSignalingExternalPort -Width 90 | Out-Null
+    Add-Field $r -Label 'Audio external (0=same)' -Control $numLetsEncryptSplitAudioExternalPort -Width 90 | Out-Null
+    Add-Field $r -Label 'Web external (0=same)' -Control $numLetsEncryptWebServerExternalPort -Width 90 | Out-Null
+
     $s = Add-CollapsibleSection $paneNetwork "TLS Certificate (Let's Encrypt)"
     $r = Add-Row $s
     Add-Field $r -Control $chkLetsEncryptEnabled -Width 340 | Out-Null
@@ -1191,11 +1209,12 @@ function Apply-ModernDashboardUi {
     $r = Add-Row $s
     Add-Field $r -Control $chkLetsEncryptStaging -Width 260 | Out-Null
     $r = Add-Row $s
-    Add-Field $r -Label 'Video external (0=same)' -Control $numLetsEncryptSignalingExternalPort -Width 90 | Out-Null
-    Add-Field $r -Label 'Audio external (0=same)' -Control $numLetsEncryptSplitAudioExternalPort -Width 90 | Out-Null
-    Add-Field $r -Label 'Web external (0=same)' -Control $numLetsEncryptWebServerExternalPort -Width 90 | Out-Null
+    Add-Field $r -Label 'Certificate storage directory' -Control $txtLetsEncryptCertificateDirectory -Width 320 | Out-Null
+    Add-Field $r -Control $btnBrowseLetsEncryptCertificateDirectory -Width 80 | Out-Null
     $r = Add-Row $s
     Add-Field $r -Control $btnLetsEncryptIssueNow -Width 150 | Out-Null
+    Add-Field $r -Control $btnLetsEncryptForceRenew -Width 110 | Out-Null
+    Add-Field $r -Control $btnLetsEncryptDeleteCertificate -Width 130 | Out-Null
 
     $s = Add-CollapsibleSection $paneNetwork 'Viewer Authentication'
     $r = Add-Row $s
@@ -1214,6 +1233,8 @@ function Apply-ModernDashboardUi {
     Add-Field $r -Control $btnViewerAuthenticationDisableTotp -Width 120 | Out-Null
     $r = Add-Row $s
     Add-Field $r -Label 'Session hours' -Control $numViewerAuthenticationSessionHours -Width 90 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Control $chkViewerAuthenticationAllowPlaintext -Width 420 | Out-Null
 
     $s = Add-Section $paneNetwork ''
     $r = Add-Row $s
@@ -1422,14 +1443,18 @@ function Apply-ModernDashboardUi {
         $txtDdnsCloudflareZoneId,
         $chkDdnsCloudflareProxied, $txtDdnsCustomUrlTemplate, $cmbDdnsCustomMethod,
         $btnDdnsUpdateNow,
-        $chkLetsEncryptEnabled, $lblLetsEncryptStatus, $txtLetsEncryptEmail, $chkLetsEncryptStaging,
+        $chkEmbeddedTlsEnabled, $lblEmbeddedTlsStatus,
+        $txtTlsCertificatePath, $btnBrowseTlsCertificatePath, $txtTlsPrivateKeyPath, $btnBrowseTlsPrivateKeyPath,
+        $chkTlsAllowInsecurePorts,
         $numLetsEncryptSignalingExternalPort, $numLetsEncryptSplitAudioExternalPort, $numLetsEncryptWebServerExternalPort,
-        $btnLetsEncryptIssueNow,
+        $chkLetsEncryptEnabled, $lblLetsEncryptStatus, $txtLetsEncryptEmail, $chkLetsEncryptStaging,
+        $txtLetsEncryptCertificateDirectory, $btnBrowseLetsEncryptCertificateDirectory,
+        $btnLetsEncryptIssueNow, $btnLetsEncryptForceRenew, $btnLetsEncryptDeleteCertificate,
         $chkViewerAuthenticationEnabled, $lstViewerAuthenticationAccounts,
         $txtViewerAuthenticationNewUsername, $txtViewerAuthenticationNewPassword,
         $btnViewerAuthenticationAddAccount, $btnViewerAuthenticationRemoveAccount,
         $btnViewerAuthenticationEnableTotp, $btnViewerAuthenticationDisableTotp,
-        $numViewerAuthenticationSessionHours,
+        $numViewerAuthenticationSessionHours, $chkViewerAuthenticationAllowPlaintext,
         $btnResetTransport, $btnResetWebRtcSane, $btnResetVideo, $btnResetAudio,
         $btnResetRecording, $btnResetNetwork, $btnResetOptions, $btnExportLabConfig, $btnResetAll,
         $txtGstPath, $btnBrowseGst, $btnDetectGst, $btnCheckGst,
@@ -1461,7 +1486,8 @@ function Apply-ModernDashboardUi {
         $chkRecordingEnabled, $chkRecordWithStream, $chkRecordingLookAhead, $chkRecordingSpatialAq,
         $chkRecordingTemporalAq, $chkRecordingDesktopAudio, $chkRecordingMic,
         $chkDdnsEnabled, $chkDdnsCloudflareProxied,
-        $chkLetsEncryptEnabled, $chkLetsEncryptStaging, $chkViewerAuthenticationEnabled,
+        $chkEmbeddedTlsEnabled, $chkTlsAllowInsecurePorts,
+        $chkLetsEncryptEnabled, $chkLetsEncryptStaging, $chkViewerAuthenticationEnabled, $chkViewerAuthenticationAllowPlaintext,
         $chkPreview, $chkHidePreviewDuringStream, $chkAutoRestart, $chkVerbose, $chkDiskProcessLogging,
         $chkCustomGstArgumentsEnabled,
         $chkMinimizeToTray, $chkStartMinimized, $chkPsDebug

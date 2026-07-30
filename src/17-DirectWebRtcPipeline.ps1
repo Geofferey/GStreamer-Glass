@@ -235,28 +235,35 @@ function Get-DirectWebRtcSplitAudioSignalingPort {
 }
 
 # The actual bind host for webrtcsink's signalling-server-host property.
-# When Let's Encrypt TLS termination is active, webrtcsink's own plain-WS
-# server must only be reachable from the TlsTerminatingProxy sitting in
-# front of it (00-Setup.ps1 / 27-StreamLifecycle.ps1), not directly from
-# the LAN/WAN -- so the configured host is overridden to loopback-only
-# regardless of what's configured. Also factors out the "blank means
-# default" resolution that used to be duplicated at each of the three
-# webrtcsink instantiation sites (23-PipelineBuilders.ps1 and two here).
+# Only overridden to loopback-only when Test-EmbeddedTlsInsecurePortsRestricted
+# says so -- which has no effect at all unless embedded TLS, TLS-enforced
+# viewer auth, or plaintext auth is actually active; otherwise this always
+# stays on whatever's configured (0.0.0.0 by default). When one of those
+# IS active, "Allow insecure ports" being checked keeps webrtcsink's own
+# plain server reachable on every interface anyway, e.g. because the
+# broadcaster still wants that plain path proxied/reached some other way.
+# A 0.0.0.0-bound TlsTerminatingProxy and a 127.0.0.1-bound internal
+# server coexist fine on the same port number when restricted (verified
+# directly against real TcpListener binds); when not restricted and both
+# sides are 0.0.0.0, the port numbers must differ instead -- see
+# Get-EmbeddedTlsPortConflicts. Also factors out the "blank means default"
+# resolution that used to be duplicated at each of the three webrtcsink
+# instantiation sites (23-PipelineBuilders.ps1 and two here).
 function Get-DirectWebRtcSignalingServerBindHost {
-    if (Test-LetsEncryptTlsActive) { return '127.0.0.1' }
+    if (Test-EmbeddedTlsInsecurePortsRestricted) { return '127.0.0.1' }
     $signalHostText = $txtDirectWebRtcSignalingHost.Text.Trim()
     if ([string]::IsNullOrWhiteSpace($signalHostText)) { return $script:DefaultDirectWebRtcSignalingHost }
     return $signalHostText
 }
 
-# Same TLS-loopback override as Get-DirectWebRtcSignalingServerBindHost,
-# but for webrtcsink's web-server-host-addr property (a full URI, not just
-# a host). Built on top of Normalize-DirectWebRtcWebAddress rather than
+# Same loopback override as Get-DirectWebRtcSignalingServerBindHost, but
+# for webrtcsink's web-server-host-addr property (a full URI, not just a
+# host). Built on top of Normalize-DirectWebRtcWebAddress rather than
 # duplicating its parsing -- only the resulting host is overridden.
 function Get-DirectWebRtcWebServerBindAddress {
     param([string]$Destination)
     $address = Normalize-DirectWebRtcWebAddress $Destination
-    if (-not (Test-LetsEncryptTlsActive)) { return $address }
+    if (-not (Test-EmbeddedTlsInsecurePortsRestricted)) { return $address }
     try {
         $uri = [System.Uri]$address
         $portPart = if ($uri.IsDefaultPort) { '' } else { ":$($uri.Port)" }
@@ -269,15 +276,14 @@ function Get-DirectWebRtcWebServerBindAddress {
 
 # The external port a browser should actually use for video signalling.
 # Populated for either of two independent reasons: UPnP has mapped an
-# external port (WAN reachability over plain ws://), or Let's Encrypt TLS
-# termination is active (webrtcsink's own port is now loopback-only, so
-# the TlsTerminatingProxy's external port is the only reachable route,
-# not just a fallback candidate). TLS takes precedence when both are
-# configured, since that reflects what's actually listening externally.
+# external port (WAN reachability over plain ws://), or embedded TLS
+# termination is active (the TlsTerminatingProxy's external port is the
+# preferred wss:// route). TLS takes precedence when both are configured,
+# since that reflects what's actually listening externally.
 # Shared by Write-DirectWebRtcWebClientConfig and
 # Add-DirectWebRtcViewerQuery so this isn't computed two different ways.
 function Get-DirectWebRtcEffectiveExternalSignalingPort {
-    if (Test-LetsEncryptTlsActive) { return Get-LetsEncryptSignalingProxyPort }
+    if (Test-EmbeddedTlsActive) { return Get-LetsEncryptSignalingProxyPort }
     if (Test-UpnpSignalingMappedExternally) { return [int]$numUpnpSignalingExternalPort.Value }
     return 0
 }
@@ -285,7 +291,7 @@ function Get-DirectWebRtcEffectiveExternalSignalingPort {
 # Split-audio counterpart to Get-DirectWebRtcEffectiveExternalSignalingPort.
 function Get-DirectWebRtcEffectiveSplitAudioExternalSignalingPort {
     if (-not ((Test-DirectWebRtcSplitAvPipelines) -and -not (Test-DirectWebRtcUnifiedPublisher))) { return 0 }
-    if (Test-LetsEncryptTlsActive) { return Get-LetsEncryptSplitAudioProxyPort }
+    if (Test-EmbeddedTlsActive) { return Get-LetsEncryptSplitAudioProxyPort }
     if (Test-UpnpSignalingMappedExternally) { return [int]$numUpnpSplitAudioExternalPort.Value }
     return 0
 }

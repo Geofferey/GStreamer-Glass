@@ -224,9 +224,14 @@ function Reset-DdnsDefaults {
 }
 
 function Reset-LetsEncryptDefaults {
+    $chkEmbeddedTlsEnabled.Checked = $script:DefaultEmbeddedTlsEnabled
+    $txtTlsCertificatePath.Text = $script:DefaultTlsCertificatePath
+    $txtTlsPrivateKeyPath.Text = $script:DefaultTlsPrivateKeyPath
+    $chkTlsAllowInsecurePorts.Checked = $script:DefaultTlsAllowInsecurePorts
     $chkLetsEncryptEnabled.Checked = $script:DefaultLetsEncryptEnabled
     $txtLetsEncryptEmail.Text = $script:DefaultLetsEncryptEmail
     $chkLetsEncryptStaging.Checked = $script:DefaultLetsEncryptStaging
+    $txtLetsEncryptCertificateDirectory.Text = $script:DefaultLetsEncryptCertificateDirectory
     $numLetsEncryptSignalingExternalPort.Value = $script:DefaultLetsEncryptSignalingExternalPort
     $numLetsEncryptSplitAudioExternalPort.Value = $script:DefaultLetsEncryptSplitAudioExternalPort
     $numLetsEncryptWebServerExternalPort.Value = $script:DefaultLetsEncryptWebServerExternalPort
@@ -236,6 +241,7 @@ function Reset-LetsEncryptDefaults {
     $txtViewerAuthenticationNewUsername.Clear()
     $txtViewerAuthenticationNewPassword.Clear()
     $numViewerAuthenticationSessionHours.Value = $script:DefaultViewerAuthenticationSessionHours
+    $chkViewerAuthenticationAllowPlaintext.Checked = $script:DefaultViewerAuthenticationAllowPlaintext
     Update-LetsEncryptUi
 }
 

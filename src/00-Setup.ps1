@@ -1794,6 +1794,13 @@ public class TlsTerminatingProxy
 
     private TcpListener listener;
     private X509Certificate2 certificate;
+    // The "Secure" cookie attribute tells the browser to never send this
+    // cookie back over a plain (non-HTTPS) connection -- correct and
+    // necessary for the normal TLS-terminating proxy, but fatal for a
+    // plaintext-auth relay (certificate == null): the browser would accept
+    // the cookie on login, then silently withhold it on every later
+    // request, making every session look logged-out immediately.
+    private string CookieSecureAttribute { get { return certificate != null ? "; Secure" : ""; } }
     private string targetHost;
     private int targetPort;
     private volatile bool running;
@@ -2012,6 +2019,12 @@ public class TlsTerminatingProxy
         return false;
     }
 
+    // certificate == null runs this relay in plaintext mode: no TLS
+    // handshake at all, used for "Allow plaintext auth" (the same login
+    // gate/session-cookie/path-routing logic, just over an unencrypted
+    // connection -- session cookies then travel in cleartext, acceptable
+    // only when something else already terminates TLS in front of Glass,
+    // or the operator has otherwise accepted that risk).
     public void Start(int externalPort, string targetHost, int targetPort, X509Certificate2 certificate)
     {
         this.targetHost = targetHost;
@@ -2065,130 +2078,151 @@ public class TlsTerminatingProxy
         {
             client.NoDelay = true;
             using (client)
-            using (SslStream sslStream = new SslStream(client.GetStream(), false))
             {
-                try
+                // certificate == null (plaintext-auth mode) skips the TLS
+                // handshake entirely and runs everything below directly over
+                // the raw NetworkStream -- see Start(). SslStream derives
+                // from Stream, so every helper below (ReadHttpRequestHeaderAsync,
+                // HandleAuthenticationAsync, PumpAsync, etc.) already takes the
+                // generic Stream type and needs no changes for this.
+                Stream stream = client.GetStream();
+                SslStream sslStream = null;
+                if (certificate != null)
                 {
-                    // Explicit protocols rather than SslProtocols.None (meant to mean
-                    // "let the OS pick") -- on at least one Windows 11 Enterprise host
-                    // in the field, None threw ArgumentException("...SslProtocolType
-                    // enumeration...") out of AuthenticateAsServerAsync, likely due to
-                    // local SChannel/TLS policy restricting the OS-default protocol
-                    // set. Naming the protocols explicitly sidesteps that.
-                    await sslStream.AuthenticateAsServerAsync(certificate, false, SslProtocols.Tls12 | SslProtocols.Tls13, false);
-                }
-                catch (Exception ex)
-                {
-                    // "Unexpected packet format" and similar almost always mean
-                    // non-TLS bytes hit this port (a stale plain ws:// URL, a
-                    // browser prefetch, or internet scanner noise once the port
-                    // is DDNS-reachable) rather than a bug in this relay -- the
-                    // remote address at least tells us whether it's the same
-                    // source repeating or many different ones.
-                    string remote = "unknown";
+                    sslStream = new SslStream(stream, false);
                     try
                     {
-                        IPEndPoint endpoint = client.Client.RemoteEndPoint as IPEndPoint;
-                        if (endpoint != null) remote = endpoint.Address.ToString();
-                    }
-                    catch { }
-                    pendingLog.Enqueue("TLS handshake failed from " + remote + ": " + ex.Message);
-                    return;
-                }
-                int effectivePort = targetPort;
-                byte[] headerBytes = new byte[0];
-                if (pathRoutes.Count > 0 ||
-                    authenticationEnabled ||
-                    !string.IsNullOrEmpty(DirectoryRedirectPath) ||
-                    !string.IsNullOrEmpty(AuthenticationMountPath))
-                {
-                    headerBytes = await ReadHttpRequestHeaderAsync(sslStream);
-                    if (headerBytes.Length == 0) return;
-                    if (!string.IsNullOrEmpty(DirectoryRedirectPath) && await RedirectMissingTrailingSlashAsync(sslStream, headerBytes))
-                    {
-                        return;
-                    }
-                    string requestPath = ExtractHttpRequestPath(headerBytes);
-                    bool isAuthenticationEndpoint = IsAuthenticationEndpointPath(requestPath);
-                    if (isAuthenticationEndpoint)
-                    {
-                        // Authentication routes are permanently owned by this
-                        // TLS gate. A valid viewer session must never cause
-                        // login/logout to fall through to GStreamer's static
-                        // or signaling servers.
-                        bool endpointHandled = await HandleAuthenticationAsync(sslStream, client, headerBytes);
-                        if (!endpointHandled)
-                        {
-                            pendingLog.Enqueue("authentication endpoint was not handled locally: " + requestPath);
-                            await WriteHttpResponseAsync(
-                                sslStream,
-                                500,
-                                "Internal Server Error",
-                                "text/plain; charset=utf-8",
-                                "Authentication gate error.",
-                                null
-                            );
-                        }
-                        return;
-                    }
-                    if (authenticationEnabled &&
-                        await HandleAuthenticationAsync(sslStream, client, headerBytes))
-                    {
-                        return;
-                    }
-                    if (requestPath != null)
-                    {
-                        foreach (Tuple<string, int> route in pathRoutes)
-                        {
-                            if (string.Equals(route.Item1, requestPath, StringComparison.OrdinalIgnoreCase))
-                            {
-                                effectivePort = route.Item2;
-                                break;
-                            }
-                        }
-                    }
-
-                    // This proxy only inspects the FIRST request on each TCP
-                    // connection -- forwarding below becomes a blind byte pump
-                    // for the rest of that connection's life (required for
-                    // WebSocket upgrades, which must stay a raw pipe). If the
-                    // browser keeps this same connection alive and reuses it
-                    // for a LATER, unrelated request (e.g. navigating to
-                    // /auth/logout after the page already loaded), that later
-                    // request would never be re-inspected and would silently
-                    // ride the upstream target chosen for the first request --
-                    // this is what made /auth/* start 404ing after the first
-                    // request on a connection, recovering only when the whole
-                    // process restarted and forced every connection fresh.
-                    // Forcing the upstream to close after any non-upgrade
-                    // response makes the browser open a new connection for
-                    // its next request, which runs this same header-peek /
-                    // auth / routing gate again from scratch.
-                    if (!IsWebSocketUpgradeRequest(headerBytes))
-                    {
-                        headerBytes = ForceConnectionCloseHeader(headerBytes);
-                    }
-                }
-
-                using (TcpClient upstream = new TcpClient())
-                {
-                    upstream.NoDelay = true;
-                    try
-                    {
-                        await upstream.ConnectAsync(targetHost, effectivePort);
+                        // Explicit protocols rather than SslProtocols.None (meant to mean
+                        // "let the OS pick") -- on at least one Windows 11 Enterprise host
+                        // in the field, None threw ArgumentException("...SslProtocolType
+                        // enumeration...") out of AuthenticateAsServerAsync, likely due to
+                        // local SChannel/TLS policy restricting the OS-default protocol
+                        // set. Naming the protocols explicitly sidesteps that.
+                        await sslStream.AuthenticateAsServerAsync(certificate, false, SslProtocols.Tls12 | SslProtocols.Tls13, false);
                     }
                     catch (Exception ex)
                     {
-                        pendingLog.Enqueue("could not reach upstream " + targetHost + ":" + effectivePort + ": " + ex.Message);
+                        // "Unexpected packet format" and similar almost always mean
+                        // non-TLS bytes hit this port (a stale plain ws:// URL, a
+                        // browser prefetch, or internet scanner noise once the port
+                        // is DDNS-reachable) rather than a bug in this relay -- the
+                        // remote address at least tells us whether it's the same
+                        // source repeating or many different ones.
+                        string remote = "unknown";
+                        try
+                        {
+                            IPEndPoint endpoint = client.Client.RemoteEndPoint as IPEndPoint;
+                            if (endpoint != null) remote = endpoint.Address.ToString();
+                        }
+                        catch { }
+                        pendingLog.Enqueue("TLS handshake failed from " + remote + ": " + ex.Message);
+                        sslStream.Dispose();
                         return;
                     }
-                    using (NetworkStream upstreamStream = upstream.GetStream())
+                    stream = sslStream;
+                }
+
+                try
+                {
+                    int effectivePort = targetPort;
+                    byte[] headerBytes = new byte[0];
+                    if (pathRoutes.Count > 0 ||
+                        authenticationEnabled ||
+                        !string.IsNullOrEmpty(DirectoryRedirectPath) ||
+                        !string.IsNullOrEmpty(AuthenticationMountPath))
                     {
-                        if (headerBytes.Length > 0) await upstreamStream.WriteAsync(headerBytes, 0, headerBytes.Length);
-                        Task toUpstream = PumpAsync(sslStream, upstreamStream);
-                        Task toClient = PumpAsync(upstreamStream, sslStream);
-                        await Task.WhenAny(toUpstream, toClient);
+                        headerBytes = await ReadHttpRequestHeaderAsync(stream);
+                        if (headerBytes.Length == 0) return;
+                        if (!string.IsNullOrEmpty(DirectoryRedirectPath) && await RedirectMissingTrailingSlashAsync(stream, headerBytes))
+                        {
+                            return;
+                        }
+                        string requestPath = ExtractHttpRequestPath(headerBytes);
+                        bool isAuthenticationEndpoint = IsAuthenticationEndpointPath(requestPath);
+                        if (isAuthenticationEndpoint)
+                        {
+                            // Authentication routes are permanently owned by this
+                            // gate. A valid viewer session must never cause
+                            // login/logout to fall through to GStreamer's static
+                            // or signaling servers.
+                            bool endpointHandled = await HandleAuthenticationAsync(stream, client, headerBytes);
+                            if (!endpointHandled)
+                            {
+                                pendingLog.Enqueue("authentication endpoint was not handled locally: " + requestPath);
+                                await WriteHttpResponseAsync(
+                                    stream,
+                                    500,
+                                    "Internal Server Error",
+                                    "text/plain; charset=utf-8",
+                                    "Authentication gate error.",
+                                    null
+                                );
+                            }
+                            return;
+                        }
+                        if (authenticationEnabled &&
+                            await HandleAuthenticationAsync(stream, client, headerBytes))
+                        {
+                            return;
+                        }
+                        if (requestPath != null)
+                        {
+                            foreach (Tuple<string, int> route in pathRoutes)
+                            {
+                                if (string.Equals(route.Item1, requestPath, StringComparison.OrdinalIgnoreCase))
+                                {
+                                    effectivePort = route.Item2;
+                                    break;
+                                }
+                            }
+                        }
+
+                        // This proxy only inspects the FIRST request on each TCP
+                        // connection -- forwarding below becomes a blind byte pump
+                        // for the rest of that connection's life (required for
+                        // WebSocket upgrades, which must stay a raw pipe). If the
+                        // browser keeps this same connection alive and reuses it
+                        // for a LATER, unrelated request (e.g. navigating to
+                        // /auth/logout after the page already loaded), that later
+                        // request would never be re-inspected and would silently
+                        // ride the upstream target chosen for the first request --
+                        // this is what made /auth/* start 404ing after the first
+                        // request on a connection, recovering only when the whole
+                        // process restarted and forced every connection fresh.
+                        // Forcing the upstream to close after any non-upgrade
+                        // response makes the browser open a new connection for
+                        // its next request, which runs this same header-peek /
+                        // auth / routing gate again from scratch.
+                        if (!IsWebSocketUpgradeRequest(headerBytes))
+                        {
+                            headerBytes = ForceConnectionCloseHeader(headerBytes);
+                        }
                     }
+
+                    using (TcpClient upstream = new TcpClient())
+                    {
+                        upstream.NoDelay = true;
+                        try
+                        {
+                            await upstream.ConnectAsync(targetHost, effectivePort);
+                        }
+                        catch (Exception ex)
+                        {
+                            pendingLog.Enqueue("could not reach upstream " + targetHost + ":" + effectivePort + ": " + ex.Message);
+                            return;
+                        }
+                        using (NetworkStream upstreamStream = upstream.GetStream())
+                        {
+                            if (headerBytes.Length > 0) await upstreamStream.WriteAsync(headerBytes, 0, headerBytes.Length);
+                            Task toUpstream = PumpAsync(stream, upstreamStream);
+                            Task toClient = PumpAsync(upstreamStream, stream);
+                            await Task.WhenAny(toUpstream, toClient);
+                        }
+                    }
+                }
+                finally
+                {
+                    if (sslStream != null) sslStream.Dispose();
                 }
             }
         }
@@ -2206,7 +2240,7 @@ public class TlsTerminatingProxy
     // disable or remove the gate. The next HTTPS/WSS request is validated
     // independently. Authentication endpoints are dispatched separately above
     // and are never eligible for upstream forwarding.
-    private async Task<bool> HandleAuthenticationAsync(SslStream stream, TcpClient client, byte[] headerBytes)
+    private async Task<bool> HandleAuthenticationAsync(Stream stream, TcpClient client, byte[] headerBytes)
     {
         string headerText = null;
         try { headerText = Encoding.ASCII.GetString(headerBytes); }
@@ -2284,7 +2318,7 @@ public class TlsTerminatingProxy
                 !string.IsNullOrWhiteSpace(logoutToken) &&
                 activeAuthenticationSessions.TryRemove(logoutToken, out removedSessionExpiry);
             Dictionary<string, string> logoutHeaders = new Dictionary<string, string>();
-            logoutHeaders["Set-Cookie"] = "GstGlassAuth=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT";
+            logoutHeaders["Set-Cookie"] = "GstGlassAuth=; Path=/; HttpOnly" + CookieSecureAttribute + "; SameSite=Strict; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT";
             logoutHeaders["Clear-Site-Data"] = "\"cookies\", \"storage\"";
             // Straight to the login page, not the viewer -- redirecting to the
             // viewer here just means that request immediately gets challenged
@@ -2365,7 +2399,7 @@ public class TlsTerminatingProxy
             authenticationFailures.TryRemove(remoteAddress, out verifyRemovedFailureState);
             string verifyToken = CreateAuthenticationSessionToken(verifyAccount.Username);
             Dictionary<string, string> verifySuccessHeaders = new Dictionary<string, string>();
-            verifySuccessHeaders["Set-Cookie"] = "GstGlassAuth=" + verifyToken + "; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=" + (authenticationSessionHours * 3600).ToString();
+            verifySuccessHeaders["Set-Cookie"] = "GstGlassAuth=" + verifyToken + "; Path=/; HttpOnly" + CookieSecureAttribute + "; SameSite=Strict; Max-Age=" + (authenticationSessionHours * 3600).ToString();
             verifySuccessHeaders["Location"] = GetSafeReturnTarget(verifyReturnTarget);
             pendingLog.Enqueue("viewer '" + verifyAccount.Username + "' authenticated (2FA) from " + remoteAddress);
             await WriteHttpResponseAsync(stream, 303, "See Other", "text/plain; charset=utf-8", "Authenticated.", verifySuccessHeaders);
@@ -2523,7 +2557,7 @@ public class TlsTerminatingProxy
             authenticationFailures.TryRemove(remoteAddress, out removedFailureState);
             string token = CreateAuthenticationSessionToken(matchedAccount.Username);
             Dictionary<string, string> successHeaders = new Dictionary<string, string>();
-            successHeaders["Set-Cookie"] = "GstGlassAuth=" + token + "; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=" + (authenticationSessionHours * 3600).ToString();
+            successHeaders["Set-Cookie"] = "GstGlassAuth=" + token + "; Path=/; HttpOnly" + CookieSecureAttribute + "; SameSite=Strict; Max-Age=" + (authenticationSessionHours * 3600).ToString();
             successHeaders["Location"] = GetSafeReturnTarget(returnTarget);
             pendingLog.Enqueue("viewer '" + matchedAccount.Username + "' authenticated from " + remoteAddress);
             await WriteHttpResponseAsync(stream, 303, "See Other", "text/plain; charset=utf-8", "Authenticated.", successHeaders);
@@ -3400,11 +3434,17 @@ $script:DefaultDdnsCustomMethod = 'GET'
 $script:DefaultLetsEncryptEnabled = $false
 $script:DefaultLetsEncryptEmail = ''
 $script:DefaultLetsEncryptStaging = $true
+$script:DefaultLetsEncryptCertificateDirectory = ''
 $script:DefaultLetsEncryptSignalingExternalPort = 0
 $script:DefaultLetsEncryptSplitAudioExternalPort = 0
 $script:DefaultLetsEncryptWebServerExternalPort = 0
+$script:DefaultEmbeddedTlsEnabled = $false
+$script:DefaultTlsCertificatePath = ''
+$script:DefaultTlsPrivateKeyPath = ''
+$script:DefaultTlsAllowInsecurePorts = $true
 $script:DefaultViewerAuthenticationEnabled = $false
 $script:DefaultViewerAuthenticationSessionHours = 12
+$script:DefaultViewerAuthenticationAllowPlaintext = $false
 # Named accounts, each @{ Username; PasswordHash }. Only the salted
 # PBKDF2-HMAC-SHA256 hash is ever persisted -- see Add-ViewerAuthenticationAccount
 # in src/33-LetsEncrypt.ps1.

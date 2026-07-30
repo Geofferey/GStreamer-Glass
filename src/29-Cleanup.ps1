@@ -47,6 +47,7 @@ function Invoke-ApplicationCleanup {
     Close-WebRtcPortRangeWorkerPipe
     try { Remove-UpnpPortMappings -Quiet } catch {}
     try { Stop-LetsEncryptTlsProxies } catch {}
+    try { Stop-PlaintextAuthProxies } catch {}
 
     try {
         Stop-ManagedMediaMtx -Quiet

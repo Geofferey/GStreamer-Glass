@@ -137,17 +137,16 @@ function Get-UpnpRequiredMappings {
     if ([string]$cmbProtocol.SelectedItem -ne $script:DirectWebRtcProtocolName) { return @() }
 
     $mappings = @()
-    # Once Let's Encrypt TLS termination is active, webrtcsink's own
-    # signalling/web servers are bound loopback-only (17-DirectWebRtcPipeline.ps1)
-    # -- only the TlsTerminatingProxy is actually listening on this machine's
-    # LAN IP, so that's what the router needs to reach, not webrtcsink's
-    # original port. Mapped 1:1 like RTP: the proxy already applied its own
-    # external-port override when it started listening
+    # Once embedded TLS termination is active, the TlsTerminatingProxy is
+    # what's actually listening on this machine's LAN IP for these
+    # services, not webrtcsink's original port -- that's what the router
+    # needs to reach. Mapped 1:1 like RTP: the proxy already applied its
+    # own external-port override when it started listening
     # (Get-LetsEncryptSignalingProxyPort etc. in 33-LetsEncrypt.ps1), so a
     # second remap here would just be a confusing second layer of the same
     # thing -- UPnP's own external-port-override fields don't apply in this
     # mode.
-    $tlsActive = Test-LetsEncryptTlsActive
+    $tlsActive = Test-EmbeddedTlsActive
 
     if ($chkUpnpMapSignaling -and $chkUpnpMapSignaling.Checked) {
         if ($tlsActive) {

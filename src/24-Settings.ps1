@@ -75,12 +75,18 @@ function Save-Settings {
             LetsEncryptEnabled = [bool]$chkLetsEncryptEnabled.Checked
             LetsEncryptEmail  = [string]$txtLetsEncryptEmail.Text
             LetsEncryptStaging = [bool]$chkLetsEncryptStaging.Checked
+            LetsEncryptCertificateDirectory = [string]$txtLetsEncryptCertificateDirectory.Text
             LetsEncryptSignalingExternalPort = [int]$numLetsEncryptSignalingExternalPort.Value
             LetsEncryptSplitAudioExternalPort = [int]$numLetsEncryptSplitAudioExternalPort.Value
             LetsEncryptWebServerExternalPort = [int]$numLetsEncryptWebServerExternalPort.Value
+            EmbeddedTlsEnabled = [bool]$chkEmbeddedTlsEnabled.Checked
+            TlsCertificatePath = [string]$txtTlsCertificatePath.Text
+            TlsPrivateKeyPath = [string]$txtTlsPrivateKeyPath.Text
+            TlsAllowInsecurePorts = [bool]$chkTlsAllowInsecurePorts.Checked
             ViewerAuthenticationEnabled = [bool]$chkViewerAuthenticationEnabled.Checked
             ViewerAuthenticationAccounts = @(@($script:ViewerAuthenticationAccounts) | ForEach-Object { [ordered]@{ Username = [string]$_.Username; PasswordHash = [string]$_.PasswordHash; TotpSecret = [string]$_.TotpSecret } })
             ViewerAuthenticationSessionHours = [int]$numViewerAuthenticationSessionHours.Value
+            ViewerAuthenticationAllowPlaintext = [bool]$chkViewerAuthenticationAllowPlaintext.Checked
             DirectWebRtcWebPath = $txtDirectWebRtcWebPath.Text
             DirectWebRtcBundledWebMode = [string]$cmbDirectWebRtcBundledWebMode.SelectedItem
             DirectWebRtcBundledWebDirectory = $txtDirectWebRtcBundledWebDirectory.Text
@@ -472,9 +478,18 @@ function Restore-SettingsFromObject {
         if ($null -ne $settings.LetsEncryptEnabled) { $chkLetsEncryptEnabled.Checked = [bool]$settings.LetsEncryptEnabled }
         if ($null -ne $settings.LetsEncryptEmail) { $txtLetsEncryptEmail.Text = [string]$settings.LetsEncryptEmail }
         if ($null -ne $settings.LetsEncryptStaging) { $chkLetsEncryptStaging.Checked = [bool]$settings.LetsEncryptStaging }
+        if ($null -ne $settings.LetsEncryptCertificateDirectory) { $txtLetsEncryptCertificateDirectory.Text = [string]$settings.LetsEncryptCertificateDirectory }
         if ($null -ne $settings.LetsEncryptSignalingExternalPort) { $numLetsEncryptSignalingExternalPort.Value = [decimal]([Math]::Min(65535, [Math]::Max(0, [int]$settings.LetsEncryptSignalingExternalPort))) }
         if ($null -ne $settings.LetsEncryptSplitAudioExternalPort) { $numLetsEncryptSplitAudioExternalPort.Value = [decimal]([Math]::Min(65535, [Math]::Max(0, [int]$settings.LetsEncryptSplitAudioExternalPort))) }
         if ($null -ne $settings.LetsEncryptWebServerExternalPort) { $numLetsEncryptWebServerExternalPort.Value = [decimal]([Math]::Min(65535, [Math]::Max(0, [int]$settings.LetsEncryptWebServerExternalPort))) }
+        if ($null -ne $settings.EmbeddedTlsEnabled) { $chkEmbeddedTlsEnabled.Checked = [bool]$settings.EmbeddedTlsEnabled }
+        if ($null -ne $settings.TlsCertificatePath) { $txtTlsCertificatePath.Text = [string]$settings.TlsCertificatePath }
+        if ($null -ne $settings.TlsPrivateKeyPath) { $txtTlsPrivateKeyPath.Text = [string]$settings.TlsPrivateKeyPath }
+        # TlsAllowInsecurePorts is a rename+polarity-flip of the earlier
+        # TlsDisableInsecurePorts key -- deliberately not migrated (a stored
+        # "true" meant the opposite thing under the old key), so an old
+        # settings file just falls back to the new default here.
+        if ($null -ne $settings.TlsAllowInsecurePorts) { $chkTlsAllowInsecurePorts.Checked = [bool]$settings.TlsAllowInsecurePorts }
         if ($null -ne $settings.ViewerAuthenticationEnabled) { $chkViewerAuthenticationEnabled.Checked = [bool]$settings.ViewerAuthenticationEnabled }
         if ($settings.ViewerAuthenticationAccounts) {
             $script:ViewerAuthenticationAccounts = @(@($settings.ViewerAuthenticationAccounts) | Where-Object { $_.Username -and $_.PasswordHash } | ForEach-Object {
@@ -492,6 +507,7 @@ function Restore-SettingsFromObject {
         }
         Sync-ViewerAuthenticationAccountsListBox
         if ($null -ne $settings.ViewerAuthenticationSessionHours) { $numViewerAuthenticationSessionHours.Value = [decimal]([Math]::Min(168, [Math]::Max(1, [int]$settings.ViewerAuthenticationSessionHours))) }
+        if ($null -ne $settings.ViewerAuthenticationAllowPlaintext) { $chkViewerAuthenticationAllowPlaintext.Checked = [bool]$settings.ViewerAuthenticationAllowPlaintext }
         $txtViewerAuthenticationNewUsername.Clear()
         $txtViewerAuthenticationNewPassword.Clear()
         if ($null -ne $settings.DirectWebRtcWebPath) { $txtDirectWebRtcWebPath.Text = [string]$settings.DirectWebRtcWebPath }
@@ -800,22 +816,35 @@ function Validate-Configuration {
         (Test-TransportEnabled) -and
         ([string]$cmbProtocol.SelectedItem -eq $script:DirectWebRtcProtocolName)
     if ($viewerAuthenticationApplies) {
-        if (-not (Test-LetsEncryptTlsActive)) {
-            [System.Windows.Forms.MessageBox]::Show(
-                'Viewer authentication requires an active Let''s Encrypt certificate. Enable TLS, configure the DDNS hostname, and issue a certificate before starting the broadcast.',
-                $script:AppName,
-                'OK',
-                'Warning'
-            ) | Out-Null
-            return $false
+        # "Require viewer login" is never a hard block on its own -- checking
+        # it with neither embedded TLS nor plaintext auth active just means
+        # nothing is actually there to enforce it, so it's disregarded for
+        # this session (logged, not silent, but the stream still starts).
+        $authenticationEnforced = (Test-EmbeddedTlsActive) -or (Test-PlaintextAuthActive)
+        if (-not $authenticationEnforced) {
+            Append-Log 'AUTH: "Require viewer login" is checked, but neither embedded TLS nor "Allow plaintext auth" is active -- viewer login will not be enforced this session.'
         }
+        else {
+            $validAccountCount = @(@($script:ViewerAuthenticationAccounts) | Where-Object {
+                $_.Username -and [TlsTerminatingProxy]::IsAuthenticationPasswordHashValid([string]$_.PasswordHash)
+            }).Count
+            if ($validAccountCount -eq 0) {
+                [System.Windows.Forms.MessageBox]::Show(
+                    'Add at least one viewer account before enabling viewer authentication.',
+                    $script:AppName,
+                    'OK',
+                    'Warning'
+                ) | Out-Null
+                return $false
+            }
+        }
+    }
 
-        $validAccountCount = @(@($script:ViewerAuthenticationAccounts) | Where-Object {
-            $_.Username -and [TlsTerminatingProxy]::IsAuthenticationPasswordHashValid([string]$_.PasswordHash)
-        }).Count
-        if ($validAccountCount -eq 0) {
+    if ($chkEmbeddedTlsEnabled -and $chkEmbeddedTlsEnabled.Checked -and (Test-TransportEnabled) -and ([string]$cmbProtocol.SelectedItem -eq $script:DirectWebRtcProtocolName)) {
+        $portConflicts = @(Get-EmbeddedTlsPortConflicts)
+        if ($portConflicts.Count -gt 0) {
             [System.Windows.Forms.MessageBox]::Show(
-                'Add at least one viewer account before enabling viewer authentication.',
+                "SSL/TLS Security port configuration conflicts:`n`n$($portConflicts -join "`n")`n`nEither check 'Disable insecure ports' (so the insecure server moves to loopback-only), or set a distinct external port for each service under SSL/TLS Security.",
                 $script:AppName,
                 'OK',
                 'Warning'

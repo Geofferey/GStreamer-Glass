@@ -384,8 +384,11 @@ function Start-GstStream {
             if ($chkDdnsEnabled -and $chkDdnsEnabled.Checked -and $transportEnabled) {
                 try { Update-DdnsRecord } catch { Append-Log "DDNS: $($_.Exception.Message)" }
             }
-            if ($chkLetsEncryptEnabled -and $chkLetsEncryptEnabled.Checked -and $transportEnabled) {
+            if ($chkEmbeddedTlsEnabled -and $chkEmbeddedTlsEnabled.Checked -and $transportEnabled) {
                 try { Start-LetsEncryptTlsProxies } catch { Append-Log "ACME: $($_.Exception.Message)" }
+            }
+            if ($chkViewerAuthenticationAllowPlaintext -and $chkViewerAuthenticationAllowPlaintext.Checked -and $transportEnabled) {
+                try { Start-PlaintextAuthProxies } catch { Append-Log "AUTH: $($_.Exception.Message)" }
             }
 
             $mediaSuffix = if ($script:MediaMtxProcess -and -not $script:MediaMtxProcess.HasExited) { " + MediaMTX PID $($script:MediaMtxProcess.Id)" } else { '' }
@@ -482,8 +485,11 @@ function Start-GstStream {
         if ($chkDdnsEnabled -and $chkDdnsEnabled.Checked -and $transportEnabled) {
             try { Update-DdnsRecord } catch { Append-Log "DDNS: $($_.Exception.Message)" }
         }
-        if ($chkLetsEncryptEnabled -and $chkLetsEncryptEnabled.Checked -and $transportEnabled) {
+        if ($chkEmbeddedTlsEnabled -and $chkEmbeddedTlsEnabled.Checked -and $transportEnabled) {
             try { Start-LetsEncryptTlsProxies } catch { Append-Log "ACME: $($_.Exception.Message)" }
+        }
+        if ($chkViewerAuthenticationAllowPlaintext -and $chkViewerAuthenticationAllowPlaintext.Checked -and $transportEnabled) {
+            try { Start-PlaintextAuthProxies } catch { Append-Log "AUTH: $($_.Exception.Message)" }
         }
 
         if ($script:JobHandle -ne [IntPtr]::Zero) {
@@ -588,6 +594,7 @@ function Start-GstStream {
         Close-WebRtcPortRangeWorkerPipe
         try { Remove-UpnpPortMappings } catch {}
         try { Stop-LetsEncryptTlsProxies } catch {}
+        try { Stop-PlaintextAuthProxies } catch {}
         $script:GstProcess = $null
         $script:GstVideoProcess = $null
         $script:GstAudioProcess = $null
@@ -664,6 +671,7 @@ function Stop-ControlledLiveStream {
     if (-not $Restart) {
         try { Remove-UpnpPortMappings } catch {}
         try { Stop-LetsEncryptTlsProxies } catch {}
+        try { Stop-PlaintextAuthProxies } catch {}
     }
     try { if ($workerProcess) { $workerProcess.Dispose() } } catch {}
     $script:GstProcess = $null
@@ -841,6 +849,7 @@ function Stop-GstStream {
     if (-not $Restart) {
         try { Remove-UpnpPortMappings } catch {}
         try { Stop-LetsEncryptTlsProxies } catch {}
+        try { Stop-PlaintextAuthProxies } catch {}
     }
     $script:GstProcess = $null
     $script:GstVideoProcess = $null

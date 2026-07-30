@@ -106,6 +106,31 @@ function Assert-ViewerAuth {
     if (-not $Condition) { throw $Message }
 }
 
+# Plaintext-auth counterpart to Send-TlsRequest -- no SslStream wrapping,
+# used against a proxy started with a null certificate (see
+# TlsTerminatingProxy.Start / "Allow plaintext auth").
+function Send-PlainRequest {
+    param([int]$Port, [string]$Request)
+
+    $client = [System.Net.Sockets.TcpClient]::new('127.0.0.1', $Port)
+    try {
+        $stream = $client.GetStream()
+        $requestBytes = [System.Text.Encoding]::UTF8.GetBytes($Request)
+        $stream.Write($requestBytes, 0, $requestBytes.Length)
+        $stream.Flush()
+
+        $response = [System.IO.MemoryStream]::new()
+        $buffer = New-Object byte[] 4096
+        while (($read = $stream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+            $response.Write($buffer, 0, $read)
+        }
+        return [System.Text.Encoding]::UTF8.GetString($response.ToArray())
+    }
+    finally {
+        $client.Dispose()
+    }
+}
+
 function New-TestAccount {
     param([string]$Username, [string]$PasswordHash, [string]$TotpSecret = '')
     $account = [TlsTerminatingProxy+AuthenticationAccount]::new()
@@ -148,6 +173,7 @@ $secondProxy = $null
 $transitionProxy = $null
 $multiAccountProxy = $null
 $totpProxy = $null
+$plaintextProxy = $null
 $passwordHash = [TlsTerminatingProxy]::HashAuthenticationPassword('glass-auth-test-password')
 $sessionKey = [TlsTerminatingProxy]::CreateAuthenticationSessionKey()
 $accounts = [TlsTerminatingProxy+AuthenticationAccount[]]@((New-TestAccount 'viewer' $passwordHash))
@@ -468,15 +494,70 @@ try {
     Assert-ViewerAuth $response.StartsWith('HTTP/1.1 429') 'Repeated failed logins were not rate-limited.'
     Assert-ViewerAuth ($response -match '(?im)^Retry-After:') 'Rate-limited response did not include Retry-After.'
 
+    # Plaintext auth (certificate = null): "Allow plaintext auth" runs the
+    # exact same login/session/routing gate without a TLS handshake at all,
+    # for when Glass's plain ports are reached directly (something else
+    # terminates TLS, or the operator accepts the cleartext-cookie risk).
+    # The critical, easy-to-get-wrong part is the session cookie: it must
+    # NOT carry "Secure" here, or the browser would silently refuse to send
+    # it back over the plain connection and every session would look
+    # logged-out immediately after a successful login.
+    # authenticationFailures is a static, process-wide, per-source-IP rate
+    # limiter (intentional -- it must catch credential stuffing across every
+    # exposed proxy, not just one). Every request in this whole suite comes
+    # from 127.0.0.1, and the rate-limit test just above deliberately left
+    # that IP rate-limited (429) as its last act -- without clearing it here,
+    # every request below (even a correct login) would keep getting 429,
+    # which would look like a plaintext-auth bug but isn't one.
+    $failuresField = [TlsTerminatingProxy].GetField('authenticationFailures', [System.Reflection.BindingFlags]::NonPublic -bor [System.Reflection.BindingFlags]::Static)
+    $failuresField.GetValue($null).Clear()
+
+    $plaintextUpstreamPort = Get-FreeTcpPort
+    $plaintextProxyPort = Get-FreeTcpPort
+    $plaintextProxy = [TlsTerminatingProxy]::new()
+    $plaintextProxy.ConfigureAuthentication($true, $accounts, $sessionKey, 12)
+    $plaintextProxy.Start($plaintextProxyPort, '127.0.0.1', $plaintextUpstreamPort, $null)
+    Start-Sleep -Milliseconds 100
+
+    $response = Send-PlainRequest $plaintextProxyPort "GET / HTTP/1.1`r`nHost: localhost`r`nConnection: close`r`n`r`n"
+    Assert-ViewerAuth $response.StartsWith('HTTP/1.1 303') 'Plaintext mode: unauthenticated viewer was not redirected.'
+    Assert-ViewerAuth ($response -match 'Location: /auth/login\?return=') 'Plaintext mode: login redirect was missing.'
+
+    # Wrong-password rejection/rate-limiting is identical shared code already
+    # proven above against the TLS proxy (and rate-limiting is keyed by
+    # source IP process-wide, so repeating it here from the same 127.0.0.1
+    # would just hit the rate limit the earlier block already triggered,
+    # not prove anything new) -- this section only covers what's actually
+    # different in plaintext mode: no TLS handshake, and the cookie must
+    # NOT be marked Secure.
+    $response = Send-PlainRequest $plaintextProxyPort "POST /auth/login HTTP/1.1`r`nHost: localhost`r`nContent-Type: application/x-www-form-urlencoded`r`nContent-Length: $loginLength`r`nConnection: close`r`n`r`n$loginBody"
+    Assert-ViewerAuth $response.StartsWith('HTTP/1.1 303') 'Plaintext mode: correct password was not accepted.'
+    $plaintextCookieHeader = ([regex]::Match($response, '(?im)^Set-Cookie:\s*(.+)$')).Groups[1].Value.Trim()
+    Assert-ViewerAuth ($plaintextCookieHeader -match 'HttpOnly') 'Plaintext mode: authentication cookie was not HttpOnly.'
+    Assert-ViewerAuth ($plaintextCookieHeader -notmatch 'Secure') 'Plaintext mode: authentication cookie was marked Secure -- the browser would never send it back over this plain connection.'
+    Assert-ViewerAuth ($plaintextCookieHeader -match 'SameSite=Strict') 'Plaintext mode: authentication cookie was not SameSite=Strict.'
+    $plaintextCookiePair = $plaintextCookieHeader.Split(';')[0]
+
+    $plaintextUpstream = [ViewerAuthTestUpstream]::ServeOne($plaintextUpstreamPort, 'plaintext-ok')
+    $response = Send-PlainRequest $plaintextProxyPort "GET / HTTP/1.1`r`nHost: localhost`r`nCookie: $plaintextCookiePair`r`nConnection: close`r`n`r`n"
+    Assert-ViewerAuth ($response -match 'plaintext-ok') 'Plaintext mode: an authenticated session was not let through to upstream.'
+    Assert-ViewerAuth $plaintextUpstream.Result.StartsWith('GET /') 'Plaintext mode: unexpected request reached the upstream.'
+
     'TLS authentication integration checks passed.'
 }
 catch {
     while ($message = $proxy.PollLogMessage()) {
         Write-Warning "TLS proxy: $message"
     }
+    if ($plaintextProxy) {
+        while ($message = $plaintextProxy.PollLogMessage()) {
+            Write-Warning "Plaintext proxy: $message"
+        }
+    }
     throw
 }
 finally {
+    if ($plaintextProxy) { $plaintextProxy.Stop() }
     if ($transitionProxy) { $transitionProxy.Stop() }
     if ($multiAccountProxy) { $multiAccountProxy.Stop() }
     if ($totpProxy) { $totpProxy.Stop() }

@@ -728,6 +728,56 @@ $btnDdnsUpdateNow.Size = New-Object System.Drawing.Size(150, 30)
 $settingsGroup.Controls.Add($btnDdnsUpdateNow)
 $toolTip.SetToolTip($btnDdnsUpdateNow, 'Resolves the current public IP and updates the configured DDNS record immediately, regardless of stream state -- useful for verifying credentials without going live.')
 
+$chkEmbeddedTlsEnabled = New-Object System.Windows.Forms.CheckBox
+$chkEmbeddedTlsEnabled.Text = 'Use embedded TLS'
+$chkEmbeddedTlsEnabled.Location = New-Object System.Drawing.Point(15, 548)
+$chkEmbeddedTlsEnabled.Size = New-Object System.Drawing.Size(300, 24)
+$chkEmbeddedTlsEnabled.Checked = $script:DefaultEmbeddedTlsEnabled
+$settingsGroup.Controls.Add($chkEmbeddedTlsEnabled)
+$toolTip.SetToolTip($chkEmbeddedTlsEnabled, "Off by default. Master switch for terminating HTTPS/WSS in front of the web viewer and signalling ports. Needs a certificate from either source below: a custom cert/key path, or Let's Encrypt (DNS-01) further down.")
+
+$lblEmbeddedTlsStatus = New-Object System.Windows.Forms.Label
+$lblEmbeddedTlsStatus.Text = 'Embedded TLS: disabled'
+$lblEmbeddedTlsStatus.Location = New-Object System.Drawing.Point(15, 548)
+$lblEmbeddedTlsStatus.Size = New-Object System.Drawing.Size(460, 23)
+$lblEmbeddedTlsStatus.TextAlign = 'MiddleLeft'
+$lblEmbeddedTlsStatus.ForeColor = [System.Drawing.Color]::DimGray
+$settingsGroup.Controls.Add($lblEmbeddedTlsStatus)
+
+$txtTlsCertificatePath = New-Object System.Windows.Forms.TextBox
+$txtTlsCertificatePath.Location = New-Object System.Drawing.Point(15, 548)
+$txtTlsCertificatePath.Size = New-Object System.Drawing.Size(320, 23)
+$txtTlsCertificatePath.Text = $script:DefaultTlsCertificatePath
+$settingsGroup.Controls.Add($txtTlsCertificatePath)
+$toolTip.SetToolTip($txtTlsCertificatePath, "Optional. Path to a certificate file (.pfx with an embedded private key, or a plain .cer/.pem) to use instead of the Let's Encrypt-issued one. Leave blank to use whatever Let's Encrypt has issued for the Dynamic DNS hostname below.")
+
+$btnBrowseTlsCertificatePath = New-Object System.Windows.Forms.Button
+$btnBrowseTlsCertificatePath.Text = 'Browse...'
+$btnBrowseTlsCertificatePath.Location = New-Object System.Drawing.Point(15, 548)
+$btnBrowseTlsCertificatePath.Size = New-Object System.Drawing.Size(80, 27)
+$settingsGroup.Controls.Add($btnBrowseTlsCertificatePath)
+
+$txtTlsPrivateKeyPath = New-Object System.Windows.Forms.TextBox
+$txtTlsPrivateKeyPath.Location = New-Object System.Drawing.Point(15, 548)
+$txtTlsPrivateKeyPath.Size = New-Object System.Drawing.Size(320, 23)
+$txtTlsPrivateKeyPath.Text = $script:DefaultTlsPrivateKeyPath
+$settingsGroup.Controls.Add($txtTlsPrivateKeyPath)
+$toolTip.SetToolTip($txtTlsPrivateKeyPath, 'Optional. Only needed if the certificate path above does not already include its private key (a .pfx does; a plain .cer/.pem usually does not). Unencrypted PEM RSA private key ("RSA PRIVATE KEY" or "PRIVATE KEY") only -- password-protected keys are not supported.')
+
+$btnBrowseTlsPrivateKeyPath = New-Object System.Windows.Forms.Button
+$btnBrowseTlsPrivateKeyPath.Text = 'Browse...'
+$btnBrowseTlsPrivateKeyPath.Location = New-Object System.Drawing.Point(15, 548)
+$btnBrowseTlsPrivateKeyPath.Size = New-Object System.Drawing.Size(80, 27)
+$settingsGroup.Controls.Add($btnBrowseTlsPrivateKeyPath)
+
+$chkTlsAllowInsecurePorts = New-Object System.Windows.Forms.CheckBox
+$chkTlsAllowInsecurePorts.Text = 'Allow insecure ports (keep them on 0.0.0.0 while embedded TLS is active)'
+$chkTlsAllowInsecurePorts.Location = New-Object System.Drawing.Point(15, 548)
+$chkTlsAllowInsecurePorts.Size = New-Object System.Drawing.Size(420, 24)
+$chkTlsAllowInsecurePorts.Checked = $script:DefaultTlsAllowInsecurePorts
+$settingsGroup.Controls.Add($chkTlsAllowInsecurePorts)
+$toolTip.SetToolTip($chkTlsAllowInsecurePorts, "On by default -- has no effect at all unless embedded TLS (or TLS-enforced viewer auth) is active; the plain HTTP/WS web, signalling, and split-audio-signalling servers always just listen on whatever's configured (0.0.0.0 by default) otherwise. When one of those IS active: checked keeps those plain servers reachable on every interface anyway (e.g. because you still want that plain path proxied some other way) -- each service's external TLS port must then be a different number than its internal port (two listeners can't share a port on 0.0.0.0). Uncheck to restrict those plain servers to 127.0.0.1 (reachable only through the TLS proxy) -- once restricted, the TLS port is free to match the internal port if you want. Always restricted to loopback regardless of this setting when 'Allow plaintext auth' is active, since that relay transparently takes over the same port number.")
+
 $chkLetsEncryptEnabled = New-Object System.Windows.Forms.CheckBox
 $chkLetsEncryptEnabled.Text = "Get a Let's Encrypt certificate (DNS-01)"
 $chkLetsEncryptEnabled.Location = New-Object System.Drawing.Point(15, 548)
@@ -758,6 +808,19 @@ $chkLetsEncryptStaging.Size = New-Object System.Drawing.Size(260, 24)
 $chkLetsEncryptStaging.Checked = $script:DefaultLetsEncryptStaging
 $settingsGroup.Controls.Add($chkLetsEncryptStaging)
 $toolTip.SetToolTip($chkLetsEncryptStaging, "On by default. Staging certificates aren't trusted by browsers but share none of production's tight rate limits (5 duplicate certs/week) -- verify the whole flow here first, then switch off once it works.")
+
+$txtLetsEncryptCertificateDirectory = New-Object System.Windows.Forms.TextBox
+$txtLetsEncryptCertificateDirectory.Location = New-Object System.Drawing.Point(15, 548)
+$txtLetsEncryptCertificateDirectory.Size = New-Object System.Drawing.Size(320, 23)
+$txtLetsEncryptCertificateDirectory.Text = $script:DefaultLetsEncryptCertificateDirectory
+$settingsGroup.Controls.Add($txtLetsEncryptCertificateDirectory)
+$toolTip.SetToolTip($txtLetsEncryptCertificateDirectory, 'Where issued certificates/account keys are stored. Leave blank to use the default AppData location.')
+
+$btnBrowseLetsEncryptCertificateDirectory = New-Object System.Windows.Forms.Button
+$btnBrowseLetsEncryptCertificateDirectory.Text = 'Browse...'
+$btnBrowseLetsEncryptCertificateDirectory.Location = New-Object System.Drawing.Point(15, 548)
+$btnBrowseLetsEncryptCertificateDirectory.Size = New-Object System.Drawing.Size(80, 27)
+$settingsGroup.Controls.Add($btnBrowseLetsEncryptCertificateDirectory)
 
 $numLetsEncryptSignalingExternalPort = New-Object System.Windows.Forms.NumericUpDown
 $numLetsEncryptSignalingExternalPort.Location = New-Object System.Drawing.Point(15, 548)
@@ -791,7 +854,21 @@ $btnLetsEncryptIssueNow.Text = 'Issue/Renew Now'
 $btnLetsEncryptIssueNow.Location = New-Object System.Drawing.Point(15, 548)
 $btnLetsEncryptIssueNow.Size = New-Object System.Drawing.Size(150, 30)
 $settingsGroup.Controls.Add($btnLetsEncryptIssueNow)
-$toolTip.SetToolTip($btnLetsEncryptIssueNow, "Runs the ACME DNS-01 flow immediately, regardless of stream state -- useful for verifying this against Let's Encrypt staging before going live with it.")
+$toolTip.SetToolTip($btnLetsEncryptIssueNow, "Runs the ACME DNS-01 flow immediately, regardless of stream state -- useful for verifying this against Let's Encrypt staging before going live with it. Skipped if the certificate on file is still current; use Force Renew to bypass that.")
+
+$btnLetsEncryptForceRenew = New-Object System.Windows.Forms.Button
+$btnLetsEncryptForceRenew.Text = 'Force Renew'
+$btnLetsEncryptForceRenew.Location = New-Object System.Drawing.Point(15, 548)
+$btnLetsEncryptForceRenew.Size = New-Object System.Drawing.Size(110, 30)
+$settingsGroup.Controls.Add($btnLetsEncryptForceRenew)
+$toolTip.SetToolTip($btnLetsEncryptForceRenew, "Re-issues a certificate even if the one on file is still current -- useful for testing, or switching between staging and production. Respects the staging checkbox above.")
+
+$btnLetsEncryptDeleteCertificate = New-Object System.Windows.Forms.Button
+$btnLetsEncryptDeleteCertificate.Text = 'Delete Certificate'
+$btnLetsEncryptDeleteCertificate.Location = New-Object System.Drawing.Point(15, 548)
+$btnLetsEncryptDeleteCertificate.Size = New-Object System.Drawing.Size(130, 30)
+$settingsGroup.Controls.Add($btnLetsEncryptDeleteCertificate)
+$toolTip.SetToolTip($btnLetsEncryptDeleteCertificate, "Deletes the certificate on file. Warns about Let's Encrypt's production rate limit (5 duplicate certs/week) first -- staging has no such limit.")
 
 $chkViewerAuthenticationEnabled = New-Object System.Windows.Forms.CheckBox
 $chkViewerAuthenticationEnabled.Text = 'Require viewer login for HTTPS/WSS'
@@ -857,6 +934,14 @@ $numViewerAuthenticationSessionHours.Maximum = 168
 $numViewerAuthenticationSessionHours.Value = $script:DefaultViewerAuthenticationSessionHours
 $settingsGroup.Controls.Add($numViewerAuthenticationSessionHours)
 $toolTip.SetToolTip($numViewerAuthenticationSessionHours, 'How long an authenticated viewer session remains valid. Sessions are also invalidated whenever the TLS proxies restart.')
+
+$chkViewerAuthenticationAllowPlaintext = New-Object System.Windows.Forms.CheckBox
+$chkViewerAuthenticationAllowPlaintext.Text = 'Allow plaintext auth (enforce login on insecure HTTP/WS too)'
+$chkViewerAuthenticationAllowPlaintext.Location = New-Object System.Drawing.Point(15, 548)
+$chkViewerAuthenticationAllowPlaintext.Size = New-Object System.Drawing.Size(420, 24)
+$chkViewerAuthenticationAllowPlaintext.Checked = $script:DefaultViewerAuthenticationAllowPlaintext
+$settingsGroup.Controls.Add($chkViewerAuthenticationAllowPlaintext)
+$toolTip.SetToolTip($chkViewerAuthenticationAllowPlaintext, "Off by default. Enforces the same login gate directly on the plain HTTP/WS ports, without embedded TLS -- for when something else (an external reverse proxy, etc.) is proxying those insecure ports and you still want Glass's own login to apply. The session cookie travels in cleartext on this path; only enable this if something else already provides transport security, or you've accepted that risk. Forces the plain servers to loopback-only on the ports this covers, regardless of 'Disable insecure ports'.")
 
 $txtDirectWebRtcWebPath = New-Object System.Windows.Forms.TextBox
 $txtDirectWebRtcWebPath.Location = New-Object System.Drawing.Point(15, 548)
@@ -4097,7 +4182,10 @@ $btnDdnsUpdateNow.Add_Click({
     Save-Settings
 })
 $chkLetsEncryptEnabled.Add_CheckedChanged({ Update-LetsEncryptUi })
+$chkEmbeddedTlsEnabled.Add_CheckedChanged({ Update-EmbeddedTlsUi })
+$chkTlsAllowInsecurePorts.Add_CheckedChanged({ Update-EmbeddedTlsUi })
 $chkViewerAuthenticationEnabled.Add_CheckedChanged({ Update-ViewerAuthenticationUi; Update-PlayerConfigFromUi })
+$chkViewerAuthenticationAllowPlaintext.Add_CheckedChanged({ Update-ViewerAuthenticationUi })
 $btnViewerAuthenticationAddAccount.Add_Click({ Add-ViewerAuthenticationAccount })
 $btnViewerAuthenticationRemoveAccount.Add_Click({ Remove-ViewerAuthenticationAccount })
 $btnViewerAuthenticationEnableTotp.Add_Click({ Enable-ViewerAuthenticationTotp })
@@ -4106,6 +4194,56 @@ $btnLetsEncryptIssueNow.Add_Click({
     $lowerTabs.SelectedTab = $tabLog
     try { Update-LetsEncryptCertificate } catch { Append-Log "ACME: $($_.Exception.Message)" }
     Save-Settings
+})
+$btnLetsEncryptForceRenew.Add_Click({
+    $lowerTabs.SelectedTab = $tabLog
+    try { Update-LetsEncryptCertificate -Force } catch { Append-Log "ACME: $($_.Exception.Message)" }
+    Save-Settings
+})
+$btnLetsEncryptDeleteCertificate.Add_Click({
+    try { Remove-LetsEncryptCertificate } catch { Append-Log "ACME: $($_.Exception.Message)" }
+})
+$btnBrowseTlsCertificatePath.Add_Click({
+    try {
+        $selectedPath = [GstExecutableBrowser]::SelectFile(
+            $txtTlsCertificatePath.Text,
+            'Select TLS certificate',
+            '',
+            'Certificate files (*.pfx;*.p12;*.cer;*.crt;*.pem)|*.pfx;*.p12;*.cer;*.crt;*.pem|All files (*.*)|*.*'
+        )
+        if (-not [string]::IsNullOrWhiteSpace($selectedPath)) {
+            $txtTlsCertificatePath.Text = $selectedPath
+            Update-EmbeddedTlsUi
+        }
+    }
+    catch { Append-Log "TLS: certificate browser error: $($_.Exception.Message)" }
+})
+$btnBrowseTlsPrivateKeyPath.Add_Click({
+    try {
+        $selectedPath = [GstExecutableBrowser]::SelectFile(
+            $txtTlsPrivateKeyPath.Text,
+            'Select TLS private key',
+            '',
+            'Private key files (*.key;*.pem)|*.key;*.pem|All files (*.*)|*.*'
+        )
+        if (-not [string]::IsNullOrWhiteSpace($selectedPath)) {
+            $txtTlsPrivateKeyPath.Text = $selectedPath
+            Update-EmbeddedTlsUi
+        }
+    }
+    catch { Append-Log "TLS: private key browser error: $($_.Exception.Message)" }
+})
+$btnBrowseLetsEncryptCertificateDirectory.Add_Click({
+    try {
+        $selectedPath = [GstExecutableBrowser]::SelectFolder(
+            $txtLetsEncryptCertificateDirectory.Text,
+            'Select certificate storage directory'
+        )
+        if (-not [string]::IsNullOrWhiteSpace($selectedPath)) {
+            $txtLetsEncryptCertificateDirectory.Text = $selectedPath
+        }
+    }
+    catch { Append-Log "ACME: certificate directory browser error: $($_.Exception.Message)" }
 })
 # Live-typing convenience for Cloudflare: auto-fill Zone from everything
 # after Hostname's first dot, but only until the user types into Zone
