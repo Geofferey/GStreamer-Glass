@@ -978,6 +978,62 @@ function Test-KeepAuthenticationProxiesOnRestart {
     return [bool]($chkViewerAuthenticationKeepOnRestart -and $chkViewerAuthenticationKeepOnRestart.Checked -and (Test-ViewerAuthenticationEnabled))
 }
 
+# Exact TCP peer addresses allowed to supply X-Forwarded-For. Never infer
+# trust from RFC1918/loopback alone: Glass can also be exposed directly on a
+# LAN, where doing so would let an ordinary client forge its rate-limit key.
+function ConvertTo-ViewerAuthenticationTrustedProxyAddresses {
+    param($Value)
+
+    $result = New-Object System.Collections.Generic.List[string]
+    $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($valueItem in @($Value)) {
+        foreach ($token in [regex]::Split([string]$valueItem, '[,;\s]+')) {
+            $candidate = [string]$token.Trim()
+            if ([string]::IsNullOrWhiteSpace($candidate)) { continue }
+            $address = $null
+            if (-not [System.Net.IPAddress]::TryParse($candidate, [ref]$address)) {
+                throw "Trusted proxy '$candidate' is not a valid IPv4 or IPv6 address."
+            }
+            if ($address.IsIPv4MappedToIPv6) { $address = $address.MapToIPv4() }
+            $normalized = $address.ToString()
+            if ($seen.Add($normalized)) { $result.Add($normalized) }
+        }
+    }
+    return @($result.ToArray())
+}
+
+function Get-ViewerAuthenticationTrustedProxyAddresses {
+    if ($lstViewerAuthenticationTrustedProxies) {
+        $items = @($lstViewerAuthenticationTrustedProxies.Items | ForEach-Object { [string]$_ })
+        return @(ConvertTo-ViewerAuthenticationTrustedProxyAddresses -Value $items)
+    }
+    return @()
+}
+
+# Accepts both the new JSON array and the earlier free-form string setting so
+# the address a user already entered migrates into the visible list.
+function Set-ViewerAuthenticationTrustedProxyAddresses {
+    param($Value)
+
+    $entries = @(ConvertTo-ViewerAuthenticationTrustedProxyAddresses $Value)
+    if ($lstViewerAuthenticationTrustedProxies) {
+        $lstViewerAuthenticationTrustedProxies.Items.Clear()
+        foreach ($entry in $entries) { [void]$lstViewerAuthenticationTrustedProxies.Items.Add($entry) }
+        if ($entries.Count -gt 0) { $lstViewerAuthenticationTrustedProxies.SelectedIndex = 0 }
+    }
+    if ($txtViewerAuthenticationTrustedProxy) { $txtViewerAuthenticationTrustedProxy.Clear() }
+}
+
+function Update-ViewerAuthenticationTrustedProxyButtons {
+    $authenticationEnabled = Test-ViewerAuthenticationEnabled
+    if ($btnViewerAuthenticationTrustedProxyAdd) {
+        $btnViewerAuthenticationTrustedProxyAdd.Enabled = [bool]($authenticationEnabled -and -not [string]::IsNullOrWhiteSpace([string]$txtViewerAuthenticationTrustedProxy.Text))
+    }
+    if ($btnViewerAuthenticationTrustedProxyRemove) {
+        $btnViewerAuthenticationTrustedProxyRemove.Enabled = [bool]($authenticationEnabled -and $lstViewerAuthenticationTrustedProxies.SelectedIndex -ge 0)
+    }
+}
+
 function Update-ViewerAuthenticationUi {
     # The "Require viewer login" checkbox itself is never grayed out by TLS
     # state -- a broadcaster can check it and set up accounts at any time.
@@ -990,10 +1046,13 @@ function Update-ViewerAuthenticationUi {
         $btnViewerAuthenticationAddAccount, $btnViewerAuthenticationRemoveAccount,
         $btnViewerAuthenticationEnableTotp, $btnViewerAuthenticationDisableTotp,
         $numViewerAuthenticationSessionHours, $chkViewerAuthenticationAllowPlaintext,
-        $chkViewerAuthenticationKeepOnRestart
+        $chkViewerAuthenticationKeepOnRestart, $lstViewerAuthenticationTrustedProxies,
+        $txtViewerAuthenticationTrustedProxy, $btnViewerAuthenticationTrustedProxyAdd,
+        $btnViewerAuthenticationTrustedProxyRemove
     )) {
         if ($control) { $control.Enabled = $authenticationEnabled }
     }
+    Update-ViewerAuthenticationTrustedProxyButtons
 }
 
 # Each named account can log in independently -- see AuthenticationAccount /
@@ -1533,6 +1592,7 @@ function Start-LetsEncryptTlsProxies {
     if (-not $certificate) { return }
 
     $authenticationEnabled = Test-ViewerAuthenticationEnabled
+    $trustedForwardingProxyAddresses = if ($authenticationEnabled) { @(Get-ViewerAuthenticationTrustedProxyAddresses) } else { @() }
     $authenticationAccounts = @($script:ViewerAuthenticationAccounts) | Where-Object {
         $_.Username -and [TlsTerminatingProxy]::IsAuthenticationPasswordHashValid([string]$_.PasswordHash)
     }
@@ -1556,6 +1616,7 @@ function Start-LetsEncryptTlsProxies {
         [string]$certificate.Thumbprint,
         [string]$authenticationEnabled,
         [string]$authenticationMountPath,
+        [string]($trustedForwardingProxyAddresses -join ','),
         [string]$numViewerAuthenticationSessionHours.Value,
         [string]$numDirectWebRtcSignalingPort.Value,
         [string](Get-DirectWebRtcSplitAudioSignalingPort),
@@ -1632,6 +1693,7 @@ function Start-LetsEncryptTlsProxies {
         AuthenticationEnabled   = [bool]$authenticationEnabled
         Accounts                = (Get-ViewerAuthenticationAccountObjects -Accounts $authenticationAccounts)
         SessionHours            = [int]$numViewerAuthenticationSessionHours.Value
+        TrustedForwardingProxyAddresses = $trustedForwardingProxyAddresses
         SessionKeyBase64        = if ($authenticationSessionKey) { [Convert]::ToBase64String($authenticationSessionKey) } else { '' }
         CertificatePfxBase64    = [Convert]::ToBase64String($certBytes)
     }
@@ -1677,6 +1739,7 @@ function Start-PlaintextAuthProxies {
     $authenticationAccounts = @($script:ViewerAuthenticationAccounts) | Where-Object {
         $_.Username -and [TlsTerminatingProxy]::IsAuthenticationPasswordHashValid([string]$_.PasswordHash)
     }
+    $trustedForwardingProxyAddresses = @(Get-ViewerAuthenticationTrustedProxyAddresses)
     if (@($authenticationAccounts).Count -eq 0) {
         throw 'Plaintext auth is enabled but no account has a valid password hash.'
     }
@@ -1689,6 +1752,7 @@ function Start-PlaintextAuthProxies {
     # Start-LetsEncryptTlsProxies.
     $configurationSignature = @(
         [string]$authenticationMountPath,
+        [string]($trustedForwardingProxyAddresses -join ','),
         [string]$numViewerAuthenticationSessionHours.Value,
         [string]$numDirectWebRtcSignalingPort.Value,
         [string](Get-DirectWebRtcSplitAudioSignalingPort),
@@ -1755,6 +1819,7 @@ function Start-PlaintextAuthProxies {
         AuthenticationEnabled   = $true
         Accounts                = (Get-ViewerAuthenticationAccountObjects -Accounts $authenticationAccounts)
         SessionHours            = [int]$numViewerAuthenticationSessionHours.Value
+        TrustedForwardingProxyAddresses = $trustedForwardingProxyAddresses
         SessionKeyBase64        = [Convert]::ToBase64String($authenticationSessionKey)
         CertificatePfxBase64    = ''
     }

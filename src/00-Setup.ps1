@@ -1858,6 +1858,10 @@ public class TlsTerminatingProxy
     private List<AuthenticationAccount> authenticationAccounts = new List<AuthenticationAccount>();
     private byte[] authenticationSessionKey = new byte[0];
     private int authenticationSessionHours = 12;
+    // X-Forwarded-For is attacker-controlled unless the TCP peer that supplied
+    // it is explicitly trusted. Keep exact normalized proxy addresses here;
+    // an empty set preserves socket-address behavior and is the safe default.
+    private readonly HashSet<string> trustedForwardingProxyAddresses = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, AuthenticationFailureState> authenticationFailures = new System.Collections.Concurrent.ConcurrentDictionary<string, AuthenticationFailureState>();
     private static readonly SemaphoreSlim authenticationHashSlots = new SemaphoreSlim(2, 2);
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, long> activeAuthenticationSessions = new System.Collections.Concurrent.ConcurrentDictionary<string, long>();
@@ -1917,6 +1921,18 @@ public class TlsTerminatingProxy
         authenticationAccounts = normalized;
         authenticationSessionKey = sessionKey == null ? new byte[0] : (byte[])sessionKey.Clone();
         authenticationSessionHours = Math.Max(1, Math.Min(168, sessionHours));
+    }
+
+    public void ConfigureTrustedForwardingProxies(string[] addresses)
+    {
+        trustedForwardingProxyAddresses.Clear();
+        if (addresses == null) return;
+        foreach (string value in addresses)
+        {
+            IPAddress address;
+            if (!IPAddress.TryParse((value ?? "").Trim(), out address)) continue;
+            trustedForwardingProxyAddresses.Add(NormalizeIpAddress(address));
+        }
     }
 
     private AuthenticationAccount FindAuthenticationAccount(string username)
@@ -2439,13 +2455,17 @@ public class TlsTerminatingProxy
         string rawTarget = requestParts[1];
         string path = ExtractHttpRequestPath(headerBytes) ?? "/";
         Dictionary<string, string> headers = ParseHttpHeaders(lines);
-        string remoteAddress = "unknown";
+        string socketRemoteAddress = "unknown";
         try
         {
             IPEndPoint endpoint = client.Client.RemoteEndPoint as IPEndPoint;
-            if (endpoint != null) remoteAddress = endpoint.Address.ToString();
+            if (endpoint != null) socketRemoteAddress = NormalizeIpAddress(endpoint.Address);
         }
         catch { }
+        // This one effective identity deliberately feeds BOTH audit logs and
+        // authenticationFailures. Otherwise a reverse proxy makes every viewer
+        // share one lockout bucket even if the log happens to show distinct IPs.
+        string remoteAddress = ResolveForwardedClientAddress(headers, socketRemoteAddress);
 
         string mountedLegacyLoginPath = GetMountedAuthenticationPath(LegacyLoginPath);
         string mountedLegacyLogoutPath = GetMountedAuthenticationPath(LegacyLogoutPath);
@@ -2873,8 +2893,49 @@ public class TlsTerminatingProxy
             string name = lines[i].Substring(0, separator).Trim();
             string value = lines[i].Substring(separator + 1).Trim();
             if (!headers.ContainsKey(name)) headers[name] = value;
+            else if (string.Equals(name, "X-Forwarded-For", StringComparison.OrdinalIgnoreCase))
+            {
+                // Multiple XFF fields are equivalent to one comma-separated
+                // chain. Combining them is also important when a trusted proxy
+                // appends the real peer after a client-supplied field.
+                headers[name] = headers[name] + "," + value;
+            }
         }
         return headers;
+    }
+
+    private static string NormalizeIpAddress(IPAddress address)
+    {
+        if (address == null) return "unknown";
+        if (address.IsIPv4MappedToIPv6) address = address.MapToIPv4();
+        return address.ToString();
+    }
+
+    // Walk X-Forwarded-For from the proxy nearest Glass toward the original
+    // client. A hop is accepted only while the current sender is in the exact
+    // trusted-proxy list. The first untrusted address is the client identity;
+    // anything farther left is client-controlled and ignored. A malformed
+    // chain fails closed to the actual socket peer.
+    private string ResolveForwardedClientAddress(Dictionary<string, string> headers, string socketRemoteAddress)
+    {
+        if (string.IsNullOrWhiteSpace(socketRemoteAddress) ||
+            !trustedForwardingProxyAddresses.Contains(socketRemoteAddress)) return socketRemoteAddress;
+
+        string forwardedFor;
+        if (headers == null || !headers.TryGetValue("X-Forwarded-For", out forwardedFor) || string.IsNullOrWhiteSpace(forwardedFor))
+            return socketRemoteAddress;
+
+        string currentAddress = socketRemoteAddress;
+        string[] hops = forwardedFor.Split(',');
+        for (int i = hops.Length - 1; i >= 0; i--)
+        {
+            string token = (hops[i] ?? "").Trim().Trim('"');
+            IPAddress parsed;
+            if (token.Length == 0 || !IPAddress.TryParse(token, out parsed)) return socketRemoteAddress;
+            currentAddress = NormalizeIpAddress(parsed);
+            if (!trustedForwardingProxyAddresses.Contains(currentAddress)) return currentAddress;
+        }
+        return currentAddress;
     }
 
     private static bool TryGetContentLength(Dictionary<string, string> headers, out int length)
@@ -3834,6 +3895,7 @@ if ($AuthProxyWorker) {
                         $proxy = New-Object TlsTerminatingProxy
                         $proxy.Label = [string]$portInfo.Label
                         $proxy.AuthenticationMountPath = [string]$Command.AuthenticationMountPath
+                        $proxy.ConfigureTrustedForwardingProxies([string[]]@($Command.TrustedForwardingProxyAddresses))
                         foreach ($route in @($portInfo.PathRoutes)) {
                             $proxy.AddPathRoute([string]$route.Path, [int]$route.Port)
                         }
@@ -4191,6 +4253,7 @@ $script:DefaultViewerAuthenticationEnabled = $false
 $script:DefaultViewerAuthenticationSessionHours = 12
 $script:DefaultViewerAuthenticationAllowPlaintext = $false
 $script:DefaultViewerAuthenticationKeepOnRestart = $false
+$script:DefaultViewerAuthenticationTrustedProxies = ''
 # Named accounts, each @{ Username; PasswordHash }. Only the salted
 # PBKDF2-HMAC-SHA256 hash is ever persisted -- see Add-ViewerAuthenticationAccount
 # in src/33-LetsEncrypt.ps1.

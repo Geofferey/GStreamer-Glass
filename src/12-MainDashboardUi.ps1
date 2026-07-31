@@ -1248,6 +1248,13 @@ function Apply-ModernDashboardUi {
     Add-Field $r -Control $chkViewerAuthenticationAllowPlaintext -Width 420 | Out-Null
     $r = Add-Row $s
     Add-Field $r -Control $chkViewerAuthenticationKeepOnRestart -Width 420 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Label 'Trusted proxy IPs' -Control $lstViewerAuthenticationTrustedProxies -Width 300 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Label 'Proxy IP' -Control $txtViewerAuthenticationTrustedProxy -Width 220 | Out-Null
+    Add-Field $r -Control $btnViewerAuthenticationTrustedProxyAdd -Width 70 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Control $btnViewerAuthenticationTrustedProxyRemove -Width 80 | Out-Null
 
     $s = Add-Section $paneNetwork ''
     $r = Add-Row $s
@@ -1468,6 +1475,8 @@ function Apply-ModernDashboardUi {
         $btnViewerAuthenticationAddAccount, $btnViewerAuthenticationRemoveAccount,
         $btnViewerAuthenticationEnableTotp, $btnViewerAuthenticationDisableTotp,
         $numViewerAuthenticationSessionHours, $chkViewerAuthenticationAllowPlaintext, $chkViewerAuthenticationKeepOnRestart,
+        $lstViewerAuthenticationTrustedProxies, $txtViewerAuthenticationTrustedProxy,
+        $btnViewerAuthenticationTrustedProxyAdd, $btnViewerAuthenticationTrustedProxyRemove,
         $btnResetTransport, $btnResetWebRtcSane, $btnResetVideo, $btnResetAudio,
         $btnResetRecording, $btnResetNetwork, $btnResetOptions, $btnExportLabConfig, $btnResetAll,
         $txtGstPath, $btnBrowseGst, $btnDetectGst, $btnCheckGst,

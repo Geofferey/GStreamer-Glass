@@ -244,6 +244,7 @@ function Reset-LetsEncryptDefaults {
     $numViewerAuthenticationSessionHours.Value = $script:DefaultViewerAuthenticationSessionHours
     $chkViewerAuthenticationAllowPlaintext.Checked = $script:DefaultViewerAuthenticationAllowPlaintext
     $chkViewerAuthenticationKeepOnRestart.Checked = $script:DefaultViewerAuthenticationKeepOnRestart
+    Set-ViewerAuthenticationTrustedProxyAddresses -Value $script:DefaultViewerAuthenticationTrustedProxies
     Update-LetsEncryptUi
 }
 

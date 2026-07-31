@@ -983,6 +983,31 @@ $chkViewerAuthenticationKeepOnRestart.Checked = $script:DefaultViewerAuthenticat
 $settingsGroup.Controls.Add($chkViewerAuthenticationKeepOnRestart)
 $toolTip.SetToolTip($chkViewerAuthenticationKeepOnRestart, "Off by default. Only applies while 'Require viewer login' is also checked. Normally, stopping the stream (including a Start/Stop/Restart cycle) also stops the TLS/plaintext-auth proxies, which drops every viewer's session -- they have to log in again once you go live again. Check this to keep those proxies running across Start/Stop/Restart instead, so already-authenticated viewers stay logged in the whole time; their browser just sees the stream go offline and come back.")
 
+$lstViewerAuthenticationTrustedProxies = New-Object System.Windows.Forms.ListBox
+$lstViewerAuthenticationTrustedProxies.Location = New-Object System.Drawing.Point(15, 548)
+$lstViewerAuthenticationTrustedProxies.Size = New-Object System.Drawing.Size(300, 72)
+$lstViewerAuthenticationTrustedProxies.SelectionMode = 'One'
+$settingsGroup.Controls.Add($lstViewerAuthenticationTrustedProxies)
+$toolTip.SetToolTip($lstViewerAuthenticationTrustedProxies, "Exact reverse-proxy IP addresses allowed to supply X-Forwarded-For. Glass uses the resolved client IP for authentication logs and per-client lockouts. Leave empty unless the proxy overwrites or safely appends this header; direct clients cannot be trusted to provide it. Changes take effect on the next Start/Restart.")
+
+$txtViewerAuthenticationTrustedProxy = New-Object System.Windows.Forms.TextBox
+$txtViewerAuthenticationTrustedProxy.Location = New-Object System.Drawing.Point(15, 548)
+$txtViewerAuthenticationTrustedProxy.Size = New-Object System.Drawing.Size(220, 23)
+$settingsGroup.Controls.Add($txtViewerAuthenticationTrustedProxy)
+$toolTip.SetToolTip($txtViewerAuthenticationTrustedProxy, 'IPv4 or IPv6 address of a trusted reverse proxy. Example: 172.16.80.1.')
+
+$btnViewerAuthenticationTrustedProxyAdd = New-Object System.Windows.Forms.Button
+$btnViewerAuthenticationTrustedProxyAdd.Text = 'Add'
+$btnViewerAuthenticationTrustedProxyAdd.Location = New-Object System.Drawing.Point(15, 548)
+$btnViewerAuthenticationTrustedProxyAdd.Size = New-Object System.Drawing.Size(70, 27)
+$settingsGroup.Controls.Add($btnViewerAuthenticationTrustedProxyAdd)
+
+$btnViewerAuthenticationTrustedProxyRemove = New-Object System.Windows.Forms.Button
+$btnViewerAuthenticationTrustedProxyRemove.Text = 'Remove'
+$btnViewerAuthenticationTrustedProxyRemove.Location = New-Object System.Drawing.Point(15, 548)
+$btnViewerAuthenticationTrustedProxyRemove.Size = New-Object System.Drawing.Size(80, 27)
+$settingsGroup.Controls.Add($btnViewerAuthenticationTrustedProxyRemove)
+
 $txtDirectWebRtcWebPath = New-Object System.Windows.Forms.TextBox
 $txtDirectWebRtcWebPath.Location = New-Object System.Drawing.Point(15, 548)
 $txtDirectWebRtcWebPath.Size = New-Object System.Drawing.Size(120, 23)
@@ -4448,6 +4473,49 @@ $btnDirectWebRtcAdditionalIceHostDown.Add_Click({
     $lstDirectWebRtcAdditionalIceHosts.Items.Insert($index + 1, $item)
     $lstDirectWebRtcAdditionalIceHosts.SelectedIndex = $index + 1
     Update-PlayerConfigFromUi
+})
+
+$addViewerAuthenticationTrustedProxy = {
+    try {
+        $entries = @(ConvertTo-ViewerAuthenticationTrustedProxyAddresses -Value ([string]$txtViewerAuthenticationTrustedProxy.Text))
+        foreach ($entry in $entries) {
+            $exists = $false
+            foreach ($existing in $lstViewerAuthenticationTrustedProxies.Items) {
+                if ([string]::Equals([string]$existing, [string]$entry, [System.StringComparison]::OrdinalIgnoreCase)) { $exists = $true; break }
+            }
+            if (-not $exists) { [void]$lstViewerAuthenticationTrustedProxies.Items.Add($entry) }
+        }
+        $txtViewerAuthenticationTrustedProxy.Clear()
+        if ($lstViewerAuthenticationTrustedProxies.Items.Count -gt 0) {
+            $lstViewerAuthenticationTrustedProxies.SelectedIndex = $lstViewerAuthenticationTrustedProxies.Items.Count - 1
+        }
+        Save-Settings
+    }
+    catch {
+        [System.Windows.Forms.MessageBox]::Show($_.Exception.Message, $script:AppName, 'OK', 'Warning') | Out-Null
+    }
+    Update-ViewerAuthenticationTrustedProxyButtons
+}
+
+$btnViewerAuthenticationTrustedProxyAdd.Add_Click($addViewerAuthenticationTrustedProxy)
+$txtViewerAuthenticationTrustedProxy.Add_KeyDown({
+    param($sender, $e)
+    if ($e.KeyCode -eq [System.Windows.Forms.Keys]::Enter) {
+        & $addViewerAuthenticationTrustedProxy
+        $e.SuppressKeyPress = $true
+    }
+})
+$txtViewerAuthenticationTrustedProxy.Add_TextChanged({ Update-ViewerAuthenticationTrustedProxyButtons })
+$lstViewerAuthenticationTrustedProxies.Add_SelectedIndexChanged({ Update-ViewerAuthenticationTrustedProxyButtons })
+$btnViewerAuthenticationTrustedProxyRemove.Add_Click({
+    $index = $lstViewerAuthenticationTrustedProxies.SelectedIndex
+    if ($index -lt 0) { return }
+    $lstViewerAuthenticationTrustedProxies.Items.RemoveAt($index)
+    if ($lstViewerAuthenticationTrustedProxies.Items.Count -gt 0) {
+        $lstViewerAuthenticationTrustedProxies.SelectedIndex = [Math]::Min($index, $lstViewerAuthenticationTrustedProxies.Items.Count - 1)
+    }
+    Save-Settings
+    Update-ViewerAuthenticationTrustedProxyButtons
 })
 
 $btnBrowseDirectWebRtcBundledWebDirectory.Add_Click({

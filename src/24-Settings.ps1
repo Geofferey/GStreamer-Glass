@@ -89,6 +89,7 @@ function Save-Settings {
             ViewerAuthenticationSessionHours = [int]$numViewerAuthenticationSessionHours.Value
             ViewerAuthenticationAllowPlaintext = [bool]$chkViewerAuthenticationAllowPlaintext.Checked
             ViewerAuthenticationKeepOnRestart = [bool]$chkViewerAuthenticationKeepOnRestart.Checked
+            ViewerAuthenticationTrustedProxies = @(Get-ViewerAuthenticationTrustedProxyAddresses)
             DirectWebRtcWebPath = $txtDirectWebRtcWebPath.Text
             DirectWebRtcBundledWebMode = [string]$cmbDirectWebRtcBundledWebMode.SelectedItem
             DirectWebRtcBundledWebDirectory = $txtDirectWebRtcBundledWebDirectory.Text
@@ -512,6 +513,13 @@ function Restore-SettingsFromObject {
         if ($null -ne $settings.ViewerAuthenticationSessionHours) { $numViewerAuthenticationSessionHours.Value = [decimal]([Math]::Min(168, [Math]::Max(1, [int]$settings.ViewerAuthenticationSessionHours))) }
         if ($null -ne $settings.ViewerAuthenticationAllowPlaintext) { $chkViewerAuthenticationAllowPlaintext.Checked = [bool]$settings.ViewerAuthenticationAllowPlaintext }
         if ($null -ne $settings.ViewerAuthenticationKeepOnRestart) { $chkViewerAuthenticationKeepOnRestart.Checked = [bool]$settings.ViewerAuthenticationKeepOnRestart }
+        if ($null -ne $settings.ViewerAuthenticationTrustedProxies) {
+            try { Set-ViewerAuthenticationTrustedProxyAddresses -Value $settings.ViewerAuthenticationTrustedProxies }
+            catch {
+                Set-ViewerAuthenticationTrustedProxyAddresses -Value @()
+                Append-Log "AUTH: ignored invalid saved trusted proxy list: $($_.Exception.Message)"
+            }
+        }
         $txtViewerAuthenticationNewUsername.Clear()
         $txtViewerAuthenticationNewPassword.Clear()
         if ($null -ne $settings.DirectWebRtcWebPath) { $txtDirectWebRtcWebPath.Text = [string]$settings.DirectWebRtcWebPath }
@@ -837,6 +845,11 @@ function Validate-Configuration {
             }).Count
             if ($validAccountCount -eq 0) {
                 Show-ValidationFailure -Silent:$Silent -Message 'Add at least one viewer account before enabling viewer authentication.'
+                return $false
+            }
+            try { $null = @(Get-ViewerAuthenticationTrustedProxyAddresses) }
+            catch {
+                Show-ValidationFailure -Silent:$Silent -Message $_.Exception.Message
                 return $false
             }
         }
