@@ -4947,6 +4947,30 @@ $pollTimer.Add_Tick({
     Update-GstThreadCountStatus
     Drain-LetsEncryptTlsProxyLogs
 
+    # The auth proxy worker process (Start-AuthProxyWorker, 33-LetsEncrypt.ps1)
+    # has no heartbeat of its own -- if it dies unexpectedly while either
+    # family was supposed to be running, notice it here (same poll cadence
+    # already used for $script:GstProcess.HasExited elsewhere in this timer)
+    # and reissue the active configuration from scratch. Any sessions the
+    # worker was holding are gone with it either way (its process death took
+    # every TlsTerminatingProxy instance and their shared session state with
+    # it), so a full restart -- fresh session key, viewers need to log in
+    # again -- is the correct outcome, not just the easiest one.
+    if (
+        ((@($script:LetsEncryptTlsProxies).Count -gt 0) -or (@($script:PlaintextAuthProxies).Count -gt 0)) -and
+        -not (Test-AuthProxyWorkerRunning)
+    ) {
+        Append-Log 'AUTH: auth proxy worker process exited unexpectedly; restarting it and reissuing active proxy configuration.'
+        $needLetsEncrypt = @($script:LetsEncryptTlsProxies).Count -gt 0
+        $needPlaintext = @($script:PlaintextAuthProxies).Count -gt 0
+        $script:LetsEncryptTlsProxies = @()
+        $script:LetsEncryptTlsProxyConfigurationSignature = ''
+        $script:PlaintextAuthProxies = @()
+        $script:PlaintextAuthProxyConfigurationSignature = ''
+        if ($needLetsEncrypt) { try { Start-LetsEncryptTlsProxies } catch { Append-Log "ACME: $($_.Exception.Message)" } }
+        if ($needPlaintext) { try { Start-PlaintextAuthProxies } catch { Append-Log "AUTH: $($_.Exception.Message)" } }
+    }
+
     Try-AttachPreview
 
     if ($script:DynamicScenePreviewActive) {

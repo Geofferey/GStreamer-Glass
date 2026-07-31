@@ -48,6 +48,12 @@ function Invoke-ApplicationCleanup {
     try { Remove-UpnpPortMappings -Quiet } catch {}
     try { Stop-LetsEncryptTlsProxies } catch {}
     try { Stop-PlaintextAuthProxies } catch {}
+    # Stop-*Proxies above only tell the auth proxy worker process to stop
+    # those families -- the worker process itself stays alive across
+    # stream cycles (it must keep answering the login-redirect page even
+    # with no stream active), so app exit needs to explicitly tear down the
+    # worker process too, or it would be orphaned.
+    try { Stop-AuthProxyWorker } catch {}
 
     try {
         Stop-ManagedMediaMtx -Quiet
