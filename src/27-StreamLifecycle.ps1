@@ -397,7 +397,15 @@ function Start-GstStream {
             if ($chkViewerAuthenticationAllowPlaintext -and $chkViewerAuthenticationAllowPlaintext.Checked -and $transportEnabled) {
                 try { Start-PlaintextAuthProxies } catch { Append-Log "AUTH: $($_.Exception.Message)" }
             }
-            try { Resume-ActiveAuthenticationProxyForwarding } catch {}
+            # Same $transportEnabled gate as the proxy-start calls above --
+            # resuming forwarding on a Preview/Recording-only run (no
+            # transportEnabled) would un-pause a still-alive proxy from a
+            # just-stopped prior stream while nothing is listening on its
+            # internal forward target, reproducing the same-port self-loop
+            # CPU-pegging freeze this was originally written to prevent.
+            if ($transportEnabled) {
+                try { Resume-ActiveAuthenticationProxyForwarding } catch {}
+            }
 
             $mediaSuffix = if ($script:MediaMtxProcess -and -not $script:MediaMtxProcess.HasExited) { " + MediaMTX PID $($script:MediaMtxProcess.Id)" } else { '' }
             if ($transportEnabled) {
@@ -499,7 +507,16 @@ function Start-GstStream {
         if ($chkViewerAuthenticationAllowPlaintext -and $chkViewerAuthenticationAllowPlaintext.Checked -and $transportEnabled) {
             try { Start-PlaintextAuthProxies } catch { Append-Log "AUTH: $($_.Exception.Message)" }
         }
-        try { Resume-ActiveAuthenticationProxyForwarding } catch {}
+        # Same $transportEnabled gate as the proxy-start calls above -- see
+        # the matching comment in the controlled-live-worker start path a
+        # few hundred lines up for why an unconditional resume here
+        # reproduces the same-port self-loop freeze on a Preview/Recording-
+        # only run triggered right after a genuine Stop (e.g. the
+        # Sync-StandalonePreviewState -> Start-GstStream -PreviewOnly path
+        # taken when "Enable experimental scene composition" is unchecked).
+        if ($transportEnabled) {
+            try { Resume-ActiveAuthenticationProxyForwarding } catch {}
+        }
 
         if ($script:JobHandle -ne [IntPtr]::Zero) {
             try {
