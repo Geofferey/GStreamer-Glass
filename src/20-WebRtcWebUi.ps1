@@ -428,10 +428,12 @@ function Add-DirectWebRtcViewerQuery {
     $proxyVideoPath = [System.Uri]::EscapeDataString([string]$playerSettings.VideoSignalingProxyPath)
     $proxyAudioPath = [System.Uri]::EscapeDataString([string]$playerSettings.AudioSignalingProxyPath)
     $proxyPathPart = "&proxyVideoPath=$proxyVideoPath&proxyAudioPath=$proxyAudioPath"
+    $additionalIceHosts = [System.Uri]::EscapeDataString(((@(Get-DirectWebRtcAdditionalIceHostsForPlayer)) -join ','))
+    $additionalIceHostPart = "&additionalIceHosts=$additionalIceHosts&minRtpPort=$([int]$numDirectWebRtcMinRtpPort.Value)&maxRtpPort=$([int]$numDirectWebRtcMaxRtpPort.Value)"
     $stamp = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
     $joiner = if ($Url -match '\?') { '&' } else { '?' }
 
-    return ($Url + $joiner + "signalPort=$videoSignalPort&videoSignalingPort=$videoSignalPort&audioJbufMs=$audioJitterMs&videoJbufMs=$videoJitterMs&jitterMs=$fallbackJitterMs&browserJitterTargetMs=$fallbackJitterMs&jbufMaxMs=$maxMs&jbufWatchdog=$watchdog&jbufDebug=$debug&liveEdgeGreenMs=$liveEdgeGreenMs&liveEdgeYellowMs=$liveEdgeYellowMs&liveEdgeAverageSec=$liveEdgeAverageSec&watchdogWarmupSeconds=$warmupSeconds&jbufWatchdogWarmupSeconds=$warmupSeconds&splitAudioWarmupSeconds=$warmupSeconds&separateHtmlMediaElements=$separateHtmlMediaElements&playerSeparateHtmlMediaElements=$separateHtmlMediaElements&avRenderMode=$avRenderMode&playerAvRenderMode=$avRenderMode&avPipelineMode=$avPipelineMode&mediaStreamGrouping=$mediaStreamGrouping&videoMsid=$videoMediaStreamId&audioMsid=$audioMediaStreamId$splitAudioPart$externalSignalingPart$externalSplitAudioPart$proxyPathPart&cb=$stamp")
+    return ($Url + $joiner + "signalPort=$videoSignalPort&videoSignalingPort=$videoSignalPort&audioJbufMs=$audioJitterMs&videoJbufMs=$videoJitterMs&jitterMs=$fallbackJitterMs&browserJitterTargetMs=$fallbackJitterMs&jbufMaxMs=$maxMs&jbufWatchdog=$watchdog&jbufDebug=$debug&liveEdgeGreenMs=$liveEdgeGreenMs&liveEdgeYellowMs=$liveEdgeYellowMs&liveEdgeAverageSec=$liveEdgeAverageSec&watchdogWarmupSeconds=$warmupSeconds&jbufWatchdogWarmupSeconds=$warmupSeconds&splitAudioWarmupSeconds=$warmupSeconds&separateHtmlMediaElements=$separateHtmlMediaElements&playerSeparateHtmlMediaElements=$separateHtmlMediaElements&avRenderMode=$avRenderMode&playerAvRenderMode=$avRenderMode&avPipelineMode=$avPipelineMode&mediaStreamGrouping=$mediaStreamGrouping&videoMsid=$videoMediaStreamId&audioMsid=$audioMediaStreamId$splitAudioPart$externalSignalingPart$externalSplitAudioPart$proxyPathPart$additionalIceHostPart&cb=$stamp")
 }
 
 function Get-DirectWebRtcViewerUrl {
@@ -465,6 +467,21 @@ function Update-UnifiedBridgeKeyframeUi {
     $available = (Test-DirectWebRtcUnifiedPublisher) -and $codecSupported
     $chkUnifiedBridgeKeyframeGuard.Enabled = $available
     $numUnifiedBridgeKeyframeIntervalMs.Enabled = $available -and $chkUnifiedBridgeKeyframeGuard.Checked
+}
+
+function Update-DirectWebRtcAdditionalIceHostListButtons {
+    $enabled = Test-DirectWebRtcProtocol
+    $selected = if ($lstDirectWebRtcAdditionalIceHosts) { [int]$lstDirectWebRtcAdditionalIceHosts.SelectedIndex } else { -1 }
+    $count = if ($lstDirectWebRtcAdditionalIceHosts) { [int]$lstDirectWebRtcAdditionalIceHosts.Items.Count } else { 0 }
+    if ($txtDirectWebRtcAdditionalIceHost) { $txtDirectWebRtcAdditionalIceHost.Enabled = $enabled }
+    if ($lstDirectWebRtcAdditionalIceHosts) { $lstDirectWebRtcAdditionalIceHosts.Enabled = $enabled }
+    if ($btnDirectWebRtcAdditionalIceHostAdd) {
+        $btnDirectWebRtcAdditionalIceHostAdd.Enabled = $enabled -and
+            -not [string]::IsNullOrWhiteSpace([string]$txtDirectWebRtcAdditionalIceHost.Text) -and $count -lt 32
+    }
+    if ($btnDirectWebRtcAdditionalIceHostRemove) { $btnDirectWebRtcAdditionalIceHostRemove.Enabled = $enabled -and $selected -ge 0 }
+    if ($btnDirectWebRtcAdditionalIceHostUp) { $btnDirectWebRtcAdditionalIceHostUp.Enabled = $enabled -and $selected -gt 0 }
+    if ($btnDirectWebRtcAdditionalIceHostDown) { $btnDirectWebRtcAdditionalIceHostDown.Enabled = $enabled -and $selected -ge 0 -and $selected -lt ($count - 1) }
 }
 
 function Update-DirectWebRtcUi {
@@ -602,6 +619,7 @@ function Update-DirectWebRtcUi {
     }
 
     if ($txtDirectWebRtcTurn) { $txtDirectWebRtcTurn.Enabled = $webRtcTransportEnabled -and $chkDirectWebRtcTurnEnabled.Checked }
+    Update-DirectWebRtcAdditionalIceHostListButtons
 
     if ($directEnabled) {
         $webDir = Get-DirectWebRtcWebDirectory

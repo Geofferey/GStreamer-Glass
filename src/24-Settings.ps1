@@ -54,6 +54,7 @@ function Save-Settings {
             DirectWebRtcTurnServer = $txtDirectWebRtcTurn.Text
             DirectWebRtcMinRtpPort = [int]$numDirectWebRtcMinRtpPort.Value
             DirectWebRtcMaxRtpPort = [int]$numDirectWebRtcMaxRtpPort.Value
+            DirectWebRtcAdditionalIceHost = Get-DirectWebRtcAdditionalIceHostTextFromUi
             UpnpEnabled = [bool]$chkUpnpEnabled.Checked
             UpnpMapSignaling = [bool]$chkUpnpMapSignaling.Checked
             UpnpMapRtp = [bool]$chkUpnpMapRtp.Checked
@@ -458,6 +459,7 @@ function Restore-SettingsFromObject {
         if ($null -ne $settings.DirectWebRtcTurnServer) { $txtDirectWebRtcTurn.Text = [string]$settings.DirectWebRtcTurnServer }
         if ($null -ne $settings.DirectWebRtcMinRtpPort) { $numDirectWebRtcMinRtpPort.Value = [decimal]([Math]::Min(65535, [Math]::Max(0, [int]$settings.DirectWebRtcMinRtpPort))) }
         if ($null -ne $settings.DirectWebRtcMaxRtpPort) { $numDirectWebRtcMaxRtpPort.Value = [decimal]([Math]::Min(65535, [Math]::Max(0, [int]$settings.DirectWebRtcMaxRtpPort))) }
+        if ($null -ne $settings.DirectWebRtcAdditionalIceHost) { Set-DirectWebRtcAdditionalIceHostTextToUi ([string]$settings.DirectWebRtcAdditionalIceHost) }
         if ($null -ne $settings.UpnpEnabled) { $chkUpnpEnabled.Checked = [bool]$settings.UpnpEnabled }
         if ($null -ne $settings.UpnpMapSignaling) { $chkUpnpMapSignaling.Checked = [bool]$settings.UpnpMapSignaling }
         if ($null -ne $settings.UpnpMapRtp) { $chkUpnpMapRtp.Checked = [bool]$settings.UpnpMapRtp }

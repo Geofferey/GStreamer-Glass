@@ -159,6 +159,12 @@
         'Get-DirectWebRtcEffectiveExternalSignalingPort'
         'Get-DirectWebRtcEffectiveSplitAudioExternalSignalingPort'
         'Get-DirectWebRtcSignalingClientHost'
+        'ConvertTo-DirectWebRtcAdditionalIceHostEntries'
+        'Get-DirectWebRtcAdditionalIceHostEntriesFromUi'
+        'Get-DirectWebRtcAdditionalIceHostTextFromUi'
+        'Set-DirectWebRtcAdditionalIceHostTextToUi'
+        'Get-DirectWebRtcAdditionalIceHostsForPlayer'
+        'Get-DirectWebRtcAdditionalIceHostForPlayer'
         'Get-DirectWebRtcSharedSignallerUri'
         'Get-DirectWebRtcSplitAudioWsUrlForPlayer'
         'Get-DirectWebRtcSplitAudioWsUrlDescriptionForLog'
@@ -246,6 +252,7 @@
         'Add-DirectWebRtcViewerQuery'
         'Get-DirectWebRtcViewerUrl'
         'Update-UnifiedBridgeKeyframeUi'
+        'Update-DirectWebRtcAdditionalIceHostListButtons'
         'Update-DirectWebRtcUi'
     )
 

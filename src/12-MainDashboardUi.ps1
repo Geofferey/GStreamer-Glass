@@ -1124,6 +1124,17 @@ function Apply-ModernDashboardUi {
     # ---------------- Network ----------------
     $paneNetwork = New-SettingsPane $tabNetwork
 
+    $s = Add-CollapsibleSection $paneNetwork 'Proxy / host mapping'
+    $r = Add-Row $s
+    Add-Field $r -Label 'Public host / IP' -Control $txtDirectWebRtcAdditionalIceHost -Width 330 | Out-Null
+    Add-Field $r -Control $btnDirectWebRtcAdditionalIceHostAdd -Width 70 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Label 'Ordered ICE hosts (highest priority first)' -Control $lstDirectWebRtcAdditionalIceHosts -Width 420 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Control $btnDirectWebRtcAdditionalIceHostUp -Width 85 | Out-Null
+    Add-Field $r -Control $btnDirectWebRtcAdditionalIceHostDown -Width 85 | Out-Null
+    Add-Field $r -Control $btnDirectWebRtcAdditionalIceHostRemove -Width 85 | Out-Null
+
     $s = Add-CollapsibleSection $paneNetwork 'UPnP Port Forwarding'
     $r = Add-Row $s
     Add-Field $r -Control $chkUpnpEnabled -Width 300 | Out-Null

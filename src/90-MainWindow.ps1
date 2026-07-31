@@ -560,6 +560,38 @@ $numDirectWebRtcMaxRtpPort.Value = $script:DefaultDirectWebRtcMaxRtpPort
 $settingsGroup.Controls.Add($numDirectWebRtcMaxRtpPort)
 $toolTip.SetToolTip($numDirectWebRtcMaxRtpPort, 'GST WebRTC protocol only. Upper bound of the ICE candidate UDP port range. See the Min RTP port tooltip for how this is enforced.')
 
+$txtDirectWebRtcAdditionalIceHost = New-Object System.Windows.Forms.TextBox
+$txtDirectWebRtcAdditionalIceHost.Location = New-Object System.Drawing.Point(15, 548)
+$txtDirectWebRtcAdditionalIceHost.Size = New-Object System.Drawing.Size(300, 23)
+$txtDirectWebRtcAdditionalIceHost.Text = ''
+$settingsGroup.Controls.Add($txtDirectWebRtcAdditionalIceHost)
+$toolTip.SetToolTip($txtDirectWebRtcAdditionalIceHost, 'Enter a public IPv4 address or DNS hostname, then press Add or Enter. Comma/semicolon-separated entries can be added together.')
+
+$btnDirectWebRtcAdditionalIceHostAdd = New-Object System.Windows.Forms.Button
+$btnDirectWebRtcAdditionalIceHostAdd.Text = 'Add'
+$btnDirectWebRtcAdditionalIceHostAdd.Size = New-Object System.Drawing.Size(70, 25)
+$settingsGroup.Controls.Add($btnDirectWebRtcAdditionalIceHostAdd)
+
+$lstDirectWebRtcAdditionalIceHosts = New-Object System.Windows.Forms.ListBox
+$lstDirectWebRtcAdditionalIceHosts.Size = New-Object System.Drawing.Size(420, 92)
+$settingsGroup.Controls.Add($lstDirectWebRtcAdditionalIceHosts)
+$toolTip.SetToolTip($lstDirectWebRtcAdditionalIceHosts, 'Ordered 1:1 NAT media hosts for WAN mode. The first item has the highest ICE priority; every item in this list outranks all automatically gathered candidates.')
+
+$btnDirectWebRtcAdditionalIceHostUp = New-Object System.Windows.Forms.Button
+$btnDirectWebRtcAdditionalIceHostUp.Text = 'Move up'
+$btnDirectWebRtcAdditionalIceHostUp.Size = New-Object System.Drawing.Size(85, 25)
+$settingsGroup.Controls.Add($btnDirectWebRtcAdditionalIceHostUp)
+
+$btnDirectWebRtcAdditionalIceHostDown = New-Object System.Windows.Forms.Button
+$btnDirectWebRtcAdditionalIceHostDown.Text = 'Move down'
+$btnDirectWebRtcAdditionalIceHostDown.Size = New-Object System.Drawing.Size(85, 25)
+$settingsGroup.Controls.Add($btnDirectWebRtcAdditionalIceHostDown)
+
+$btnDirectWebRtcAdditionalIceHostRemove = New-Object System.Windows.Forms.Button
+$btnDirectWebRtcAdditionalIceHostRemove.Text = 'Remove'
+$btnDirectWebRtcAdditionalIceHostRemove.Size = New-Object System.Drawing.Size(85, 25)
+$settingsGroup.Controls.Add($btnDirectWebRtcAdditionalIceHostRemove)
+
 $chkUpnpEnabled = New-Object System.Windows.Forms.CheckBox
 $chkUpnpEnabled.Text = 'Forward ports via UPnP (if router supports it)'
 $chkUpnpEnabled.Location = New-Object System.Drawing.Point(15, 548)
@@ -4355,6 +4387,68 @@ foreach ($control in @(
         $control.Add_CheckedChanged({ Update-PlayerConfigFromUi })
     }
 }
+
+$addAdditionalIceHostsFromEntry = {
+    $entries = @(ConvertTo-DirectWebRtcAdditionalIceHostEntries ([string]$txtDirectWebRtcAdditionalIceHost.Text))
+    if (-not $entries.Count) { return }
+    foreach ($entry in $entries) {
+        $exists = $false
+        foreach ($existing in $lstDirectWebRtcAdditionalIceHosts.Items) {
+            if ([string]::Equals([string]$existing, [string]$entry, [System.StringComparison]::OrdinalIgnoreCase)) { $exists = $true; break }
+        }
+        if (-not $exists -and $lstDirectWebRtcAdditionalIceHosts.Items.Count -lt 32) {
+            [void]$lstDirectWebRtcAdditionalIceHosts.Items.Add($entry)
+        }
+    }
+    $txtDirectWebRtcAdditionalIceHost.Clear()
+    if ($lstDirectWebRtcAdditionalIceHosts.Items.Count -gt 0) {
+        $lstDirectWebRtcAdditionalIceHosts.SelectedIndex = $lstDirectWebRtcAdditionalIceHosts.Items.Count - 1
+    }
+    Update-PlayerConfigFromUi
+    Update-DirectWebRtcAdditionalIceHostListButtons
+}
+
+$btnDirectWebRtcAdditionalIceHostAdd.Add_Click($addAdditionalIceHostsFromEntry)
+$txtDirectWebRtcAdditionalIceHost.Add_KeyDown({
+    param($sender, $e)
+    if ($e.KeyCode -eq [System.Windows.Forms.Keys]::Enter) {
+        & $addAdditionalIceHostsFromEntry
+        $e.SuppressKeyPress = $true
+    }
+})
+$txtDirectWebRtcAdditionalIceHost.Add_TextChanged({ Update-DirectWebRtcAdditionalIceHostListButtons })
+$lstDirectWebRtcAdditionalIceHosts.Add_SelectedIndexChanged({ Update-DirectWebRtcAdditionalIceHostListButtons })
+
+$btnDirectWebRtcAdditionalIceHostRemove.Add_Click({
+    $index = $lstDirectWebRtcAdditionalIceHosts.SelectedIndex
+    if ($index -lt 0) { return }
+    $lstDirectWebRtcAdditionalIceHosts.Items.RemoveAt($index)
+    if ($lstDirectWebRtcAdditionalIceHosts.Items.Count -gt 0) {
+        $lstDirectWebRtcAdditionalIceHosts.SelectedIndex = [Math]::Min($index, $lstDirectWebRtcAdditionalIceHosts.Items.Count - 1)
+    }
+    Update-PlayerConfigFromUi
+    Update-DirectWebRtcAdditionalIceHostListButtons
+})
+
+$btnDirectWebRtcAdditionalIceHostUp.Add_Click({
+    $index = $lstDirectWebRtcAdditionalIceHosts.SelectedIndex
+    if ($index -le 0) { return }
+    $item = $lstDirectWebRtcAdditionalIceHosts.Items[$index]
+    $lstDirectWebRtcAdditionalIceHosts.Items.RemoveAt($index)
+    $lstDirectWebRtcAdditionalIceHosts.Items.Insert($index - 1, $item)
+    $lstDirectWebRtcAdditionalIceHosts.SelectedIndex = $index - 1
+    Update-PlayerConfigFromUi
+})
+
+$btnDirectWebRtcAdditionalIceHostDown.Add_Click({
+    $index = $lstDirectWebRtcAdditionalIceHosts.SelectedIndex
+    if ($index -lt 0 -or $index -ge ($lstDirectWebRtcAdditionalIceHosts.Items.Count - 1)) { return }
+    $item = $lstDirectWebRtcAdditionalIceHosts.Items[$index]
+    $lstDirectWebRtcAdditionalIceHosts.Items.RemoveAt($index)
+    $lstDirectWebRtcAdditionalIceHosts.Items.Insert($index + 1, $item)
+    $lstDirectWebRtcAdditionalIceHosts.SelectedIndex = $index + 1
+    Update-PlayerConfigFromUi
+})
 
 $btnBrowseDirectWebRtcBundledWebDirectory.Add_Click({
     try {

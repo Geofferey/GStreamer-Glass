@@ -79,6 +79,7 @@ function Reset-TransportDefaults {
     $txtDirectWebRtcTurn.Text = $script:DefaultDirectWebRtcTurnServer
     $numDirectWebRtcMinRtpPort.Value = $script:DefaultDirectWebRtcMinRtpPort
     $numDirectWebRtcMaxRtpPort.Value = $script:DefaultDirectWebRtcMaxRtpPort
+    Set-DirectWebRtcAdditionalIceHostTextToUi $script:DefaultDirectWebRtcAdditionalIceHost
     $chkUpnpEnabled.Checked = $script:DefaultUpnpEnabled
     $chkUpnpMapSignaling.Checked = $script:DefaultUpnpMapSignaling
     $chkUpnpMapRtp.Checked = $script:DefaultUpnpMapRtp

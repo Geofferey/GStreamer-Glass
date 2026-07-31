@@ -4157,6 +4157,7 @@ $script:DefaultDirectWebRtcTurnEnabled = $false
 $script:DefaultDirectWebRtcTurnServer = 'turn://openrelay.metered.ca:80'
 $script:DefaultDirectWebRtcMinRtpPort = 0
 $script:DefaultDirectWebRtcMaxRtpPort = 0
+$script:DefaultDirectWebRtcAdditionalIceHost = ''
 $script:DefaultUpnpEnabled = $false
 $script:DefaultUpnpMapSignaling = $true
 $script:DefaultUpnpMapRtp = $true

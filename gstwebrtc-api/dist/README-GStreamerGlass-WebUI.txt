@@ -35,6 +35,15 @@ Current viewer authentication and signaling behavior (3.8.36):
 - PROXY, LAN, and AUTO keep their media/ICE behavior independent from the
   WebSocket transport. Configured proxy paths are tried first and mapped/direct
   same-host ports remain fallbacks when they satisfy the active security mode.
+- Network > Proxy / host mapping accepts an ordered list of public IPv4 or DNS
+  hosts for a manually or UPnP-mapped 1:1 RTP range. Glass resolves and
+  de-duplicates the list in order, then adds a public candidate with the same
+  UDP port as each private webrtcsink host candidate. In WAN (internal
+  `proxy`) mode every listed host outranks every automatically gathered ICE
+  candidate, and earlier entries outrank later entries. AUTO and LAN candidate
+  handling remains unchanged. Add hosts through the entry field, then reorder
+  them with Move Up / Move Down or delete them with Remove. The list is capped
+  at 32 unique resolved IPv4s.
 
 The entries below are historical implementation notes. Newer entries above
 supersede older route/authentication descriptions where they disagree.

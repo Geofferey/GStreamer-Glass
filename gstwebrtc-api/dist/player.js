@@ -202,18 +202,22 @@
       const sig = configSignature(cfg);
       if (sig === state.lastConfigSignature) return false;
       const previousGrouping = mediaStreamGroupingSignature();
+      const previousIceMapping = mappedIceHostSignature();
       state.lastConfigSignature = sig;
       window.GST_GLASS_CONFIG = cfg;
       const nextGrouping = mediaStreamGroupingSignature();
+      const nextIceMapping = mappedIceHostSignature();
       if (jbufDebugEnabled()) log('config reloaded', reason, playerConfigLine(), cfg);
       applyAllReceiverJitter('config reload', true);
       refreshRenderedTracks('config reload');
       reconcileSplitAudio('config reload');
       updatePlayerControls();
       applyLogicalMediaState('config reload');
-      if (previousGrouping !== nextGrouping && state.pc) {
-        log('MediaStream grouping changed; restarting WebRTC session', previousGrouping, '→', nextGrouping);
-        restartConnectionForMode('mediastream-grouping-change');
+      const activeIceMappingChanged = previousIceMapping !== nextIceMapping && connectionMode() === 'proxy';
+      if ((previousGrouping !== nextGrouping || activeIceMappingChanged) && state.pc) {
+        log('Connection-affecting player config changed; restarting WebRTC session',
+          previousGrouping, '→', nextGrouping, previousIceMapping, '→', nextIceMapping);
+        restartConnectionForMode(activeIceMappingChanged ? 'mapped-ice-host-change' : 'mediastream-grouping-change');
       }
       return true;
     } catch (err) {
@@ -697,6 +701,13 @@
     return 'auto';
   }
 
+  // Presentation-only label for the route switch. The internal/config/API
+  // value remains "proxy" everywhere else for compatibility.
+  function connectionModeControlLabel(mode = connectionMode()) {
+    const normalized = normalizeConnectionMode(mode);
+    return normalized === 'proxy' ? 'WAN' : normalized.toUpperCase();
+  }
+
   function connectionMode() {
     if (state.connectionModeOverride) return normalizeConnectionMode(state.connectionModeOverride);
     const fromQuery = query('route') || query('mode') || query('connectionMode');
@@ -748,6 +759,124 @@
     return false;
   }
 
+  function isValidIpv4Address(address) {
+    const parts = String(address || '').trim().split('.');
+    return parts.length === 4 && parts.every((part) => /^\d{1,3}$/.test(part) && Number(part) >= 0 && Number(part) <= 255);
+  }
+
+  function parseAdditionalIceHosts(value) {
+    const values = Array.isArray(value) ? value : String(value || '').split(/[,;\s]+/);
+    // Runtime config resolves DNS names on the Glass host. Requiring an IPv4
+    // literal here also prevents query-string text from being spliced into a
+    // candidate line and avoids inconsistent browser FQDN candidate support.
+    const hosts = [];
+    const seen = new Set();
+    values.forEach((value) => {
+      const host = String(value || '').trim();
+      if (!isValidIpv4Address(host) || seen.has(host)) return;
+      seen.add(host);
+      hosts.push(host);
+    });
+    // Bound candidate growth and reserve enough standards-compliant priority
+    // space beneath the ordered mapped-host band for normal ICE fallbacks.
+    return hosts.slice(0, 32);
+  }
+
+  function additionalIceHosts() {
+    const queryValue = query('additionalIceHosts');
+    if (queryValue !== null) return parseAdditionalIceHosts(queryValue);
+    const legacyQueryValue = query('additionalIceHost');
+    if (legacyQueryValue !== null) return parseAdditionalIceHosts(legacyQueryValue);
+    const oldestQueryValue = query('iceHost');
+    if (oldestQueryValue !== null) return parseAdditionalIceHosts(oldestQueryValue);
+    const configured = configValue('additionalIceHosts', undefined);
+    if (configured !== undefined) return parseAdditionalIceHosts(configured);
+    return parseAdditionalIceHosts(configValue('additionalIceHost', ''));
+  }
+
+  function additionalIceHost() {
+    return additionalIceHosts()[0] || '';
+  }
+
+  function mappedRtpPortBound(name) {
+    const queryValue = query(name);
+    const value = Number.parseInt(queryValue !== null ? queryValue : configValue(name, 0), 10);
+    return Number.isFinite(value) && value > 0 && value <= 65535 ? value : 0;
+  }
+
+  function mappedIceHostSignature() {
+    return `${additionalIceHosts().join(',')}:${mappedRtpPortBound('minRtpPort')}-${mappedRtpPortBound('maxRtpPort')}`;
+  }
+
+  function mappedHostIcePriority(hostIndex, originalPriority) {
+    const original = Number.parseInt(originalPriority, 10);
+    const componentBits = Number.isFinite(original) ? original & 0xff : 1;
+    // Reserve the standards-compliant top ICE-priority band for configured
+    // mapped hosts, leaving a full local-preference byte between list entries.
+    return Math.max(256 + componentBits, 2122317056 - (Math.max(0, hostIndex) * 256) + componentBits);
+  }
+
+  function rewriteCandidateForMappedHost(candidateLine, host = additionalIceHost(), hostIndex = 0) {
+    const minPort = mappedRtpPortBound('minRtpPort');
+    const maxPort = mappedRtpPortBound('maxRtpPort');
+    if (!host || !minPort || !maxPort || maxPort < minPort) return '';
+
+    const text = String(candidateLine || '');
+    const hasAttributePrefix = /^a=/i.test(text);
+    const raw = hasAttributePrefix ? text.slice(2) : text;
+    if (!/^candidate:/i.test(raw)) return '';
+    const parts = raw.trim().split(/\s+/);
+    const typIndex = parts.findIndex((part) => String(part).toLowerCase() === 'typ');
+    if (parts.length < 8 || typIndex < 0 || String(parts[typIndex + 1]).toLowerCase() !== 'host') return '';
+    if (String(parts[2] || '').toLowerCase() !== 'udp') return '';
+    const address = parts[4] || '';
+    const port = Number.parseInt(parts[5], 10);
+    if (!isPrivateIceAddress(address) || !Number.isFinite(port) || port < minPort || port > maxPort || address === host) return '';
+
+    // The external and internal ports are deliberately identical. Only the
+    // address changes; the candidate continues to describe the real socket
+    // owned by webrtcsink/libnice behind the 1:1 forwarding rule.
+    parts[4] = host;
+    parts[3] = String(mappedHostIcePriority(hostIndex, parts[3]));
+    return `${hasAttributePrefix ? 'a=' : ''}${parts.join(' ')}`;
+  }
+
+  function expandRemoteIceCandidates(candidate, scope = 'primary remote') {
+    if (connectionMode() !== 'proxy') return [candidate];
+    if (!candidate) return [candidate];
+    const init = typeof candidate.toJSON === 'function' ? candidate.toJSON() : candidate;
+    if (!init || typeof init !== 'object' || !init.candidate) return [candidate];
+    const mappedCandidates = additionalIceHosts().map((host, index) => {
+      const candidateLine = rewriteCandidateForMappedHost(init.candidate, host, index);
+      return candidateLine && candidateLine !== init.candidate ? { ...init, candidate: candidateLine } : null;
+    }).filter(Boolean);
+    if (!mappedCandidates.length) return [init];
+    if (jbufDebugEnabled()) log(`${scope} added ${mappedCandidates.length} ordered mapped ICE candidate(s): ${additionalIceHosts().join(', ')}`);
+    return [...mappedCandidates, init];
+  }
+
+  function injectMappedIceCandidatesIntoDescription(description, scope = 'primary remote') {
+    const hosts = additionalIceHosts();
+    if (connectionMode() !== 'proxy' || !description || !description.sdp || !hosts.length) return description;
+    let injected = 0;
+    const lines = [];
+    String(description.sdp).split(/\r?\n/).forEach((line) => {
+      if (/^a=candidate:/i.test(line)) {
+        hosts.forEach((host, index) => {
+          const mapped = rewriteCandidateForMappedHost(line, host, index);
+          if (mapped && mapped !== line) {
+            lines.push(mapped);
+            injected += 1;
+          }
+        });
+      }
+      lines.push(line);
+    });
+    if (!injected) return description;
+    if (jbufDebugEnabled()) log(`${scope} injected ${injected} ordered mapped ICE candidate(s) for ${hosts.join(', ')}`);
+    return { type: description.type, sdp: lines.join('\r\n') };
+  }
+
   function routeIcePriority(type, originalPriority, address) {
     const mode = connectionMode();
     const candidateType = String(type || '').toLowerCase();
@@ -758,6 +887,7 @@
     // address. Treat only private/mDNS (or address-less) host candidates as
     // LAN paths so PROXY keeps preferring genuinely external host candidates.
     const isPrivateHost = candidateType === 'host' && (!address || isPrivateIceAddress(address));
+    const mappedHostIndex = candidateType === 'host' ? additionalIceHosts().indexOf(String(address || '')) : -1;
     // A prflx candidate discovered on a private address (common on
     // multi-homed machines/virtual adapters, where a connectivity check
     // arrives on a different local interface than the one a candidate was
@@ -765,10 +895,18 @@
     // not rank anywhere near a genuine externally-reachable srflx candidate.
     const isPrivatePrflx = candidateType === 'prflx' && isPrivateIceAddress(address);
     if (mode === 'proxy') {
-      if (candidateType === 'relay') return 2130706176 + componentBits;
-      if (candidateType === 'srflx') return 2122317568 + componentBits;
-      if (candidateType === 'prflx' && !isPrivatePrflx) return 2122317312 + componentBits;
-      if (candidateType === 'host' && !isPrivateHost) return 2122317056 + componentBits;
+      // Every configured 1:1 host outranks every automatically gathered path.
+      // The first fallback starts one full local-preference step below the
+      // final mapped host, preserving normal relay > srflx > prflx > host
+      // ordering only within the fallback band.
+      if (mappedHostIndex >= 0) return mappedHostIcePriority(mappedHostIndex, original);
+      const fallbackTop = 2122317056 - (additionalIceHosts().length * 256);
+      if (candidateType === 'relay') return fallbackTop + componentBits;
+      if (candidateType === 'srflx') return fallbackTop - 256 + componentBits;
+      if (candidateType === 'prflx' && !isPrivatePrflx) return fallbackTop - 512 + componentBits;
+      if (candidateType === 'host' && !isPrivateHost) {
+        return fallbackTop - 768 + componentBits;
+      }
       if (isPrivateHost || isPrivatePrflx) return 256 + componentBits;
     }
     if (mode === 'lan') {
@@ -804,6 +942,8 @@
   // srflx candidate (confirmed in testing after the STUN fix) -- rejecting the
   // producer's host candidate back when it had no srflx of its own at all
   // left zero usable remote candidates and broke every connection outright.
+  // A configured 1:1 mapped host now supplies that public candidate when STUN
+  // cannot discover the router's static forwarding rule.
   function applyIceRoutePolicyToCandidate(candidate, scope = 'primary') {
     if (!candidate || connectionMode() === 'auto') return candidate;
     const init = typeof candidate.toJSON === 'function' ? candidate.toJSON() : candidate;
@@ -2082,12 +2222,13 @@
     const button = state.controller.routeButton;
     if (!button) return;
     const mode = connectionMode();
-    button.textContent = mode.toUpperCase();
+    const label = connectionModeControlLabel(mode);
+    button.textContent = label;
     button.classList.toggle('isLan', mode === 'lan');
     button.classList.toggle('isProxy', mode === 'proxy');
-    button.setAttribute('aria-label', `Connection mode ${mode}. Activate to switch mode.`);
+    button.setAttribute('aria-label', `Connection mode ${label}. Activate to switch mode.`);
     button.setAttribute('aria-pressed', mode === 'auto' ? 'false' : 'true');
-    button.title = `Connection mode: ${mode.toUpperCase()}\n${signalingTransportStatusLine()}\n${mediaRoutePolicyLine()}\nActivate to switch AUTO → LAN → PROXY.`;
+    button.title = `Connection mode: ${label}\n${signalingTransportStatusLine()}\n${mediaRoutePolicyLine()}\nActivate to switch AUTO → LAN → WAN.`;
   }
 
   function restartConnectionForMode(reason = 'mode-change') {
@@ -2114,7 +2255,7 @@
     } catch (_) {}
     updateConnectionModeControl();
     if (next === previous) return next;
-    setStatus(`Connection mode: ${next.toUpperCase()}`, `${signalingTransportStatusLine()} · ${mediaRoutePolicyLine()}`, 'warn');
+    setStatus(`Connection mode: ${connectionModeControlLabel(next)}`, `${signalingTransportStatusLine()} · ${mediaRoutePolicyLine()}`, 'warn');
     log('connection mode changed', previous, '→', next, reason, mediaRoutePolicyLine());
     restartConnectionForMode(`connection-mode:${next}`);
     return next;
@@ -2893,7 +3034,8 @@
     if (!state.pc) throw new Error('received SDP without active peer connection');
     const pc = state.pc;
     const rawDesc = typeof sdp === 'string' ? { type: 'offer', sdp } : sdp;
-    const routedDesc = applyIceRoutePolicyToDescription(rawDesc, 'primary remote');
+    const mappedDesc = injectMappedIceCandidatesIntoDescription(rawDesc, 'primary remote');
+    const routedDesc = applyIceRoutePolicyToDescription(mappedDesc, 'primary remote');
     const desc = rewriteRemoteMediaStreamIds(routedDesc, 'primary remote');
     await pc.setRemoteDescription(desc);
     if (state.pc !== pc) return;
@@ -2915,17 +3057,21 @@
 
   async function handleRemoteIce(ice) {
     if (!state.pc || !ice) return;
-    const routedIce = applyIceRoutePolicyToCandidate(ice, 'primary remote');
+    const routedCandidates = expandRemoteIceCandidates(ice, 'primary remote')
+      .map((candidate) => applyIceRoutePolicyToCandidate(candidate, 'primary remote'))
+      .filter((candidate) => candidate !== null);
     // null means "rejected private candidate", not "end of candidates" --
     // addIceCandidate(null) is a real, distinct signal to the ICE agent and
     // must only fire for an actual end-of-candidates marker.
-    if (routedIce === null) return;
+    if (!routedCandidates.length) return;
     if (!state.pc.remoteDescription) {
-      state.pendingRemoteIce.push(routedIce);
+      state.pendingRemoteIce.push(...routedCandidates);
       return;
     }
-    try { await state.pc.addIceCandidate(routedIce && routedIce.candidate ? routedIce : null); }
-    catch (err) { log('addIceCandidate failed', err); }
+    for (const routedIce of routedCandidates) {
+      try { await state.pc.addIceCandidate(routedIce && routedIce.candidate ? routedIce : null); }
+      catch (err) { log('addIceCandidate failed', err); }
+    }
   }
 
   function stopStatsTimer() {
@@ -3919,7 +4065,8 @@
     if (!sa.pc) throw new Error('split audio SDP without active peer connection');
     const pc = sa.pc;
     const rawDesc = typeof sdp === 'string' ? { type: 'offer', sdp } : sdp;
-    const desc = applyIceRoutePolicyToDescription(rawDesc, 'split audio remote');
+    const mappedDesc = injectMappedIceCandidatesIntoDescription(rawDesc, 'split audio remote');
+    const desc = applyIceRoutePolicyToDescription(mappedDesc, 'split audio remote');
     await pc.setRemoteDescription(desc);
     if (sa.pc !== pc) return;
     while (sa.pendingRemoteIce.length) {
@@ -3937,13 +4084,18 @@
   async function splitHandleRemoteIce(ice) {
     const sa = state.splitAudio;
     if (!sa.pc || !ice) return;
-    const routedIce = applyIceRoutePolicyToCandidate(ice, 'split audio remote');
-    if (routedIce === null) return;
+    const routedCandidates = expandRemoteIceCandidates(ice, 'split audio remote')
+      .map((candidate) => applyIceRoutePolicyToCandidate(candidate, 'split audio remote'))
+      .filter((candidate) => candidate !== null);
+    if (!routedCandidates.length) return;
     if (!sa.pc.remoteDescription) {
-      sa.pendingRemoteIce.push(routedIce);
+      sa.pendingRemoteIce.push(...routedCandidates);
       return;
     }
-    try { await sa.pc.addIceCandidate(routedIce && routedIce.candidate ? routedIce : null); } catch (err) { log('split audio addIceCandidate failed', err); }
+    for (const routedIce of routedCandidates) {
+      try { await sa.pc.addIceCandidate(routedIce && routedIce.candidate ? routedIce : null); }
+      catch (err) { log('split audio addIceCandidate failed', err); }
+    }
   }
 
   function splitStopSession(notify = true, clearMedia = true) {

@@ -304,6 +304,118 @@ function Get-DirectWebRtcSignalingClientHost {
     return $hostText
 }
 
+function ConvertTo-DirectWebRtcAdditionalIceHostEntries {
+    param([string]$Value)
+    if ([string]::IsNullOrWhiteSpace($Value)) { return @() }
+    $entries = New-Object System.Collections.Generic.List[string]
+    $seen = @{}
+    foreach ($item in [regex]::Split($Value.Trim(), '[,;\s]+')) {
+        $entry = ([string]$item).Trim()
+        $key = $entry.ToLowerInvariant()
+        if (-not [string]::IsNullOrWhiteSpace($entry) -and -not $seen.ContainsKey($key)) {
+            $seen[$key] = $true
+            $entries.Add($entry)
+        }
+    }
+    return @($entries)
+}
+
+function Get-DirectWebRtcAdditionalIceHostEntriesFromUi {
+    if ($null -ne $lstDirectWebRtcAdditionalIceHosts) {
+        return @($lstDirectWebRtcAdditionalIceHosts.Items | ForEach-Object { [string]$_ })
+    }
+    if ($txtDirectWebRtcAdditionalIceHost) {
+        return @(ConvertTo-DirectWebRtcAdditionalIceHostEntries ([string]$txtDirectWebRtcAdditionalIceHost.Text))
+    }
+    return @()
+}
+
+function Get-DirectWebRtcAdditionalIceHostTextFromUi {
+    return (@(Get-DirectWebRtcAdditionalIceHostEntriesFromUi) -join "`r`n")
+}
+
+function Set-DirectWebRtcAdditionalIceHostTextToUi {
+    param([string]$Value)
+    $entries = @(ConvertTo-DirectWebRtcAdditionalIceHostEntries $Value)
+    if ($null -ne $lstDirectWebRtcAdditionalIceHosts) {
+        $lstDirectWebRtcAdditionalIceHosts.Items.Clear()
+        foreach ($entry in $entries) { [void]$lstDirectWebRtcAdditionalIceHosts.Items.Add($entry) }
+    }
+    if ($txtDirectWebRtcAdditionalIceHost) { $txtDirectWebRtcAdditionalIceHost.Text = '' }
+}
+
+function Get-DirectWebRtcAdditionalIceHostsForPlayer {
+    $entries = @(Get-DirectWebRtcAdditionalIceHostEntriesFromUi)
+    if (-not $entries.Count) { return @() }
+    $configured = $entries -join "`n"
+
+    $now = [DateTime]::UtcNow
+    if ($script:AdditionalIceHostCacheInput -eq $configured -and
+        $script:AdditionalIceHostCacheAt -and
+        (($now - $script:AdditionalIceHostCacheAt).TotalSeconds -lt 60)) {
+        return @($script:AdditionalIceHostCacheValue)
+    }
+
+    $resolved = New-Object System.Collections.Generic.List[string]
+    $seen = New-Object System.Collections.Generic.HashSet[string]
+    foreach ($entryValue in $entries) {
+        $entry = ([string]$entryValue).Trim().TrimEnd('.')
+        # Entries represent addresses, not URLs or port remaps. Keeping ports
+        # out preserves the explicit 1:1 RTP-range invariant.
+        if ($entry -match '[/\\:]') {
+            Append-Log "Additional ICE host ignored: '$entry' includes a scheme, path, or port."
+            continue
+        }
+
+        $resolvedAddress = ''
+        $parsed = $null
+        if ([System.Net.IPAddress]::TryParse($entry, [ref]$parsed)) {
+            if ($parsed.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork) {
+                $resolvedAddress = $parsed.ToString()
+            }
+            else {
+                Append-Log "Additional ICE host ignored: '$entry' is not IPv4."
+                continue
+            }
+        }
+        elseif ($entry -match '^(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)*[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$') {
+            try {
+                $address = [System.Net.Dns]::GetHostAddresses($entry) |
+                    Where-Object { $_.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork } |
+                    Select-Object -First 1
+                if ($address) { $resolvedAddress = $address.ToString() }
+            }
+            catch {}
+            if ([string]::IsNullOrWhiteSpace($resolvedAddress)) {
+                Append-Log "Additional ICE host '$entry' could not be resolved to IPv4 and was skipped."
+                continue
+            }
+        }
+        else {
+            Append-Log "Additional ICE host ignored: '$entry' is not a valid IPv4 address or DNS hostname."
+            continue
+        }
+
+        if ($seen.Add($resolvedAddress)) {
+            $resolved.Add($resolvedAddress)
+            if ($resolved.Count -ge 32) {
+                Append-Log 'Additional ICE host list is limited to the first 32 unique resolved IPv4 addresses.'
+                break
+            }
+        }
+    }
+
+    $script:AdditionalIceHostCacheInput = $configured
+    $script:AdditionalIceHostCacheValue = @($resolved)
+    $script:AdditionalIceHostCacheAt = $now
+    return @($resolved)
+}
+
+# Compatibility helper for callers/configs from the single-host implementation.
+function Get-DirectWebRtcAdditionalIceHostForPlayer {
+    return @(Get-DirectWebRtcAdditionalIceHostsForPlayer) | Select-Object -First 1
+}
+
 function Get-DirectWebRtcSharedSignallerUri {
     $clientHost = Get-DirectWebRtcSignalingClientHost
     return "ws://${clientHost}:$([int]$numDirectWebRtcSignalingPort.Value)"
@@ -551,6 +663,8 @@ function Write-DirectWebRtcWebClientConfig {
         $audioMediaStreamId = [string](Get-DirectWebRtcMediaStreamId -Kind audio)
         $playerTurn = Get-DirectWebRtcTurnUrlForPlayer
         $playerStun = Get-DirectWebRtcStunUrlForPlayer
+        $additionalIceHosts = @(Get-DirectWebRtcAdditionalIceHostsForPlayer)
+        $additionalIceHost = if ($additionalIceHosts.Count) { [string]$additionalIceHosts[0] } else { '' }
 
         $data = [ordered]@{
             version = $script:AppVersion
@@ -588,6 +702,11 @@ function Write-DirectWebRtcWebClientConfig {
             liveEdgeAverageSec = [int]$playerSettings.LiveEdgeAverageSec
             screenWakeLock = $true
             connectionMode = 'auto'
+            additionalIceHost = $additionalIceHost
+            additionalIceHosts = @($additionalIceHosts)
+            additionalIceHostConfigured = Get-DirectWebRtcAdditionalIceHostTextFromUi
+            minRtpPort = [int]$numDirectWebRtcMinRtpPort.Value
+            maxRtpPort = [int]$numDirectWebRtcMaxRtpPort.Value
             viewerAuthenticationEnabled = [bool](Test-ViewerAuthenticationEnabled)
             videoSignalingProxyPath = [string]$playerSettings.VideoSignalingProxyPath
             audioSignalingProxyPath = [string]$playerSettings.AudioSignalingProxyPath
