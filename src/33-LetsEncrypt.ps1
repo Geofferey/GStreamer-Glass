@@ -57,8 +57,8 @@ $script:AuthProxyWorkerWriter = $null
 # Wait-UiResponsiveTask pumps WinForms messages while an IPC reply is pending.
 # That keeps the UI live, but also permits a timer tick or click handler to
 # re-enter Send-AuthProxyWorkerCommand on the same StreamReader. Track the one
-# legal in-flight request so reentrancy can fail closed instead of corrupting
-# the request/reply framing.
+# legal in-flight request so a nested caller can defer its work without ever
+# writing a second request into the single request/reply channel.
 $script:AuthProxyWorkerCommandInFlight = $false
 
 function ConvertTo-AcmeBase64Url {
@@ -1416,7 +1416,8 @@ function Send-AuthProxyWorkerCommand {
     param(
         [Parameter(Mandatory)][hashtable]$Command,
         [int]$TimeoutMs = 5000,
-        [switch]$AutoStart
+        [switch]$AutoStart,
+        [switch]$NoUiPump
     )
 
     if (-not (Test-AuthProxyWorkerRunning)) {
@@ -1426,11 +1427,17 @@ function Send-AuthProxyWorkerCommand {
 
     # Application.DoEvents() inside the outer request's responsive wait can
     # re-enter here. Never issue a second WriteLine/ReadLineAsync pair on the
-    # same stream. Recycling the worker is intentionally fail-closed: teardown
-    # callers may continue killing the upstream safely because no proxy remains
-    # capable of forwarding into it, and the normal supervisor recreates the
-    # desired families after this event unwinds.
+    # same stream. A nested PollLog is opportunistic and was detected before it
+    # wrote anything, so it can simply be skipped. Any lifecycle/configuration
+    # command reaching this state still fails closed: its caller may be about
+    # to kill the upstream process and cannot safely continue with a proxy that
+    # missed SuspendForwarding or DisconnectConnections. Drain-* uses a short,
+    # non-message-pumping wait below, so an ordinary Stop click cannot normally
+    # become nested behind PollLog in the first place. Genuine timeout/EOF/
+    # exception paths below also recycle because those DO leave the channel
+    # ambiguous.
     if ($script:AuthProxyWorkerCommandInFlight) {
+        if ([string]$Command.Type -eq 'PollLog') { return $null }
         Reset-FailedAuthProxyWorker -Reason "reentrant command '$($Command.Type)' while another command was awaiting a reply"
         return $null
     }
@@ -1439,7 +1446,17 @@ function Send-AuthProxyWorkerCommand {
     try {
         $script:AuthProxyWorkerWriter.WriteLine(($Command | ConvertTo-Json -Compress -Depth 6))
         $replyTask = $script:AuthProxyWorkerReader.ReadLineAsync()
-        if (-not (Wait-UiResponsiveTask -Task $replyTask -TimeoutMs $TimeoutMs)) {
+        $replyCompleted = if ($NoUiPump) {
+            # PollLog runs from a WinForms timer and should return immediately.
+            # Do not call Application.DoEvents here: that allowed the same timer
+            # (or a Stop click) to re-enter the single IPC channel. The short
+            # caller-supplied timeout bounds the only UI-thread wait.
+            $replyTask.Wait($TimeoutMs)
+        }
+        else {
+            Wait-UiResponsiveTask -Task $replyTask -TimeoutMs $TimeoutMs
+        }
+        if (-not $replyCompleted) {
             Reset-FailedAuthProxyWorker -Reason "command '$($Command.Type)' did not respond within $TimeoutMs ms"
             return $null
         }
@@ -1766,9 +1783,14 @@ function Start-PlaintextAuthProxies {
 # poll -- proxies queue errors from ThreadPool threads that have no
 # PowerShell runspace, so draining must happen from the UI thread.
 function Drain-LetsEncryptTlsProxyLogs {
+    # Wait-UiResponsiveTask pumps WinForms messages. A PollLog request can
+    # therefore re-enter this same 400 ms timer before its reply arrives.
+    # Polling is opportunistic, so skip that nested tick instead of competing
+    # with a lifecycle command or recursively polling the single IPC reader.
+    if ($script:AuthProxyWorkerCommandInFlight) { return }
     if (-not (Test-AuthProxyWorkerRunning)) { return }
     if (@($script:LetsEncryptTlsProxies).Count -eq 0 -and @($script:PlaintextAuthProxies).Count -eq 0) { return }
-    $reply = Send-AuthProxyWorkerCommand -Command @{ Type = 'PollLog' } -TimeoutMs 2000
+    $reply = Send-AuthProxyWorkerCommand -Command @{ Type = 'PollLog' } -TimeoutMs 250 -NoUiPump
     if (-not $reply -or [string]$reply.Status -ne 'Ready') { return }
     foreach ($message in @($reply.Messages)) {
         Append-Log "ACME: TLS proxy ($message)"
