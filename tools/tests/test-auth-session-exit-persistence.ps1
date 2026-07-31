@@ -86,7 +86,7 @@ Assert-ExitPersistence ($proxySource -match "Type\s*=\s*'ImportSessions'") 'The 
 foreach ($diagnostic in @(
     'AUTH: skipped loading the auth cache',
     'AUTH: save requested by',
-    'AUTH: restored $(@($sessions).Count) unexpired session record(s)',
+    'AUTH: restoring $(@($sessions).Count) unexpired session record(s)',
     'AUTH: deleted the persisted auth cache'
 )) {
     Assert-ExitPersistence ($proxySource.Contains($diagnostic)) "Auth-cache diagnostic '$diagnostic' is missing."

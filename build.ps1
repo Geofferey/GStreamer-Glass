@@ -90,6 +90,30 @@ finally {
 }
 Write-Output 'Compiled auth-cache DPAPI smoke test passed.'
 
+# The GUI host is deliberately MTA, so OLE-backed clipboard operations must
+# always cross onto GstClipboard's dedicated STA helper thread.
+$clipboardSmoke = Start-Process `
+    -FilePath $exePath `
+    -ArgumentList @('-ClipboardApartmentSelfTest') `
+    -WindowStyle Hidden `
+    -PassThru `
+    -Wait
+try {
+    if ($clipboardSmoke.ExitCode -ne 0) {
+        throw "Compiled clipboard apartment smoke test failed with exit code $($clipboardSmoke.ExitCode)."
+    }
+}
+finally {
+    $clipboardSmoke.Dispose()
+}
+Write-Output 'Compiled clipboard STA-helper smoke test passed.'
+
+# Exercise the temporary-link IPC contract inside the compiled host too. The
+# PS2EXE Windows PowerShell adapter has previously serialized dynamically
+# compiled CLR fields differently from console PowerShell, yielding blank
+# records and an epoch date only in the installed application.
+& (Join-Path $PSScriptRoot 'tools\tests\test-compiled-auth-proxy-temporary-links.ps1') -ExecutablePath $exePath
+
 # Step 5: run the standalone Inno Setup script from the command line.
 # Installer files, paths, architecture, shortcuts, and output naming remain
 # entirely managed by build.iss.
