@@ -1241,10 +1241,19 @@ function Save-PersistedAuthenticationState {
         $null = New-Item -ItemType Directory -Path $script:ConfigDirectory -Force
     }
     $temporaryPath = "$($script:PersistedAuthenticationStatePath).tmp-$PID"
+    $backupPath = "$($script:PersistedAuthenticationStatePath).backup-$PID"
     try {
         [System.IO.File]::WriteAllBytes($temporaryPath, $protected)
         if (Test-Path -LiteralPath $script:PersistedAuthenticationStatePath) {
-            [System.IO.File]::Replace($temporaryPath, $script:PersistedAuthenticationStatePath, $null)
+            # .NET Framework's three-argument File.Replace rejects a null
+            # backup filename inside the compiled PS12EXE host. Use a legal
+            # same-directory backup so replacement stays atomic, then remove
+            # it once the new encrypted cache is safely in place.
+            if (Test-Path -LiteralPath $backupPath) { Remove-Item -LiteralPath $backupPath -Force }
+            [System.IO.File]::Replace($temporaryPath, $script:PersistedAuthenticationStatePath, $backupPath)
+            try { Remove-Item -LiteralPath $backupPath -Force -ErrorAction Stop } catch {
+                Append-Log "AUTH: saved the auth cache, but could not remove its encrypted replacement backup '$backupPath': $($_.Exception.Message)"
+            }
         }
         else {
             [System.IO.File]::Move($temporaryPath, $script:PersistedAuthenticationStatePath)
@@ -1255,8 +1264,18 @@ function Save-PersistedAuthenticationState {
         return $true
     }
     catch {
+        $writeError = $_.Exception.Message
         try { if (Test-Path -LiteralPath $temporaryPath) { Remove-Item -LiteralPath $temporaryPath -Force } } catch {}
-        Append-Log "AUTH: failed to write the auth cache: $($_.Exception.Message)"
+        try {
+            if (-not (Test-Path -LiteralPath $script:PersistedAuthenticationStatePath) -and (Test-Path -LiteralPath $backupPath)) {
+                [System.IO.File]::Move($backupPath, $script:PersistedAuthenticationStatePath)
+            }
+            elseif (Test-Path -LiteralPath $backupPath) {
+                Remove-Item -LiteralPath $backupPath -Force
+            }
+        }
+        catch {}
+        Append-Log "AUTH: failed to write the auth cache: $writeError"
         Update-PersistedAuthenticationStateUi
         return $false
     }

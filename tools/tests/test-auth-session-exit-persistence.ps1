@@ -9,6 +9,7 @@
 param()
 
 $ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.Security
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot '..\..')
 $setupPath = Join-Path $repoRoot 'src\00-Setup.ps1'
 $proxyPath = Join-Path $repoRoot 'src\33-LetsEncrypt.ps1'
@@ -147,6 +148,14 @@ try {
     Assert-ExitPersistence (Test-Path -LiteralPath $script:PersistedAuthenticationStatePath) 'The real cache helper did not create its DPAPI file.'
     $rawCacheText = [System.Text.Encoding]::UTF8.GetString([System.IO.File]::ReadAllBytes($script:PersistedAuthenticationStatePath))
     Assert-ExitPersistence ($rawCacheText -notmatch [regex]::Escape($cacheToken)) 'A bearer session token was written to the cache in plaintext.'
+
+    # The second save takes the existing-file replacement branch. The shipped
+    # .NET Framework host rejects File.Replace(..., $null), even though the
+    # first create succeeds, so this path needs its own regression assertion.
+    $secondSaveSucceeded = Save-PersistedAuthenticationState
+    Assert-ExitPersistence $secondSaveSucceeded 'Replacing an existing encrypted auth cache failed.'
+    Assert-ExitPersistence (Test-Path -LiteralPath $script:PersistedAuthenticationStatePath) 'The replacement save removed the auth cache.'
+    Assert-ExitPersistence (-not (Test-Path -LiteralPath "$($script:PersistedAuthenticationStatePath).backup-$PID")) 'The replacement save left its encrypted backup behind.'
 
     $script:PersistedAuthenticationState = $null
     $script:PersistedAuthenticationStateLoadAttempted = $false
