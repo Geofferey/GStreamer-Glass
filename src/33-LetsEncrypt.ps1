@@ -706,7 +706,15 @@ function Get-EmbeddedTlsCertificate {
     $customCertPath = if ($txtTlsCertificatePath) { [string]$txtTlsCertificatePath.Text.Trim() } else { '' }
     $isCustomCertificate = -not [string]::IsNullOrWhiteSpace($customCertPath)
     try {
-        $certificate = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($certPath)
+        # Exportable: the auth proxy worker process needs a second PFX
+        # export to send this certificate over the pipe (Start-AuthProxyWorker) --
+        # the in-process SslStream hand-off this originally only needed
+        # never required the private key to be re-exportable, so this
+        # wasn't needed until the proxy moved to its own process.
+        $certificate = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new(
+            $certPath, '',
+            [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::Exportable
+        )
         if (-not $isCustomCertificate) { return $certificate }
 
         $keyPath = if ($txtTlsPrivateKeyPath) { [string]$txtTlsPrivateKeyPath.Text.Trim() } else { '' }
