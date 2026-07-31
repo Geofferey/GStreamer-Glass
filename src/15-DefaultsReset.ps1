@@ -245,6 +245,10 @@ function Reset-LetsEncryptDefaults {
     $chkViewerAuthenticationAllowPlaintext.Checked = $script:DefaultViewerAuthenticationAllowPlaintext
     $chkViewerAuthenticationKeepOnRestart.Checked = $script:DefaultViewerAuthenticationKeepOnRestart
     $chkViewerAuthenticationKeepOnExit.Checked = $script:DefaultViewerAuthenticationKeepOnExit
+    $txtViewerAuthenticationTemporaryLinkProxyDomain.Text = $script:DefaultViewerAuthenticationTemporaryLinkProxyDomain
+    $numViewerAuthenticationTemporaryLinkMinutes.Value = $script:DefaultViewerAuthenticationTemporaryLinkMinutes
+    $chkViewerAuthenticationTemporaryLinkSingleUse.Checked = $script:DefaultViewerAuthenticationTemporaryLinkSingleUse
+    $txtViewerAuthenticationTemporaryLinkRestrictedIp.Text = $script:DefaultViewerAuthenticationTemporaryLinkRestrictedIp
     Set-ViewerAuthenticationTrustedProxyAddresses -Value $script:DefaultViewerAuthenticationTrustedProxies
     Update-LetsEncryptUi
 }

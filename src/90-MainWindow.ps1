@@ -1011,6 +1011,76 @@ $btnViewerAuthenticationDestroyExitCache.Size = New-Object System.Drawing.Size(1
 $settingsGroup.Controls.Add($btnViewerAuthenticationDestroyExitCache)
 $toolTip.SetToolTip($btnViewerAuthenticationDestroyExitCache, 'Deletes the encrypted exit cache and turns off Keep auth on exit so closing Glass cannot immediately recreate it.')
 
+$txtViewerAuthenticationTemporaryLinkProxyDomain = New-Object System.Windows.Forms.TextBox
+$txtViewerAuthenticationTemporaryLinkProxyDomain.Location = New-Object System.Drawing.Point(15, 548)
+$txtViewerAuthenticationTemporaryLinkProxyDomain.Size = New-Object System.Drawing.Size(300, 23)
+$txtViewerAuthenticationTemporaryLinkProxyDomain.Text = $script:DefaultViewerAuthenticationTemporaryLinkProxyDomain
+$settingsGroup.Controls.Add($txtViewerAuthenticationTemporaryLinkProxyDomain)
+$toolTip.SetToolTip($txtViewerAuthenticationTemporaryLinkProxyDomain, 'Optional public origin used only when generating temporary links, for example https://live.example.com:8889. A value without http:// or https:// defaults to HTTPS. This does not configure or change the proxy.')
+
+$numViewerAuthenticationTemporaryLinkMinutes = New-Object System.Windows.Forms.NumericUpDown
+$numViewerAuthenticationTemporaryLinkMinutes.Location = New-Object System.Drawing.Point(15, 548)
+$numViewerAuthenticationTemporaryLinkMinutes.Size = New-Object System.Drawing.Size(100, 23)
+$numViewerAuthenticationTemporaryLinkMinutes.Minimum = 1
+$numViewerAuthenticationTemporaryLinkMinutes.Maximum = 43200
+$numViewerAuthenticationTemporaryLinkMinutes.Value = $script:DefaultViewerAuthenticationTemporaryLinkMinutes
+$settingsGroup.Controls.Add($numViewerAuthenticationTemporaryLinkMinutes)
+$toolTip.SetToolTip($numViewerAuthenticationTemporaryLinkMinutes, 'Temporary-link lifetime in minutes. The resulting viewer session is capped to this same expiration, even when normal session hours are longer.')
+
+$chkViewerAuthenticationTemporaryLinkSingleUse = New-Object System.Windows.Forms.CheckBox
+$chkViewerAuthenticationTemporaryLinkSingleUse.Text = 'Single-use link'
+$chkViewerAuthenticationTemporaryLinkSingleUse.Location = New-Object System.Drawing.Point(15, 548)
+$chkViewerAuthenticationTemporaryLinkSingleUse.Size = New-Object System.Drawing.Size(150, 24)
+$chkViewerAuthenticationTemporaryLinkSingleUse.Checked = $script:DefaultViewerAuthenticationTemporaryLinkSingleUse
+$settingsGroup.Controls.Add($chkViewerAuthenticationTemporaryLinkSingleUse)
+$toolTip.SetToolTip($chkViewerAuthenticationTemporaryLinkSingleUse, 'Consume the link atomically on its first successful redemption. The issued viewer session remains valid until the link expiration.')
+
+$txtViewerAuthenticationTemporaryLinkRestrictedIp = New-Object System.Windows.Forms.TextBox
+$txtViewerAuthenticationTemporaryLinkRestrictedIp.Location = New-Object System.Drawing.Point(15, 548)
+$txtViewerAuthenticationTemporaryLinkRestrictedIp.Size = New-Object System.Drawing.Size(180, 23)
+$txtViewerAuthenticationTemporaryLinkRestrictedIp.Text = $script:DefaultViewerAuthenticationTemporaryLinkRestrictedIp
+$settingsGroup.Controls.Add($txtViewerAuthenticationTemporaryLinkRestrictedIp)
+$toolTip.SetToolTip($txtViewerAuthenticationTemporaryLinkRestrictedIp, 'Optional exact IPv4 or IPv6 client address. The redeemed viewer session remains bound to this resolved address; trusted X-Forwarded-For is honored.')
+
+$btnViewerAuthenticationGenerateTemporaryLink = New-Object System.Windows.Forms.Button
+$btnViewerAuthenticationGenerateTemporaryLink.Text = 'Generate temporary link'
+$btnViewerAuthenticationGenerateTemporaryLink.Location = New-Object System.Drawing.Point(15, 548)
+$btnViewerAuthenticationGenerateTemporaryLink.Size = New-Object System.Drawing.Size(175, 27)
+$settingsGroup.Controls.Add($btnViewerAuthenticationGenerateTemporaryLink)
+$toolTip.SetToolTip($btnViewerAuthenticationGenerateTemporaryLink, 'Creates a bearer link for the selected viewer account using the expiration, single-use, and IP controls above.')
+
+$txtViewerAuthenticationGeneratedTemporaryLink = New-Object System.Windows.Forms.TextBox
+$txtViewerAuthenticationGeneratedTemporaryLink.Location = New-Object System.Drawing.Point(15, 548)
+$txtViewerAuthenticationGeneratedTemporaryLink.Size = New-Object System.Drawing.Size(350, 23)
+$txtViewerAuthenticationGeneratedTemporaryLink.ReadOnly = $true
+$settingsGroup.Controls.Add($txtViewerAuthenticationGeneratedTemporaryLink)
+
+$btnViewerAuthenticationCopyTemporaryLink = New-Object System.Windows.Forms.Button
+$btnViewerAuthenticationCopyTemporaryLink.Text = 'Copy link'
+$btnViewerAuthenticationCopyTemporaryLink.Location = New-Object System.Drawing.Point(15, 548)
+$btnViewerAuthenticationCopyTemporaryLink.Size = New-Object System.Drawing.Size(85, 27)
+$settingsGroup.Controls.Add($btnViewerAuthenticationCopyTemporaryLink)
+
+$lstViewerAuthenticationTemporaryLinks = New-Object System.Windows.Forms.ListBox
+$lstViewerAuthenticationTemporaryLinks.Location = New-Object System.Drawing.Point(15, 548)
+$lstViewerAuthenticationTemporaryLinks.Size = New-Object System.Drawing.Size(440, 82)
+$lstViewerAuthenticationTemporaryLinks.SelectionMode = 'One'
+$settingsGroup.Controls.Add($lstViewerAuthenticationTemporaryLinks)
+$toolTip.SetToolTip($lstViewerAuthenticationTemporaryLinks, 'Temporary links currently held by the auth worker. Raw bearer tokens are shown only in the generated URL field when created or selected.')
+
+$btnViewerAuthenticationRevokeTemporaryLink = New-Object System.Windows.Forms.Button
+$btnViewerAuthenticationRevokeTemporaryLink.Text = 'Revoke selected link'
+$btnViewerAuthenticationRevokeTemporaryLink.Location = New-Object System.Drawing.Point(15, 548)
+$btnViewerAuthenticationRevokeTemporaryLink.Size = New-Object System.Drawing.Size(145, 27)
+$settingsGroup.Controls.Add($btnViewerAuthenticationRevokeTemporaryLink)
+$toolTip.SetToolTip($btnViewerAuthenticationRevokeTemporaryLink, 'Revokes the selected bearer link and every active viewer session for that account. The account and its password remain configured and can sign in again.')
+
+$btnViewerAuthenticationRefreshTemporaryLinks = New-Object System.Windows.Forms.Button
+$btnViewerAuthenticationRefreshTemporaryLinks.Text = 'Refresh links'
+$btnViewerAuthenticationRefreshTemporaryLinks.Location = New-Object System.Drawing.Point(15, 548)
+$btnViewerAuthenticationRefreshTemporaryLinks.Size = New-Object System.Drawing.Size(105, 27)
+$settingsGroup.Controls.Add($btnViewerAuthenticationRefreshTemporaryLinks)
+
 $lstViewerAuthenticationTrustedProxies = New-Object System.Windows.Forms.ListBox
 $lstViewerAuthenticationTrustedProxies.Location = New-Object System.Drawing.Point(15, 548)
 $lstViewerAuthenticationTrustedProxies.Size = New-Object System.Drawing.Size(300, 72)
@@ -4309,6 +4379,37 @@ $btnViewerAuthenticationDestroyExitCache.Add_Click({
     Save-Settings
     Update-PersistedAuthenticationStateUi
 })
+$btnViewerAuthenticationGenerateTemporaryLink.Add_Click({
+    $lowerTabs.SelectedTab = $tabLog
+    Save-Settings
+    New-ViewerAuthenticationTemporaryLink
+})
+$btnViewerAuthenticationCopyTemporaryLink.Add_Click({
+    if (-not [string]::IsNullOrWhiteSpace([string]$txtViewerAuthenticationGeneratedTemporaryLink.Text)) {
+        try {
+            [GstClipboard]::SetText([string]$txtViewerAuthenticationGeneratedTemporaryLink.Text)
+            Append-Log 'AUTH: copied temporary viewer link to the clipboard'
+        }
+        catch { Append-Log "AUTH: could not copy the temporary viewer link: $($_.Exception.Message)" }
+    }
+})
+$lstViewerAuthenticationTemporaryLinks.Add_SelectedIndexChanged({
+    Show-SelectedViewerAuthenticationTemporaryLink
+})
+$btnViewerAuthenticationRevokeTemporaryLink.Add_Click({
+    $lowerTabs.SelectedTab = $tabLog
+    Revoke-SelectedViewerAuthenticationTemporaryLink
+})
+$btnViewerAuthenticationRefreshTemporaryLinks.Add_Click({
+    $lowerTabs.SelectedTab = $tabLog
+    Sync-ViewerAuthenticationTemporaryLinks
+})
+$lstViewerAuthenticationAccounts.Add_SelectedIndexChanged({ Update-ViewerAuthenticationTemporaryLinkUi })
+$txtViewerAuthenticationGeneratedTemporaryLink.Add_TextChanged({ Update-ViewerAuthenticationTemporaryLinkUi })
+$txtViewerAuthenticationTemporaryLinkProxyDomain.Add_TextChanged({
+    if (-not $script:LoadingSettings) { Show-SelectedViewerAuthenticationTemporaryLink }
+})
+$txtViewerAuthenticationTemporaryLinkProxyDomain.Add_Leave({ if (-not $script:LoadingSettings) { Save-Settings } })
 $btnViewerAuthenticationAddAccount.Add_Click({ Add-ViewerAuthenticationAccount })
 $btnViewerAuthenticationRemoveAccount.Add_Click({ Remove-ViewerAuthenticationAccount })
 $btnViewerAuthenticationEnableTotp.Add_Click({ Enable-ViewerAuthenticationTotp })
@@ -4808,7 +4909,7 @@ $btnResetWebRtcSane.Add_Click({ Reset-WebRtcSaneDefaults; Save-Settings; Append-
 
 $btnCopyDirectWebRtcViewer.Add_Click({
     try {
-        [System.Windows.Forms.Clipboard]::SetText((Get-DirectWebRtcViewerUrl))
+        [GstClipboard]::SetText((Get-DirectWebRtcViewerUrl))
         Append-Log "Direct WebRTC viewer URL copied: $(Get-DirectWebRtcViewerUrl)"
     }
     catch {
@@ -5003,7 +5104,7 @@ $btnRestart.Add_Click({
 })
 $btnCopyCommand.Add_Click({
     try {
-        [System.Windows.Forms.Clipboard]::SetText($txtCommand.Text)
+        [GstClipboard]::SetText($txtCommand.Text)
         $lowerTabs.SelectedTab = $tabCommand
         $statusLabel.Text = 'Command copied'
         $statusLabel.ForeColor = [System.Drawing.Color]::DarkBlue

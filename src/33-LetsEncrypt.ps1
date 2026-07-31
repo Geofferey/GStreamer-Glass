@@ -72,6 +72,8 @@ $script:PersistedAuthenticationState = $null
 $script:PersistedAuthenticationStateLoadAttempted = $false
 $script:PersistedAuthenticationSessionsRestored = $false
 $script:PersistedAuthenticationKeyUsed = @{ LetsEncrypt = $false; Plaintext = $false }
+$script:ViewerAuthenticationTemporaryLinks = @()
+$script:UpdatingViewerAuthenticationTemporaryLinkList = $false
 
 function ConvertTo-AcmeBase64Url {
     param([byte[]]$Bytes)
@@ -1041,12 +1043,13 @@ function Get-PersistedAuthenticationStateSummary {
         $state = [System.Text.Encoding]::UTF8.GetString($plain) | ConvertFrom-Json
         $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
         $sessionCount = @($state.Sessions | Where-Object { [long]$_.Expires -ge $now }).Count
+        $temporaryLinkCount = @($state.TemporaryLinks | Where-Object { [long]$_.Expires -ge $now }).Count
         $families = @()
         if (-not [string]::IsNullOrWhiteSpace([string]$state.LetsEncryptSessionKeyBase64)) { $families += 'TLS' }
         if (-not [string]::IsNullOrWhiteSpace([string]$state.PlaintextSessionKeyBase64)) { $families += 'plaintext' }
         $familyText = if ($families.Count) { $families -join '+' } else { 'no keys' }
         $savedText = try { ([DateTime]$state.SavedUtc).ToLocalTime().ToString('g') } catch { 'unknown time' }
-        return "Exit auth cache: $sessionCount session(s), $familyText, saved $savedText"
+        return "Exit auth cache: $sessionCount session(s), $temporaryLinkCount temporary link(s), $familyText, saved $savedText"
     }
     catch {
         return "Exit auth cache: unreadable ($($_.Exception.Message))"
@@ -1112,7 +1115,7 @@ function Import-PersistedAuthenticationState {
         $keyFamilies = @()
         if ($state.LetsEncryptSessionKeyBase64) { $keyFamilies += 'TLS' }
         if ($state.PlaintextSessionKeyBase64) { $keyFamilies += 'plaintext' }
-        Append-Log "AUTH: decrypted auth cache version $($state.Version), saved $($state.SavedUtc), $(@($state.Sessions).Count) session record(s), key families: $(if ($keyFamilies.Count) { $keyFamilies -join ', ' } else { 'none' })"
+        Append-Log "AUTH: decrypted auth cache version $($state.Version), saved $($state.SavedUtc), $(@($state.Sessions).Count) session record(s), $(@($state.TemporaryLinks).Count) temporary link(s), key families: $(if ($keyFamilies.Count) { $keyFamilies -join ', ' } else { 'none' })"
         return $state
     }
     catch {
@@ -1162,11 +1165,14 @@ function Restore-PersistedAuthenticationSessions {
     $sessions = @($state.Sessions) | Where-Object {
         $_.Token -and ([long]$_.Expires -ge [DateTimeOffset]::UtcNow.ToUnixTimeSeconds())
     }
-    Append-Log "AUTH: restored $(@($sessions).Count) unexpired session record(s) to auth worker PID $($script:AuthProxyWorkerProcess.Id)"
-    $reply = Send-AuthProxyWorkerCommand -Command @{ Type = 'ImportSessions'; Sessions = $sessions } -TimeoutMs 3000
+    $temporaryLinks = @($state.TemporaryLinks) | Where-Object {
+        $_.Token -and ([long]$_.Expires -ge [DateTimeOffset]::UtcNow.ToUnixTimeSeconds())
+    }
+    Append-Log "AUTH: restoring $(@($sessions).Count) unexpired session record(s) and $(@($temporaryLinks).Count) temporary link(s) to auth worker PID $($script:AuthProxyWorkerProcess.Id)"
+    $reply = Send-AuthProxyWorkerCommand -Command @{ Type = 'ImportSessions'; Sessions = $sessions; TemporaryLinks = $temporaryLinks } -TimeoutMs 3000
     if ($reply -and [string]$reply.Status -eq 'Ready') {
         $script:PersistedAuthenticationSessionsRestored = $true
-        Append-Log "AUTH: worker accepted $(@($sessions).Count) session record(s), existing browser cookies can now be validated with the restored family key"
+        Append-Log "AUTH: worker accepted $(@($sessions).Count) session record(s) and $(@($temporaryLinks).Count) temporary link(s); existing browser cookies can now be validated with the restored family key"
         Update-PersistedAuthenticationStateUi
     }
     else {
@@ -1221,7 +1227,7 @@ function Save-PersistedAuthenticationState {
         Update-PersistedAuthenticationStateUi
         return $false
     }
-    Append-Log "AUTH: worker exported $(@($reply.Sessions).Count) active session record(s)"
+    Append-Log "AUTH: worker exported $(@($reply.Sessions).Count) active session record(s) and $(@($reply.TemporaryLinks).Count) temporary link(s)"
 
     $state = [ordered]@{
         Version = 1
@@ -1229,6 +1235,7 @@ function Save-PersistedAuthenticationState {
         LetsEncryptSessionKeyBase64 = if ($tlsKey) { [Convert]::ToBase64String($tlsKey) } else { '' }
         PlaintextSessionKeyBase64 = if ($plaintextKey) { [Convert]::ToBase64String($plaintextKey) } else { '' }
         Sessions = @($reply.Sessions)
+        TemporaryLinks = @($reply.TemporaryLinks)
     }
     $plain = [System.Text.Encoding]::UTF8.GetBytes(($state | ConvertTo-Json -Compress -Depth 5))
     $protected = [System.Security.Cryptography.ProtectedData]::Protect(
@@ -1259,7 +1266,7 @@ function Save-PersistedAuthenticationState {
             [System.IO.File]::Move($temporaryPath, $script:PersistedAuthenticationStatePath)
         }
         $script:PersistedAuthenticationState = [pscustomobject]$state
-        Append-Log "AUTH: saved the auth cache - wrote $($protected.Length) DPAPI-encrypted byte(s) with $(@($reply.Sessions).Count) session record(s) to '$script:PersistedAuthenticationStatePath'"
+        Append-Log "AUTH: saved the auth cache - wrote $($protected.Length) DPAPI-encrypted byte(s) with $(@($reply.Sessions).Count) session record(s) and $(@($reply.TemporaryLinks).Count) temporary link(s) to '$script:PersistedAuthenticationStatePath'"
         Update-PersistedAuthenticationStateUi
         return $true
     }
@@ -1279,6 +1286,208 @@ function Save-PersistedAuthenticationState {
         Update-PersistedAuthenticationStateUi
         return $false
     }
+}
+
+function Get-ViewerAuthenticationTemporaryLinkUrl {
+    param([Parameter(Mandatory)][string]$Token)
+
+    $viewerUri = Get-ViewerAuthenticationTemporaryLinkBaseUri
+    $builder = New-Object System.UriBuilder($viewerUri)
+    $builder.Path = '/auth/session'
+    $builder.Query = 'token=' + [Uri]::EscapeDataString($Token) + '&return=' + [Uri]::EscapeDataString((Get-DirectWebRtcWebPathForTemporaryLink))
+    $builder.Fragment = ''
+    return $builder.Uri.AbsoluteUri
+}
+
+function Get-ViewerAuthenticationTemporaryLinkBaseUri {
+    $configured = if ($txtViewerAuthenticationTemporaryLinkProxyDomain) { [string]$txtViewerAuthenticationTemporaryLinkProxyDomain.Text.Trim() } else { '' }
+    if ([string]::IsNullOrWhiteSpace($configured)) { return [Uri](Get-DirectWebRtcViewerUrl) }
+
+    # A bare public host[:port] is the common input for this field. Default it
+    # to HTTPS because it represents an external proxy origin; users can still
+    # explicitly enter http:// for an intentionally plaintext deployment.
+    if ($configured -notmatch '^[A-Za-z][A-Za-z0-9+.-]*://') { $configured = 'https://' + $configured.TrimStart('/') }
+    $uri = $null
+    if (-not [Uri]::TryCreate($configured, [UriKind]::Absolute, [ref]$uri) -or $uri.Scheme -notin @('http', 'https') -or [string]::IsNullOrWhiteSpace($uri.Host)) {
+        throw "Proxy domain must be a valid HTTP(S) origin such as https://live.example.com:8889."
+    }
+    return $uri
+}
+
+function Get-DirectWebRtcWebPathForTemporaryLink {
+    $path = Normalize-DirectWebRtcWebPath $txtDirectWebRtcWebPath.Text
+    if ($path -eq '/') { return '/' }
+    return $path.TrimEnd('/') + '/'
+}
+
+function Update-ViewerAuthenticationTemporaryLinkUi {
+    $authenticationEnabled = Test-ViewerAuthenticationEnabled
+    $workerRunning = Test-AuthProxyWorkerRunning
+    $selectedAccount = -not [string]::IsNullOrWhiteSpace((Get-SelectedViewerAuthenticationUsername))
+    if ($numViewerAuthenticationTemporaryLinkMinutes) { $numViewerAuthenticationTemporaryLinkMinutes.Enabled = $authenticationEnabled }
+    if ($txtViewerAuthenticationTemporaryLinkProxyDomain) { $txtViewerAuthenticationTemporaryLinkProxyDomain.Enabled = $authenticationEnabled }
+    if ($chkViewerAuthenticationTemporaryLinkSingleUse) { $chkViewerAuthenticationTemporaryLinkSingleUse.Enabled = $authenticationEnabled }
+    if ($txtViewerAuthenticationTemporaryLinkRestrictedIp) { $txtViewerAuthenticationTemporaryLinkRestrictedIp.Enabled = $authenticationEnabled }
+    if ($btnViewerAuthenticationGenerateTemporaryLink) { $btnViewerAuthenticationGenerateTemporaryLink.Enabled = $authenticationEnabled -and $workerRunning -and $selectedAccount }
+    if ($txtViewerAuthenticationGeneratedTemporaryLink) { $txtViewerAuthenticationGeneratedTemporaryLink.Enabled = $authenticationEnabled }
+    if ($btnViewerAuthenticationCopyTemporaryLink) {
+        $btnViewerAuthenticationCopyTemporaryLink.Enabled = $authenticationEnabled -and -not [string]::IsNullOrWhiteSpace([string]$txtViewerAuthenticationGeneratedTemporaryLink.Text)
+    }
+    if ($lstViewerAuthenticationTemporaryLinks) { $lstViewerAuthenticationTemporaryLinks.Enabled = $authenticationEnabled -and $workerRunning }
+    if ($btnViewerAuthenticationRevokeTemporaryLink) {
+        $btnViewerAuthenticationRevokeTemporaryLink.Enabled = $authenticationEnabled -and $workerRunning -and $lstViewerAuthenticationTemporaryLinks.SelectedIndex -ge 0
+    }
+    if ($btnViewerAuthenticationRefreshTemporaryLinks) { $btnViewerAuthenticationRefreshTemporaryLinks.Enabled = $authenticationEnabled -and $workerRunning }
+}
+
+function Sync-ViewerAuthenticationTemporaryLinks {
+    if (-not $lstViewerAuthenticationTemporaryLinks) { return }
+    if (-not (Test-AuthProxyWorkerRunning)) {
+        $script:ViewerAuthenticationTemporaryLinks = @()
+        $script:UpdatingViewerAuthenticationTemporaryLinkList = $true
+        try { $lstViewerAuthenticationTemporaryLinks.Items.Clear() }
+        finally { $script:UpdatingViewerAuthenticationTemporaryLinkList = $false }
+        Show-SelectedViewerAuthenticationTemporaryLink
+        Update-ViewerAuthenticationTemporaryLinkUi
+        return
+    }
+    $reply = Send-AuthProxyWorkerCommand -Command @{ Type = 'ListTemporaryLinks' } -TimeoutMs 3000
+    if (-not $reply -or [string]$reply.Status -ne 'Ready') {
+        Append-Log "AUTH: failed to list temporary viewer links: $(if ($reply) { [string]$reply.Error } else { 'auth worker returned no reply' })"
+        Update-ViewerAuthenticationTemporaryLinkUi
+        return
+    }
+    # An empty PowerShell array can cross ConvertTo/From-Json as null. Exclude
+    # that transport placeholder before counting invalid records so revoking
+    # the final link does not emit a bogus "discarded 1 malformed" warning.
+    $receivedLinks = @($reply.TemporaryLinks | Where-Object { $null -ne $_ })
+    $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+    $validLinks = @($receivedLinks | Where-Object {
+        -not [string]::IsNullOrWhiteSpace([string]$_.Token) -and
+        -not [string]::IsNullOrWhiteSpace([string]$_.Username) -and
+        [long]$_.Expires -gt $now
+    })
+    if ($validLinks.Count -ne $receivedLinks.Count) {
+        Append-Log "AUTH: discarded $($receivedLinks.Count - $validLinks.Count) malformed or expired temporary-link record(s) returned by the auth worker"
+    }
+
+    $script:UpdatingViewerAuthenticationTemporaryLinkList = $true
+    $lstViewerAuthenticationTemporaryLinks.BeginUpdate()
+    try {
+        $script:ViewerAuthenticationTemporaryLinks = @($validLinks | Sort-Object Expires)
+        $lstViewerAuthenticationTemporaryLinks.Items.Clear()
+        foreach ($link in $script:ViewerAuthenticationTemporaryLinks) {
+            $expiresLocal = [DateTimeOffset]::FromUnixTimeSeconds([long]$link.Expires).LocalDateTime.ToString('g')
+            $mode = if ([bool]$link.SingleUse) { 'single-use' } else { 'reusable' }
+            $restriction = if ([string]::IsNullOrWhiteSpace([string]$link.BoundAddress)) { 'any IP' } else { "IP $($link.BoundAddress)" }
+            [void]$lstViewerAuthenticationTemporaryLinks.Items.Add("$($link.Username) | $mode | $restriction | expires $expiresLocal")
+        }
+        if ($lstViewerAuthenticationTemporaryLinks.Items.Count -gt 0) { $lstViewerAuthenticationTemporaryLinks.SelectedIndex = 0 }
+    }
+    finally {
+        $lstViewerAuthenticationTemporaryLinks.EndUpdate()
+        $script:UpdatingViewerAuthenticationTemporaryLinkList = $false
+    }
+    Show-SelectedViewerAuthenticationTemporaryLink
+    Update-ViewerAuthenticationTemporaryLinkUi
+}
+
+function Show-SelectedViewerAuthenticationTemporaryLink {
+    # ListBox selection events fire synchronously while Items/SelectedIndex are
+    # being rebuilt. Treat that intermediate state as "no selection" instead
+    # of allowing an empty token to reach the mandatory URL parameter and tear
+    # down the WinForms event handler with an unhandled JIT exception.
+    if ($script:UpdatingViewerAuthenticationTemporaryLinkList) { return }
+
+    $index = if ($lstViewerAuthenticationTemporaryLinks) { [int]$lstViewerAuthenticationTemporaryLinks.SelectedIndex } else { -1 }
+    $token = ''
+    if ($index -ge 0 -and $index -lt @($script:ViewerAuthenticationTemporaryLinks).Count) {
+        $token = [string]$script:ViewerAuthenticationTemporaryLinks[$index].Token
+    }
+    if ([string]::IsNullOrWhiteSpace($token)) {
+        if ($txtViewerAuthenticationGeneratedTemporaryLink) { $txtViewerAuthenticationGeneratedTemporaryLink.Clear() }
+        Update-ViewerAuthenticationTemporaryLinkUi
+        return
+    }
+
+    try { $txtViewerAuthenticationGeneratedTemporaryLink.Text = Get-ViewerAuthenticationTemporaryLinkUrl -Token $token }
+    catch {
+        $txtViewerAuthenticationGeneratedTemporaryLink.Clear()
+        Append-Log "AUTH: could not display the selected temporary viewer link: $($_.Exception.Message)"
+    }
+    Update-ViewerAuthenticationTemporaryLinkUi
+}
+
+function New-ViewerAuthenticationTemporaryLink {
+    $username = Get-SelectedViewerAuthenticationUsername
+    if ([string]::IsNullOrWhiteSpace($username)) {
+        Append-Log 'AUTH: select a viewer account before generating a temporary link'
+        return
+    }
+    if (-not (Test-AuthProxyWorkerRunning)) {
+        Append-Log 'AUTH: cannot generate a temporary link because the auth proxy worker is not running'
+        return
+    }
+    try { $null = Get-ViewerAuthenticationTemporaryLinkBaseUri }
+    catch {
+        Append-Log "AUTH: temporary-link proxy domain is invalid: $($_.Exception.Message)"
+        return
+    }
+    $boundAddress = [string]$txtViewerAuthenticationTemporaryLinkRestrictedIp.Text.Trim()
+    if (-not [string]::IsNullOrWhiteSpace($boundAddress)) {
+        $parsedAddress = $null
+        if (-not [System.Net.IPAddress]::TryParse($boundAddress, [ref]$parsedAddress)) {
+            Append-Log "AUTH: temporary-link client IP '$boundAddress' is invalid"
+            return
+        }
+        if ($parsedAddress.IsIPv4MappedToIPv6) { $parsedAddress = $parsedAddress.MapToIPv4() }
+        $boundAddress = $parsedAddress.ToString()
+    }
+    $reply = Send-AuthProxyWorkerCommand -Command @{
+        Type = 'CreateTemporaryLink'
+        Username = $username
+        DurationMinutes = [int]$numViewerAuthenticationTemporaryLinkMinutes.Value
+        SingleUse = [bool]$chkViewerAuthenticationTemporaryLinkSingleUse.Checked
+        BoundAddress = $boundAddress
+    } -TimeoutMs 3000
+    if (
+        -not $reply -or
+        [string]$reply.Status -ne 'Ready' -or
+        -not $reply.Link -or
+        [string]::IsNullOrWhiteSpace([string]$reply.Link.Token) -or
+        [string]::IsNullOrWhiteSpace([string]$reply.Link.Username) -or
+        [long]$reply.Link.Expires -le [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+    ) {
+        Append-Log "AUTH: failed to generate temporary viewer link: $(if ($reply) { [string]$reply.Error } else { 'auth worker returned no reply' })"
+        return
+    }
+    $url = Get-ViewerAuthenticationTemporaryLinkUrl -Token ([string]$reply.Link.Token)
+    $txtViewerAuthenticationGeneratedTemporaryLink.Text = $url
+    $linkMode = if ([bool]$reply.Link.SingleUse) { 'single-use' } else { 'reusable' }
+    Append-Log "AUTH: generated $linkMode temporary link for viewer '$username', expiring $([DateTimeOffset]::FromUnixTimeSeconds([long]$reply.Link.Expires).LocalDateTime.ToString('g'))$(if ($boundAddress) { ", restricted to $boundAddress" } else { '' })"
+    Sync-ViewerAuthenticationTemporaryLinks
+    Update-ViewerAuthenticationTemporaryLinkUi
+}
+
+function Revoke-SelectedViewerAuthenticationTemporaryLink {
+    $index = if ($lstViewerAuthenticationTemporaryLinks) { [int]$lstViewerAuthenticationTemporaryLinks.SelectedIndex } else { -1 }
+    if ($index -lt 0 -or $index -ge @($script:ViewerAuthenticationTemporaryLinks).Count) { return }
+    $link = $script:ViewerAuthenticationTemporaryLinks[$index]
+    $reply = Send-AuthProxyWorkerCommand -Command @{ Type = 'RevokeTemporaryLink'; Token = [string]$link.Token } -TimeoutMs 3000
+    if (-not $reply -or [string]$reply.Status -ne 'Ready') {
+        Append-Log "AUTH: failed to revoke temporary viewer link: $(if ($reply) { [string]$reply.Error } else { 'auth worker returned no reply' })"
+        return
+    }
+    if (-not [bool]$reply.Removed) {
+        Append-Log "AUTH: temporary viewer link for '$($link.Username)' was already absent"
+        Sync-ViewerAuthenticationTemporaryLinks
+        return
+    }
+    $revokedUsername = if ([string]::IsNullOrWhiteSpace([string]$reply.Username)) { [string]$link.Username } else { [string]$reply.Username }
+    Append-Log "AUTH: revoked temporary viewer link for '$revokedUsername' and invalidated $([int]$reply.SessionsRevoked) active session(s); the viewer account and password remain configured"
+    $txtViewerAuthenticationGeneratedTemporaryLink.Clear()
+    Sync-ViewerAuthenticationTemporaryLinks
+    if (Test-KeepAuthenticationOnExit) { $null = Save-PersistedAuthenticationState }
 }
 
 # Exact TCP peer addresses allowed to supply X-Forwarded-For. Never infer
@@ -1357,6 +1566,7 @@ function Update-ViewerAuthenticationUi {
     }
     Update-ViewerAuthenticationTrustedProxyButtons
     Update-PersistedAuthenticationStateUi
+    Update-ViewerAuthenticationTemporaryLinkUi
 }
 
 # Each named account can log in independently -- see AuthenticationAccount /
@@ -1376,6 +1586,7 @@ function Sync-ViewerAuthenticationAccountsListBox {
             if ($selectedUsername -and [string]$account.Username -eq $selectedUsername) { $selectedLabel = $label }
         }
         if ($selectedLabel) { $lstViewerAuthenticationAccounts.SelectedItem = $selectedLabel }
+        elseif ($lstViewerAuthenticationAccounts.Items.Count -gt 0) { $lstViewerAuthenticationAccounts.SelectedIndex = 0 }
     }
     finally {
         $lstViewerAuthenticationAccounts.EndUpdate()
@@ -2030,6 +2241,7 @@ function Start-LetsEncryptTlsProxies {
         Append-Log "AUTH: viewer login required on all TLS viewer/signaling endpoints; sessions expire after $([int]$numViewerAuthenticationSessionHours.Value) hour(s)."
     }
     Update-PersistedAuthenticationStateUi
+    Sync-ViewerAuthenticationTemporaryLinks
 }
 
 # "Allow plaintext auth" counterpart to Start-LetsEncryptTlsProxies: runs
@@ -2160,6 +2372,7 @@ function Start-PlaintextAuthProxies {
     if ($usedPersistedAuthenticationKey) { $script:PersistedAuthenticationKeyUsed['Plaintext'] = $true }
     Restore-PersistedAuthenticationSessions
     Update-PersistedAuthenticationStateUi
+    Sync-ViewerAuthenticationTemporaryLinks
 }
 
 # Called from the UI poll timer (90-MainWindow.ps1), same cadence as the

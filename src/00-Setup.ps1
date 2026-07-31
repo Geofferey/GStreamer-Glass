@@ -27,7 +27,8 @@ param(
     [string]$WebRtcPortRangeWorkerPipe,
     [switch]$AuthProxyWorker,
     [string]$AuthProxyWorkerPipe,
-    [switch]$AuthCacheCryptoSelfTest
+    [switch]$AuthCacheCryptoSelfTest,
+    [switch]$ClipboardApartmentSelfTest
 )
 
 Add-Type -AssemblyName System.Windows.Forms
@@ -312,7 +313,51 @@ public static class GstExecutableBrowser
         return selectedPath;
     }
 }
+
+// The packaged UI deliberately runs MTA, while the Windows clipboard is an
+// OLE API and therefore requires STA. Keep every clipboard call behind this
+// helper, matching the dedicated STA-thread pattern used by the dialogs above.
+public static class GstClipboard
+{
+    public static void SetText(string text)
+    {
+        if (String.IsNullOrEmpty(text))
+            throw new ArgumentException("Clipboard text cannot be empty.", "text");
+
+        Exception clipboardError = null;
+        Thread clipboardThread = new Thread(() =>
+        {
+            try { Clipboard.SetText(text); }
+            catch (Exception ex) { clipboardError = ex; }
+        });
+        clipboardThread.Name = "Clipboard writer";
+        clipboardThread.IsBackground = true;
+        clipboardThread.SetApartmentState(ApartmentState.STA);
+        clipboardThread.Start();
+        clipboardThread.Join();
+
+        if (clipboardError != null)
+            throw new InvalidOperationException("Text could not be copied to the clipboard.", clipboardError);
+    }
+
+    public static ApartmentState GetHelperApartmentState()
+    {
+        ApartmentState state = ApartmentState.Unknown;
+        Thread clipboardThread = new Thread(() => { state = Thread.CurrentThread.GetApartmentState(); });
+        clipboardThread.Name = "Clipboard apartment self-test";
+        clipboardThread.IsBackground = true;
+        clipboardThread.SetApartmentState(ApartmentState.STA);
+        clipboardThread.Start();
+        clipboardThread.Join();
+        return state;
+    }
+}
 '@
+}
+
+if ($ClipboardApartmentSelfTest) {
+    if ([GstClipboard]::GetHelperApartmentState() -eq [System.Threading.ApartmentState]::STA) { exit 0 }
+    exit 73
 }
 
 
@@ -1823,6 +1868,7 @@ public class TlsTerminatingProxy
     private const string CanonicalLogoutPath = "/auth/logout";
     private const string CanonicalVerifyPath = "/auth/verify";
     private const string CanonicalStatusPath = "/auth/status";
+    private const string CanonicalTemporarySessionPath = "/auth/session";
     private const string LegacyLoginPath = "/__gstglass/auth/login";
     private const string LegacyLogoutPath = "/__gstglass/auth/logout";
     private const string LegacySimpleLogoutPath = "/logout";
@@ -1898,6 +1944,8 @@ public class TlsTerminatingProxy
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, AuthenticationFailureState> authenticationFailures = new System.Collections.Concurrent.ConcurrentDictionary<string, AuthenticationFailureState>();
     private static readonly SemaphoreSlim authenticationHashSlots = new SemaphoreSlim(2, 2);
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, long> activeAuthenticationSessions = new System.Collections.Concurrent.ConcurrentDictionary<string, long>();
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, string> authenticationSessionBoundAddresses = new System.Collections.Concurrent.ConcurrentDictionary<string, string>();
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, TemporaryAuthenticationLinkState> temporaryAuthenticationLinks = new System.Collections.Concurrent.ConcurrentDictionary<string, TemporaryAuthenticationLinkState>();
 
     // Async continuations resume on arbitrary ThreadPool threads with no
     // PowerShell runspace bound to them, so failures here cannot invoke a
@@ -1943,6 +1991,23 @@ public class TlsTerminatingProxy
     {
         public string Token;
         public long Expires;
+        public string BoundAddress;
+    }
+
+    public sealed class TemporaryAuthenticationLinkState
+    {
+        public string Token;
+        public string Username;
+        public long Expires;
+        public bool SingleUse;
+        public string BoundAddress;
+    }
+
+    public sealed class TemporaryAuthenticationLinkRevocationState
+    {
+        public bool LinkRemoved;
+        public string Username;
+        public int SessionsRevoked;
     }
 
     public void ConfigureAuthentication(bool enabled, AuthenticationAccount[] accounts, byte[] sessionKey, int sessionHours)
@@ -2214,6 +2279,7 @@ public class TlsTerminatingProxy
     public void RevokeAllSessions()
     {
         activeAuthenticationSessions.Clear();
+        authenticationSessionBoundAddresses.Clear();
     }
 
     // The UI process uses these two methods only for the opt-in
@@ -2227,7 +2293,9 @@ public class TlsTerminatingProxy
         List<AuthenticationSessionState> result = new List<AuthenticationSessionState>();
         foreach (KeyValuePair<string, long> session in activeAuthenticationSessions)
         {
-            result.Add(new AuthenticationSessionState { Token = session.Key, Expires = session.Value });
+            string boundAddress;
+            authenticationSessionBoundAddresses.TryGetValue(session.Key, out boundAddress);
+            result.Add(new AuthenticationSessionState { Token = session.Key, Expires = session.Value, BoundAddress = boundAddress ?? "" });
         }
         return result.ToArray();
     }
@@ -2235,6 +2303,7 @@ public class TlsTerminatingProxy
     public void RestoreActiveAuthenticationSessions(AuthenticationSessionState[] sessions)
     {
         activeAuthenticationSessions.Clear();
+        authenticationSessionBoundAddresses.Clear();
         if (sessions == null) return;
         long now = ToUnixTimeSeconds(DateTime.UtcNow);
         int restored = 0;
@@ -2245,8 +2314,131 @@ public class TlsTerminatingProxy
             long tokenExpiry;
             if (tokenParts.Length != 4 || !long.TryParse(tokenParts[0], out tokenExpiry) || tokenExpiry != session.Expires) continue;
             activeAuthenticationSessions[session.Token] = session.Expires;
+            IPAddress boundAddress;
+            if (!string.IsNullOrWhiteSpace(session.BoundAddress) && IPAddress.TryParse(session.BoundAddress, out boundAddress))
+                authenticationSessionBoundAddresses[session.Token] = NormalizeIpAddress(boundAddress);
             restored++;
             if (restored >= 4096) break;
+        }
+    }
+
+    public TemporaryAuthenticationLinkState CreateTemporaryAuthenticationLink(string username, int durationMinutes, bool singleUse, string boundAddress)
+    {
+        AuthenticationAccount account = FindAuthenticationAccount((username ?? "").Trim());
+        if (account == null) throw new InvalidOperationException("The selected viewer account no longer exists.");
+        string normalizedBoundAddress = "";
+        if (!string.IsNullOrWhiteSpace(boundAddress))
+        {
+            IPAddress parsed;
+            if (!IPAddress.TryParse(boundAddress.Trim(), out parsed)) throw new ArgumentException("The restricted client IP address is invalid.");
+            normalizedBoundAddress = NormalizeIpAddress(parsed);
+        }
+        RemoveExpiredTemporaryAuthenticationLinks();
+        if (temporaryAuthenticationLinks.Count >= 4096) throw new InvalidOperationException("The temporary-link limit has been reached.");
+        byte[] randomBytes = new byte[32];
+        using (RandomNumberGenerator random = RandomNumberGenerator.Create()) { random.GetBytes(randomBytes); }
+        TemporaryAuthenticationLinkState state = new TemporaryAuthenticationLinkState {
+            Token = Base64UrlEncode(randomBytes),
+            Username = account.Username,
+            Expires = ToUnixTimeSeconds(DateTime.UtcNow.AddMinutes(Math.Max(1, Math.Min(43200, durationMinutes)))),
+            SingleUse = singleUse,
+            BoundAddress = normalizedBoundAddress
+        };
+        temporaryAuthenticationLinks[state.Token] = state;
+        return CloneTemporaryAuthenticationLink(state);
+    }
+
+    public TemporaryAuthenticationLinkState[] ExportTemporaryAuthenticationLinks()
+    {
+        RemoveExpiredTemporaryAuthenticationLinks();
+        List<TemporaryAuthenticationLinkState> result = new List<TemporaryAuthenticationLinkState>();
+        foreach (TemporaryAuthenticationLinkState state in temporaryAuthenticationLinks.Values)
+            result.Add(CloneTemporaryAuthenticationLink(state));
+        return result.ToArray();
+    }
+
+    public void RestoreTemporaryAuthenticationLinks(TemporaryAuthenticationLinkState[] links)
+    {
+        temporaryAuthenticationLinks.Clear();
+        if (links == null) return;
+        long now = ToUnixTimeSeconds(DateTime.UtcNow);
+        int restored = 0;
+        foreach (TemporaryAuthenticationLinkState link in links)
+        {
+            if (link == null || string.IsNullOrWhiteSpace(link.Token) || string.IsNullOrWhiteSpace(link.Username) || link.Expires < now) continue;
+            string normalizedBoundAddress = "";
+            if (!string.IsNullOrWhiteSpace(link.BoundAddress))
+            {
+                IPAddress parsed;
+                if (!IPAddress.TryParse(link.BoundAddress, out parsed)) continue;
+                normalizedBoundAddress = NormalizeIpAddress(parsed);
+            }
+            temporaryAuthenticationLinks[link.Token] = new TemporaryAuthenticationLinkState {
+                Token = link.Token,
+                Username = link.Username,
+                Expires = link.Expires,
+                SingleUse = link.SingleUse,
+                BoundAddress = normalizedBoundAddress
+            };
+            restored++;
+            if (restored >= 4096) break;
+        }
+    }
+
+    public bool RevokeTemporaryAuthenticationLink(string token)
+    {
+        TemporaryAuthenticationLinkState removed;
+        return !string.IsNullOrWhiteSpace(token) && temporaryAuthenticationLinks.TryRemove(token, out removed);
+    }
+
+    public TemporaryAuthenticationLinkRevocationState RevokeTemporaryAuthenticationLinkAndSessions(string token)
+    {
+        TemporaryAuthenticationLinkState removed;
+        if (string.IsNullOrWhiteSpace(token) || !temporaryAuthenticationLinks.TryRemove(token, out removed) || removed == null)
+            return new TemporaryAuthenticationLinkRevocationState { LinkRemoved = false, Username = "", SessionsRevoked = 0 };
+
+        return new TemporaryAuthenticationLinkRevocationState {
+            LinkRemoved = true,
+            Username = removed.Username ?? "",
+            SessionsRevoked = RevokeAuthenticationSessionsForUsername(removed.Username)
+        };
+    }
+
+    public int RevokeAuthenticationSessionsForUsername(string username)
+    {
+        if (string.IsNullOrWhiteSpace(username)) return 0;
+        int revoked = 0;
+        foreach (KeyValuePair<string, long> session in activeAuthenticationSessions)
+        {
+            if (!string.Equals(GetTokenUsernameForLogging(session.Key), username, StringComparison.Ordinal)) continue;
+            long removedExpiry;
+            if (!activeAuthenticationSessions.TryRemove(session.Key, out removedExpiry)) continue;
+            string removedBoundAddress;
+            authenticationSessionBoundAddresses.TryRemove(session.Key, out removedBoundAddress);
+            revoked++;
+        }
+        return revoked;
+    }
+
+    private static TemporaryAuthenticationLinkState CloneTemporaryAuthenticationLink(TemporaryAuthenticationLinkState state)
+    {
+        return new TemporaryAuthenticationLinkState {
+            Token = state.Token,
+            Username = state.Username,
+            Expires = state.Expires,
+            SingleUse = state.SingleUse,
+            BoundAddress = state.BoundAddress ?? ""
+        };
+    }
+
+    private static void RemoveExpiredTemporaryAuthenticationLinks()
+    {
+        long now = ToUnixTimeSeconds(DateTime.UtcNow);
+        foreach (KeyValuePair<string, TemporaryAuthenticationLinkState> entry in temporaryAuthenticationLinks)
+        {
+            if (entry.Value != null && entry.Value.Expires >= now) continue;
+            TemporaryAuthenticationLinkState removed;
+            temporaryAuthenticationLinks.TryRemove(entry.Key, out removed);
         }
     }
 
@@ -2556,6 +2748,7 @@ public class TlsTerminatingProxy
             string.Equals(path, mountedLegacyLoginPath, StringComparison.OrdinalIgnoreCase);
         bool isVerifyEndpoint = string.Equals(path, CanonicalVerifyPath, StringComparison.OrdinalIgnoreCase);
         bool isStatusEndpoint = string.Equals(path, CanonicalStatusPath, StringComparison.OrdinalIgnoreCase);
+        bool isTemporarySessionEndpoint = string.Equals(path, CanonicalTemporarySessionPath, StringComparison.OrdinalIgnoreCase);
         bool isAuthenticationRoot =
             string.Equals(path, "/auth", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(path, "/auth/", StringComparison.OrdinalIgnoreCase);
@@ -2587,6 +2780,8 @@ public class TlsTerminatingProxy
             bool removedCurrentSession =
                 !string.IsNullOrWhiteSpace(logoutToken) &&
                 activeAuthenticationSessions.TryRemove(logoutToken, out removedSessionExpiry);
+            string removedBoundAddress;
+            if (!string.IsNullOrWhiteSpace(logoutToken)) authenticationSessionBoundAddresses.TryRemove(logoutToken, out removedBoundAddress);
             Dictionary<string, string> logoutHeaders = new Dictionary<string, string>();
             logoutHeaders["Set-Cookie"] = "GstGlassAuth=; Path=/; HttpOnly" + CookieSecureAttribute + "; SameSite=Lax; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT";
             logoutHeaders["Clear-Site-Data"] = "\"cookies\", \"storage\"";
@@ -2602,6 +2797,50 @@ public class TlsTerminatingProxy
                 "viewer" + (logoutUsername != null ? " '" + logoutUsername + "'" : "") + " logout from " + remoteAddress +
                 "; current session " + (removedCurrentSession ? "removed" : "not found"));
             await WriteHttpResponseAsync(stream, 303, "See Other", "text/plain; charset=utf-8", "Signed out.", logoutHeaders);
+            return true;
+        }
+
+        if (isTemporarySessionEndpoint)
+        {
+            if (!string.Equals(method, "GET", StringComparison.OrdinalIgnoreCase))
+            {
+                Dictionary<string, string> methodHeaders = new Dictionary<string, string>();
+                methodHeaders["Allow"] = "GET";
+                await WriteHttpResponseAsync(stream, 405, "Method Not Allowed", "text/plain; charset=utf-8", "Method not allowed.", methodHeaders);
+                return true;
+            }
+            if (!authenticationEnabled)
+            {
+                await WriteHttpResponseAsync(stream, 404, "Not Found", "text/plain; charset=utf-8", "Authentication endpoint not found.", null);
+                return true;
+            }
+            string temporaryReturnTarget = GetQueryValue(rawTarget, "return");
+            if (string.IsNullOrWhiteSpace(temporaryReturnTarget)) temporaryReturnTarget = GetMountedViewerPath();
+            if (HasValidAuthenticationCookie(headers, remoteAddress))
+            {
+                await WriteRedirectAsync(stream, temporaryReturnTarget);
+                return true;
+            }
+            string temporaryToken = GetQueryValue(rawTarget, "token");
+            TemporaryAuthenticationLinkState temporaryLink;
+            string rejectionReason;
+            int rejectionStatus;
+            if (!TryRedeemTemporaryAuthenticationLink(temporaryToken, remoteAddress, out temporaryLink, out rejectionReason, out rejectionStatus))
+            {
+                pendingLog.Enqueue("temporary viewer link rejected from " + remoteAddress + ": " + rejectionReason);
+                await WriteHttpResponseAsync(stream, rejectionStatus, rejectionStatus == 403 ? "Forbidden" : "Gone", "text/plain; charset=utf-8", "This temporary viewer link is invalid, expired, already used, or unavailable from this client.", null);
+                return true;
+            }
+            await IssueAuthenticationSessionResponseAsync(
+                stream,
+                temporaryLink.Username,
+                temporaryReturnTarget,
+                remoteAddress,
+                " (temporary link" + (temporaryLink.SingleUse ? ", single-use" : ", reusable") + (!string.IsNullOrEmpty(temporaryLink.BoundAddress) ? ", IP-bound" : "") + ")",
+                null,
+                temporaryLink.Expires,
+                temporaryLink.BoundAddress
+            );
             return true;
         }
 
@@ -2702,7 +2941,7 @@ public class TlsTerminatingProxy
                 await WriteHttpResponseAsync(stream, 405, "Method Not Allowed", "text/plain; charset=utf-8", "Method not allowed.", statusMethodHeaders);
                 return true;
             }
-            bool authenticated = !authenticationEnabled || HasValidAuthenticationCookie(headers);
+            bool authenticated = !authenticationEnabled || HasValidAuthenticationCookie(headers, remoteAddress);
             await WriteHttpResponseAsync(
                 stream,
                 200,
@@ -2716,7 +2955,7 @@ public class TlsTerminatingProxy
 
         if (isAuthenticationRoot)
         {
-            if (authenticationEnabled && !HasValidAuthenticationCookie(headers))
+            if (authenticationEnabled && !HasValidAuthenticationCookie(headers, remoteAddress))
             {
                 await WriteRedirectAsync(
                     stream,
@@ -2733,7 +2972,7 @@ public class TlsTerminatingProxy
         // /auth/ is a permanently reserved gate namespace. Unknown children
         // are answered locally and are never eligible for authenticated
         // forwarding to the viewer or signaling upstreams.
-        if (isCanonicalAuthenticationPath && !isLoginEndpoint && !isVerifyEndpoint)
+        if (isCanonicalAuthenticationPath && !isLoginEndpoint && !isVerifyEndpoint && !isTemporarySessionEndpoint)
         {
             await WriteHttpResponseAsync(
                 stream,
@@ -2766,7 +3005,7 @@ public class TlsTerminatingProxy
             if (string.IsNullOrWhiteSpace(returnTarget)) returnTarget = GetMountedViewerPath();
             if (method == "GET")
             {
-                if (HasValidAuthenticationCookie(headers))
+                if (HasValidAuthenticationCookie(headers, remoteAddress))
                 {
                     await WriteRedirectAsync(stream, GetSafeReturnTarget(returnTarget));
                 }
@@ -2880,7 +3119,7 @@ public class TlsTerminatingProxy
             return true;
         }
 
-        if (HasValidAuthenticationCookie(headers)) return false;
+        if (HasValidAuthenticationCookie(headers, remoteAddress)) return false;
 
         bool isWebSocket = headers.ContainsKey("Upgrade") && headers["Upgrade"].IndexOf("websocket", StringComparison.OrdinalIgnoreCase) >= 0;
         if (isWebSocket)
@@ -3242,9 +3481,20 @@ public class TlsTerminatingProxy
         return ValidateAuthenticationSessionToken(GetAuthenticationCookie(headers));
     }
 
+    private bool HasValidAuthenticationCookie(Dictionary<string, string> headers, string remoteAddress)
+    {
+        return ValidateAuthenticationSessionTokenForAddress(GetAuthenticationCookie(headers), remoteAddress);
+    }
+
     private string CreateAuthenticationSessionToken(string username)
     {
+        return CreateBoundedAuthenticationSessionToken(username, long.MaxValue, "");
+    }
+
+    private string CreateBoundedAuthenticationSessionToken(string username, long maximumExpires, string boundAddress)
+    {
         long expires = ToUnixTimeSeconds(DateTime.UtcNow.AddHours(authenticationSessionHours));
+        if (maximumExpires > 0 && maximumExpires < expires) expires = maximumExpires;
         byte[] nonce = new byte[24];
         using (RandomNumberGenerator random = RandomNumberGenerator.Create())
         {
@@ -3258,6 +3508,7 @@ public class TlsTerminatingProxy
         }
         string token = payload + "." + Base64UrlEncode(signature);
         activeAuthenticationSessions[token] = expires;
+        if (!string.IsNullOrWhiteSpace(boundAddress)) authenticationSessionBoundAddresses[token] = boundAddress;
         if (activeAuthenticationSessions.Count > 4096) RemoveExpiredAuthenticationSessions();
         return token;
     }
@@ -3349,9 +3600,17 @@ public class TlsTerminatingProxy
     // top-level GET/app-launch navigation the way Strict was never able to.
     private async Task IssueAuthenticationSessionResponseAsync(Stream stream, string username, string returnTarget, string remoteAddress, string logSuffix, List<string> extraSetCookieHeaders)
     {
-        string token = CreateAuthenticationSessionToken(username);
+        await IssueAuthenticationSessionResponseAsync(stream, username, returnTarget, remoteAddress, logSuffix, extraSetCookieHeaders, long.MaxValue, "");
+    }
+
+    private async Task IssueAuthenticationSessionResponseAsync(Stream stream, string username, string returnTarget, string remoteAddress, string logSuffix, List<string> extraSetCookieHeaders, long maximumExpires, string boundAddress)
+    {
+        long now = ToUnixTimeSeconds(DateTime.UtcNow);
+        long effectiveExpires = Math.Min(ToUnixTimeSeconds(DateTime.UtcNow.AddHours(authenticationSessionHours)), maximumExpires > 0 ? maximumExpires : long.MaxValue);
+        int maxAge = (int)Math.Max(1, Math.Min(int.MaxValue, effectiveExpires - now));
+        string token = CreateBoundedAuthenticationSessionToken(username, effectiveExpires, boundAddress);
         Dictionary<string, string> headers = new Dictionary<string, string>();
-        headers["Set-Cookie"] = "GstGlassAuth=" + token + "; Path=/; HttpOnly" + CookieSecureAttribute + "; SameSite=Lax; Max-Age=" + (authenticationSessionHours * 3600).ToString();
+        headers["Set-Cookie"] = "GstGlassAuth=" + token + "; Path=/; HttpOnly" + CookieSecureAttribute + "; SameSite=Lax; Max-Age=" + maxAge.ToString();
         headers["Location"] = GetSafeReturnTarget(returnTarget);
         pendingLog.Enqueue("viewer '" + username + "' authenticated from " + remoteAddress + logSuffix);
         await WriteHttpResponseAsync(stream, 303, "See Other", "text/plain; charset=utf-8", "Authenticated.", headers, null, extraSetCookieHeaders);
@@ -3424,6 +3683,11 @@ public class TlsTerminatingProxy
 
     private bool ValidateAuthenticationSessionToken(string token)
     {
+        return ValidateAuthenticationSessionTokenForAddress(token, null);
+    }
+
+    private bool ValidateAuthenticationSessionTokenForAddress(string token, string remoteAddress)
+    {
         if (authenticationSessionKey == null || authenticationSessionKey.Length < 32 || string.IsNullOrWhiteSpace(token)) return false;
         string[] parts = token.Split('.');
         if (parts.Length != 4) return false;
@@ -3447,7 +3711,11 @@ public class TlsTerminatingProxy
             string username = Encoding.UTF8.GetString(Base64UrlDecode(parts[2]));
             if (FindAuthenticationAccount(username) == null) return false;
             long registeredExpiry;
-            return activeAuthenticationSessions.TryGetValue(token, out registeredExpiry) && registeredExpiry == expires;
+            if (!activeAuthenticationSessions.TryGetValue(token, out registeredExpiry) || registeredExpiry != expires) return false;
+            string boundAddress;
+            if (authenticationSessionBoundAddresses.TryGetValue(token, out boundAddress) && !string.IsNullOrWhiteSpace(boundAddress))
+                return !string.IsNullOrWhiteSpace(remoteAddress) && string.Equals(boundAddress, remoteAddress, StringComparison.OrdinalIgnoreCase);
+            return true;
         }
         catch { return false; }
     }
@@ -3460,7 +3728,54 @@ public class TlsTerminatingProxy
             if (session.Value >= now) continue;
             long removedExpiry;
             activeAuthenticationSessions.TryRemove(session.Key, out removedExpiry);
+            string removedBoundAddress;
+            authenticationSessionBoundAddresses.TryRemove(session.Key, out removedBoundAddress);
         }
+    }
+
+    private bool TryRedeemTemporaryAuthenticationLink(string token, string remoteAddress, out TemporaryAuthenticationLinkState redeemed, out string reason, out int statusCode)
+    {
+        redeemed = null;
+        reason = "not found";
+        statusCode = 410;
+        if (string.IsNullOrWhiteSpace(token)) return false;
+        TemporaryAuthenticationLinkState current;
+        if (!temporaryAuthenticationLinks.TryGetValue(token, out current) || current == null) return false;
+        long now = ToUnixTimeSeconds(DateTime.UtcNow);
+        if (current.Expires < now)
+        {
+            TemporaryAuthenticationLinkState expired;
+            temporaryAuthenticationLinks.TryRemove(token, out expired);
+            reason = "expired";
+            return false;
+        }
+        if (FindAuthenticationAccount(current.Username) == null)
+        {
+            TemporaryAuthenticationLinkState orphaned;
+            temporaryAuthenticationLinks.TryRemove(token, out orphaned);
+            reason = "account removed";
+            return false;
+        }
+        if (!string.IsNullOrWhiteSpace(current.BoundAddress) && !string.Equals(current.BoundAddress, remoteAddress, StringComparison.OrdinalIgnoreCase))
+        {
+            reason = "client IP does not match restriction";
+            statusCode = 403;
+            return false;
+        }
+        if (current.SingleUse)
+        {
+            TemporaryAuthenticationLinkState consumed;
+            if (!temporaryAuthenticationLinks.TryRemove(token, out consumed))
+            {
+                reason = "already used";
+                return false;
+            }
+            current = consumed;
+        }
+        redeemed = CloneTemporaryAuthenticationLink(current);
+        reason = "accepted";
+        statusCode = 200;
+        return true;
     }
 
     private int GetAuthenticationRetryAfterSeconds(string remoteAddress)
@@ -3941,6 +4256,23 @@ if ($AuthProxyWorker) {
         )
     }
 
+    # Do not send dynamically-compiled CLR objects directly across the JSON
+    # boundary. Windows PowerShell's adapter inside the packaged PS2EXE host
+    # can expose their public fields differently than console PowerShell,
+    # producing records with no Token/Username/Expires values. Materializing
+    # an ordinary PowerShell object keeps the IPC contract host-independent.
+    function ConvertTo-AuthProxyTemporaryLinkRecord {
+        param($Link)
+        if (-not $Link) { return $null }
+        return [pscustomobject][ordered]@{
+            Token = [string]$Link.Token
+            Username = [string]$Link.Username
+            Expires = [long]$Link.Expires
+            SingleUse = [bool]$Link.SingleUse
+            BoundAddress = [string]$Link.BoundAddress
+        }
+    }
+
     function Stop-AuthProxyFamily {
         param([string]$Family)
         foreach ($proxy in @($proxiesByFamily[$Family])) {
@@ -4029,7 +4361,9 @@ if ($AuthProxyWorker) {
             'ExportSessions' {
                 $any = (@($proxiesByFamily['LetsEncrypt']) + @($proxiesByFamily['Plaintext'])) | Select-Object -First 1
                 $sessions = if ($any) { @($any.ExportActiveAuthenticationSessions()) } else { @() }
-                return @{ Status = 'Ready'; Error = ''; SessionCount = @($sessions).Count; Sessions = $sessions }
+                [object[]]$temporaryLinks = @()
+                if ($any) { $temporaryLinks = [object[]]@($any.ExportTemporaryAuthenticationLinks() | ForEach-Object { ConvertTo-AuthProxyTemporaryLinkRecord $_ }) }
+                return @{ Status = 'Ready'; Error = ''; SessionCount = @($sessions).Count; Sessions = $sessions; TemporaryLinks = $temporaryLinks }
             }
             'ImportSessions' {
                 $any = (@($proxiesByFamily['LetsEncrypt']) + @($proxiesByFamily['Plaintext'])) | Select-Object -First 1
@@ -4039,12 +4373,52 @@ if ($AuthProxyWorker) {
                             $state = New-Object TlsTerminatingProxy+AuthenticationSessionState
                             $state.Token = [string]$_.Token
                             $state.Expires = [long]$_.Expires
+                            $state.BoundAddress = [string]$_.BoundAddress
                             $state
                         }
                     )
                     $any.RestoreActiveAuthenticationSessions($sessions)
+                    $temporaryLinks = [TlsTerminatingProxy+TemporaryAuthenticationLinkState[]]@(
+                        @($Command.TemporaryLinks) | ForEach-Object {
+                            $state = New-Object TlsTerminatingProxy+TemporaryAuthenticationLinkState
+                            $state.Token = [string]$_.Token
+                            $state.Username = [string]$_.Username
+                            $state.Expires = [long]$_.Expires
+                            $state.SingleUse = [bool]$_.SingleUse
+                            $state.BoundAddress = [string]$_.BoundAddress
+                            $state
+                        }
+                    )
+                    $any.RestoreTemporaryAuthenticationLinks($temporaryLinks)
                 }
-                return @{ Status = 'Ready'; Error = ''; SessionCount = @($Command.Sessions).Count }
+                return @{ Status = 'Ready'; Error = ''; SessionCount = @($Command.Sessions).Count; TemporaryLinkCount = @($Command.TemporaryLinks).Count }
+            }
+            'CreateTemporaryLink' {
+                $any = (@($proxiesByFamily['LetsEncrypt']) + @($proxiesByFamily['Plaintext'])) | Select-Object -First 1
+                if (-not $any) { return @{ Status = 'Error'; Error = 'no authentication proxy is running' } }
+                try {
+                    $link = $any.CreateTemporaryAuthenticationLink([string]$Command.Username, [int]$Command.DurationMinutes, [bool]$Command.SingleUse, [string]$Command.BoundAddress)
+                    return @{ Status = 'Ready'; Error = ''; Link = (ConvertTo-AuthProxyTemporaryLinkRecord $link) }
+                }
+                catch { return @{ Status = 'Error'; Error = $_.Exception.Message } }
+            }
+            'ListTemporaryLinks' {
+                $any = (@($proxiesByFamily['LetsEncrypt']) + @($proxiesByFamily['Plaintext'])) | Select-Object -First 1
+                [object[]]$links = @()
+                if ($any) { $links = [object[]]@($any.ExportTemporaryAuthenticationLinks() | ForEach-Object { ConvertTo-AuthProxyTemporaryLinkRecord $_ }) }
+                return @{ Status = 'Ready'; Error = ''; TemporaryLinks = $links }
+            }
+            'RevokeTemporaryLink' {
+                $any = (@($proxiesByFamily['LetsEncrypt']) + @($proxiesByFamily['Plaintext'])) | Select-Object -First 1
+                if (-not $any) { return @{ Status = 'Error'; Error = 'no authentication proxy is running'; Removed = $false; Username = ''; SessionsRevoked = 0 } }
+                $revocation = $any.RevokeTemporaryAuthenticationLinkAndSessions([string]$Command.Token)
+                return @{
+                    Status = 'Ready'
+                    Error = ''
+                    Removed = [bool]$revocation.LinkRemoved
+                    Username = [string]$revocation.Username
+                    SessionsRevoked = [int]$revocation.SessionsRevoked
+                }
             }
             'PollLog' {
                 $messages = New-Object System.Collections.Generic.List[string]
@@ -4347,6 +4721,10 @@ $script:DefaultViewerAuthenticationSessionHours = 12
 $script:DefaultViewerAuthenticationAllowPlaintext = $false
 $script:DefaultViewerAuthenticationKeepOnRestart = $false
 $script:DefaultViewerAuthenticationKeepOnExit = $false
+$script:DefaultViewerAuthenticationTemporaryLinkProxyDomain = ''
+$script:DefaultViewerAuthenticationTemporaryLinkMinutes = 60
+$script:DefaultViewerAuthenticationTemporaryLinkSingleUse = $false
+$script:DefaultViewerAuthenticationTemporaryLinkRestrictedIp = ''
 $script:DefaultViewerAuthenticationTrustedProxies = ''
 # Named accounts, each @{ Username; PasswordHash }. Only the salted
 # PBKDF2-HMAC-SHA256 hash is ever persisted -- see Add-ViewerAuthenticationAccount

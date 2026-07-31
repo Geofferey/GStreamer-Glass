@@ -1256,6 +1256,23 @@ function Apply-ModernDashboardUi {
     Add-Field $r -Control $btnViewerAuthenticationSaveExitCache -Width 145 | Out-Null
     Add-Field $r -Control $btnViewerAuthenticationDestroyExitCache -Width 135 | Out-Null
     $r = Add-Row $s
+    Add-Field $r -Label 'Proxy domain (link only)' -Control $txtViewerAuthenticationTemporaryLinkProxyDomain -Width 300 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Label 'Temporary link minutes' -Control $numViewerAuthenticationTemporaryLinkMinutes -Width 100 | Out-Null
+    Add-Field $r -Control $chkViewerAuthenticationTemporaryLinkSingleUse -Width 150 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Label 'Restrict to client IP (optional)' -Control $txtViewerAuthenticationTemporaryLinkRestrictedIp -Width 180 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Control $btnViewerAuthenticationGenerateTemporaryLink -Width 175 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Label 'Generated link' -Control $txtViewerAuthenticationGeneratedTemporaryLink -Width 350 | Out-Null
+    Add-Field $r -Control $btnViewerAuthenticationCopyTemporaryLink -Width 85 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Label 'Active temporary links' -Control $lstViewerAuthenticationTemporaryLinks -Width 440 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Control $btnViewerAuthenticationRevokeTemporaryLink -Width 145 | Out-Null
+    Add-Field $r -Control $btnViewerAuthenticationRefreshTemporaryLinks -Width 105 | Out-Null
+    $r = Add-Row $s
     Add-Field $r -Label 'Trusted proxy IPs' -Control $lstViewerAuthenticationTrustedProxies -Width 300 | Out-Null
     $r = Add-Row $s
     Add-Field $r -Label 'Proxy IP' -Control $txtViewerAuthenticationTrustedProxy -Width 220 | Out-Null
@@ -1483,6 +1500,10 @@ function Apply-ModernDashboardUi {
         $btnViewerAuthenticationEnableTotp, $btnViewerAuthenticationDisableTotp,
         $numViewerAuthenticationSessionHours, $chkViewerAuthenticationAllowPlaintext, $chkViewerAuthenticationKeepOnRestart, $chkViewerAuthenticationKeepOnExit,
         $lblViewerAuthenticationExitCacheStatus, $btnViewerAuthenticationSaveExitCache, $btnViewerAuthenticationDestroyExitCache,
+        $txtViewerAuthenticationTemporaryLinkProxyDomain, $numViewerAuthenticationTemporaryLinkMinutes, $chkViewerAuthenticationTemporaryLinkSingleUse,
+        $txtViewerAuthenticationTemporaryLinkRestrictedIp, $btnViewerAuthenticationGenerateTemporaryLink,
+        $txtViewerAuthenticationGeneratedTemporaryLink, $btnViewerAuthenticationCopyTemporaryLink,
+        $lstViewerAuthenticationTemporaryLinks, $btnViewerAuthenticationRevokeTemporaryLink, $btnViewerAuthenticationRefreshTemporaryLinks,
         $lstViewerAuthenticationTrustedProxies, $txtViewerAuthenticationTrustedProxy,
         $btnViewerAuthenticationTrustedProxyAdd, $btnViewerAuthenticationTrustedProxyRemove,
         $btnResetTransport, $btnResetWebRtcSane, $btnResetVideo, $btnResetAudio,
@@ -1517,7 +1538,7 @@ function Apply-ModernDashboardUi {
         $chkRecordingTemporalAq, $chkRecordingDesktopAudio, $chkRecordingMic,
         $chkDdnsEnabled, $chkDdnsCloudflareProxied,
         $chkEmbeddedTlsEnabled, $chkTlsAllowInsecurePorts,
-        $chkLetsEncryptEnabled, $chkLetsEncryptStaging, $chkViewerAuthenticationEnabled, $chkViewerAuthenticationAllowPlaintext, $chkViewerAuthenticationKeepOnRestart, $chkViewerAuthenticationKeepOnExit,
+        $chkLetsEncryptEnabled, $chkLetsEncryptStaging, $chkViewerAuthenticationEnabled, $chkViewerAuthenticationAllowPlaintext, $chkViewerAuthenticationKeepOnRestart, $chkViewerAuthenticationKeepOnExit, $chkViewerAuthenticationTemporaryLinkSingleUse,
         $chkPreview, $chkHidePreviewDuringStream, $chkAutoRestart, $chkVerbose, $chkDiskProcessLogging,
         $chkCustomGstArgumentsEnabled,
         $chkMinimizeToTray, $chkStartMinimized, $chkPsDebug
