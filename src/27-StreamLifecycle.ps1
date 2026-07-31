@@ -806,6 +806,16 @@ function Stop-GstStream {
         Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Marking the stream intentionally stopped before pipeline teardown."
         Set-DirectWebRtcStreamStopMarker -IntentionalStop $true
     }
+
+    # A checked "Require viewer login" keeps the existing proxy/session
+    # lifecycle unchanged below. If it has been unchecked in the UI, the
+    # worker is still carrying the old live gate configuration and must not
+    # survive either Stop or Restart. Do this before the controlled-live early
+    # return so every pipeline topology follows the same rule; Restart will
+    # recreate only the proxy families still enabled by the current controls.
+    try { $null = Stop-AuthProxyWorkerIfViewerAuthenticationDisabled }
+    catch { Append-Log "AUTH: could not stop the disabled auth/proxy worker cleanly: $($_.Exception.Message)" }
+
     if (Stop-ControlledLiveStream -Restart:$Restart -AutomaticRestart:$AutomaticRestart -SuppressPreviewRestore:$SuppressPreviewRestore) { return }
 
     if ($script:DynamicScenePreviewActive) {

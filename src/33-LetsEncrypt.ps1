@@ -1434,6 +1434,33 @@ function Stop-AuthProxyWorker {
     $script:PlaintextAuthenticationSessionKey = $null
 }
 
+# Stop/Restart normally leaves the proxy worker alive so the existing viewer-
+# authentication lifecycle can either preserve or revoke sessions without
+# dropping the gate itself. Once "Require viewer login for HTTPS/WSS" is
+# unchecked there is no authentication gate to preserve, however, and keeping
+# the old worker alive would leave it enforcing the configuration captured
+# before the UI change. Stop it completely so a Restart rebuilds only the TLS
+# or plaintext families still requested by the CURRENT controls, while a full
+# Stop leaves no obsolete auth/proxy worker behind.
+#
+# Deliberately does nothing while viewer authentication is enabled. In
+# particular, the "Keep auth on restarts" checked/unchecked behavior remains
+# exactly where it already lives in 27-StreamLifecycle.ps1.
+function Stop-AuthProxyWorkerIfViewerAuthenticationDisabled {
+    if (Test-ViewerAuthenticationEnabled) { return $false }
+
+    $hadWorkerState = [bool](
+        (Test-AuthProxyWorkerRunning) -or
+        (@($script:LetsEncryptTlsProxies).Count -gt 0) -or
+        (@($script:PlaintextAuthProxies).Count -gt 0)
+    )
+    if (-not $hadWorkerState) { return $false }
+
+    Append-Log 'AUTH: viewer login is disabled; stopping the auth/proxy worker for this Stop/Restart.'
+    Stop-AuthProxyWorker
+    return $true
+}
+
 function Start-LetsEncryptTlsProxies {
     if (-not (Test-EmbeddedTlsActive)) { return }
 
