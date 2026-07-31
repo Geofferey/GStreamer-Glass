@@ -220,6 +220,32 @@ try {
     Assert-ViewerAuth $scriptNonceMatch.Success 'Login page heartbeat script tag was missing a nonce attribute.'
     Assert-ViewerAuth ($cspNonceMatch.Groups[1].Value -eq $scriptNonceMatch.Groups[1].Value) 'CSP nonce did not match the script tag nonce.'
 
+    # Installed PWAs always reopen to wherever they were installed FROM
+    # (confirmed platform behavior) -- the login page needs to be
+    # installable too, not just the player, so that install anchor is
+    # self-correcting (valid session redirects through; invalid just shows
+    # this same form) instead of stuck showing stale player content.
+    Assert-ViewerAuth ($response -match 'rel="manifest" href="/live/manifest\.webmanifest"') 'Login page was missing a manifest link.'
+    Assert-ViewerAuth ($response -match 'name="mobile-web-app-capable" content="yes"') 'Login page was missing PWA capability meta tags.'
+    # The manifest/icon <link> tags are useless if the page's own CSP then
+    # blocks the browser from actually fetching them -- default-src 'none'
+    # implicitly blocks manifest-src/img-src too unless stated explicitly.
+    Assert-ViewerAuth ($response -match "(?im)^Content-Security-Policy:.*manifest-src 'self'") 'Login page CSP did not permit fetching the manifest.'
+    Assert-ViewerAuth ($response -match "(?im)^Content-Security-Policy:.*img-src 'self'") 'Login page CSP did not permit fetching icons.'
+
+    # The manifest and icons it links must themselves be reachable without
+    # a session -- otherwise fetching them would get redirected to this
+    # same login page, the browser would fail to parse that as JSON, and
+    # the page would never be considered installable at all.
+    $manifestUpstream = [ViewerAuthTestUpstream]::ServeOne($upstreamPort, '{"name":"stub"}')
+    $response = Send-TlsRequest $proxyPort "GET /live/manifest.webmanifest HTTP/1.1`r`nHost: localhost`r`nConnection: close`r`n`r`n"
+    Assert-ViewerAuth ($response -match 'stub') 'Unauthenticated manifest request was not forwarded to the upstream.'
+    Assert-ViewerAuth $manifestUpstream.Result.StartsWith('GET /live/manifest.webmanifest') 'Unexpected manifest request reached the upstream.'
+    $iconUpstream = [ViewerAuthTestUpstream]::ServeOne($upstreamPort, 'icon-bytes')
+    $response = Send-TlsRequest $proxyPort "GET /live/icons/gstreamer-glass-192.png HTTP/1.1`r`nHost: localhost`r`nConnection: close`r`n`r`n"
+    Assert-ViewerAuth ($response -match 'icon-bytes') 'Unauthenticated icon request was not forwarded to the upstream.'
+    Assert-ViewerAuth $iconUpstream.Result.StartsWith('GET /live/icons/gstreamer-glass-192.png') 'Unexpected icon request reached the upstream.'
+
     $response = Send-TlsRequest $proxyPort "GET /__gstglass/auth/login?return=%2Flive%2F HTTP/1.1`r`nHost: localhost`r`nConnection: close`r`n`r`n"
     Assert-ViewerAuth $response.StartsWith('HTTP/1.1 200') 'Legacy root login alias was not served.'
     $response = Send-TlsRequest $proxyPort "GET /live/__gstglass/auth/login?return=%2Flive%2F HTTP/1.1`r`nHost: localhost`r`nConnection: close`r`n`r`n"
@@ -244,6 +270,24 @@ try {
     $response = Send-TlsRequest $proxyPort "GET /live/ HTTP/1.1`r`nHost: localhost`r`nCookie: $cookiePair`r`nConnection: close`r`n`r`n"
     Assert-ViewerAuth ($response -match 'viewer-ok') 'Authorized viewer request did not reach the upstream.'
     Assert-ViewerAuth $viewerUpstream.Result.StartsWith('GET /live/') 'Unexpected authorized viewer request reached the upstream.'
+
+    # The viewer document itself must never be cacheable while auth is
+    # enforced -- a stale cached copy served after a real logout is exactly
+    # what let a logged-out browser keep showing the player without ever
+    # re-hitting this gate. The stub upstream sends no Cache-Control at all,
+    # so seeing one here proves the proxy injected it on the way out.
+    Assert-ViewerAuth ($response -match '(?im)^Cache-Control:.*no-store') 'Viewer document response was not marked no-store.'
+    Assert-ViewerAuth ($response -match '(?im)^Pragma:\s*no-cache\r?$') 'Viewer document response was missing Pragma: no-cache.'
+    Assert-ViewerAuth ($response -match '(?im)^Expires:\s*0\r?$') 'Viewer document response was missing Expires: 0.'
+
+    # A sub-resource under the same mount (not the document itself) must be
+    # left alone -- blanket no-store on every forwarded response would
+    # needlessly defeat legitimate caching of static assets.
+    $assetUpstream = [ViewerAuthTestUpstream]::ServeOne($upstreamPort, 'asset-ok')
+    $response = Send-TlsRequest $proxyPort "GET /live/config.js HTTP/1.1`r`nHost: localhost`r`nCookie: $cookiePair`r`nConnection: close`r`n`r`n"
+    Assert-ViewerAuth ($response -match 'asset-ok') 'Authorized asset request did not reach the upstream.'
+    Assert-ViewerAuth $assetUpstream.Result.StartsWith('GET /live/config.js') 'Unexpected asset request reached the upstream.'
+    Assert-ViewerAuth ($response -notmatch 'Cache-Control') 'A sub-resource response was unexpectedly marked no-store.'
 
     # /auth/status: the dedicated session heartbeat player.js polls directly,
     # always answered locally regardless of upstream/GST state.

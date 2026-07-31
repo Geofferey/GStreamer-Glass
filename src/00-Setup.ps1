@@ -2172,7 +2172,7 @@ public class TlsTerminatingProxy
                 // certificate == null (plaintext-auth mode) skips the TLS
                 // handshake entirely and runs everything below directly over
                 // the raw NetworkStream -- see Start(). SslStream derives
-                // from Stream, so every helper below (ReadHttpRequestHeaderAsync,
+                // from Stream, so every helper below (ReadHttpHeaderBlockAsync,
                 // HandleAuthenticationAsync, PumpAsync, etc.) already takes the
                 // generic Stream type and needs no changes for this.
                 Stream stream = client.GetStream();
@@ -2216,12 +2216,13 @@ public class TlsTerminatingProxy
                 {
                     int effectivePort = targetPort;
                     byte[] headerBytes = new byte[0];
+                    bool suppressDocumentCaching = false;
                     if (pathRoutes.Count > 0 ||
                         authenticationEnabled ||
                         !string.IsNullOrEmpty(DirectoryRedirectPath) ||
                         !string.IsNullOrEmpty(AuthenticationMountPath))
                     {
-                        headerBytes = await ReadHttpRequestHeaderAsync(stream);
+                        headerBytes = await ReadHttpHeaderBlockAsync(stream);
                         if (headerBytes.Length == 0) return;
                         if (!string.IsNullOrEmpty(DirectoryRedirectPath) && await RedirectMissingTrailingSlashAsync(stream, headerBytes))
                         {
@@ -2250,7 +2251,7 @@ public class TlsTerminatingProxy
                             }
                             return;
                         }
-                        if (authenticationEnabled &&
+                        if (authenticationEnabled && !IsPublicPwaAssetPath(requestPath) &&
                             await HandleAuthenticationAsync(stream, client, headerBytes))
                         {
                             return;
@@ -2283,9 +2284,19 @@ public class TlsTerminatingProxy
                         // response makes the browser open a new connection for
                         // its next request, which runs this same header-peek /
                         // auth / routing gate again from scratch.
-                        if (!IsWebSocketUpgradeRequest(headerBytes))
+                        bool isWebSocketUpgrade = IsWebSocketUpgradeRequest(headerBytes);
+                        if (!isWebSocketUpgrade)
                         {
                             headerBytes = ForceConnectionCloseHeader(headerBytes);
+                            // See InjectNoStoreCacheControlHeader's comment -- a
+                            // stale cached copy of the viewer document served
+                            // straight from disk cache after a real logout is
+                            // exactly what let a logged-out browser keep showing
+                            // the player without ever re-hitting this gate. Only
+                            // relevant while auth is actually enforced; otherwise
+                            // there is no session to protect and no reason to
+                            // change existing caching behavior.
+                            suppressDocumentCaching = authenticationEnabled && IsDocumentEntryPath(requestPath);
                         }
                     }
 
@@ -2326,7 +2337,9 @@ public class TlsTerminatingProxy
                             {
                                 if (headerBytes.Length > 0) await upstreamStream.WriteAsync(headerBytes, 0, headerBytes.Length);
                                 Task toUpstream = PumpAsync(stream, upstreamStream);
-                                Task toClient = PumpAsync(upstreamStream, stream);
+                                Task toClient = suppressDocumentCaching
+                                    ? PumpResponseWithNoStoreAsync(upstreamStream, stream)
+                                    : PumpAsync(upstreamStream, stream);
                                 await Task.WhenAny(toUpstream, toClient);
                             }
                         }
@@ -2876,7 +2889,27 @@ public class TlsTerminatingProxy
             "function check(){fetch('/auth/status',{cache:'no-store'}).then(function(r){return r.ok?r.json():null;})" +
             ".then(function(d){if(d&&d.authenticated){location.replace(t);}}).catch(function(){});}" +
             "check();setInterval(check,2000);})();</script>";
-        string html = "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">" +
+        // Installable from here too, not just the player -- the whole point
+        // being that an installed PWA always reopens to wherever it was
+        // installed FROM (confirmed platform behavior, not something either
+        // page can override), so an install anchored on /auth/login is
+        // self-correcting on every relaunch: a still-valid session already
+        // 303s straight through to the viewer (see the GET branch of the
+        // /auth/login handler above), an invalid one just shows this same
+        // form again. No manifest URL is mount-relative here the way
+        // index.html's is -- this page lives at the origin root, not under
+        // the viewer mount, so GetMountedViewerPath() builds an absolute
+        // reference to the same manifest/icons index.html uses.
+        string pwaMountPath = GetMountedViewerPath();
+        string manifestUrl = pwaMountPath + "manifest.webmanifest";
+        string iconUrl = pwaMountPath + "icons/gstreamer-glass-192.png";
+        string html = "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1,viewport-fit=cover\">" +
+            "<meta name=\"theme-color\" content=\"#07111f\"><meta name=\"mobile-web-app-capable\" content=\"yes\">" +
+            "<meta name=\"apple-mobile-web-app-capable\" content=\"yes\"><meta name=\"apple-mobile-web-app-status-bar-style\" content=\"black-translucent\">" +
+            "<meta name=\"apple-mobile-web-app-title\" content=\"Glass Live\">" +
+            "<link rel=\"manifest\" href=\"" + WebUtility.HtmlEncode(manifestUrl) + "\" crossorigin=\"use-credentials\">" +
+            "<link rel=\"icon\" type=\"image/png\" sizes=\"192x192\" href=\"" + WebUtility.HtmlEncode(iconUrl) + "\">" +
+            "<link rel=\"apple-touch-icon\" href=\"" + WebUtility.HtmlEncode(iconUrl) + "\">" +
             "<title>GStreamer Glass - Viewer Login</title><style>html{color-scheme:dark}*{box-sizing:border-box}" +
             // backdrop-filter blur only produces a visible effect when there is
             // actual detail behind the element to blur -- the in-player .overlay
@@ -2951,13 +2984,25 @@ public class TlsTerminatingProxy
         response.Append("HTTP/1.1 ").Append(statusCode).Append(' ').Append(reason).Append("\r\n");
         response.Append("Content-Type: ").Append(contentType).Append("\r\n");
         response.Append("Content-Length: ").Append(bodyBytes.Length).Append("\r\n");
-        response.Append("Cache-Control: no-store\r\n");
+        // no-store alone is the strongest, spec-correct directive (and the
+        // one actually verified fixing the auth-gate-bypass-via-cache bug),
+        // but the full belt-and-suspenders set costs nothing and covers
+        // older/nonstandard caches that only honor Pragma/Expires.
+        response.Append("Cache-Control: no-store, no-cache, must-revalidate, max-age=0\r\n");
+        response.Append("Pragma: no-cache\r\n");
+        response.Append("Expires: 0\r\n");
         // script-src is omitted (falling back to default-src 'none', blocking
         // all script execution) unless a caller explicitly opts a specific
         // response into running one nonce-tagged inline script -- see
         // WriteLoginPageAsync's session-heartbeat script for the only current
-        // user of this.
-        string contentSecurityPolicy = "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'";
+        // user of this. manifest-src/img-src are both explicit (rather than
+        // also inheriting default-src 'none') because WriteLoginPageAsync
+        // links the PWA manifest and icons so the login page is installable
+        // too -- without these, the <link> tags are present in the HTML but
+        // the browser silently refuses to actually fetch either one, so
+        // Chrome never sees a valid manifest and never offers to install
+        // the page at all, regardless of how correct the markup is.
+        string contentSecurityPolicy = "default-src 'none'; style-src 'unsafe-inline'; manifest-src 'self'; img-src 'self'; form-action 'self'; frame-ancestors 'none'";
         if (!string.IsNullOrEmpty(scriptNonce))
         {
             contentSecurityPolicy += "; script-src 'nonce-" + scriptNonce + "'";
@@ -3433,14 +3478,42 @@ public class TlsTerminatingProxy
         }
     }
 
-    // Reads exactly up through the blank line that ends an HTTP request's
-    // headers (no body is expected for a GET/WebSocket-upgrade request), one
-    // byte at a time -- this runs once per connection at setup, not on the
-    // media data path, so simplicity wins over throughput here. Whatever is
-    // read is later replayed verbatim to the chosen upstream so no bytes are
-    // lost to the peek. Bails out (returning what it has) past a generous cap
-    // so a non-HTTP or malformed client can't buffer unbounded data.
-    private static async Task<byte[]> ReadHttpRequestHeaderAsync(Stream stream)
+    // Same as PumpAsync, but for the one response this proxy actually cares
+    // about the caching behavior of (see IsDocumentEntryPath/
+    // InjectNoStoreCacheControlHeader): peeks and rewrites just the
+    // upstream's response header block, writes that out, then falls back to
+    // a plain transparent copy for the body/rest of the connection exactly
+    // like PumpAsync. Never parses/buffers the body itself, so this stays
+    // safe for arbitrarily large responses.
+    private static async Task PumpResponseWithNoStoreAsync(Stream source, Stream destination)
+    {
+        try
+        {
+            byte[] responseHeader = await ReadHttpHeaderBlockAsync(source);
+            if (responseHeader.Length > 0)
+            {
+                byte[] rewritten = InjectNoStoreCacheControlHeader(responseHeader);
+                await destination.WriteAsync(rewritten, 0, rewritten.Length);
+            }
+            await source.CopyToAsync(destination);
+        }
+        catch
+        {
+        }
+    }
+
+    // Reads exactly up through the blank line that ends an HTTP message's
+    // headers, one byte at a time -- generic over direction (a request's
+    // headers and a response's headers both end in the same "\r\n\r\n", and
+    // this makes no assumptions about which side of the connection it's
+    // reading), used both for the client's initial request (this runs once
+    // per connection at setup, not on the media data path, so simplicity
+    // wins over throughput here) and, in PumpResponseWithNoStoreAsync, for
+    // peeking the upstream's response headers on the way back out. Whatever
+    // is read is later replayed verbatim so no bytes are lost to the peek.
+    // Bails out (returning what it has) past a generous cap so a non-HTTP or
+    // malformed peer can't buffer unbounded data.
+    private static async Task<byte[]> ReadHttpHeaderBlockAsync(Stream stream)
     {
         List<byte> buffer = new List<byte>();
         byte[] one = new byte[1];
@@ -3473,6 +3546,37 @@ public class TlsTerminatingProxy
         int query = path.IndexOf('?');
         if (query >= 0) path = path.Substring(0, query);
         return path.TrimEnd('/');
+    }
+
+    // True for the actual navigable document (the viewer mount root, e.g.
+    // "/live", and its index.html) as opposed to sub-resources fetched by
+    // that page (player.js, config.js, images, ...). Matters specifically
+    // for cache suppression: the document itself must always be refetched
+    // so an invalidated session gets caught by the auth gate on every
+    // navigation, but blanket no-store on every forwarded response would
+    // needlessly defeat legitimate, harmless caching of static assets that
+    // already use their own cache-busted URLs (player.js's ?v=...&t=...).
+    private bool IsDocumentEntryPath(string path)
+    {
+        if (string.IsNullOrEmpty(DirectoryRedirectPath) || string.IsNullOrEmpty(path)) return false;
+        string mount = DirectoryRedirectPath.TrimEnd('/');
+        string trimmed = path.TrimEnd('/');
+        return string.Equals(trimmed, mount, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(trimmed, mount + "/index.html", StringComparison.OrdinalIgnoreCase);
+    }
+
+    // The PWA manifest and its icons must be reachable without a valid
+    // session -- WriteLoginPageAsync links them too (so the login page
+    // itself is installable, not just the player), and if fetching the
+    // manifest got redirected to /auth/login like any other gated
+    // sub-resource, the browser would try to parse that HTML as JSON and
+    // never consider the page installable in the first place. Neither file
+    // is sensitive: a manifest and some branding icons, not viewer content.
+    private static bool IsPublicPwaAssetPath(string path)
+    {
+        if (string.IsNullOrEmpty(path)) return false;
+        return path.EndsWith("/manifest.webmanifest", StringComparison.OrdinalIgnoreCase) ||
+            path.IndexOf("/icons/", StringComparison.OrdinalIgnoreCase) >= 0;
     }
 
     private static bool IsWebSocketUpgradeRequest(byte[] header)
@@ -3521,6 +3625,61 @@ public class TlsTerminatingProxy
             // insert just before those so the blank-line terminator survives.
             int insertAt = rebuilt.Count >= 2 ? rebuilt.Count - 2 : rebuilt.Count;
             rebuilt.Insert(Math.Max(0, insertAt), "Connection: close");
+        }
+        try { return Encoding.ASCII.GetBytes(string.Join("\r\n", rebuilt)); }
+        catch { return header; }
+    }
+
+    // There is no way to reach into a browser's cache and purge a specific
+    // already-cached response after the fact -- the only lever a server has
+    // is what Cache-Control it sends on each response going forward. So
+    // "invalidate the viewer document on logout" has to mean "never let it
+    // become cacheable while auth is in play at all": a stale cached copy
+    // of /live/ served straight from disk cache after a real logout is
+    // exactly what let a logged-out browser keep showing the player instead
+    // of ever re-hitting this gate. Only touches the Cache-Control header
+    // (see InjectNoStoreCacheControlHeader) -- everything else about the
+    // forwarded response is untouched. Deliberately NOT applied when
+    // authenticationEnabled is false: with no session to protect, this
+    // would just be an unrequested behavior change with no upside.
+    private static byte[] InjectNoStoreCacheControlHeader(byte[] header)
+    {
+        // no-store alone is the strongest, spec-correct directive, but the
+        // full belt-and-suspenders set (matching WriteHttpResponseAsync's
+        // own locally-answered responses) costs nothing and covers
+        // older/nonstandard caches that only honor Pragma/Expires.
+        Dictionary<string, string> replacements = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            { "Cache-Control", "Cache-Control: no-store, no-cache, must-revalidate, max-age=0" },
+            { "Pragma", "Pragma: no-cache" },
+            { "Expires", "Expires: 0" }
+        };
+        string text;
+        try { text = Encoding.ASCII.GetString(header); }
+        catch { return header; }
+        string[] lines = text.Split(new string[] { "\r\n" }, StringSplitOptions.None);
+        List<string> rebuilt = new List<string>();
+        HashSet<string> seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (string line in lines)
+        {
+            int separator = line.IndexOf(':');
+            string name = separator > 0 ? line.Substring(0, separator).Trim() : null;
+            string replacement;
+            if (name != null && replacements.TryGetValue(name, out replacement))
+            {
+                rebuilt.Add(replacement);
+                seen.Add(name);
+            }
+            else
+            {
+                rebuilt.Add(line);
+            }
+        }
+        int insertAt = rebuilt.Count >= 2 ? rebuilt.Count - 2 : rebuilt.Count;
+        foreach (KeyValuePair<string, string> entry in replacements)
+        {
+            if (seen.Contains(entry.Key)) continue;
+            rebuilt.Insert(Math.Max(0, insertAt), entry.Value);
         }
         try { return Encoding.ASCII.GetBytes(string.Join("\r\n", rebuilt)); }
         catch { return header; }

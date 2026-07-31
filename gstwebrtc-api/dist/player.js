@@ -1,5 +1,5 @@
 (() => {
-  const FRONTEND_VERSION = '3.8-viewer-auth-38';
+  const FRONTEND_VERSION = '3.8-viewer-auth-40';
   console.info(`[GStreamer Glass Live] frontend ${FRONTEND_VERSION}`);
   const playerRoot = document.getElementById('playerRoot');
   const video = document.getElementById('video');
@@ -3736,11 +3736,40 @@
   document.addEventListener('keydown', () => revealPlayerUi('keydown'));
   document.addEventListener('focusin', () => revealPlayerUi('focusin'));
   window.addEventListener('resize', () => applyVideoZoom(state.videoZoom.scale, state.videoZoom.x, state.videoZoom.y, 'resize'));
+  // A PWA relaunched from its home-screen icon after being swiped away is
+  // not guaranteed to be a fresh process/script execution -- Android/Chrome
+  // can instead resume a frozen, previously-loaded renderer as-is (same DOM,
+  // same JS state, same possibly-stale config.configReloadTimer), showing
+  // whatever the page looked like when it was backgrounded rather than
+  // re-running the auth/redirect checks a true fresh load would. This is
+  // exactly why "logged out, closed the PWA, reopened it" could land back
+  // on the player instead of staying on login -- nothing ever re-validated
+  // the session against the resumed page. visibilitychange and pageshow are
+  // the standard signals for "this page is back, possibly stale, worth
+  // re-checking" (pageshow specifically fires on bfcache/frozen-page
+  // restores) -- restarting the whole config/stream-state/auth poll loop
+  // (not just a one-off check) on both also recovers from the interval
+  // itself having been frozen/killed during the background period.
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') { syncScreenWakeLock('visibility-visible', true); scheduleFullscreenRenderRecovery('visibility-visible', 200); }
+    if (document.visibilityState === 'visible') { syncScreenWakeLock('visibility-visible', true); scheduleFullscreenRenderRecovery('visibility-visible', 200); startConfigReloadTimer(); }
     else syncScreenWakeLock('visibility-hidden');
   });
-  window.addEventListener('pageshow', () => { syncScreenWakeLock('pageshow', true); scheduleFullscreenRenderRecovery('pageshow', 200); });
+  window.addEventListener('pageshow', (event) => {
+    syncScreenWakeLock('pageshow', true);
+    scheduleFullscreenRenderRecovery('pageshow', 200);
+    if (event.persisted) {
+      // event.persisted means the browser has confirmed this is a genuine
+      // bfcache restore (cached document AND cached JS state), not a fresh
+      // load -- nothing about whatever is currently running, however stale
+      // it might be, can be trusted to self-correct from in here. A hard
+      // reload forces a real fresh fetch of the document, which the
+      // no-store headers on it now guarantee re-hits the auth gate rather
+      // than resuming whatever was cached.
+      location.reload();
+      return;
+    }
+    startConfigReloadTimer();
+  });
   window.addEventListener('focus', () => { syncScreenWakeLock('window-focus', true); scheduleFullscreenRenderRecovery('window-focus', 200); });
 
 
