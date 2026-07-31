@@ -26,12 +26,45 @@ param(
     [switch]$WebRtcPortRangeWorker,
     [string]$WebRtcPortRangeWorkerPipe,
     [switch]$AuthProxyWorker,
-    [string]$AuthProxyWorkerPipe
+    [string]$AuthProxyWorkerPipe,
+    [switch]$AuthCacheCryptoSelfTest
 )
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
+# ProtectedData lives in System.Security.dll on Windows PowerShell/.NET
+# Framework. An interactive console often has that assembly loaded already,
+# but a PS12EXE no-console host does not; without this explicit load, merely
+# resolving [System.Security.Cryptography.ProtectedData] throws from the UI
+# button handler before our cache-level try/catch can run.
+Add-Type -AssemblyName System.Security
 [System.Windows.Forms.Application]::EnableVisualStyles()
+
+# Hidden build-smoke-test entry point. Running the compiled EXE with this
+# switch proves the exact PS12EXE host can load System.Security and complete a
+# current-user DPAPI round trip, instead of trusting a console PowerShell test
+# whose assembly set differs from the shipped executable.
+if ($AuthCacheCryptoSelfTest) {
+    try {
+        $sample = [System.Text.Encoding]::UTF8.GetBytes('gstglass-auth-cache-self-test')
+        $entropy = [System.Text.Encoding]::UTF8.GetBytes('gstglass-auth-cache-self-test-entropy')
+        $encrypted = [System.Security.Cryptography.ProtectedData]::Protect(
+            $sample,
+            $entropy,
+            [System.Security.Cryptography.DataProtectionScope]::CurrentUser
+        )
+        $roundTrip = [System.Security.Cryptography.ProtectedData]::Unprotect(
+            $encrypted,
+            $entropy,
+            [System.Security.Cryptography.DataProtectionScope]::CurrentUser
+        )
+        if ([Convert]::ToBase64String($sample) -ne [Convert]::ToBase64String($roundTrip)) { exit 72 }
+        exit 0
+    }
+    catch {
+        exit 71
+    }
+}
 
 
 if (-not ('GstExecutableBrowser' -as [type])) {
@@ -1906,6 +1939,12 @@ public class TlsTerminatingProxy
         public DateTime LockedUntilUtc;
     }
 
+    public sealed class AuthenticationSessionState
+    {
+        public string Token;
+        public long Expires;
+    }
+
     public void ConfigureAuthentication(bool enabled, AuthenticationAccount[] accounts, byte[] sessionKey, int sessionHours)
     {
         authenticationEnabled = enabled;
@@ -2175,6 +2214,40 @@ public class TlsTerminatingProxy
     public void RevokeAllSessions()
     {
         activeAuthenticationSessions.Clear();
+    }
+
+    // The UI process uses these two methods only for the opt-in
+    // "Keep auth on exit" cache. Session tokens are still useless without
+    // the per-family HMAC key and are additionally protected at rest with
+    // Windows DPAPI; keeping the registry is necessary because validation
+    // deliberately requires both a sound signature and live membership.
+    public AuthenticationSessionState[] ExportActiveAuthenticationSessions()
+    {
+        RemoveExpiredAuthenticationSessions();
+        List<AuthenticationSessionState> result = new List<AuthenticationSessionState>();
+        foreach (KeyValuePair<string, long> session in activeAuthenticationSessions)
+        {
+            result.Add(new AuthenticationSessionState { Token = session.Key, Expires = session.Value });
+        }
+        return result.ToArray();
+    }
+
+    public void RestoreActiveAuthenticationSessions(AuthenticationSessionState[] sessions)
+    {
+        activeAuthenticationSessions.Clear();
+        if (sessions == null) return;
+        long now = ToUnixTimeSeconds(DateTime.UtcNow);
+        int restored = 0;
+        foreach (AuthenticationSessionState session in sessions)
+        {
+            if (session == null || string.IsNullOrWhiteSpace(session.Token) || session.Expires < now) continue;
+            string[] tokenParts = session.Token.Split('.');
+            long tokenExpiry;
+            if (tokenParts.Length != 4 || !long.TryParse(tokenParts[0], out tokenExpiry) || tokenExpiry != session.Expires) continue;
+            activeAuthenticationSessions[session.Token] = session.Expires;
+            restored++;
+            if (restored >= 4096) break;
+        }
     }
 
     public string PollLogMessage()
@@ -3953,6 +4026,26 @@ if ($AuthProxyWorker) {
                 if ($any) { try { $any.RevokeAllSessions() } catch {} }
                 return @{ Status = 'Ready'; Error = '' }
             }
+            'ExportSessions' {
+                $any = (@($proxiesByFamily['LetsEncrypt']) + @($proxiesByFamily['Plaintext'])) | Select-Object -First 1
+                $sessions = if ($any) { @($any.ExportActiveAuthenticationSessions()) } else { @() }
+                return @{ Status = 'Ready'; Error = ''; SessionCount = @($sessions).Count; Sessions = $sessions }
+            }
+            'ImportSessions' {
+                $any = (@($proxiesByFamily['LetsEncrypt']) + @($proxiesByFamily['Plaintext'])) | Select-Object -First 1
+                if ($any) {
+                    $sessions = [TlsTerminatingProxy+AuthenticationSessionState[]]@(
+                        @($Command.Sessions) | ForEach-Object {
+                            $state = New-Object TlsTerminatingProxy+AuthenticationSessionState
+                            $state.Token = [string]$_.Token
+                            $state.Expires = [long]$_.Expires
+                            $state
+                        }
+                    )
+                    $any.RestoreActiveAuthenticationSessions($sessions)
+                }
+                return @{ Status = 'Ready'; Error = ''; SessionCount = @($Command.Sessions).Count }
+            }
             'PollLog' {
                 $messages = New-Object System.Collections.Generic.List[string]
                 foreach ($proxy in (@($proxiesByFamily['LetsEncrypt']) + @($proxiesByFamily['Plaintext']))) {
@@ -4253,6 +4346,7 @@ $script:DefaultViewerAuthenticationEnabled = $false
 $script:DefaultViewerAuthenticationSessionHours = 12
 $script:DefaultViewerAuthenticationAllowPlaintext = $false
 $script:DefaultViewerAuthenticationKeepOnRestart = $false
+$script:DefaultViewerAuthenticationKeepOnExit = $false
 $script:DefaultViewerAuthenticationTrustedProxies = ''
 # Named accounts, each @{ Username; PasswordHash }. Only the salted
 # PBKDF2-HMAC-SHA256 hash is ever persisted -- see Add-ViewerAuthenticationAccount

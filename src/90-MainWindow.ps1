@@ -983,6 +983,34 @@ $chkViewerAuthenticationKeepOnRestart.Checked = $script:DefaultViewerAuthenticat
 $settingsGroup.Controls.Add($chkViewerAuthenticationKeepOnRestart)
 $toolTip.SetToolTip($chkViewerAuthenticationKeepOnRestart, "Off by default. Only applies while 'Require viewer login' is also checked. Normally, stopping the stream (including a Start/Stop/Restart cycle) also stops the TLS/plaintext-auth proxies, which drops every viewer's session -- they have to log in again once you go live again. Check this to keep those proxies running across Start/Stop/Restart instead, so already-authenticated viewers stay logged in the whole time; their browser just sees the stream go offline and come back.")
 
+$chkViewerAuthenticationKeepOnExit = New-Object System.Windows.Forms.CheckBox
+$chkViewerAuthenticationKeepOnExit.Text = 'Keep auth on exit (restore signed-in viewers after relaunch)'
+$chkViewerAuthenticationKeepOnExit.Location = New-Object System.Drawing.Point(15, 548)
+$chkViewerAuthenticationKeepOnExit.Size = New-Object System.Drawing.Size(420, 24)
+$chkViewerAuthenticationKeepOnExit.Checked = $script:DefaultViewerAuthenticationKeepOnExit
+$settingsGroup.Controls.Add($chkViewerAuthenticationKeepOnExit)
+$toolTip.SetToolTip($chkViewerAuthenticationKeepOnExit, "Off by default. When Glass exits normally, encrypts the active viewer-session registry and signing keys for the current Windows user. On the next launch, unexpired browser sessions are restored when the authentication proxy starts. Unchecking this immediately deletes the saved state.")
+
+$lblViewerAuthenticationExitCacheStatus = New-Object System.Windows.Forms.Label
+$lblViewerAuthenticationExitCacheStatus.Text = 'Exit auth cache: not inspected'
+$lblViewerAuthenticationExitCacheStatus.Location = New-Object System.Drawing.Point(15, 548)
+$lblViewerAuthenticationExitCacheStatus.Size = New-Object System.Drawing.Size(440, 24)
+$settingsGroup.Controls.Add($lblViewerAuthenticationExitCacheStatus)
+
+$btnViewerAuthenticationSaveExitCache = New-Object System.Windows.Forms.Button
+$btnViewerAuthenticationSaveExitCache.Text = 'Save auth cache now'
+$btnViewerAuthenticationSaveExitCache.Location = New-Object System.Drawing.Point(15, 548)
+$btnViewerAuthenticationSaveExitCache.Size = New-Object System.Drawing.Size(145, 27)
+$settingsGroup.Controls.Add($btnViewerAuthenticationSaveExitCache)
+$toolTip.SetToolTip($btnViewerAuthenticationSaveExitCache, 'Immediately exports the live auth-worker session registry and encrypts it to disk. Useful for testing without closing Glass; details are written to the UI log.')
+
+$btnViewerAuthenticationDestroyExitCache = New-Object System.Windows.Forms.Button
+$btnViewerAuthenticationDestroyExitCache.Text = 'Destroy auth cache'
+$btnViewerAuthenticationDestroyExitCache.Location = New-Object System.Drawing.Point(15, 548)
+$btnViewerAuthenticationDestroyExitCache.Size = New-Object System.Drawing.Size(135, 27)
+$settingsGroup.Controls.Add($btnViewerAuthenticationDestroyExitCache)
+$toolTip.SetToolTip($btnViewerAuthenticationDestroyExitCache, 'Deletes the encrypted exit cache and turns off Keep auth on exit so closing Glass cannot immediately recreate it.')
+
 $lstViewerAuthenticationTrustedProxies = New-Object System.Windows.Forms.ListBox
 $lstViewerAuthenticationTrustedProxies.Location = New-Object System.Drawing.Point(15, 548)
 $lstViewerAuthenticationTrustedProxies.Size = New-Object System.Drawing.Size(300, 72)
@@ -4252,6 +4280,35 @@ $chkTlsAllowInsecurePorts.Add_CheckedChanged({ Update-EmbeddedTlsUi })
 $chkViewerAuthenticationEnabled.Add_CheckedChanged({ Update-ViewerAuthenticationUi; Update-PlayerConfigFromUi })
 $chkViewerAuthenticationAllowPlaintext.Add_CheckedChanged({ Update-ViewerAuthenticationUi })
 $chkViewerAuthenticationKeepOnRestart.Add_CheckedChanged({ Update-ViewerAuthenticationUi })
+$chkViewerAuthenticationKeepOnExit.Add_CheckedChanged({
+    Update-ViewerAuthenticationUi
+    if (-not $script:LoadingSettings -and -not $chkViewerAuthenticationKeepOnExit.Checked) {
+        Clear-PersistedAuthenticationState
+        Update-PersistedAuthenticationStateUi
+    }
+})
+$btnViewerAuthenticationSaveExitCache.Add_Click({
+    $lowerTabs.SelectedTab = $tabLog
+    try {
+        Save-Settings
+        $null = Save-PersistedAuthenticationState -Manual
+        Update-PersistedAuthenticationStateUi
+    }
+    catch {
+        Append-Log "AUTH: unhandled manual-save failure: $($_.Exception.Message)"
+    }
+})
+$btnViewerAuthenticationDestroyExitCache.Add_Click({
+    $lowerTabs.SelectedTab = $tabLog
+    if ($chkViewerAuthenticationKeepOnExit.Checked) {
+        $chkViewerAuthenticationKeepOnExit.Checked = $false
+    }
+    else {
+        Clear-PersistedAuthenticationState -LogMissing
+    }
+    Save-Settings
+    Update-PersistedAuthenticationStateUi
+})
 $btnViewerAuthenticationAddAccount.Add_Click({ Add-ViewerAuthenticationAccount })
 $btnViewerAuthenticationRemoveAccount.Add_Click({ Remove-ViewerAuthenticationAccount })
 $btnViewerAuthenticationEnableTotp.Add_Click({ Enable-ViewerAuthenticationTotp })
@@ -5387,6 +5444,14 @@ $pollTimer.Start()
 $form.Add_Shown({
     Refresh-WebcamDevices
     Load-Settings
+    if (Test-KeepAuthenticationOnExit) {
+        Append-Log "AUTH: keep auth on exit is enabled; $(Get-PersistedAuthenticationStateSummary)"
+    }
+    else {
+        Append-Log 'AUTH: keep auth on exit is disabled; no saved viewer sessions will be restored'
+        Clear-PersistedAuthenticationState
+    }
+    Update-PersistedAuthenticationStateUi
     Write-PsDebugTrace "GStreamer Glass v$($script:AppVersion) started."
     # Repair legacy configs that contain StartMinimized=true alongside
     # MinimizeToTray=false, then write the corrected invariant immediately.

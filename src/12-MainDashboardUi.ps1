@@ -1249,6 +1249,13 @@ function Apply-ModernDashboardUi {
     $r = Add-Row $s
     Add-Field $r -Control $chkViewerAuthenticationKeepOnRestart -Width 420 | Out-Null
     $r = Add-Row $s
+    Add-Field $r -Control $chkViewerAuthenticationKeepOnExit -Width 420 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Control $lblViewerAuthenticationExitCacheStatus -Width 440 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Control $btnViewerAuthenticationSaveExitCache -Width 145 | Out-Null
+    Add-Field $r -Control $btnViewerAuthenticationDestroyExitCache -Width 135 | Out-Null
+    $r = Add-Row $s
     Add-Field $r -Label 'Trusted proxy IPs' -Control $lstViewerAuthenticationTrustedProxies -Width 300 | Out-Null
     $r = Add-Row $s
     Add-Field $r -Label 'Proxy IP' -Control $txtViewerAuthenticationTrustedProxy -Width 220 | Out-Null
@@ -1474,7 +1481,8 @@ function Apply-ModernDashboardUi {
         $txtViewerAuthenticationNewUsername, $txtViewerAuthenticationNewPassword,
         $btnViewerAuthenticationAddAccount, $btnViewerAuthenticationRemoveAccount,
         $btnViewerAuthenticationEnableTotp, $btnViewerAuthenticationDisableTotp,
-        $numViewerAuthenticationSessionHours, $chkViewerAuthenticationAllowPlaintext, $chkViewerAuthenticationKeepOnRestart,
+        $numViewerAuthenticationSessionHours, $chkViewerAuthenticationAllowPlaintext, $chkViewerAuthenticationKeepOnRestart, $chkViewerAuthenticationKeepOnExit,
+        $lblViewerAuthenticationExitCacheStatus, $btnViewerAuthenticationSaveExitCache, $btnViewerAuthenticationDestroyExitCache,
         $lstViewerAuthenticationTrustedProxies, $txtViewerAuthenticationTrustedProxy,
         $btnViewerAuthenticationTrustedProxyAdd, $btnViewerAuthenticationTrustedProxyRemove,
         $btnResetTransport, $btnResetWebRtcSane, $btnResetVideo, $btnResetAudio,
@@ -1509,7 +1517,7 @@ function Apply-ModernDashboardUi {
         $chkRecordingTemporalAq, $chkRecordingDesktopAudio, $chkRecordingMic,
         $chkDdnsEnabled, $chkDdnsCloudflareProxied,
         $chkEmbeddedTlsEnabled, $chkTlsAllowInsecurePorts,
-        $chkLetsEncryptEnabled, $chkLetsEncryptStaging, $chkViewerAuthenticationEnabled, $chkViewerAuthenticationAllowPlaintext, $chkViewerAuthenticationKeepOnRestart,
+        $chkLetsEncryptEnabled, $chkLetsEncryptStaging, $chkViewerAuthenticationEnabled, $chkViewerAuthenticationAllowPlaintext, $chkViewerAuthenticationKeepOnRestart, $chkViewerAuthenticationKeepOnExit,
         $chkPreview, $chkHidePreviewDuringStream, $chkAutoRestart, $chkVerbose, $chkDiskProcessLogging,
         $chkCustomGstArgumentsEnabled,
         $chkMinimizeToTray, $chkStartMinimized, $chkPsDebug

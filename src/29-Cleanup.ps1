@@ -46,6 +46,11 @@ function Invoke-ApplicationCleanup {
     Close-ControlledLiveWorkerPipe
     Close-WebRtcPortRangeWorkerPipe
     try { Remove-UpnpPortMappings -Quiet } catch {}
+    # Snapshot the live session table and signing keys before either proxy
+    # family or its worker is torn down. This is opt-in via the distinct
+    # "Keep auth on exit" checkbox and DPAPI-protected by the helper.
+    Append-Log 'AUTH: beginning clean-exit authentication snapshot before proxy teardown'
+    try { $null = Save-PersistedAuthenticationState } catch { Append-Log "AUTH: unhandled snapshot failure: $($_.Exception.Message)" }
     try { Stop-LetsEncryptTlsProxies } catch {}
     try { Stop-PlaintextAuthProxies } catch {}
     # Stop-*Proxies above only tell the auth proxy worker process to stop

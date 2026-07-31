@@ -61,6 +61,18 @@ $script:AuthProxyWorkerWriter = $null
 # writing a second request into the single request/reply channel.
 $script:AuthProxyWorkerCommandInFlight = $false
 
+# Opt-in, clean-exit authentication persistence. The file contains bearer
+# session tokens and their HMAC signing keys, so it is never written as plain
+# JSON: Windows DPAPI binds it to the current user account. The loaded state is
+# consumed only for the first successful start of each proxy family in this
+# process; an unrelated worker crash later in the run retains the established
+# fresh-login behavior instead of resurrecting the last clean-exit snapshot.
+$script:PersistedAuthenticationStatePath = Join-Path $script:ConfigDirectory 'viewer-auth-state.dat'
+$script:PersistedAuthenticationState = $null
+$script:PersistedAuthenticationStateLoadAttempted = $false
+$script:PersistedAuthenticationSessionsRestored = $false
+$script:PersistedAuthenticationKeyUsed = @{ LetsEncrypt = $false; Plaintext = $false }
+
 function ConvertTo-AcmeBase64Url {
     param([byte[]]$Bytes)
     return [Convert]::ToBase64String($Bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_')
@@ -978,6 +990,278 @@ function Test-KeepAuthenticationProxiesOnRestart {
     return [bool]($chkViewerAuthenticationKeepOnRestart -and $chkViewerAuthenticationKeepOnRestart.Checked -and (Test-ViewerAuthenticationEnabled))
 }
 
+function Test-KeepAuthenticationOnExit {
+    return [bool]($chkViewerAuthenticationKeepOnExit -and $chkViewerAuthenticationKeepOnExit.Checked -and (Test-ViewerAuthenticationEnabled))
+}
+
+function Get-PersistedAuthenticationStateEntropy {
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes('GStreamer Glass viewer authentication state v1')
+    $sha256 = $null
+    try {
+        $sha256 = [System.Security.Cryptography.SHA256]::Create()
+        return $sha256.ComputeHash($bytes)
+    }
+    finally {
+        if ($sha256) { $sha256.Dispose() }
+    }
+}
+
+function Clear-PersistedAuthenticationState {
+    param([switch]$LogMissing)
+
+    $script:PersistedAuthenticationState = $null
+    $script:PersistedAuthenticationStateLoadAttempted = $true
+    $script:PersistedAuthenticationSessionsRestored = $false
+    $script:PersistedAuthenticationKeyUsed = @{ LetsEncrypt = $false; Plaintext = $false }
+    try {
+        if (Test-Path -LiteralPath $script:PersistedAuthenticationStatePath) {
+            Remove-Item -LiteralPath $script:PersistedAuthenticationStatePath -Force
+            Append-Log "AUTH: deleted the persisted auth cache '$script:PersistedAuthenticationStatePath'"
+        }
+        elseif ($LogMissing) {
+            Append-Log "AUTH: no saved auth cache exists at '$script:PersistedAuthenticationStatePath'"
+        }
+    }
+    catch {
+        Append-Log "AUTH: failed to delete the persisted auth cache: $($_.Exception.Message)"
+    }
+}
+
+function Get-PersistedAuthenticationStateSummary {
+    if (-not (Test-Path -LiteralPath $script:PersistedAuthenticationStatePath)) {
+        return 'Exit auth cache: none'
+    }
+    try {
+        $protected = [System.IO.File]::ReadAllBytes($script:PersistedAuthenticationStatePath)
+        $plain = [System.Security.Cryptography.ProtectedData]::Unprotect(
+            $protected,
+            (Get-PersistedAuthenticationStateEntropy),
+            [System.Security.Cryptography.DataProtectionScope]::CurrentUser
+        )
+        $state = [System.Text.Encoding]::UTF8.GetString($plain) | ConvertFrom-Json
+        $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+        $sessionCount = @($state.Sessions | Where-Object { [long]$_.Expires -ge $now }).Count
+        $families = @()
+        if (-not [string]::IsNullOrWhiteSpace([string]$state.LetsEncryptSessionKeyBase64)) { $families += 'TLS' }
+        if (-not [string]::IsNullOrWhiteSpace([string]$state.PlaintextSessionKeyBase64)) { $families += 'plaintext' }
+        $familyText = if ($families.Count) { $families -join '+' } else { 'no keys' }
+        $savedText = try { ([DateTime]$state.SavedUtc).ToLocalTime().ToString('g') } catch { 'unknown time' }
+        return "Exit auth cache: $sessionCount session(s), $familyText, saved $savedText"
+    }
+    catch {
+        return "Exit auth cache: unreadable ($($_.Exception.Message))"
+    }
+}
+
+function Update-PersistedAuthenticationStateUi {
+    if ($lblViewerAuthenticationExitCacheStatus) {
+        $summary = Get-PersistedAuthenticationStateSummary
+        $lblViewerAuthenticationExitCacheStatus.Text = $summary
+        $lblViewerAuthenticationExitCacheStatus.ForeColor = if ($summary -match 'unreadable') {
+            [System.Drawing.Color]::DarkOrange
+        }
+        elseif ($summary -match ': none$') {
+            [System.Drawing.Color]::DimGray
+        }
+        else {
+            [System.Drawing.Color]::DarkGreen
+        }
+    }
+    if ($btnViewerAuthenticationSaveExitCache) {
+        # Keep this clickable even before the worker starts: the resulting
+        # tagged "worker-running=False" log is itself useful diagnostics.
+        $btnViewerAuthenticationSaveExitCache.Enabled = [bool](Test-KeepAuthenticationOnExit)
+    }
+    if ($btnViewerAuthenticationDestroyExitCache) {
+        $btnViewerAuthenticationDestroyExitCache.Enabled = [bool](
+            $chkViewerAuthenticationKeepOnExit.Checked -or
+            (Test-Path -LiteralPath $script:PersistedAuthenticationStatePath)
+        )
+    }
+}
+
+function Import-PersistedAuthenticationState {
+    if ($script:PersistedAuthenticationStateLoadAttempted) { return $script:PersistedAuthenticationState }
+    $script:PersistedAuthenticationStateLoadAttempted = $true
+    if (-not (Test-KeepAuthenticationOnExit)) {
+        Append-Log 'AUTH: skipped loading the auth cache - keep auth on exit or viewer authentication is disabled'
+        return $null
+    }
+    if (-not (Test-Path -LiteralPath $script:PersistedAuthenticationStatePath)) {
+        Append-Log "AUTH: keep auth on exit is enabled, but no cache exists at '$script:PersistedAuthenticationStatePath'"
+        return $null
+    }
+
+    try {
+        $protected = [System.IO.File]::ReadAllBytes($script:PersistedAuthenticationStatePath)
+        Append-Log "AUTH: reading $($protected.Length) encrypted byte(s) from '$script:PersistedAuthenticationStatePath'"
+        $plain = [System.Security.Cryptography.ProtectedData]::Unprotect(
+            $protected,
+            (Get-PersistedAuthenticationStateEntropy),
+            [System.Security.Cryptography.DataProtectionScope]::CurrentUser
+        )
+        $state = [System.Text.Encoding]::UTF8.GetString($plain) | ConvertFrom-Json
+        if ([int]$state.Version -ne 1) { throw "unsupported cache version '$($state.Version)'" }
+
+        foreach ($property in @('LetsEncryptSessionKeyBase64', 'PlaintextSessionKeyBase64')) {
+            $encoded = [string]$state.$property
+            if ([string]::IsNullOrWhiteSpace($encoded)) { continue }
+            if ([Convert]::FromBase64String($encoded).Length -ne 32) { throw "invalid $property" }
+        }
+        $script:PersistedAuthenticationState = $state
+        $keyFamilies = @()
+        if ($state.LetsEncryptSessionKeyBase64) { $keyFamilies += 'TLS' }
+        if ($state.PlaintextSessionKeyBase64) { $keyFamilies += 'plaintext' }
+        Append-Log "AUTH: decrypted auth cache version $($state.Version), saved $($state.SavedUtc), $(@($state.Sessions).Count) session record(s), key families: $(if ($keyFamilies.Count) { $keyFamilies -join ', ' } else { 'none' })"
+        return $state
+    }
+    catch {
+        Append-Log "AUTH: failed to load the auth cache; discarding unreadable cache: $($_.Exception.Message)"
+        Clear-PersistedAuthenticationState
+        return $null
+    }
+}
+
+function Get-PersistedAuthenticationSessionKey {
+    param([Parameter(Mandatory)][ValidateSet('LetsEncrypt', 'Plaintext')][string]$Family)
+
+    if (-not (Test-KeepAuthenticationOnExit)) { return $null }
+    if ([bool]$script:PersistedAuthenticationKeyUsed[$Family]) { return $null }
+    $state = Import-PersistedAuthenticationState
+    if (-not $state) { return $null }
+    # Matches the "TLS"/"plaintext" wording Start-LetsEncryptTlsProxies/
+    # Start-PlaintextAuthProxies already use in their own AUTH:/ACME: log
+    # lines, rather than the raw LetsEncrypt/Plaintext enum values.
+    $familyLabel = if ($Family -eq 'Plaintext') { 'plaintext' } else { 'TLS' }
+    $property = "${Family}SessionKeyBase64"
+    $encoded = [string]$state.$property
+    if ([string]::IsNullOrWhiteSpace($encoded)) {
+        Append-Log "AUTH: no saved $familyLabel signing key is present; this family will start with a new key"
+        return $null
+    }
+    try {
+        $key = [Convert]::FromBase64String($encoded)
+        if ($key.Length -eq 32) {
+            Append-Log "AUTH: loaded the $familyLabel signing key for this family's first start"
+            return $key
+        }
+    }
+    catch { Append-Log "AUTH: saved $familyLabel signing key was invalid: $($_.Exception.Message)" }
+    return $null
+}
+
+function Restore-PersistedAuthenticationSessions {
+    if ($script:PersistedAuthenticationSessionsRestored) { return }
+    $state = Import-PersistedAuthenticationState
+    if (-not $state) {
+        $script:PersistedAuthenticationSessionsRestored = $true
+        return
+    }
+    if (-not (Test-AuthProxyWorkerRunning)) { return }
+
+    $sessions = @($state.Sessions) | Where-Object {
+        $_.Token -and ([long]$_.Expires -ge [DateTimeOffset]::UtcNow.ToUnixTimeSeconds())
+    }
+    Append-Log "AUTH: restored $(@($sessions).Count) unexpired session record(s) to auth worker PID $($script:AuthProxyWorkerProcess.Id)"
+    $reply = Send-AuthProxyWorkerCommand -Command @{ Type = 'ImportSessions'; Sessions = $sessions } -TimeoutMs 3000
+    if ($reply -and [string]$reply.Status -eq 'Ready') {
+        $script:PersistedAuthenticationSessionsRestored = $true
+        Append-Log "AUTH: worker accepted $(@($sessions).Count) session record(s), existing browser cookies can now be validated with the restored family key"
+        Update-PersistedAuthenticationStateUi
+    }
+    else {
+        Append-Log "AUTH: failed to restore sessions to the auth worker: $(if ($reply) { [string]$reply.Error } else { 'auth worker returned no reply' })"
+    }
+}
+
+function Save-PersistedAuthenticationState {
+    param([switch]$Manual)
+
+    $source = if ($Manual) { 'manual button' } else { 'application exit' }
+    Append-Log (
+        "AUTH: save requested by $source; " +
+        "keep-on-exit=$([bool](Test-KeepAuthenticationOnExit)); " +
+        "worker-running=$([bool](Test-AuthProxyWorkerRunning)); " +
+        "TLS-key-live=$([bool]$script:LetsEncryptAuthenticationSessionKey); " +
+        "plaintext-key-live=$([bool]$script:PlaintextAuthenticationSessionKey)"
+    )
+    if (-not (Test-KeepAuthenticationOnExit)) {
+        Append-Log 'AUTH: skipped saving the auth cache - keep auth on exit or viewer authentication is disabled; deleting any previous cache'
+        Clear-PersistedAuthenticationState
+        Update-PersistedAuthenticationStateUi
+        return $false
+    }
+    if (-not (Test-AuthProxyWorkerRunning)) {
+        # Preserve an existing, still-unexpired cache if Glass was opened and
+        # closed without ever starting the authentication proxy this run.
+        Append-Log 'AUTH: skipped saving the auth cache - auth proxy worker is not running; any existing cache was left untouched'
+        Update-PersistedAuthenticationStateUi
+        return $false
+    }
+
+    $tlsKey = $script:LetsEncryptAuthenticationSessionKey
+    $plaintextKey = $script:PlaintextAuthenticationSessionKey
+    $loaded = Import-PersistedAuthenticationState
+    if (-not $tlsKey -and $loaded -and $loaded.LetsEncryptSessionKeyBase64) {
+        try { $tlsKey = [Convert]::FromBase64String([string]$loaded.LetsEncryptSessionKeyBase64) } catch {}
+    }
+    if (-not $plaintextKey -and $loaded -and $loaded.PlaintextSessionKeyBase64) {
+        try { $plaintextKey = [Convert]::FromBase64String([string]$loaded.PlaintextSessionKeyBase64) } catch {}
+    }
+    if (-not $tlsKey -and -not $plaintextKey) {
+        Append-Log 'AUTH: skipped saving the auth cache - no live or previously-loaded signing key exists for either auth family'
+        Update-PersistedAuthenticationStateUi
+        return $false
+    }
+
+    Append-Log "AUTH: exporting the active session registry from auth worker PID $($script:AuthProxyWorkerProcess.Id)"
+    $reply = Send-AuthProxyWorkerCommand -Command @{ Type = 'ExportSessions' } -TimeoutMs 3000
+    if (-not $reply -or [string]$reply.Status -ne 'Ready') {
+        Append-Log "AUTH: failed to export sessions from the auth worker: $(if ($reply) { [string]$reply.Error } else { 'auth worker returned no reply' }); previous cache left untouched"
+        Update-PersistedAuthenticationStateUi
+        return $false
+    }
+    Append-Log "AUTH: worker exported $(@($reply.Sessions).Count) active session record(s)"
+
+    $state = [ordered]@{
+        Version = 1
+        SavedUtc = [DateTime]::UtcNow.ToString('o')
+        LetsEncryptSessionKeyBase64 = if ($tlsKey) { [Convert]::ToBase64String($tlsKey) } else { '' }
+        PlaintextSessionKeyBase64 = if ($plaintextKey) { [Convert]::ToBase64String($plaintextKey) } else { '' }
+        Sessions = @($reply.Sessions)
+    }
+    $plain = [System.Text.Encoding]::UTF8.GetBytes(($state | ConvertTo-Json -Compress -Depth 5))
+    $protected = [System.Security.Cryptography.ProtectedData]::Protect(
+        $plain,
+        (Get-PersistedAuthenticationStateEntropy),
+        [System.Security.Cryptography.DataProtectionScope]::CurrentUser
+    )
+
+    if (-not (Test-Path -LiteralPath $script:ConfigDirectory)) {
+        $null = New-Item -ItemType Directory -Path $script:ConfigDirectory -Force
+    }
+    $temporaryPath = "$($script:PersistedAuthenticationStatePath).tmp-$PID"
+    try {
+        [System.IO.File]::WriteAllBytes($temporaryPath, $protected)
+        if (Test-Path -LiteralPath $script:PersistedAuthenticationStatePath) {
+            [System.IO.File]::Replace($temporaryPath, $script:PersistedAuthenticationStatePath, $null)
+        }
+        else {
+            [System.IO.File]::Move($temporaryPath, $script:PersistedAuthenticationStatePath)
+        }
+        $script:PersistedAuthenticationState = [pscustomobject]$state
+        Append-Log "AUTH: saved the auth cache - wrote $($protected.Length) DPAPI-encrypted byte(s) with $(@($reply.Sessions).Count) session record(s) to '$script:PersistedAuthenticationStatePath'"
+        Update-PersistedAuthenticationStateUi
+        return $true
+    }
+    catch {
+        try { if (Test-Path -LiteralPath $temporaryPath) { Remove-Item -LiteralPath $temporaryPath -Force } } catch {}
+        Append-Log "AUTH: failed to write the auth cache: $($_.Exception.Message)"
+        Update-PersistedAuthenticationStateUi
+        return $false
+    }
+}
+
 # Exact TCP peer addresses allowed to supply X-Forwarded-For. Never infer
 # trust from RFC1918/loopback alone: Glass can also be exposed directly on a
 # LAN, where doing so would let an ordinary client forge its rate-limit key.
@@ -1046,13 +1330,14 @@ function Update-ViewerAuthenticationUi {
         $btnViewerAuthenticationAddAccount, $btnViewerAuthenticationRemoveAccount,
         $btnViewerAuthenticationEnableTotp, $btnViewerAuthenticationDisableTotp,
         $numViewerAuthenticationSessionHours, $chkViewerAuthenticationAllowPlaintext,
-        $chkViewerAuthenticationKeepOnRestart, $lstViewerAuthenticationTrustedProxies,
+        $chkViewerAuthenticationKeepOnRestart, $chkViewerAuthenticationKeepOnExit, $lstViewerAuthenticationTrustedProxies,
         $txtViewerAuthenticationTrustedProxy, $btnViewerAuthenticationTrustedProxyAdd,
         $btnViewerAuthenticationTrustedProxyRemove
     )) {
         if ($control) { $control.Enabled = $authenticationEnabled }
     }
     Update-ViewerAuthenticationTrustedProxyButtons
+    Update-PersistedAuthenticationStateUi
 }
 
 # Each named account can log in independently -- see AuthenticationAccount /
@@ -1597,11 +1882,16 @@ function Start-LetsEncryptTlsProxies {
         $_.Username -and [TlsTerminatingProxy]::IsAuthenticationPasswordHashValid([string]$_.PasswordHash)
     }
     $authenticationSessionKey = $null
+    $usedPersistedAuthenticationKey = $false
     if ($authenticationEnabled) {
         if (@($authenticationAccounts).Count -eq 0) {
             throw 'Viewer authentication is enabled but no account has a valid password hash.'
         }
-        $authenticationSessionKey = [TlsTerminatingProxy]::CreateAuthenticationSessionKey()
+        $authenticationSessionKey = Get-PersistedAuthenticationSessionKey -Family 'LetsEncrypt'
+        $usedPersistedAuthenticationKey = [bool]$authenticationSessionKey
+        if (-not $authenticationSessionKey) {
+            $authenticationSessionKey = [TlsTerminatingProxy]::CreateAuthenticationSessionKey()
+        }
     }
     $viewerMountSegment = [string](Get-DirectWebRtcWebServerPathSegment)
     $authenticationMountPath = if ([string]::IsNullOrWhiteSpace($viewerMountSegment)) { '' } else { "/$($viewerMountSegment.Trim('/'))" }
@@ -1631,7 +1921,7 @@ function Start-LetsEncryptTlsProxies {
     ) -join '|'
     if (@($script:LetsEncryptTlsProxies).Count -gt 0) {
         if ($script:LetsEncryptTlsProxyConfigurationSignature -eq $configurationSignature) { return }
-        Append-Log 'ACME: TLS/authentication configuration changed; restarting the local TLS proxies and invalidating viewer sessions.'
+        Append-Log 'AUTH: TLS/authentication configuration changed; restarting the local TLS proxies and invalidating viewer sessions.'
         Stop-LetsEncryptTlsProxies
     }
 
@@ -1676,11 +1966,11 @@ function Start-LetsEncryptTlsProxies {
         }
     }
     catch {
-        Append-Log "ACME: could not determine the web viewer port for TLS termination: $($_.Exception.Message)"
+        Append-Log "AUTH: could not determine the web viewer port for TLS termination: $($_.Exception.Message)"
     }
 
     if (-not (Start-AuthProxyWorker)) {
-        Append-Log 'ACME: could not start the auth proxy worker process; TLS termination is unavailable this run.'
+        Append-Log 'AUTH: could not start the auth proxy worker process; TLS termination is unavailable this run.'
         return
     }
 
@@ -1700,24 +1990,27 @@ function Start-LetsEncryptTlsProxies {
 
     if (-not $reply -or [string]$reply.Status -ne 'Ready') {
         $errorText = if ($reply) { [string]$reply.Error } else { 'no response from the auth proxy worker' }
-        Append-Log "ACME: could not start TLS termination: $errorText"
+        Append-Log "AUTH: could not start TLS termination: $errorText"
         $script:LetsEncryptTlsProxies = @()
         $script:LetsEncryptTlsProxyConfigurationSignature = ''
         $script:LetsEncryptAuthenticationSessionKey = $null
         return
     }
     if (-not [string]::IsNullOrEmpty([string]$reply.Error)) {
-        Append-Log "ACME: TLS termination partially started: $([string]$reply.Error)"
+        Append-Log "AUTH: TLS termination partially started: $([string]$reply.Error)"
     }
     foreach ($portInfo in $ports) {
-        Append-Log "ACME: TLS termination active for $($portInfo.Label): 0.0.0.0:$($portInfo.ExternalPort) -> 127.0.0.1:$($portInfo.InternalPort)."
+        Append-Log "AUTH: TLS termination active for $($portInfo.Label): 0.0.0.0:$($portInfo.ExternalPort) -> 127.0.0.1:$($portInfo.InternalPort)."
     }
     $script:LetsEncryptTlsProxies = $ports
     $script:LetsEncryptTlsProxyConfigurationSignature = $configurationSignature
     $script:LetsEncryptAuthenticationSessionKey = if ($authenticationEnabled) { $authenticationSessionKey } else { $null }
     if ($authenticationEnabled) {
+        if ($usedPersistedAuthenticationKey) { $script:PersistedAuthenticationKeyUsed['LetsEncrypt'] = $true }
+        Restore-PersistedAuthenticationSessions
         Append-Log "AUTH: viewer login required on all TLS viewer/signaling endpoints; sessions expire after $([int]$numViewerAuthenticationSessionHours.Value) hour(s)."
     }
+    Update-PersistedAuthenticationStateUi
 }
 
 # "Allow plaintext auth" counterpart to Start-LetsEncryptTlsProxies: runs
@@ -1743,7 +2036,11 @@ function Start-PlaintextAuthProxies {
     if (@($authenticationAccounts).Count -eq 0) {
         throw 'Plaintext auth is enabled but no account has a valid password hash.'
     }
-    $authenticationSessionKey = [TlsTerminatingProxy]::CreateAuthenticationSessionKey()
+    $authenticationSessionKey = Get-PersistedAuthenticationSessionKey -Family 'Plaintext'
+    $usedPersistedAuthenticationKey = [bool]$authenticationSessionKey
+    if (-not $authenticationSessionKey) {
+        $authenticationSessionKey = [TlsTerminatingProxy]::CreateAuthenticationSessionKey()
+    }
 
     $viewerMountSegment = [string](Get-DirectWebRtcWebServerPathSegment)
     $authenticationMountPath = if ([string]::IsNullOrWhiteSpace($viewerMountSegment)) { '' } else { "/$($viewerMountSegment.Trim('/'))" }
@@ -1841,6 +2138,9 @@ function Start-PlaintextAuthProxies {
     $script:PlaintextAuthProxies = $ports
     $script:PlaintextAuthProxyConfigurationSignature = $configurationSignature
     $script:PlaintextAuthenticationSessionKey = $authenticationSessionKey
+    if ($usedPersistedAuthenticationKey) { $script:PersistedAuthenticationKeyUsed['Plaintext'] = $true }
+    Restore-PersistedAuthenticationSessions
+    Update-PersistedAuthenticationStateUi
 }
 
 # Called from the UI poll timer (90-MainWindow.ps1), same cadence as the
@@ -1858,7 +2158,7 @@ function Drain-LetsEncryptTlsProxyLogs {
     $reply = Send-AuthProxyWorkerCommand -Command @{ Type = 'PollLog' } -TimeoutMs 250 -NoUiPump
     if (-not $reply -or [string]$reply.Status -ne 'Ready') { return }
     foreach ($message in @($reply.Messages)) {
-        Append-Log "ACME: TLS proxy ($message)"
+        Append-Log "AUTH: TLS proxy ($message)"
     }
 }
 

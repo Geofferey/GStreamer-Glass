@@ -71,7 +71,26 @@ ps12exe `
 
 Write-Output "Built '$exePath' (v$rawVersion, file version $exeVersion)"
 
-# Step 4: run the standalone Inno Setup script from the command line.
+# Step 4: exercise DPAPI inside the compiled PS12EXE host. Console PowerShell
+# loads a broader default assembly set than the shipped no-console executable,
+# so a source-level cache test alone cannot catch a missing System.Security.dll.
+$cryptoSmoke = Start-Process `
+    -FilePath $exePath `
+    -ArgumentList @('-AuthCacheCryptoSelfTest') `
+    -WindowStyle Hidden `
+    -PassThru `
+    -Wait
+try {
+    if ($cryptoSmoke.ExitCode -ne 0) {
+        throw "Compiled auth-cache DPAPI smoke test failed with exit code $($cryptoSmoke.ExitCode)."
+    }
+}
+finally {
+    $cryptoSmoke.Dispose()
+}
+Write-Output 'Compiled auth-cache DPAPI smoke test passed.'
+
+# Step 5: run the standalone Inno Setup script from the command line.
 # Installer files, paths, architecture, shortcuts, and output naming remain
 # entirely managed by build.iss.
 if (-not (Test-Path -LiteralPath $IssPath -PathType Leaf)) {
@@ -102,4 +121,3 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 Write-Output "Installer build completed from '$IssPath' (v$rawVersion)"
-
