@@ -249,6 +249,7 @@ function Reset-LetsEncryptDefaults {
     $numViewerAuthenticationTemporaryLinkMinutes.Value = $script:DefaultViewerAuthenticationTemporaryLinkMinutes
     $chkViewerAuthenticationTemporaryLinkSingleUse.Checked = $script:DefaultViewerAuthenticationTemporaryLinkSingleUse
     $txtViewerAuthenticationTemporaryLinkRestrictedIp.Text = $script:DefaultViewerAuthenticationTemporaryLinkRestrictedIp
+    $chkViewerAuthenticationSetupLinkRequireTotp.Checked = $script:DefaultViewerAuthenticationSetupLinkRequireTotp
     Set-ViewerAuthenticationTrustedProxyAddresses -Value $script:DefaultViewerAuthenticationTrustedProxies
     Update-LetsEncryptUi
 }

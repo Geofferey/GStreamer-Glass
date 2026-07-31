@@ -1025,7 +1025,7 @@ $numViewerAuthenticationTemporaryLinkMinutes.Minimum = 1
 $numViewerAuthenticationTemporaryLinkMinutes.Maximum = 43200
 $numViewerAuthenticationTemporaryLinkMinutes.Value = $script:DefaultViewerAuthenticationTemporaryLinkMinutes
 $settingsGroup.Controls.Add($numViewerAuthenticationTemporaryLinkMinutes)
-$toolTip.SetToolTip($numViewerAuthenticationTemporaryLinkMinutes, 'Temporary-link lifetime in minutes. The resulting viewer session is capped to this same expiration, even when normal session hours are longer.')
+$toolTip.SetToolTip($numViewerAuthenticationTemporaryLinkMinutes, 'Link lifetime in minutes. Temporary viewer sessions are capped to this expiration; account setup links stop permitting credential changes when they expire.')
 
 $chkViewerAuthenticationTemporaryLinkSingleUse = New-Object System.Windows.Forms.CheckBox
 $chkViewerAuthenticationTemporaryLinkSingleUse.Text = 'Single-use link'
@@ -1049,6 +1049,21 @@ $btnViewerAuthenticationGenerateTemporaryLink.Size = New-Object System.Drawing.S
 $settingsGroup.Controls.Add($btnViewerAuthenticationGenerateTemporaryLink)
 $toolTip.SetToolTip($btnViewerAuthenticationGenerateTemporaryLink, 'Creates a bearer link for the selected viewer account using the expiration, single-use, and IP controls above.')
 
+$chkViewerAuthenticationSetupLinkRequireTotp = New-Object System.Windows.Forms.CheckBox
+$chkViewerAuthenticationSetupLinkRequireTotp.Text = 'Require new 2FA setup'
+$chkViewerAuthenticationSetupLinkRequireTotp.Location = New-Object System.Drawing.Point(15, 548)
+$chkViewerAuthenticationSetupLinkRequireTotp.Size = New-Object System.Drawing.Size(190, 24)
+$chkViewerAuthenticationSetupLinkRequireTotp.Checked = $script:DefaultViewerAuthenticationSetupLinkRequireTotp
+$settingsGroup.Controls.Add($chkViewerAuthenticationSetupLinkRequireTotp)
+$toolTip.SetToolTip($chkViewerAuthenticationSetupLinkRequireTotp, 'Account setup links will display a fresh authenticator secret and require a valid code before replacing the password. When unchecked, an existing 2FA enrollment is preserved and must still be verified.')
+
+$btnViewerAuthenticationGenerateSetupLink = New-Object System.Windows.Forms.Button
+$btnViewerAuthenticationGenerateSetupLink.Text = 'Generate account setup link'
+$btnViewerAuthenticationGenerateSetupLink.Location = New-Object System.Drawing.Point(15, 548)
+$btnViewerAuthenticationGenerateSetupLink.Size = New-Object System.Drawing.Size(205, 27)
+$settingsGroup.Controls.Add($btnViewerAuthenticationGenerateSetupLink)
+$toolTip.SetToolTip($btnViewerAuthenticationGenerateSetupLink, 'Creates a one-time link for the selected viewer to choose a new password. It also enrolls new 2FA when required, works for accounts that already have a password, and invalidates their existing sessions when completed.')
+
 $txtViewerAuthenticationGeneratedTemporaryLink = New-Object System.Windows.Forms.TextBox
 $txtViewerAuthenticationGeneratedTemporaryLink.Location = New-Object System.Drawing.Point(15, 548)
 $txtViewerAuthenticationGeneratedTemporaryLink.Size = New-Object System.Drawing.Size(350, 23)
@@ -1066,7 +1081,7 @@ $lstViewerAuthenticationTemporaryLinks.Location = New-Object System.Drawing.Poin
 $lstViewerAuthenticationTemporaryLinks.Size = New-Object System.Drawing.Size(440, 82)
 $lstViewerAuthenticationTemporaryLinks.SelectionMode = 'One'
 $settingsGroup.Controls.Add($lstViewerAuthenticationTemporaryLinks)
-$toolTip.SetToolTip($lstViewerAuthenticationTemporaryLinks, 'Temporary links currently held by the auth worker. Raw bearer tokens are shown only in the generated URL field when created or selected.')
+$toolTip.SetToolTip($lstViewerAuthenticationTemporaryLinks, 'Temporary viewer-access and account-setup links currently held by the auth worker. Raw bearer tokens are shown only in the generated URL field when created or selected.')
 
 $btnViewerAuthenticationRevokeTemporaryLink = New-Object System.Windows.Forms.Button
 $btnViewerAuthenticationRevokeTemporaryLink.Text = 'Revoke selected link'
@@ -4384,13 +4399,18 @@ $btnViewerAuthenticationGenerateTemporaryLink.Add_Click({
     Save-Settings
     New-ViewerAuthenticationTemporaryLink
 })
+$btnViewerAuthenticationGenerateSetupLink.Add_Click({
+    $lowerTabs.SelectedTab = $tabLog
+    Save-Settings
+    New-ViewerAuthenticationSetupLink
+})
 $btnViewerAuthenticationCopyTemporaryLink.Add_Click({
     if (-not [string]::IsNullOrWhiteSpace([string]$txtViewerAuthenticationGeneratedTemporaryLink.Text)) {
         try {
             [GstClipboard]::SetText([string]$txtViewerAuthenticationGeneratedTemporaryLink.Text)
-            Append-Log 'AUTH: copied temporary viewer link to the clipboard'
+            Append-Log 'AUTH: copied authentication link to the clipboard'
         }
-        catch { Append-Log "AUTH: could not copy the temporary viewer link: $($_.Exception.Message)" }
+        catch { Append-Log "AUTH: could not copy the authentication link: $($_.Exception.Message)" }
     }
 })
 $lstViewerAuthenticationTemporaryLinks.Add_SelectedIndexChanged({
@@ -5603,6 +5623,10 @@ $form.Add_Shown({
 
 
 $form.Add_FormClosing({
+    # Capture any password/2FA update completed through a browser setup link
+    # since the last 400 ms poll before settings are serialized and the worker
+    # is torn down. The worker never returns plaintext, only the derived hash.
+    try { Drain-LetsEncryptTlsProxyLogs } catch {}
     Save-Settings
     $pollTimer.Stop()
     Invoke-ApplicationCleanup

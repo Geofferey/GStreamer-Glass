@@ -1289,11 +1289,14 @@ function Save-PersistedAuthenticationState {
 }
 
 function Get-ViewerAuthenticationTemporaryLinkUrl {
-    param([Parameter(Mandatory)][string]$Token)
+    param(
+        [Parameter(Mandatory)][string]$Token,
+        [ValidateSet('session', 'setup')][string]$Purpose = 'session'
+    )
 
     $viewerUri = Get-ViewerAuthenticationTemporaryLinkBaseUri
     $builder = New-Object System.UriBuilder($viewerUri)
-    $builder.Path = '/auth/session'
+    $builder.Path = if ($Purpose -eq 'setup') { '/auth/setup' } else { '/auth/session' }
     $builder.Query = 'token=' + [Uri]::EscapeDataString($Token) + '&return=' + [Uri]::EscapeDataString((Get-DirectWebRtcWebPathForTemporaryLink))
     $builder.Fragment = ''
     return $builder.Uri.AbsoluteUri
@@ -1327,8 +1330,10 @@ function Update-ViewerAuthenticationTemporaryLinkUi {
     if ($numViewerAuthenticationTemporaryLinkMinutes) { $numViewerAuthenticationTemporaryLinkMinutes.Enabled = $authenticationEnabled }
     if ($txtViewerAuthenticationTemporaryLinkProxyDomain) { $txtViewerAuthenticationTemporaryLinkProxyDomain.Enabled = $authenticationEnabled }
     if ($chkViewerAuthenticationTemporaryLinkSingleUse) { $chkViewerAuthenticationTemporaryLinkSingleUse.Enabled = $authenticationEnabled }
+    if ($chkViewerAuthenticationSetupLinkRequireTotp) { $chkViewerAuthenticationSetupLinkRequireTotp.Enabled = $authenticationEnabled }
     if ($txtViewerAuthenticationTemporaryLinkRestrictedIp) { $txtViewerAuthenticationTemporaryLinkRestrictedIp.Enabled = $authenticationEnabled }
     if ($btnViewerAuthenticationGenerateTemporaryLink) { $btnViewerAuthenticationGenerateTemporaryLink.Enabled = $authenticationEnabled -and $workerRunning -and $selectedAccount }
+    if ($btnViewerAuthenticationGenerateSetupLink) { $btnViewerAuthenticationGenerateSetupLink.Enabled = $authenticationEnabled -and $workerRunning -and $selectedAccount }
     if ($txtViewerAuthenticationGeneratedTemporaryLink) { $txtViewerAuthenticationGeneratedTemporaryLink.Enabled = $authenticationEnabled }
     if ($btnViewerAuthenticationCopyTemporaryLink) {
         $btnViewerAuthenticationCopyTemporaryLink.Enabled = $authenticationEnabled -and -not [string]::IsNullOrWhiteSpace([string]$txtViewerAuthenticationGeneratedTemporaryLink.Text)
@@ -1378,9 +1383,13 @@ function Sync-ViewerAuthenticationTemporaryLinks {
         $lstViewerAuthenticationTemporaryLinks.Items.Clear()
         foreach ($link in $script:ViewerAuthenticationTemporaryLinks) {
             $expiresLocal = [DateTimeOffset]::FromUnixTimeSeconds([long]$link.Expires).LocalDateTime.ToString('g')
+            $purpose = if ([string]$link.Purpose -eq 'setup') {
+                if ([bool]$link.RequireTotp) { 'account setup + 2FA' } else { 'account setup' }
+            }
+            else { 'viewer access' }
             $mode = if ([bool]$link.SingleUse) { 'single-use' } else { 'reusable' }
             $restriction = if ([string]::IsNullOrWhiteSpace([string]$link.BoundAddress)) { 'any IP' } else { "IP $($link.BoundAddress)" }
-            [void]$lstViewerAuthenticationTemporaryLinks.Items.Add("$($link.Username) | $mode | $restriction | expires $expiresLocal")
+            [void]$lstViewerAuthenticationTemporaryLinks.Items.Add("$($link.Username) | $purpose | $mode | $restriction | expires $expiresLocal")
         }
         if ($lstViewerAuthenticationTemporaryLinks.Items.Count -gt 0) { $lstViewerAuthenticationTemporaryLinks.SelectedIndex = 0 }
     }
@@ -1410,10 +1419,11 @@ function Show-SelectedViewerAuthenticationTemporaryLink {
         return
     }
 
-    try { $txtViewerAuthenticationGeneratedTemporaryLink.Text = Get-ViewerAuthenticationTemporaryLinkUrl -Token $token }
+    $purpose = if ([string]$script:ViewerAuthenticationTemporaryLinks[$index].Purpose -eq 'setup') { 'setup' } else { 'session' }
+    try { $txtViewerAuthenticationGeneratedTemporaryLink.Text = Get-ViewerAuthenticationTemporaryLinkUrl -Token $token -Purpose $purpose }
     catch {
         $txtViewerAuthenticationGeneratedTemporaryLink.Clear()
-        Append-Log "AUTH: could not display the selected temporary viewer link: $($_.Exception.Message)"
+        Append-Log "AUTH: could not display the selected authentication link: $($_.Exception.Message)"
     }
     Update-ViewerAuthenticationTemporaryLinkUi
 }
@@ -1465,6 +1475,56 @@ function New-ViewerAuthenticationTemporaryLink {
     $txtViewerAuthenticationGeneratedTemporaryLink.Text = $url
     $linkMode = if ([bool]$reply.Link.SingleUse) { 'single-use' } else { 'reusable' }
     Append-Log "AUTH: generated $linkMode temporary link for viewer '$username', expiring $([DateTimeOffset]::FromUnixTimeSeconds([long]$reply.Link.Expires).LocalDateTime.ToString('g'))$(if ($boundAddress) { ", restricted to $boundAddress" } else { '' })"
+    Sync-ViewerAuthenticationTemporaryLinks
+    Update-ViewerAuthenticationTemporaryLinkUi
+}
+
+function New-ViewerAuthenticationSetupLink {
+    $username = Get-SelectedViewerAuthenticationUsername
+    if ([string]::IsNullOrWhiteSpace($username)) {
+        Append-Log 'AUTH: select a viewer account before generating an account setup link'
+        return
+    }
+    if (-not (Test-AuthProxyWorkerRunning)) {
+        Append-Log 'AUTH: cannot generate an account setup link because the auth proxy worker is not running'
+        return
+    }
+    try { $null = Get-ViewerAuthenticationTemporaryLinkBaseUri }
+    catch {
+        Append-Log "AUTH: account-setup-link proxy domain is invalid: $($_.Exception.Message)"
+        return
+    }
+    $boundAddress = [string]$txtViewerAuthenticationTemporaryLinkRestrictedIp.Text.Trim()
+    if (-not [string]::IsNullOrWhiteSpace($boundAddress)) {
+        $parsedAddress = $null
+        if (-not [System.Net.IPAddress]::TryParse($boundAddress, [ref]$parsedAddress)) {
+            Append-Log "AUTH: account-setup-link client IP '$boundAddress' is invalid"
+            return
+        }
+        if ($parsedAddress.IsIPv4MappedToIPv6) { $parsedAddress = $parsedAddress.MapToIPv4() }
+        $boundAddress = $parsedAddress.ToString()
+    }
+    $requireTotp = [bool]$chkViewerAuthenticationSetupLinkRequireTotp.Checked
+    $reply = Send-AuthProxyWorkerCommand -Command @{
+        Type = 'CreateAccountSetupLink'
+        Username = $username
+        DurationMinutes = [int]$numViewerAuthenticationTemporaryLinkMinutes.Value
+        RequireTotp = $requireTotp
+        BoundAddress = $boundAddress
+    } -TimeoutMs 3000
+    if (
+        -not $reply -or
+        [string]$reply.Status -ne 'Ready' -or
+        -not $reply.Link -or
+        [string]::IsNullOrWhiteSpace([string]$reply.Link.Token) -or
+        [string]$reply.Link.Purpose -ne 'setup' -or
+        [long]$reply.Link.Expires -le [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+    ) {
+        Append-Log "AUTH: failed to generate account setup link: $(if ($reply) { [string]$reply.Error } else { 'auth worker returned no reply' })"
+        return
+    }
+    $txtViewerAuthenticationGeneratedTemporaryLink.Text = Get-ViewerAuthenticationTemporaryLinkUrl -Token ([string]$reply.Link.Token) -Purpose setup
+    Append-Log "AUTH: generated single-use account setup link for viewer '$username', expiring $([DateTimeOffset]::FromUnixTimeSeconds([long]$reply.Link.Expires).LocalDateTime.ToString('g'))$(if ($requireTotp) { ', requiring new 2FA enrollment' } else { '' })$(if ($boundAddress) { ", restricted to $boundAddress" } else { '' })"
     Sync-ViewerAuthenticationTemporaryLinks
     Update-ViewerAuthenticationTemporaryLinkUi
 }
@@ -1559,6 +1619,7 @@ function Update-ViewerAuthenticationUi {
         $btnViewerAuthenticationEnableTotp, $btnViewerAuthenticationDisableTotp,
         $numViewerAuthenticationSessionHours, $chkViewerAuthenticationAllowPlaintext,
         $chkViewerAuthenticationKeepOnRestart, $chkViewerAuthenticationKeepOnExit, $lstViewerAuthenticationTrustedProxies,
+        $chkViewerAuthenticationSetupLinkRequireTotp, $btnViewerAuthenticationGenerateSetupLink,
         $txtViewerAuthenticationTrustedProxy, $btnViewerAuthenticationTrustedProxyAdd,
         $btnViewerAuthenticationTrustedProxyRemove
     )) {
@@ -2413,6 +2474,32 @@ function Drain-LetsEncryptTlsProxyLogs {
     if (-not $reply -or [string]$reply.Status -ne 'Ready') { return }
     foreach ($message in @($reply.Messages)) {
         Append-Log "AUTH: TLS proxy ($message)"
+    }
+    $accountSettingsChanged = $false
+    foreach ($update in @($reply.AccountUpdates | Where-Object { $null -ne $_ })) {
+        $username = [string]$update.Username
+        $passwordHash = [string]$update.PasswordHash
+        if (
+            [string]::IsNullOrWhiteSpace($username) -or
+            -not [TlsTerminatingProxy]::IsAuthenticationPasswordHashValid($passwordHash)
+        ) {
+            Append-Log 'AUTH: discarded a malformed account update returned by the auth worker'
+            continue
+        }
+        $account = @($script:ViewerAuthenticationAccounts) | Where-Object { [string]$_.Username -eq $username } | Select-Object -First 1
+        if (-not $account) {
+            Append-Log "AUTH: discarded account setup for removed viewer '$username'"
+            continue
+        }
+        $account.PasswordHash = $passwordHash
+        $account.TotpSecret = [string]$update.TotpSecret
+        $accountSettingsChanged = $true
+        Append-Log "AUTH: saved credentials completed through an account setup link for viewer '$username'; $([int]$update.SessionsRevoked) prior session(s) invalidated"
+    }
+    if ($accountSettingsChanged) {
+        Sync-ViewerAuthenticationAccountsListBox
+        Save-Settings
+        Sync-ViewerAuthenticationTemporaryLinks
     }
 }
 

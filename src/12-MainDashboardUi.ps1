@@ -1263,7 +1263,10 @@ function Apply-ModernDashboardUi {
     $r = Add-Row $s
     Add-Field $r -Label 'Restrict to client IP (optional)' -Control $txtViewerAuthenticationTemporaryLinkRestrictedIp -Width 180 | Out-Null
     $r = Add-Row $s
+    Add-Field $r -Control $chkViewerAuthenticationSetupLinkRequireTotp -Width 190 | Out-Null
+    $r = Add-Row $s
     Add-Field $r -Control $btnViewerAuthenticationGenerateTemporaryLink -Width 175 | Out-Null
+    Add-Field $r -Control $btnViewerAuthenticationGenerateSetupLink -Width 205 | Out-Null
     $r = Add-Row $s
     Add-Field $r -Label 'Generated link' -Control $txtViewerAuthenticationGeneratedTemporaryLink -Width 350 | Out-Null
     Add-Field $r -Control $btnViewerAuthenticationCopyTemporaryLink -Width 85 | Out-Null
@@ -1501,7 +1504,8 @@ function Apply-ModernDashboardUi {
         $numViewerAuthenticationSessionHours, $chkViewerAuthenticationAllowPlaintext, $chkViewerAuthenticationKeepOnRestart, $chkViewerAuthenticationKeepOnExit,
         $lblViewerAuthenticationExitCacheStatus, $btnViewerAuthenticationSaveExitCache, $btnViewerAuthenticationDestroyExitCache,
         $txtViewerAuthenticationTemporaryLinkProxyDomain, $numViewerAuthenticationTemporaryLinkMinutes, $chkViewerAuthenticationTemporaryLinkSingleUse,
-        $txtViewerAuthenticationTemporaryLinkRestrictedIp, $btnViewerAuthenticationGenerateTemporaryLink,
+        $txtViewerAuthenticationTemporaryLinkRestrictedIp, $chkViewerAuthenticationSetupLinkRequireTotp,
+        $btnViewerAuthenticationGenerateTemporaryLink, $btnViewerAuthenticationGenerateSetupLink,
         $txtViewerAuthenticationGeneratedTemporaryLink, $btnViewerAuthenticationCopyTemporaryLink,
         $lstViewerAuthenticationTemporaryLinks, $btnViewerAuthenticationRevokeTemporaryLink, $btnViewerAuthenticationRefreshTemporaryLinks,
         $lstViewerAuthenticationTrustedProxies, $txtViewerAuthenticationTrustedProxy,
@@ -1538,7 +1542,7 @@ function Apply-ModernDashboardUi {
         $chkRecordingTemporalAq, $chkRecordingDesktopAudio, $chkRecordingMic,
         $chkDdnsEnabled, $chkDdnsCloudflareProxied,
         $chkEmbeddedTlsEnabled, $chkTlsAllowInsecurePorts,
-        $chkLetsEncryptEnabled, $chkLetsEncryptStaging, $chkViewerAuthenticationEnabled, $chkViewerAuthenticationAllowPlaintext, $chkViewerAuthenticationKeepOnRestart, $chkViewerAuthenticationKeepOnExit, $chkViewerAuthenticationTemporaryLinkSingleUse,
+        $chkLetsEncryptEnabled, $chkLetsEncryptStaging, $chkViewerAuthenticationEnabled, $chkViewerAuthenticationAllowPlaintext, $chkViewerAuthenticationKeepOnRestart, $chkViewerAuthenticationKeepOnExit, $chkViewerAuthenticationTemporaryLinkSingleUse, $chkViewerAuthenticationSetupLinkRequireTotp,
         $chkPreview, $chkHidePreviewDuringStream, $chkAutoRestart, $chkVerbose, $chkDiskProcessLogging,
         $chkCustomGstArgumentsEnabled,
         $chkMinimizeToTray, $chkStartMinimized, $chkPsDebug

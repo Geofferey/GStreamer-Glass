@@ -1869,6 +1869,7 @@ public class TlsTerminatingProxy
     private const string CanonicalVerifyPath = "/auth/verify";
     private const string CanonicalStatusPath = "/auth/status";
     private const string CanonicalTemporarySessionPath = "/auth/session";
+    private const string CanonicalAccountSetupPath = "/auth/setup";
     private const string CanonicalRobotsPath = "/robots.txt";
     private const string LegacyLoginPath = "/__gstglass/auth/login";
     private const string LegacyLogoutPath = "/__gstglass/auth/logout";
@@ -1947,6 +1948,12 @@ public class TlsTerminatingProxy
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, long> activeAuthenticationSessions = new System.Collections.Concurrent.ConcurrentDictionary<string, long>();
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, string> authenticationSessionBoundAddresses = new System.Collections.Concurrent.ConcurrentDictionary<string, string>();
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, TemporaryAuthenticationLinkState> temporaryAuthenticationLinks = new System.Collections.Concurrent.ConcurrentDictionary<string, TemporaryAuthenticationLinkState>();
+    // Password setup happens inside the isolated auth worker, but the UI owns
+    // the durable account settings. Only the newly-derived password hash (and
+    // optional TOTP secret), never plaintext, crosses back over the worker IPC
+    // channel. PollLog drains this queue and applies each update to every live
+    // proxy before returning it to the UI for persistence.
+    private static readonly System.Collections.Concurrent.ConcurrentQueue<AuthenticationAccountUpdateState> pendingAuthenticationAccountUpdates = new System.Collections.Concurrent.ConcurrentQueue<AuthenticationAccountUpdateState>();
     // Shared by every proxy instance in this worker so the ~1 MB artwork is
     // loaded only once even when video, audio, and viewer ports are all gated.
     private static readonly object temporaryLinkUnavailableImageLock = new object();
@@ -2043,6 +2050,22 @@ public class TlsTerminatingProxy
         public long Expires;
         public bool SingleUse;
         public string BoundAddress;
+        // "session" grants temporary viewer access. "setup" is always
+        // single-use and lets the named account replace its password.
+        public string Purpose;
+        public bool RequireTotp;
+        // Present only for setup links that require enrolling a fresh second
+        // factor. Setup links are bearer secrets already and the worker's
+        // persisted cache is DPAPI-protected.
+        public string TotpSecret;
+    }
+
+    public sealed class AuthenticationAccountUpdateState
+    {
+        public string Username;
+        public string PasswordHash;
+        public string TotpSecret;
+        public int SessionsRevoked;
     }
 
     public sealed class TemporaryAuthenticationLinkRevocationState
@@ -2368,26 +2391,49 @@ public class TlsTerminatingProxy
     {
         AuthenticationAccount account = FindAuthenticationAccount((username ?? "").Trim());
         if (account == null) throw new InvalidOperationException("The selected viewer account no longer exists.");
-        string normalizedBoundAddress = "";
-        if (!string.IsNullOrWhiteSpace(boundAddress))
-        {
-            IPAddress parsed;
-            if (!IPAddress.TryParse(boundAddress.Trim(), out parsed)) throw new ArgumentException("The restricted client IP address is invalid.");
-            normalizedBoundAddress = NormalizeIpAddress(parsed);
-        }
+        return CreateTemporaryAuthenticationLinkState(account.Username, durationMinutes, singleUse, boundAddress, "session", false, "");
+    }
+
+    public TemporaryAuthenticationLinkState CreateAuthenticationSetupLink(string username, int durationMinutes, bool requireTotp, string boundAddress)
+    {
+        AuthenticationAccount account = FindAuthenticationAccount((username ?? "").Trim());
+        if (account == null) throw new InvalidOperationException("The selected viewer account no longer exists.");
+        string totpSecret = requireTotp ? GenerateTotpSecret() : "";
+        return CreateTemporaryAuthenticationLinkState(account.Username, durationMinutes, true, boundAddress, "setup", requireTotp, totpSecret);
+    }
+
+    private TemporaryAuthenticationLinkState CreateTemporaryAuthenticationLinkState(string username, int durationMinutes, bool singleUse, string boundAddress, string purpose, bool requireTotp, string totpSecret)
+    {
+        string normalizedBoundAddress = NormalizeTemporaryLinkBoundAddress(boundAddress);
         RemoveExpiredTemporaryAuthenticationLinks();
         if (temporaryAuthenticationLinks.Count >= 4096) throw new InvalidOperationException("The temporary-link limit has been reached.");
         byte[] randomBytes = new byte[32];
         using (RandomNumberGenerator random = RandomNumberGenerator.Create()) { random.GetBytes(randomBytes); }
         TemporaryAuthenticationLinkState state = new TemporaryAuthenticationLinkState {
             Token = Base64UrlEncode(randomBytes),
-            Username = account.Username,
+            Username = username,
             Expires = ToUnixTimeSeconds(DateTime.UtcNow.AddMinutes(Math.Max(1, Math.Min(43200, durationMinutes)))),
             SingleUse = singleUse,
-            BoundAddress = normalizedBoundAddress
+            BoundAddress = normalizedBoundAddress,
+            Purpose = NormalizeTemporaryLinkPurpose(purpose),
+            RequireTotp = requireTotp,
+            TotpSecret = totpSecret ?? ""
         };
         temporaryAuthenticationLinks[state.Token] = state;
         return CloneTemporaryAuthenticationLink(state);
+    }
+
+    private static string NormalizeTemporaryLinkBoundAddress(string boundAddress)
+    {
+        if (string.IsNullOrWhiteSpace(boundAddress)) return "";
+        IPAddress parsed;
+        if (!IPAddress.TryParse(boundAddress.Trim(), out parsed)) throw new ArgumentException("The restricted client IP address is invalid.");
+        return NormalizeIpAddress(parsed);
+    }
+
+    private static string NormalizeTemporaryLinkPurpose(string purpose)
+    {
+        return string.Equals(purpose, "setup", StringComparison.OrdinalIgnoreCase) ? "setup" : "session";
     }
 
     public TemporaryAuthenticationLinkState[] ExportTemporaryAuthenticationLinks()
@@ -2419,8 +2465,11 @@ public class TlsTerminatingProxy
                 Token = link.Token,
                 Username = link.Username,
                 Expires = link.Expires,
-                SingleUse = link.SingleUse,
-                BoundAddress = normalizedBoundAddress
+                SingleUse = NormalizeTemporaryLinkPurpose(link.Purpose) == "setup" ? true : link.SingleUse,
+                BoundAddress = normalizedBoundAddress,
+                Purpose = NormalizeTemporaryLinkPurpose(link.Purpose),
+                RequireTotp = NormalizeTemporaryLinkPurpose(link.Purpose) == "setup" && link.RequireTotp,
+                TotpSecret = NormalizeTemporaryLinkPurpose(link.Purpose) == "setup" && link.RequireTotp ? (link.TotpSecret ?? "") : ""
             };
             restored++;
             if (restored >= 4096) break;
@@ -2469,7 +2518,10 @@ public class TlsTerminatingProxy
             Username = state.Username,
             Expires = state.Expires,
             SingleUse = state.SingleUse,
-            BoundAddress = state.BoundAddress ?? ""
+            BoundAddress = state.BoundAddress ?? "",
+            Purpose = NormalizeTemporaryLinkPurpose(state.Purpose),
+            RequireTotp = state.RequireTotp,
+            TotpSecret = state.TotpSecret ?? ""
         };
     }
 
@@ -2482,6 +2534,22 @@ public class TlsTerminatingProxy
             TemporaryAuthenticationLinkState removed;
             temporaryAuthenticationLinks.TryRemove(entry.Key, out removed);
         }
+    }
+
+    public bool ApplyAuthenticationAccountUpdate(string username, string passwordHash, string totpSecret)
+    {
+        if (string.IsNullOrWhiteSpace(username) || !IsAuthenticationPasswordHashValid(passwordHash)) return false;
+        AuthenticationAccount account = FindAuthenticationAccount(username);
+        if (account == null) return false;
+        account.PasswordHash = passwordHash;
+        account.TotpSecret = totpSecret ?? "";
+        return true;
+    }
+
+    public AuthenticationAccountUpdateState PollAuthenticationAccountUpdate()
+    {
+        AuthenticationAccountUpdateState update;
+        return pendingAuthenticationAccountUpdates.TryDequeue(out update) ? update : null;
     }
 
     public string PollLogMessage()
@@ -2793,6 +2861,7 @@ public class TlsTerminatingProxy
         bool isVerifyEndpoint = string.Equals(path, CanonicalVerifyPath, StringComparison.OrdinalIgnoreCase);
         bool isStatusEndpoint = string.Equals(path, CanonicalStatusPath, StringComparison.OrdinalIgnoreCase);
         bool isTemporarySessionEndpoint = string.Equals(path, CanonicalTemporarySessionPath, StringComparison.OrdinalIgnoreCase);
+        bool isAccountSetupEndpoint = string.Equals(path, CanonicalAccountSetupPath, StringComparison.OrdinalIgnoreCase);
         bool isRobotsEndpoint = string.Equals(path, CanonicalRobotsPath, StringComparison.OrdinalIgnoreCase);
         bool isAuthenticationRoot =
             string.Equals(path, "/auth", StringComparison.OrdinalIgnoreCase) ||
@@ -2921,7 +2990,7 @@ public class TlsTerminatingProxy
             TemporaryAuthenticationLinkState temporaryLink;
             string rejectionReason;
             int rejectionStatus;
-            if (!TryValidateTemporaryAuthenticationLink(temporaryToken, remoteAddress, out temporaryLink, out rejectionReason, out rejectionStatus))
+            if (!TryValidateTemporaryAuthenticationLink(temporaryToken, remoteAddress, "session", out temporaryLink, out rejectionReason, out rejectionStatus))
             {
                 pendingLog.Enqueue("temporary viewer link rejected from " + remoteAddress + ": " + rejectionReason);
                 await WriteTemporaryLinkRejectedAsync(stream, rejectionStatus);
@@ -2938,7 +3007,7 @@ public class TlsTerminatingProxy
                 return true;
             }
 
-            if (!TryRedeemTemporaryAuthenticationLink(temporaryToken, remoteAddress, out temporaryLink, out rejectionReason, out rejectionStatus))
+            if (!TryRedeemTemporaryAuthenticationLink(temporaryToken, remoteAddress, "session", out temporaryLink, out rejectionReason, out rejectionStatus))
             {
                 pendingLog.Enqueue("temporary viewer link redemption rejected from " + remoteAddress + ": " + rejectionReason);
                 await WriteTemporaryLinkRejectedAsync(stream, rejectionStatus);
@@ -2953,6 +3022,182 @@ public class TlsTerminatingProxy
                 null,
                 temporaryLink.Expires,
                 temporaryLink.BoundAddress
+            );
+            return true;
+        }
+
+        if (isAccountSetupEndpoint)
+        {
+            bool isSetupGet = string.Equals(method, "GET", StringComparison.OrdinalIgnoreCase);
+            bool isSetupHead = string.Equals(method, "HEAD", StringComparison.OrdinalIgnoreCase);
+            bool isSetupPost = string.Equals(method, "POST", StringComparison.OrdinalIgnoreCase);
+            if (!isSetupGet && !isSetupHead && !isSetupPost)
+            {
+                Dictionary<string, string> methodHeaders = new Dictionary<string, string>();
+                methodHeaders["Allow"] = "GET, HEAD, POST";
+                await WriteHttpResponseAsync(stream, 405, "Method Not Allowed", "text/plain; charset=utf-8", "Method not allowed.", methodHeaders);
+                return true;
+            }
+            if (!authenticationEnabled)
+            {
+                await WriteHttpResponseAsync(stream, 404, "Not Found", "text/plain; charset=utf-8", "Authentication endpoint not found.", null);
+                return true;
+            }
+            // Preview probes get no token oracle and can never consume a link.
+            if (isSetupHead)
+            {
+                await WriteHttpResponseAsync(stream, 204, "No Content", "text/plain; charset=utf-8", "", null);
+                return true;
+            }
+
+            string setupToken;
+            string setupReturnTarget;
+            Dictionary<string, string> setupForm = null;
+            if (isSetupPost)
+            {
+                int setupContentLength;
+                if (!TryGetContentLength(headers, out setupContentLength) || setupContentLength < 0 || setupContentLength > 8192)
+                {
+                    await WriteHttpResponseAsync(stream, 413, "Payload Too Large", "text/plain; charset=utf-8", "Invalid account-setup request.", null);
+                    return true;
+                }
+                byte[] setupBodyBytes = await ReadExactAsync(stream, setupContentLength);
+                if (setupBodyBytes.Length != setupContentLength)
+                {
+                    await WriteHttpResponseAsync(stream, 400, "Bad Request", "text/plain; charset=utf-8", "Incomplete account-setup request.", null);
+                    return true;
+                }
+                setupForm = ParseUrlEncoded(Encoding.UTF8.GetString(setupBodyBytes));
+                setupToken = setupForm.ContainsKey("token") ? setupForm["token"] : "";
+                setupReturnTarget = setupForm.ContainsKey("return") ? setupForm["return"] : "";
+            }
+            else
+            {
+                setupToken = GetQueryValue(rawTarget, "token");
+                setupReturnTarget = GetQueryValue(rawTarget, "return");
+            }
+            if (string.IsNullOrWhiteSpace(setupReturnTarget)) setupReturnTarget = GetMountedViewerPath();
+
+            TemporaryAuthenticationLinkState setupLink;
+            string setupRejectionReason;
+            int setupRejectionStatus;
+            if (!TryValidateTemporaryAuthenticationLink(setupToken, remoteAddress, "setup", out setupLink, out setupRejectionReason, out setupRejectionStatus))
+            {
+                pendingLog.Enqueue("account setup link rejected from " + remoteAddress + ": " + setupRejectionReason);
+                await WriteTemporaryLinkRejectedAsync(stream, setupRejectionStatus);
+                return true;
+            }
+            AuthenticationAccount setupAccount = FindAuthenticationAccount(setupLink.Username);
+            if (setupAccount == null || (setupLink.RequireTotp && string.IsNullOrWhiteSpace(setupLink.TotpSecret)))
+            {
+                RevokeTemporaryAuthenticationLink(setupToken);
+                pendingLog.Enqueue("account setup link rejected from " + remoteAddress + ": account or 2FA enrollment state unavailable");
+                await WriteTemporaryLinkRejectedAsync(stream, 410);
+                return true;
+            }
+
+            if (isSetupGet)
+            {
+                await WriteAccountSetupPageAsync(stream, setupToken, setupReturnTarget, setupLink, setupAccount, "", 200, "OK", null);
+                return true;
+            }
+
+            string setupPassword = setupForm.ContainsKey("password") ? setupForm["password"] : "";
+            string setupPasswordConfirmation = setupForm.ContainsKey("confirm") ? setupForm["confirm"] : "";
+            string setupCode = setupForm.ContainsKey("code") ? setupForm["code"] : "";
+            if (setupPassword.Length < 10 || setupPassword.Length > 256 || !string.Equals(setupPassword, setupPasswordConfirmation, StringComparison.Ordinal))
+            {
+                await WriteAccountSetupPageAsync(stream, setupToken, setupReturnTarget, setupLink, setupAccount,
+                    "Passwords must match and contain between 10 and 256 characters.", 400, "Bad Request", null);
+                return true;
+            }
+
+            string totpSecretToKeep = setupLink.RequireTotp ? setupLink.TotpSecret : (setupAccount.TotpSecret ?? "");
+            string verifiedTotpSecret = totpSecretToKeep;
+            bool codeRequired = !string.IsNullOrWhiteSpace(totpSecretToKeep);
+            if (codeRequired)
+            {
+                int setupRetryAfter = GetAuthenticationRetryAfterSeconds(remoteAddress);
+                if (setupRetryAfter > 0)
+                {
+                    Dictionary<string, string> limitedHeaders = new Dictionary<string, string>();
+                    limitedHeaders["Retry-After"] = setupRetryAfter.ToString();
+                    await WriteAccountSetupPageAsync(stream, setupToken, setupReturnTarget, setupLink, setupAccount,
+                        "Too many attempts. Wait a moment and try again.", 429, "Too Many Requests", limitedHeaders);
+                    return true;
+                }
+                if (!VerifyTotpCode(totpSecretToKeep, setupCode))
+                {
+                    RecordAuthenticationFailure(remoteAddress);
+                    pendingLog.Enqueue("account setup 2FA code rejected from " + remoteAddress);
+                    await WriteAccountSetupPageAsync(stream, setupToken, setupReturnTarget, setupLink, setupAccount,
+                        "That authenticator code was not accepted.", 401, "Unauthorized", null);
+                    return true;
+                }
+            }
+
+            bool setupHashSlot = await authenticationHashSlots.WaitAsync(5000);
+            if (!setupHashSlot)
+            {
+                Dictionary<string, string> busyHeaders = new Dictionary<string, string>();
+                busyHeaders["Retry-After"] = "5";
+                await WriteAccountSetupPageAsync(stream, setupToken, setupReturnTarget, setupLink, setupAccount,
+                    "Password setup is busy. Try again in a few seconds.", 503, "Service Unavailable", busyHeaders);
+                return true;
+            }
+            string newPasswordHash;
+            try { newPasswordHash = HashAuthenticationPassword(setupPassword); }
+            finally { authenticationHashSlots.Release(); }
+
+            // Consume only after every validation and the expensive password
+            // derivation succeeds. Concurrent submissions race here, so only
+            // one can ever change credentials or receive a session.
+            if (!TryRedeemTemporaryAuthenticationLink(setupToken, remoteAddress, "setup", out setupLink, out setupRejectionReason, out setupRejectionStatus))
+            {
+                pendingLog.Enqueue("account setup link redemption rejected from " + remoteAddress + ": " + setupRejectionReason);
+                await WriteTemporaryLinkRejectedAsync(stream, setupRejectionStatus);
+                return true;
+            }
+            setupAccount = FindAuthenticationAccount(setupLink.Username);
+            if (setupAccount == null)
+            {
+                await WriteTemporaryLinkRejectedAsync(stream, 410);
+                return true;
+            }
+            totpSecretToKeep = setupLink.RequireTotp ? setupLink.TotpSecret : (setupAccount.TotpSecret ?? "");
+            // An administrator can change 2FA while this request is hashing
+            // the new password. Never issue a session against a secret that
+            // was not the one actually verified above (including a change
+            // from no 2FA to 2FA during the request).
+            if (!string.Equals(totpSecretToKeep, verifiedTotpSecret, StringComparison.Ordinal))
+            {
+                pendingLog.Enqueue("account setup link consumed without changing credentials because 2FA changed during redemption for '" + setupLink.Username + "'");
+                await WriteTemporaryLinkRejectedAsync(stream, 410);
+                return true;
+            }
+            if (!ApplyAuthenticationAccountUpdate(setupLink.Username, newPasswordHash, totpSecretToKeep))
+            {
+                await WriteTemporaryLinkRejectedAsync(stream, 410);
+                return true;
+            }
+            int setupSessionsRevoked = RevokeAuthenticationSessionsForUsername(setupLink.Username);
+            pendingAuthenticationAccountUpdates.Enqueue(new AuthenticationAccountUpdateState {
+                Username = setupLink.Username,
+                PasswordHash = newPasswordHash,
+                TotpSecret = totpSecretToKeep,
+                SessionsRevoked = setupSessionsRevoked
+            });
+            AuthenticationFailureState removedSetupFailureState;
+            authenticationFailures.TryRemove(remoteAddress, out removedSetupFailureState);
+            await IssueAuthenticationSessionResponseAsync(
+                stream,
+                setupLink.Username,
+                setupReturnTarget,
+                remoteAddress,
+                " (account setup link" + (codeRequired ? ", 2FA verified" : "") + ")",
+                null,
+                long.MaxValue,
+                setupLink.BoundAddress
             );
             return true;
         }
@@ -3085,7 +3330,7 @@ public class TlsTerminatingProxy
         // /auth/ is a permanently reserved gate namespace. Unknown children
         // are answered locally and are never eligible for authenticated
         // forwarding to the viewer or signaling upstreams.
-        if (isCanonicalAuthenticationPath && !isLoginEndpoint && !isVerifyEndpoint && !isTemporarySessionEndpoint)
+        if (isCanonicalAuthenticationPath && !isLoginEndpoint && !isVerifyEndpoint && !isTemporarySessionEndpoint && !isAccountSetupEndpoint)
         {
             await WriteHttpResponseAsync(
                 stream,
@@ -3490,6 +3735,53 @@ public class TlsTerminatingProxy
         await WriteHttpResponseAsync(stream, 200, "OK", "text/html; charset=utf-8", html, null);
     }
 
+    private async Task WriteAccountSetupPageAsync(Stream stream, string token, string returnTarget, TemporaryAuthenticationLinkState link, AuthenticationAccount account, string errorMessage, int statusCode, string reason, Dictionary<string, string> additionalHeaders)
+    {
+        string safeReturn = GetSafeReturnTarget(returnTarget);
+        string username = account != null ? account.Username : (link != null ? link.Username : "");
+        bool enrollTotp = link != null && link.RequireTotp;
+        bool verifyExistingTotp = !enrollTotp && account != null && !string.IsNullOrWhiteSpace(account.TotpSecret);
+        string error = string.IsNullOrWhiteSpace(errorMessage) ? "" : "<p class=\"error\">" + WebUtility.HtmlEncode(errorMessage) + "</p>";
+        string totpFields = "";
+        if (enrollTotp)
+        {
+            string issuer = "GStreamer Glass";
+            string secret = link.TotpSecret ?? "";
+            string otpauthUri = "otpauth://totp/" + Uri.EscapeDataString(issuer) + ":" + Uri.EscapeDataString(username) +
+                "?secret=" + Uri.EscapeDataString(secret) + "&issuer=" + Uri.EscapeDataString(issuer);
+            totpFields =
+                "<section><h2>Set up two-factor authentication</h2><p>Add this account to your authenticator app using the secret or URI below, then enter its current code.</p>" +
+                "<label>Secret key</label><code>" + WebUtility.HtmlEncode(secret) + "</code>" +
+                "<label>Authenticator URI</label><code class=\"uri\"><a href=\"" + WebUtility.HtmlEncode(otpauthUri) + "\">" + WebUtility.HtmlEncode(otpauthUri) + "</a></code></section>" +
+                "<label for=\"code\">Authenticator code</label><input id=\"code\" name=\"code\" inputmode=\"numeric\" pattern=\"[0-9]{6}\" maxlength=\"6\" autocomplete=\"one-time-code\" required>";
+        }
+        else if (verifyExistingTotp)
+        {
+            totpFields =
+                "<p>Your existing two-factor enrollment will be preserved. Enter its current code to complete the password change.</p>" +
+                "<label for=\"code\">Authenticator code</label><input id=\"code\" name=\"code\" inputmode=\"numeric\" pattern=\"[0-9]{6}\" maxlength=\"6\" autocomplete=\"one-time-code\" required>";
+        }
+        string html = "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">" +
+            "<meta name=\"robots\" content=\"noindex,nofollow,noarchive,nosnippet,noimageindex\">" +
+            "<title>GStreamer Glass - Account Setup</title><style>html{color-scheme:dark}*{box-sizing:border-box}" +
+            "body{margin:0;min-height:100vh;display:grid;place-items:center;background:#05070b;color:#e8edf5;font:16px system-ui,-apple-system,Segoe UI,sans-serif}" +
+            "body::before{content:\"\";position:fixed;inset:0;z-index:-1;background:radial-gradient(560px circle at 18% 20%,rgba(79,140,255,.40),transparent 60%),radial-gradient(520px circle at 85% 75%,rgba(53,215,137,.30),transparent 58%),radial-gradient(640px circle at 60% 100%,rgba(255,93,108,.20),transparent 60%),#05070b}" +
+            "main{width:min(92vw,420px);margin:24px 0;padding:32px;border:1px solid rgba(255,255,255,.12);border-radius:16px;background:linear-gradient(180deg,rgba(10,14,22,.82),rgba(10,14,22,.48));backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);box-shadow:0 14px 44px rgba(0,0,0,.35)}" +
+            ".bars{height:10px;margin:-8px 0 24px;border-radius:99px;background:linear-gradient(90deg,#fff 0 14%,#ffe500 14% 28%,#00e5e5 28% 42%,#19ef18 42% 56%,#ed38eb 56% 70%,#ff2626 70% 84%,#1515ef 84%)}" +
+            "h1{margin:0 0 8px;font-size:1.65rem}h2{margin:24px 0 6px;font-size:1.1rem}p{color:#aab6c8;line-height:1.5}.error{color:#ff9b9b}" +
+            "label{display:block;margin:17px 0 6px;font-weight:650}input{width:100%;padding:12px;border:1px solid #35435a;border-radius:9px;background:#090f19;color:#fff;font:inherit}" +
+            "#code{letter-spacing:.3em;text-align:center}code{display:block;padding:11px;border:1px solid #29364b;border-radius:8px;background:#070c14;color:#bcd0ef;overflow-wrap:anywhere;user-select:all}.uri{font-size:.78rem}.uri a{color:inherit;text-decoration:underline;text-decoration-color:#4f8cff;text-underline-offset:3px}" +
+            "button{width:100%;margin-top:24px;padding:13px;border:0;border-radius:9px;background:#4f8cff;color:white;font:inherit;font-weight:750;cursor:pointer}</style></head>" +
+            "<body><main><div class=\"bars\" aria-hidden=\"true\"></div><h1>Set up " + WebUtility.HtmlEncode(username) + "</h1>" +
+            "<p>Choose a new password for this viewer account. Completing setup signs out its existing sessions.</p>" + error +
+            "<form method=\"post\" action=\"/auth/setup\"><input type=\"hidden\" name=\"token\" value=\"" + WebUtility.HtmlEncode(token ?? "") + "\">" +
+            "<input type=\"hidden\" name=\"return\" value=\"" + WebUtility.HtmlEncode(safeReturn) + "\">" +
+            "<label for=\"password\">New password</label><input id=\"password\" name=\"password\" type=\"password\" minlength=\"10\" maxlength=\"256\" autocomplete=\"new-password\" required autofocus>" +
+            "<label for=\"confirm\">Confirm password</label><input id=\"confirm\" name=\"confirm\" type=\"password\" minlength=\"10\" maxlength=\"256\" autocomplete=\"new-password\" required>" +
+            totpFields + "<button type=\"submit\">Save account and continue</button></form></main></body></html>";
+        await WriteHttpResponseAsync(stream, statusCode, reason, "text/html; charset=utf-8", html, additionalHeaders);
+    }
+
     private async Task WriteTemporaryLinkRejectedAsync(Stream stream, int rejectionStatus)
     {
         byte[] rejectionImage = temporaryLinkUnavailableImageBytes;
@@ -3889,7 +4181,7 @@ public class TlsTerminatingProxy
         }
     }
 
-    private bool TryValidateTemporaryAuthenticationLink(string token, string remoteAddress, out TemporaryAuthenticationLinkState validated, out string reason, out int statusCode)
+    private bool TryValidateTemporaryAuthenticationLink(string token, string remoteAddress, string expectedPurpose, out TemporaryAuthenticationLinkState validated, out string reason, out int statusCode)
     {
         validated = null;
         reason = "not found";
@@ -3897,6 +4189,11 @@ public class TlsTerminatingProxy
         if (string.IsNullOrWhiteSpace(token)) return false;
         TemporaryAuthenticationLinkState current;
         if (!temporaryAuthenticationLinks.TryGetValue(token, out current) || current == null) return false;
+        if (!string.Equals(NormalizeTemporaryLinkPurpose(current.Purpose), NormalizeTemporaryLinkPurpose(expectedPurpose), StringComparison.Ordinal))
+        {
+            reason = "wrong link purpose";
+            return false;
+        }
         long now = ToUnixTimeSeconds(DateTime.UtcNow);
         if (current.Expires < now)
         {
@@ -3924,15 +4221,15 @@ public class TlsTerminatingProxy
         return true;
     }
 
-    private bool TryRedeemTemporaryAuthenticationLink(string token, string remoteAddress, out TemporaryAuthenticationLinkState redeemed, out string reason, out int statusCode)
+    private bool TryRedeemTemporaryAuthenticationLink(string token, string remoteAddress, string expectedPurpose, out TemporaryAuthenticationLinkState redeemed, out string reason, out int statusCode)
     {
         redeemed = null;
         TemporaryAuthenticationLinkState current;
-        if (!TryValidateTemporaryAuthenticationLink(token, remoteAddress, out current, out reason, out statusCode))
+        if (!TryValidateTemporaryAuthenticationLink(token, remoteAddress, expectedPurpose, out current, out reason, out statusCode))
         {
             return false;
         }
-        if (current.SingleUse)
+        if (current.SingleUse || string.Equals(NormalizeTemporaryLinkPurpose(expectedPurpose), "setup", StringComparison.Ordinal))
         {
             TemporaryAuthenticationLinkState consumed;
             if (!temporaryAuthenticationLinks.TryRemove(token, out consumed))
@@ -4438,6 +4735,20 @@ if ($AuthProxyWorker) {
             Expires = [long]$Link.Expires
             SingleUse = [bool]$Link.SingleUse
             BoundAddress = [string]$Link.BoundAddress
+            Purpose = [string]$Link.Purpose
+            RequireTotp = [bool]$Link.RequireTotp
+            TotpSecret = [string]$Link.TotpSecret
+        }
+    }
+
+    function ConvertTo-AuthProxyAccountUpdateRecord {
+        param($Update)
+        if (-not $Update) { return $null }
+        return [pscustomobject][ordered]@{
+            Username = [string]$Update.Username
+            PasswordHash = [string]$Update.PasswordHash
+            TotpSecret = [string]$Update.TotpSecret
+            SessionsRevoked = [int]$Update.SessionsRevoked
         }
     }
 
@@ -4555,6 +4866,9 @@ if ($AuthProxyWorker) {
                             $state.Expires = [long]$_.Expires
                             $state.SingleUse = [bool]$_.SingleUse
                             $state.BoundAddress = [string]$_.BoundAddress
+                            $state.Purpose = [string]$_.Purpose
+                            $state.RequireTotp = [bool]$_.RequireTotp
+                            $state.TotpSecret = [string]$_.TotpSecret
                             $state
                         }
                     )
@@ -4567,6 +4881,15 @@ if ($AuthProxyWorker) {
                 if (-not $any) { return @{ Status = 'Error'; Error = 'no authentication proxy is running' } }
                 try {
                     $link = $any.CreateTemporaryAuthenticationLink([string]$Command.Username, [int]$Command.DurationMinutes, [bool]$Command.SingleUse, [string]$Command.BoundAddress)
+                    return @{ Status = 'Ready'; Error = ''; Link = (ConvertTo-AuthProxyTemporaryLinkRecord $link) }
+                }
+                catch { return @{ Status = 'Error'; Error = $_.Exception.Message } }
+            }
+            'CreateAccountSetupLink' {
+                $any = (@($proxiesByFamily['LetsEncrypt']) + @($proxiesByFamily['Plaintext'])) | Select-Object -First 1
+                if (-not $any) { return @{ Status = 'Error'; Error = 'no authentication proxy is running' } }
+                try {
+                    $link = $any.CreateAuthenticationSetupLink([string]$Command.Username, [int]$Command.DurationMinutes, [bool]$Command.RequireTotp, [string]$Command.BoundAddress)
                     return @{ Status = 'Ready'; Error = ''; Link = (ConvertTo-AuthProxyTemporaryLinkRecord $link) }
                 }
                 catch { return @{ Status = 'Error'; Error = $_.Exception.Message } }
@@ -4591,14 +4914,27 @@ if ($AuthProxyWorker) {
             }
             'PollLog' {
                 $messages = New-Object System.Collections.Generic.List[string]
-                foreach ($proxy in (@($proxiesByFamily['LetsEncrypt']) + @($proxiesByFamily['Plaintext']))) {
+                $allProxies = @($proxiesByFamily['LetsEncrypt']) + @($proxiesByFamily['Plaintext'])
+                foreach ($proxy in $allProxies) {
                     while ($true) {
                         $message = $proxy.PollLogMessage()
                         if (-not $message) { break }
                         $messages.Add("$($proxy.Label): $message")
                     }
                 }
-                return @{ Status = 'Ready'; Error = ''; Messages = $messages.ToArray() }
+                $accountUpdates = New-Object System.Collections.Generic.List[object]
+                $any = $allProxies | Select-Object -First 1
+                if ($any) {
+                    while ($true) {
+                        $update = $any.PollAuthenticationAccountUpdate()
+                        if (-not $update) { break }
+                        foreach ($proxy in $allProxies) {
+                            try { $null = $proxy.ApplyAuthenticationAccountUpdate([string]$update.Username, [string]$update.PasswordHash, [string]$update.TotpSecret) } catch {}
+                        }
+                        $accountUpdates.Add((ConvertTo-AuthProxyAccountUpdateRecord $update))
+                    }
+                }
+                return @{ Status = 'Ready'; Error = ''; Messages = $messages.ToArray(); AccountUpdates = $accountUpdates.ToArray() }
             }
             default {
                 return @{ Status = 'Error'; Error = "Unknown auth proxy worker command: $($Command.Type)" }
@@ -4894,6 +5230,7 @@ $script:DefaultViewerAuthenticationTemporaryLinkProxyDomain = ''
 $script:DefaultViewerAuthenticationTemporaryLinkMinutes = 60
 $script:DefaultViewerAuthenticationTemporaryLinkSingleUse = $false
 $script:DefaultViewerAuthenticationTemporaryLinkRestrictedIp = ''
+$script:DefaultViewerAuthenticationSetupLinkRequireTotp = $false
 $script:DefaultViewerAuthenticationTrustedProxies = ''
 # Named accounts, each @{ Username; PasswordHash }. Only the salted
 # PBKDF2-HMAC-SHA256 hash is ever persisted -- see Add-ViewerAuthenticationAccount

@@ -94,6 +94,7 @@ function Save-Settings {
             ViewerAuthenticationTemporaryLinkMinutes = [int]$numViewerAuthenticationTemporaryLinkMinutes.Value
             ViewerAuthenticationTemporaryLinkSingleUse = [bool]$chkViewerAuthenticationTemporaryLinkSingleUse.Checked
             ViewerAuthenticationTemporaryLinkRestrictedIp = [string]$txtViewerAuthenticationTemporaryLinkRestrictedIp.Text
+            ViewerAuthenticationSetupLinkRequireTotp = [bool]$chkViewerAuthenticationSetupLinkRequireTotp.Checked
             ViewerAuthenticationTrustedProxies = @(Get-ViewerAuthenticationTrustedProxyAddresses)
             DirectWebRtcWebPath = $txtDirectWebRtcWebPath.Text
             DirectWebRtcBundledWebMode = [string]$cmbDirectWebRtcBundledWebMode.SelectedItem
@@ -523,6 +524,7 @@ function Restore-SettingsFromObject {
         if ($null -ne $settings.ViewerAuthenticationTemporaryLinkMinutes) { $numViewerAuthenticationTemporaryLinkMinutes.Value = [decimal]([Math]::Min(43200, [Math]::Max(1, [int]$settings.ViewerAuthenticationTemporaryLinkMinutes))) }
         if ($null -ne $settings.ViewerAuthenticationTemporaryLinkSingleUse) { $chkViewerAuthenticationTemporaryLinkSingleUse.Checked = [bool]$settings.ViewerAuthenticationTemporaryLinkSingleUse }
         if ($null -ne $settings.ViewerAuthenticationTemporaryLinkRestrictedIp) { $txtViewerAuthenticationTemporaryLinkRestrictedIp.Text = [string]$settings.ViewerAuthenticationTemporaryLinkRestrictedIp }
+        if ($null -ne $settings.ViewerAuthenticationSetupLinkRequireTotp) { $chkViewerAuthenticationSetupLinkRequireTotp.Checked = [bool]$settings.ViewerAuthenticationSetupLinkRequireTotp }
         if ($null -ne $settings.ViewerAuthenticationTrustedProxies) {
             try { Set-ViewerAuthenticationTrustedProxyAddresses -Value $settings.ViewerAuthenticationTrustedProxies }
             catch {
