@@ -24,7 +24,9 @@ param(
     [switch]$ControlledLiveWorker,
     [string]$ControlledLiveWorkerPipe,
     [switch]$WebRtcPortRangeWorker,
-    [string]$WebRtcPortRangeWorkerPipe
+    [string]$WebRtcPortRangeWorkerPipe,
+    [switch]$AuthProxyWorker,
+    [string]$AuthProxyWorkerPipe
 )
 
 Add-Type -AssemblyName System.Windows.Forms
@@ -3699,6 +3701,195 @@ public class TlsTerminatingProxy
     }
 }
 '@
+}
+
+if ($AuthProxyWorker) {
+    # Hosts every TlsTerminatingProxy instance (both auth families:
+    # embedded TLS + plaintext auth) in a disposable process, so a
+    # misbehaving proxy -- e.g. a runaway reconnect loop pegging CPU and
+    # exhausting the shared .NET thread pool, the exact mechanism behind an
+    # earlier whole-app UI freeze -- can never starve the UI process's own
+    # threads/message pump. See 33-LetsEncrypt.ps1's Start-AuthProxyWorker
+    # for the UI-side half of this. Placed after the TlsTerminatingProxy
+    # Add-Type block above (unlike the two worker blocks earlier in this
+    # file) because it needs that class to already be defined -- this
+    # script executes top-to-bottom, and a function/type is only callable
+    # once its own definition has actually run.
+    #
+    # Unlike the scene-preview/port-range workers above, this is a
+    # persistent request/response server -- many commands over its whole
+    # lifetime, not one Start plus incremental updates -- and needs no
+    # GMainContext pump, since TlsTerminatingProxy is plain .NET
+    # (TcpListener/SslStream), not glib-driven. A simple synchronous
+    # ReadLine loop is enough.
+    if ([string]::IsNullOrWhiteSpace($AuthProxyWorkerPipe)) { exit 64 }
+
+    $proxiesByFamily = @{ LetsEncrypt = @(); Plaintext = @() }
+
+    function New-AuthProxyAccountObjects {
+        param($Accounts)
+        return [TlsTerminatingProxy+AuthenticationAccount[]]@(
+            @($Accounts) | ForEach-Object {
+                $account = [TlsTerminatingProxy+AuthenticationAccount]::new()
+                $account.Username = [string]$_.Username
+                $account.PasswordHash = [string]$_.PasswordHash
+                $account.TotpSecret = [string]$_.TotpSecret
+                $account
+            }
+        )
+    }
+
+    function Stop-AuthProxyFamily {
+        param([string]$Family)
+        foreach ($proxy in @($proxiesByFamily[$Family])) {
+            try { $proxy.Stop() } catch {}
+        }
+        $proxiesByFamily[$Family] = @()
+    }
+
+    function Invoke-AuthProxyWorkerCommand {
+        param($Command)
+        switch ([string]$Command.Type) {
+            'StartFamily' {
+                $family = [string]$Command.Family
+                Stop-AuthProxyFamily -Family $family
+                $certificate = $null
+                if (-not [string]::IsNullOrEmpty([string]$Command.CertificatePfxBase64)) {
+                    $certBytes = [Convert]::FromBase64String([string]$Command.CertificatePfxBase64)
+                    $certificate = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2($certBytes, '')
+                }
+                $accountObjects = New-AuthProxyAccountObjects -Accounts $Command.Accounts
+                $errors = New-Object System.Collections.Generic.List[string]
+                $started = New-Object System.Collections.Generic.List[object]
+                foreach ($portInfo in @($Command.Ports)) {
+                    try {
+                        $proxy = New-Object TlsTerminatingProxy
+                        $proxy.Label = [string]$portInfo.Label
+                        $proxy.AuthenticationMountPath = [string]$Command.AuthenticationMountPath
+                        foreach ($route in @($portInfo.PathRoutes)) {
+                            $proxy.AddPathRoute([string]$route.Path, [int]$route.Port)
+                        }
+                        if (-not [string]::IsNullOrEmpty([string]$portInfo.DirectoryRedirectPath)) {
+                            $proxy.DirectoryRedirectPath = [string]$portInfo.DirectoryRedirectPath
+                        }
+                        if ([bool]$Command.AuthenticationEnabled) {
+                            $proxy.ConfigureAuthentication($true, $accountObjects, [Convert]::FromBase64String([string]$Command.SessionKeyBase64), [int]$Command.SessionHours)
+                        }
+                        $proxy.Start([int]$portInfo.ExternalPort, '127.0.0.1', [int]$portInfo.InternalPort, $certificate)
+                        $started.Add($proxy)
+                    }
+                    catch {
+                        $errors.Add("$($portInfo.Label): $($_.Exception.Message)")
+                    }
+                }
+                $proxiesByFamily[$family] = $started.ToArray()
+                if ($started.Count -gt 0) {
+                    return @{ Status = 'Ready'; Error = ($errors -join '; ') }
+                }
+                return @{ Status = 'Error'; Error = $(if ($errors.Count -gt 0) { $errors -join '; ' } else { 'no ports were configured' }) }
+            }
+            'StopFamily' {
+                Stop-AuthProxyFamily -Family ([string]$Command.Family)
+                return @{ Status = 'Ready'; Error = '' }
+            }
+            'ConfigureAuthentication' {
+                $family = [string]$Command.Family
+                $accountObjects = New-AuthProxyAccountObjects -Accounts $Command.Accounts
+                foreach ($proxy in @($proxiesByFamily[$family])) {
+                    try { $proxy.ConfigureAuthentication($true, $accountObjects, [Convert]::FromBase64String([string]$Command.SessionKeyBase64), [int]$Command.SessionHours) } catch {}
+                }
+                return @{ Status = 'Ready'; Error = '' }
+            }
+            'SuspendForwarding' {
+                foreach ($proxy in (@($proxiesByFamily['LetsEncrypt']) + @($proxiesByFamily['Plaintext']))) {
+                    try { $proxy.PauseForwarding() } catch {}
+                }
+                return @{ Status = 'Ready'; Error = '' }
+            }
+            'ResumeForwarding' {
+                foreach ($proxy in (@($proxiesByFamily['LetsEncrypt']) + @($proxiesByFamily['Plaintext']))) {
+                    try { $proxy.ResumeForwarding() } catch {}
+                }
+                return @{ Status = 'Ready'; Error = '' }
+            }
+            'DisconnectConnections' {
+                foreach ($proxy in (@($proxiesByFamily['LetsEncrypt']) + @($proxiesByFamily['Plaintext']))) {
+                    try { $proxy.DisconnectActiveConnections() } catch {}
+                }
+                return @{ Status = 'Ready'; Error = '' }
+            }
+            'RevokeSessions' {
+                $any = (@($proxiesByFamily['LetsEncrypt']) + @($proxiesByFamily['Plaintext'])) | Select-Object -First 1
+                if ($any) { try { $any.RevokeAllSessions() } catch {} }
+                return @{ Status = 'Ready'; Error = '' }
+            }
+            'PollLog' {
+                $messages = New-Object System.Collections.Generic.List[string]
+                foreach ($proxy in (@($proxiesByFamily['LetsEncrypt']) + @($proxiesByFamily['Plaintext']))) {
+                    while ($true) {
+                        $message = $proxy.PollLogMessage()
+                        if (-not $message) { break }
+                        $messages.Add("$($proxy.Label): $message")
+                    }
+                }
+                return @{ Status = 'Ready'; Error = ''; Messages = $messages.ToArray() }
+            }
+            default {
+                return @{ Status = 'Error'; Error = "Unknown auth proxy worker command: $($Command.Type)" }
+            }
+        }
+    }
+
+    $pipeServer = $null
+    $pipeReader = $null
+    $pipeWriter = $null
+    try {
+        $pipeServer = New-Object System.IO.Pipes.NamedPipeServerStream(
+            $AuthProxyWorkerPipe,
+            [System.IO.Pipes.PipeDirection]::InOut,
+            1,
+            [System.IO.Pipes.PipeTransmissionMode]::Byte,
+            [System.IO.Pipes.PipeOptions]::None
+        )
+        $pipeServer.WaitForConnection()
+        $utf8 = New-Object System.Text.UTF8Encoding($false)
+        $pipeReader = New-Object System.IO.StreamReader($pipeServer, $utf8, $false, 4096, $true)
+        $pipeWriter = New-Object System.IO.StreamWriter($pipeServer, $utf8, 4096, $true)
+        $pipeWriter.AutoFlush = $true
+
+        while ($true) {
+            $line = $pipeReader.ReadLine()
+            if ($null -eq $line) { break }
+            if ([string]::IsNullOrWhiteSpace($line)) { continue }
+            $command = $line | ConvertFrom-Json
+            if ([string]$command.Type -eq 'Shutdown') {
+                $pipeWriter.WriteLine((@{ Status = 'Ready'; Error = '' } | ConvertTo-Json -Compress))
+                break
+            }
+            try {
+                $result = Invoke-AuthProxyWorkerCommand -Command $command
+            }
+            catch {
+                $result = @{ Status = 'Error'; Error = $_.Exception.Message }
+            }
+            $pipeWriter.WriteLine(($result | ConvertTo-Json -Compress -Depth 6))
+        }
+    }
+    catch {
+        [Console]::Error.WriteLine("Auth proxy worker error: $($_.Exception)")
+        exit 70
+    }
+    finally {
+        foreach ($family in @('LetsEncrypt', 'Plaintext')) {
+            foreach ($proxy in @($proxiesByFamily[$family])) {
+                try { $proxy.Stop() } catch {}
+            }
+        }
+        try { if ($pipeWriter) { $pipeWriter.Dispose() } } catch {}
+        try { if ($pipeReader) { $pipeReader.Dispose() } } catch {}
+        try { if ($pipeServer) { $pipeServer.Dispose() } } catch {}
+    }
+    exit 0
 }
 
 $script:AppVersion = '3.8.3a'

@@ -21,8 +21,13 @@
 # Like UPnP/DDNS, a failure here never blocks the stream: every call site
 # wraps these functions in try/catch and just logs on failure.
 
-# Running TlsTerminatingProxy instances (see Start-LetsEncryptTlsProxies),
-# one per externally-exposed port. Empty when TLS termination isn't active.
+# Port descriptors for the currently-running TlsTerminatingProxy instances
+# (see Start-LetsEncryptTlsProxies), one per externally-exposed port. The
+# actual TlsTerminatingProxy .NET objects live in the auth proxy worker
+# process (Start-AuthProxyWorker below), not here -- this only tracks what
+# was told to run, so .Count -gt 0 still means "this family should be
+# running" exactly as it did back when this held the live objects directly.
+# Empty when TLS termination isn't active.
 $script:LetsEncryptTlsProxies = @()
 $script:LetsEncryptTlsProxyConfigurationSignature = ''
 # The exact session-signing key currently live on $script:LetsEncryptTlsProxies
@@ -33,14 +38,22 @@ $script:LetsEncryptTlsProxyConfigurationSignature = ''
 # proxies aren't running authentication.
 $script:LetsEncryptAuthenticationSessionKey = $null
 
-# Plaintext-mode (certificate = null) TlsTerminatingProxy instances for
-# "Allow plaintext auth" -- see Start-PlaintextAuthProxies. Kept separate
-# from $script:LetsEncryptTlsProxies since these can run independently of
-# embedded TLS (or alongside it, for the plain ports it deliberately
-# leaves open).
+# Plaintext-mode (certificate = null) port descriptors for "Allow plaintext
+# auth" -- see Start-PlaintextAuthProxies and the matching comment on
+# $script:LetsEncryptTlsProxies above (same "descriptor, not live object"
+# shape). Kept separate from $script:LetsEncryptTlsProxies since these can
+# run independently of embedded TLS (or alongside it, for the plain ports
+# it deliberately leaves open).
 $script:PlaintextAuthProxies = @()
 $script:PlaintextAuthProxyConfigurationSignature = ''
 $script:PlaintextAuthenticationSessionKey = $null
+
+# The auth proxy worker process hosting every TlsTerminatingProxy instance
+# for both families -- see Start-AuthProxyWorker.
+$script:AuthProxyWorkerProcess = $null
+$script:AuthProxyWorkerPipeHandle = $null
+$script:AuthProxyWorkerReader = $null
+$script:AuthProxyWorkerWriter = $null
 
 function ConvertTo-AcmeBase64Url {
     param([byte[]]$Bytes)
@@ -1223,16 +1236,194 @@ function Sync-ViewerAuthenticationAccountsToLiveProxies {
     $accountObjects = Get-ViewerAuthenticationAccountObjects -Accounts $validAccounts
     $sessionHours = [int]$numViewerAuthenticationSessionHours.Value
 
+    if (-not (Test-AuthProxyWorkerRunning)) { return }
     if ($script:LetsEncryptAuthenticationSessionKey -and @($script:LetsEncryptTlsProxies).Count -gt 0) {
-        foreach ($proxy in $script:LetsEncryptTlsProxies) {
-            try { $proxy.ConfigureAuthentication($true, $accountObjects, $script:LetsEncryptAuthenticationSessionKey, $sessionHours) } catch {}
+        $null = Send-AuthProxyWorkerCommand -Command @{
+            Type             = 'ConfigureAuthentication'
+            Family           = 'LetsEncrypt'
+            Accounts         = $accountObjects
+            SessionHours     = $sessionHours
+            SessionKeyBase64 = [Convert]::ToBase64String($script:LetsEncryptAuthenticationSessionKey)
         }
     }
     if ($script:PlaintextAuthenticationSessionKey -and @($script:PlaintextAuthProxies).Count -gt 0) {
-        foreach ($proxy in $script:PlaintextAuthProxies) {
-            try { $proxy.ConfigureAuthentication($true, $accountObjects, $script:PlaintextAuthenticationSessionKey, $sessionHours) } catch {}
+        $null = Send-AuthProxyWorkerCommand -Command @{
+            Type             = 'ConfigureAuthentication'
+            Family           = 'Plaintext'
+            Accounts         = $accountObjects
+            SessionHours     = $sessionHours
+            SessionKeyBase64 = [Convert]::ToBase64String($script:PlaintextAuthenticationSessionKey)
         }
     }
+}
+
+# Auth proxy worker process control -- every TlsTerminatingProxy instance
+# for both families runs in this disposable child process instead of the UI
+# process, so a misbehaving proxy (a runaway reconnect loop pegging CPU and
+# exhausting the shared .NET thread pool, the mechanism behind an earlier
+# whole-app UI freeze) can never starve the UI process's own threads. One
+# process hosts BOTH families together (not one process per family/port) so
+# TlsTerminatingProxy's static state (activeAuthenticationSessions,
+# authenticationFailures) keeps sharing across every instance exactly like
+# it did when everything ran in a single process -- RevokeAllSessions()
+# clearing sessions globally via any one instance still works unchanged.
+# The worker-side dispatcher lives in 00-Setup.ps1's `if ($AuthProxyWorker)`
+# block, placed after TlsTerminatingProxy's own Add-Type block since it
+# needs that class already defined.
+function Test-AuthProxyWorkerRunning {
+    return [bool]($script:AuthProxyWorkerProcess -and -not $script:AuthProxyWorkerProcess.HasExited -and $script:AuthProxyWorkerWriter)
+}
+
+function Close-AuthProxyWorkerPipe {
+    try { if ($script:AuthProxyWorkerWriter) { $script:AuthProxyWorkerWriter.Dispose() } } catch {}
+    try { if ($script:AuthProxyWorkerReader) { $script:AuthProxyWorkerReader.Dispose() } } catch {}
+    try { if ($script:AuthProxyWorkerPipeHandle) { $script:AuthProxyWorkerPipeHandle.Dispose() } } catch {}
+    $script:AuthProxyWorkerWriter = $null
+    $script:AuthProxyWorkerReader = $null
+    $script:AuthProxyWorkerPipeHandle = $null
+}
+
+# Lazily starts the worker process the first time either auth family needs
+# to run; stays alive across stream start/stop/restart cycles exactly like
+# the proxies themselves always have, since it must keep answering the
+# login-redirect page even with no stream active. A no-op if already
+# running. Mirrors Start-ControlledLiveWorker (25-PreviewWindow.ps1) --
+# relaunch this same exe with a hidden switch, connect over a named pipe,
+# with a bounded, UI-responsive wait (Wait-UiResponsiveTask) rather than a
+# blocking one.
+function Start-AuthProxyWorker {
+    if (Test-AuthProxyWorkerRunning) { return $true }
+    Close-AuthProxyWorkerPipe
+    $pipeName = "gstglass-authproxy-$PID-$([Guid]::NewGuid().ToString('N'))"
+    $process = $null
+    $pipe = $null
+    $reader = $null
+    $writer = $null
+    try {
+        $currentProcess = [System.Diagnostics.Process]::GetCurrentProcess()
+        $currentExe = $currentProcess.MainModule.FileName
+        $currentName = [System.IO.Path]::GetFileNameWithoutExtension($currentExe)
+        if ($currentName -match '^(powershell|pwsh|powershell_ise)$') {
+            if ([string]::IsNullOrWhiteSpace($PSCommandPath) -or -not (Test-Path -LiteralPath $PSCommandPath)) {
+                throw 'The current script path is unavailable; the auth proxy worker cannot be launched.'
+            }
+            $escapedScript = $PSCommandPath.Replace('"', '\"')
+            $arguments = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$escapedScript`" -AuthProxyWorker -AuthProxyWorkerPipe `"$pipeName`""
+        }
+        else {
+            $arguments = "-AuthProxyWorker -AuthProxyWorkerPipe `"$pipeName`""
+        }
+
+        $startParams = @{
+            FilePath     = $currentExe
+            ArgumentList = $arguments
+            WindowStyle  = 'Hidden'
+            PassThru     = $true
+        }
+        if (Test-ProcessDiskLoggingEnabled) {
+            $startParams.RedirectStandardOutput = $script:StdOutPath
+            $startParams.RedirectStandardError = $script:StdErrPath
+        }
+        $process = Start-Process @startParams
+        if ($script:JobHandle -ne [IntPtr]::Zero) {
+            try { [GstProcessJob]::AssignProcess($script:JobHandle, $process.Handle) }
+            catch { Append-Log "WARNING: Auth proxy worker could not be assigned to the kill-on-close job: $($_.Exception.Message)" }
+        }
+
+        $pipe = New-Object System.IO.Pipes.NamedPipeClientStream(
+            '.',
+            $pipeName,
+            [System.IO.Pipes.PipeDirection]::InOut,
+            [System.IO.Pipes.PipeOptions]::None
+        )
+        $connectTask = $pipe.ConnectAsync(12000)
+        if (-not (Wait-UiResponsiveTask -Task $connectTask -TimeoutMs 12500)) {
+            throw 'The auth proxy worker pipe did not connect within 12 seconds.'
+        }
+        $utf8 = New-Object System.Text.UTF8Encoding($false)
+        $reader = New-Object System.IO.StreamReader($pipe, $utf8, $false, 4096, $true)
+        $writer = New-Object System.IO.StreamWriter($pipe, $utf8, 4096, $true)
+        $writer.AutoFlush = $true
+
+        $script:AuthProxyWorkerProcess = $process
+        $script:AuthProxyWorkerPipeHandle = $pipe
+        $script:AuthProxyWorkerReader = $reader
+        $script:AuthProxyWorkerWriter = $writer
+        Append-Log "AUTH: auth proxy worker started - PID $($process.Id)."
+        return $true
+    }
+    catch {
+        Append-Log "AUTH: auth proxy worker failed to start: $($_.Exception.Message)"
+        try { if ($process -and -not $process.HasExited) { Stop-ProcessTreeById -ProcessId $process.Id } } catch {}
+        try { if ($writer) { $writer.Dispose() } } catch {}
+        try { if ($reader) { $reader.Dispose() } } catch {}
+        try { if ($pipe) { $pipe.Dispose() } } catch {}
+        try { if ($process) { $process.Dispose() } } catch {}
+        $script:AuthProxyWorkerProcess = $null
+        return $false
+    }
+}
+
+# Sends one command and waits (UI-responsive, bounded) for its reply.
+# Returns $null on any failure (timeout, worker not running and unable to
+# start, pipe error) -- callers treat $null exactly like "nothing happened,
+# state unknown" and log accordingly, never block indefinitely. This bound
+# is the single most important invariant of the whole worker-process
+# design: a hang in the worker must only ever cost one timeout here, never
+# take the UI thread down with it.
+function Send-AuthProxyWorkerCommand {
+    param(
+        [Parameter(Mandatory)][hashtable]$Command,
+        [int]$TimeoutMs = 5000,
+        [switch]$AutoStart
+    )
+
+    if (-not (Test-AuthProxyWorkerRunning)) {
+        if (-not $AutoStart) { return $null }
+        if (-not (Start-AuthProxyWorker)) { return $null }
+    }
+    try {
+        $script:AuthProxyWorkerWriter.WriteLine(($Command | ConvertTo-Json -Compress -Depth 6))
+        $replyTask = $script:AuthProxyWorkerReader.ReadLineAsync()
+        if (-not (Wait-UiResponsiveTask -Task $replyTask -TimeoutMs $TimeoutMs)) {
+            Append-Log "AUTH: auth proxy worker did not respond to $($Command.Type) within $TimeoutMs ms."
+            return $null
+        }
+        $replyLine = $replyTask.Result
+        if ([string]::IsNullOrWhiteSpace($replyLine)) {
+            Append-Log 'AUTH: auth proxy worker closed the pipe unexpectedly.'
+            Close-AuthProxyWorkerPipe
+            return $null
+        }
+        return ($replyLine | ConvertFrom-Json)
+    }
+    catch {
+        Append-Log "AUTH: auth proxy worker command $($Command.Type) failed: $($_.Exception.Message)"
+        return $null
+    }
+}
+
+# Full worker teardown -- app exit (29-Cleanup.ps1) or a deliberate restart
+# after the worker is found to have died unexpectedly (90-MainWindow.ps1's
+# poll timer). Safe to call even when the worker was never started.
+function Stop-AuthProxyWorker {
+    if (Test-AuthProxyWorkerRunning) {
+        try { $null = Send-AuthProxyWorkerCommand -Command @{ Type = 'Shutdown' } -TimeoutMs 2000 } catch {}
+    }
+    try {
+        if ($script:AuthProxyWorkerProcess -and -not $script:AuthProxyWorkerProcess.HasExited) {
+            Stop-ProcessTreeById -ProcessId $script:AuthProxyWorkerProcess.Id
+        }
+    }
+    catch {}
+    Close-AuthProxyWorkerPipe
+    $script:AuthProxyWorkerProcess = $null
+    $script:LetsEncryptTlsProxies = @()
+    $script:LetsEncryptTlsProxyConfigurationSignature = ''
+    $script:LetsEncryptAuthenticationSessionKey = $null
+    $script:PlaintextAuthProxies = @()
+    $script:PlaintextAuthProxyConfigurationSignature = ''
+    $script:PlaintextAuthenticationSessionKey = $null
 }
 
 function Start-LetsEncryptTlsProxies {
@@ -1327,38 +1518,42 @@ function Start-LetsEncryptTlsProxies {
         Append-Log "ACME: could not determine the web viewer port for TLS termination: $($_.Exception.Message)"
     }
 
-    $started = @()
-    foreach ($portInfo in $ports) {
-        try {
-            $proxy = New-Object TlsTerminatingProxy
-            $proxy.Label = [string]$portInfo.Label
-            $proxy.AuthenticationMountPath = $authenticationMountPath
-            foreach ($route in @($portInfo.PathRoutes)) {
-                $proxy.AddPathRoute([string]$route.Path, [int]$route.Port)
-            }
-            if (-not [string]::IsNullOrEmpty([string]$portInfo.DirectoryRedirectPath)) {
-                $proxy.DirectoryRedirectPath = [string]$portInfo.DirectoryRedirectPath
-            }
-            if ($authenticationEnabled) {
-                $proxy.ConfigureAuthentication(
-                    $true,
-                    (Get-ViewerAuthenticationAccountObjects -Accounts $authenticationAccounts),
-                    $authenticationSessionKey,
-                    [int]$numViewerAuthenticationSessionHours.Value
-                )
-            }
-            $proxy.Start($portInfo.ExternalPort, '127.0.0.1', $portInfo.InternalPort, $certificate)
-            $started += $proxy
-            Append-Log "ACME: TLS termination active for $($portInfo.Label): 0.0.0.0:$($portInfo.ExternalPort) -> 127.0.0.1:$($portInfo.InternalPort)."
-        }
-        catch {
-            Append-Log "ACME: could not start TLS termination for $($portInfo.Label) on port $($portInfo.ExternalPort): $($_.Exception.Message)"
-        }
+    if (-not (Start-AuthProxyWorker)) {
+        Append-Log 'ACME: could not start the auth proxy worker process; TLS termination is unavailable this run.'
+        return
     }
-    $script:LetsEncryptTlsProxies = $started
-    $script:LetsEncryptTlsProxyConfigurationSignature = if (@($started).Count -gt 0) { $configurationSignature } else { '' }
-    $script:LetsEncryptAuthenticationSessionKey = if (@($started).Count -gt 0 -and $authenticationEnabled) { $authenticationSessionKey } else { $null }
-    if ($authenticationEnabled -and @($started).Count -gt 0) {
+
+    $certBytes = $certificate.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Pfx, '')
+    $reply = Send-AuthProxyWorkerCommand -TimeoutMs 8000 -Command @{
+        Type                    = 'StartFamily'
+        Family                  = 'LetsEncrypt'
+        Ports                   = @($ports)
+        AuthenticationMountPath = $authenticationMountPath
+        AuthenticationEnabled   = [bool]$authenticationEnabled
+        Accounts                = (Get-ViewerAuthenticationAccountObjects -Accounts $authenticationAccounts)
+        SessionHours            = [int]$numViewerAuthenticationSessionHours.Value
+        SessionKeyBase64        = if ($authenticationSessionKey) { [Convert]::ToBase64String($authenticationSessionKey) } else { '' }
+        CertificatePfxBase64    = [Convert]::ToBase64String($certBytes)
+    }
+
+    if (-not $reply -or [string]$reply.Status -ne 'Ready') {
+        $errorText = if ($reply) { [string]$reply.Error } else { 'no response from the auth proxy worker' }
+        Append-Log "ACME: could not start TLS termination: $errorText"
+        $script:LetsEncryptTlsProxies = @()
+        $script:LetsEncryptTlsProxyConfigurationSignature = ''
+        $script:LetsEncryptAuthenticationSessionKey = $null
+        return
+    }
+    if (-not [string]::IsNullOrEmpty([string]$reply.Error)) {
+        Append-Log "ACME: TLS termination partially started: $([string]$reply.Error)"
+    }
+    foreach ($portInfo in $ports) {
+        Append-Log "ACME: TLS termination active for $($portInfo.Label): 0.0.0.0:$($portInfo.ExternalPort) -> 127.0.0.1:$($portInfo.InternalPort)."
+    }
+    $script:LetsEncryptTlsProxies = $ports
+    $script:LetsEncryptTlsProxyConfigurationSignature = $configurationSignature
+    $script:LetsEncryptAuthenticationSessionKey = if ($authenticationEnabled) { $authenticationSessionKey } else { $null }
+    if ($authenticationEnabled) {
         Append-Log "AUTH: viewer login required on all TLS viewer/signaling endpoints; sessions expire after $([int]$numViewerAuthenticationSessionHours.Value) hour(s)."
     }
 }
@@ -1434,35 +1629,53 @@ function Start-PlaintextAuthProxies {
         Append-Log "AUTH: could not determine the web viewer port for plaintext auth: $($_.Exception.Message)"
     }
 
-    $started = @()
-    foreach ($portInfo in $ports) {
-        try {
-            $proxy = New-Object TlsTerminatingProxy
-            $proxy.Label = [string]$portInfo.Label
-            $proxy.AuthenticationMountPath = $authenticationMountPath
-            foreach ($route in @($portInfo.PathRoutes)) {
-                $proxy.AddPathRoute([string]$route.Path, [int]$route.Port)
-            }
-            if (-not [string]::IsNullOrEmpty([string]$portInfo.DirectoryRedirectPath)) {
-                $proxy.DirectoryRedirectPath = [string]$portInfo.DirectoryRedirectPath
-            }
-            $proxy.ConfigureAuthentication(
-                $true,
-                (Get-ViewerAuthenticationAccountObjects -Accounts $authenticationAccounts),
-                $authenticationSessionKey,
-                [int]$numViewerAuthenticationSessionHours.Value
-            )
-            $proxy.Start([int]$portInfo.Port, '127.0.0.1', [int]$portInfo.Port, $null)
-            $started += $proxy
-            Append-Log "AUTH: plaintext auth active for $($portInfo.Label): 0.0.0.0:$($portInfo.Port) -> 127.0.0.1:$($portInfo.Port)."
-        }
-        catch {
-            Append-Log "AUTH: could not start plaintext auth for $($portInfo.Label) on port $($portInfo.Port): $($_.Exception.Message)"
+    if (-not (Start-AuthProxyWorker)) {
+        Append-Log 'AUTH: could not start the auth proxy worker process; plaintext auth is unavailable this run.'
+        return
+    }
+
+    # Port descriptors need an ExternalPort/InternalPort shape identical to
+    # the TLS family's (both cross the same StartFamily command) -- external
+    # == internal here, since plaintext auth transparently takes over each
+    # service's normal port number rather than using a separate one.
+    $workerPorts = @($ports) | ForEach-Object {
+        [pscustomobject]@{
+            Label                  = $_.Label
+            ExternalPort           = $_.Port
+            InternalPort           = $_.Port
+            PathRoutes             = $_.PathRoutes
+            DirectoryRedirectPath  = $_.DirectoryRedirectPath
         }
     }
-    $script:PlaintextAuthProxies = $started
-    $script:PlaintextAuthProxyConfigurationSignature = if (@($started).Count -gt 0) { $configurationSignature } else { '' }
-    $script:PlaintextAuthenticationSessionKey = if (@($started).Count -gt 0) { $authenticationSessionKey } else { $null }
+    $reply = Send-AuthProxyWorkerCommand -TimeoutMs 8000 -Command @{
+        Type                    = 'StartFamily'
+        Family                  = 'Plaintext'
+        Ports                   = @($workerPorts)
+        AuthenticationMountPath = $authenticationMountPath
+        AuthenticationEnabled   = $true
+        Accounts                = (Get-ViewerAuthenticationAccountObjects -Accounts $authenticationAccounts)
+        SessionHours            = [int]$numViewerAuthenticationSessionHours.Value
+        SessionKeyBase64        = [Convert]::ToBase64String($authenticationSessionKey)
+        CertificatePfxBase64    = ''
+    }
+
+    if (-not $reply -or [string]$reply.Status -ne 'Ready') {
+        $errorText = if ($reply) { [string]$reply.Error } else { 'no response from the auth proxy worker' }
+        Append-Log "AUTH: could not start plaintext auth: $errorText"
+        $script:PlaintextAuthProxies = @()
+        $script:PlaintextAuthProxyConfigurationSignature = ''
+        $script:PlaintextAuthenticationSessionKey = $null
+        return
+    }
+    if (-not [string]::IsNullOrEmpty([string]$reply.Error)) {
+        Append-Log "AUTH: plaintext auth partially started: $([string]$reply.Error)"
+    }
+    foreach ($portInfo in $ports) {
+        Append-Log "AUTH: plaintext auth active for $($portInfo.Label): 0.0.0.0:$($portInfo.Port) -> 127.0.0.1:$($portInfo.Port)."
+    }
+    $script:PlaintextAuthProxies = $ports
+    $script:PlaintextAuthProxyConfigurationSignature = $configurationSignature
+    $script:PlaintextAuthenticationSessionKey = $authenticationSessionKey
 }
 
 # Called from the UI poll timer (90-MainWindow.ps1), same cadence as the
@@ -1470,12 +1683,12 @@ function Start-PlaintextAuthProxies {
 # poll -- proxies queue errors from ThreadPool threads that have no
 # PowerShell runspace, so draining must happen from the UI thread.
 function Drain-LetsEncryptTlsProxyLogs {
-    foreach ($proxy in @($script:LetsEncryptTlsProxies) + @($script:PlaintextAuthProxies)) {
-        while ($true) {
-            $message = $proxy.PollLogMessage()
-            if (-not $message) { break }
-            Append-Log "ACME: TLS proxy ($($proxy.Label)): $message"
-        }
+    if (-not (Test-AuthProxyWorkerRunning)) { return }
+    if (@($script:LetsEncryptTlsProxies).Count -eq 0 -and @($script:PlaintextAuthProxies).Count -eq 0) { return }
+    $reply = Send-AuthProxyWorkerCommand -Command @{ Type = 'PollLog' } -TimeoutMs 2000
+    if (-not $reply -or [string]$reply.Status -ne 'Ready') { return }
+    foreach ($message in @($reply.Messages)) {
+        Append-Log "ACME: TLS proxy ($message)"
     }
 }
 
@@ -1491,9 +1704,9 @@ function Drain-LetsEncryptTlsProxyLogs {
 # when no proxies are running, or when they're about to be fully stopped
 # anyway (Keep-auth off) -- it's a no-op past that point either way.
 function Disconnect-ActiveAuthenticationProxyConnections {
-    foreach ($proxy in @($script:LetsEncryptTlsProxies) + @($script:PlaintextAuthProxies)) {
-        try { $proxy.DisconnectActiveConnections() } catch {}
-    }
+    if (-not (Test-AuthProxyWorkerRunning)) { return }
+    if (@($script:LetsEncryptTlsProxies).Count -eq 0 -and @($script:PlaintextAuthProxies).Count -eq 0) { return }
+    $null = Send-AuthProxyWorkerCommand -Command @{ Type = 'DisconnectConnections' } -TimeoutMs 3000
 }
 
 # Call immediately before killing the upstream GST process for a restart
@@ -1507,17 +1720,17 @@ function Disconnect-ActiveAuthenticationProxyConnections {
 # core and making the whole process look hung. See PauseForwarding's
 # comment on the C# side for the verified mechanism.
 function Suspend-ActiveAuthenticationProxyForwarding {
-    foreach ($proxy in @($script:LetsEncryptTlsProxies) + @($script:PlaintextAuthProxies)) {
-        try { $proxy.PauseForwarding() } catch {}
-    }
+    if (-not (Test-AuthProxyWorkerRunning)) { return }
+    if (@($script:LetsEncryptTlsProxies).Count -eq 0 -and @($script:PlaintextAuthProxies).Count -eq 0) { return }
+    $null = Send-AuthProxyWorkerCommand -Command @{ Type = 'SuspendForwarding' } -TimeoutMs 3000
 }
 
 # Call once the new GST process has been (re)started -- see
 # Suspend-ActiveAuthenticationProxyForwarding.
 function Resume-ActiveAuthenticationProxyForwarding {
-    foreach ($proxy in @($script:LetsEncryptTlsProxies) + @($script:PlaintextAuthProxies)) {
-        try { $proxy.ResumeForwarding() } catch {}
-    }
+    if (-not (Test-AuthProxyWorkerRunning)) { return }
+    if (@($script:LetsEncryptTlsProxies).Count -eq 0 -and @($script:PlaintextAuthProxies).Count -eq 0) { return }
+    $null = Send-AuthProxyWorkerCommand -Command @{ Type = 'ResumeForwarding' } -TimeoutMs 3000
 }
 
 # Invalidates every currently-issued viewer session, used in place of
@@ -1535,15 +1748,15 @@ function Resume-ActiveAuthenticationProxyForwarding {
 # /auth/status directly on its own schedule as a dedicated heartbeat,
 # rather than only noticing this as a side effect of some other fetch.
 function Revoke-ActiveAuthenticationProxySessions {
-    foreach ($proxy in @($script:LetsEncryptTlsProxies) + @($script:PlaintextAuthProxies)) {
-        try { $proxy.RevokeAllSessions() } catch {}
-    }
+    if (-not (Test-AuthProxyWorkerRunning)) { return }
+    if (@($script:LetsEncryptTlsProxies).Count -eq 0 -and @($script:PlaintextAuthProxies).Count -eq 0) { return }
+    $null = Send-AuthProxyWorkerCommand -Command @{ Type = 'RevokeSessions' } -TimeoutMs 3000
 }
 
 function Stop-PlaintextAuthProxies {
     if (@($script:PlaintextAuthProxies).Count -eq 0) { return }
-    foreach ($proxy in $script:PlaintextAuthProxies) {
-        try { $proxy.Stop() } catch {}
+    if (Test-AuthProxyWorkerRunning) {
+        $null = Send-AuthProxyWorkerCommand -Command @{ Type = 'StopFamily'; Family = 'Plaintext' } -TimeoutMs 5000
     }
     $script:PlaintextAuthProxies = @()
     $script:PlaintextAuthProxyConfigurationSignature = ''
@@ -1552,8 +1765,8 @@ function Stop-PlaintextAuthProxies {
 
 function Stop-LetsEncryptTlsProxies {
     if (@($script:LetsEncryptTlsProxies).Count -eq 0) { return }
-    foreach ($proxy in $script:LetsEncryptTlsProxies) {
-        try { $proxy.Stop() } catch {}
+    if (Test-AuthProxyWorkerRunning) {
+        $null = Send-AuthProxyWorkerCommand -Command @{ Type = 'StopFamily'; Family = 'LetsEncrypt' } -TimeoutMs 5000
     }
     $script:LetsEncryptTlsProxies = @()
     $script:LetsEncryptTlsProxyConfigurationSignature = ''
