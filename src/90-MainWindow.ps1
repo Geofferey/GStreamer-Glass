@@ -4958,6 +4958,7 @@ $pollTimer.Add_Tick({
     # again -- is the correct outcome, not just the easiest one.
     if (
         ((@($script:LetsEncryptTlsProxies).Count -gt 0) -or (@($script:PlaintextAuthProxies).Count -gt 0)) -and
+        -not $script:AuthProxyWorkerCommandInFlight -and
         -not (Test-AuthProxyWorkerRunning)
     ) {
         Append-Log 'AUTH: auth proxy worker process exited unexpectedly; restarting it and reissuing active proxy configuration.'

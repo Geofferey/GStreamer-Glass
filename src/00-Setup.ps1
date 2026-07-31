@@ -1846,6 +1846,14 @@ public class TlsTerminatingProxy
     // port when nothing else is bound to it. Refusing new forwards while
     // paused avoids ever attempting that connection in the first place.
     private volatile bool forwardingPaused;
+    // Defense in depth for the same-port plaintext relay: every forwarded
+    // first request carries an instance-unique hop marker. If the upstream
+    // connect was actually accepted by THIS listener because GStreamer was
+    // absent, the recursively-arriving request is rejected locally instead
+    // of being forwarded into the listener again without bound. A random
+    // per-instance value prevents an ordinary external client from guessing
+    // the marker and manufacturing this internal-loop response.
+    private readonly string proxyLoopToken = Guid.NewGuid().ToString("N");
     private bool authenticationEnabled;
     private List<AuthenticationAccount> authenticationAccounts = new List<AuthenticationAccount>();
     private byte[] authenticationSessionKey = new byte[0];
@@ -2239,6 +2247,19 @@ public class TlsTerminatingProxy
                     {
                         headerBytes = await ReadHttpHeaderBlockAsync(stream);
                         if (headerBytes.Length == 0) return;
+                        if (HasOwnProxyLoopMarker(headerBytes))
+                        {
+                            pendingLog.Enqueue("blocked a recursive same-port proxy request because the configured upstream resolved back to this listener");
+                            await WriteHttpResponseAsync(
+                                stream,
+                                502,
+                                "Bad Gateway",
+                                "text/plain; charset=utf-8",
+                                "The stream backend is unavailable.",
+                                null
+                            );
+                            return;
+                        }
                         if (!string.IsNullOrEmpty(DirectoryRedirectPath) && await RedirectMissingTrailingSlashAsync(stream, headerBytes))
                         {
                             return;
@@ -2331,6 +2352,16 @@ public class TlsTerminatingProxy
                             new Dictionary<string, string> { { "Retry-After", "2" } }
                         );
                         return;
+                    }
+
+                    // Mark the request only after all local auth/routing work
+                    // has completed. The real upstream ignores this private
+                    // extension header; if the same-port connect loops back to
+                    // this listener, HasOwnProxyLoopMarker above terminates it
+                    // on the first recursion with a bounded 502 response.
+                    if (headerBytes.Length > 0)
+                    {
+                        headerBytes = InjectOwnProxyLoopMarker(headerBytes);
                     }
 
                     using (TcpClient upstream = new TcpClient())
@@ -3604,6 +3635,43 @@ public class TlsTerminatingProxy
         Dictionary<string, string> headers = ParseHttpHeaders(lines);
         string upgrade;
         return headers.TryGetValue("Upgrade", out upgrade) && upgrade.IndexOf("websocket", StringComparison.OrdinalIgnoreCase) >= 0;
+    }
+
+    private bool HasOwnProxyLoopMarker(byte[] header)
+    {
+        if (header == null || header.Length == 0) return false;
+        string text;
+        try { text = Encoding.ASCII.GetString(header); }
+        catch { return false; }
+        string[] lines = text.Split(new string[] { "\r\n" }, StringSplitOptions.None);
+        Dictionary<string, string> headers = ParseHttpHeaders(lines);
+        string marker;
+        return headers.TryGetValue("X-GstGlass-Proxy-Hop", out marker) &&
+            string.Equals(marker.Trim(), proxyLoopToken, StringComparison.Ordinal);
+    }
+
+    private byte[] InjectOwnProxyLoopMarker(byte[] header)
+    {
+        string text;
+        try { text = Encoding.ASCII.GetString(header); }
+        catch { return header; }
+        string[] lines = text.Split(new string[] { "\r\n" }, StringSplitOptions.None);
+        List<string> rebuilt = new List<string>();
+        foreach (string line in lines)
+        {
+            int separator = line.IndexOf(':');
+            if (separator > 0 && string.Equals(line.Substring(0, separator).Trim(), "X-GstGlass-Proxy-Hop", StringComparison.OrdinalIgnoreCase))
+            {
+                // Strip any client-supplied value. Only this instance's fresh
+                // token is allowed to travel toward its configured upstream.
+                continue;
+            }
+            rebuilt.Add(line);
+        }
+        int insertAt = rebuilt.Count >= 2 ? rebuilt.Count - 2 : rebuilt.Count;
+        rebuilt.Insert(Math.Max(0, insertAt), "X-GstGlass-Proxy-Hop: " + proxyLoopToken);
+        try { return Encoding.ASCII.GetBytes(string.Join("\r\n", rebuilt)); }
+        catch { return header; }
     }
 
     // Rewrites (or adds) a Connection header on a raw HTTP request so the

@@ -54,6 +54,12 @@ $script:AuthProxyWorkerProcess = $null
 $script:AuthProxyWorkerPipeHandle = $null
 $script:AuthProxyWorkerReader = $null
 $script:AuthProxyWorkerWriter = $null
+# Wait-UiResponsiveTask pumps WinForms messages while an IPC reply is pending.
+# That keeps the UI live, but also permits a timer tick or click handler to
+# re-enter Send-AuthProxyWorkerCommand on the same StreamReader. Track the one
+# legal in-flight request so reentrancy can fail closed instead of corrupting
+# the request/reply framing.
+$script:AuthProxyWorkerCommandInFlight = $false
 
 function ConvertTo-AcmeBase64Url {
     param([byte[]]$Bytes)
@@ -1291,6 +1297,33 @@ function Close-AuthProxyWorkerPipe {
     $script:AuthProxyWorkerPipeHandle = $null
 }
 
+# Abandons a worker whose command channel can no longer be trusted. A timed-out
+# ReadLineAsync remains outstanding, and a second read on that StreamReader can
+# consume the first command's delayed reply or throw "stream already in use".
+# Closing only the pipe is also insufficient: the process would stay alive with
+# no controller and the HasExited-based supervisor would consider that a
+# different failure. Tear down both halves, but deliberately PRESERVE the
+# desired family descriptors/signatures/session keys so the UI poll timer sees
+# that those families should still exist and reconstructs them next tick.
+function Reset-FailedAuthProxyWorker {
+    param([string]$Reason)
+
+    if (-not [string]::IsNullOrWhiteSpace($Reason)) {
+        Append-Log "AUTH: recycling the auth proxy worker after an IPC failure: $Reason"
+    }
+
+    $failedProcess = $script:AuthProxyWorkerProcess
+    Close-AuthProxyWorkerPipe
+    $script:AuthProxyWorkerProcess = $null
+    try {
+        if ($failedProcess -and -not $failedProcess.HasExited) {
+            Stop-ProcessTreeById -ProcessId $failedProcess.Id
+        }
+    }
+    catch {}
+    try { if ($failedProcess) { $failedProcess.Dispose() } } catch {}
+}
+
 # Lazily starts the worker process the first time either auth family needs
 # to run; stays alive across stream start/stop/restart cycles exactly like
 # the proxies themselves always have, since it must keep answering the
@@ -1390,24 +1423,39 @@ function Send-AuthProxyWorkerCommand {
         if (-not $AutoStart) { return $null }
         if (-not (Start-AuthProxyWorker)) { return $null }
     }
+
+    # Application.DoEvents() inside the outer request's responsive wait can
+    # re-enter here. Never issue a second WriteLine/ReadLineAsync pair on the
+    # same stream. Recycling the worker is intentionally fail-closed: teardown
+    # callers may continue killing the upstream safely because no proxy remains
+    # capable of forwarding into it, and the normal supervisor recreates the
+    # desired families after this event unwinds.
+    if ($script:AuthProxyWorkerCommandInFlight) {
+        Reset-FailedAuthProxyWorker -Reason "reentrant command '$($Command.Type)' while another command was awaiting a reply"
+        return $null
+    }
+
+    $script:AuthProxyWorkerCommandInFlight = $true
     try {
         $script:AuthProxyWorkerWriter.WriteLine(($Command | ConvertTo-Json -Compress -Depth 6))
         $replyTask = $script:AuthProxyWorkerReader.ReadLineAsync()
         if (-not (Wait-UiResponsiveTask -Task $replyTask -TimeoutMs $TimeoutMs)) {
-            Append-Log "AUTH: auth proxy worker did not respond to $($Command.Type) within $TimeoutMs ms."
+            Reset-FailedAuthProxyWorker -Reason "command '$($Command.Type)' did not respond within $TimeoutMs ms"
             return $null
         }
         $replyLine = $replyTask.Result
         if ([string]::IsNullOrWhiteSpace($replyLine)) {
-            Append-Log 'AUTH: auth proxy worker closed the pipe unexpectedly.'
-            Close-AuthProxyWorkerPipe
+            Reset-FailedAuthProxyWorker -Reason "the worker closed the pipe while handling '$($Command.Type)'"
             return $null
         }
         return ($replyLine | ConvertFrom-Json)
     }
     catch {
-        Append-Log "AUTH: auth proxy worker command $($Command.Type) failed: $($_.Exception.Message)"
+        Reset-FailedAuthProxyWorker -Reason "command '$($Command.Type)' failed: $($_.Exception.Message)"
         return $null
+    }
+    finally {
+        $script:AuthProxyWorkerCommandInFlight = $false
     }
 }
 

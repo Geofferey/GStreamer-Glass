@@ -463,6 +463,7 @@
         'Sync-ViewerAuthenticationAccountsToLiveProxies'
         'Test-AuthProxyWorkerRunning'
         'Close-AuthProxyWorkerPipe'
+        'Reset-FailedAuthProxyWorker'
         'Start-AuthProxyWorker'
         'Send-AuthProxyWorkerCommand'
         'Stop-AuthProxyWorker'
