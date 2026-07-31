@@ -11,22 +11,30 @@ The project is designed to make advanced real-time streaming workflows easier to
 - Stream through supported GStreamer transports such as direct WebRTC, WHIP, SRT, and RTSP.
 - Configure unified or split audio and video pipelines and signaling paths.
 - Preview capture sources and composed scenes before or during streaming.
+- Edit the live broadcast's compositor scene — source placement, size, and opacity — while streaming, without restarting the pipeline (experimental).
 - Record streams independently using configurable recording settings.
 - Generate and inspect the resulting GStreamer command line before launch.
 - Override the generated pipeline using validated custom `gst-launch-1.0` arguments.
 - Configure capture devices, network adapters, WebRTC signaling, STUN and TURN behavior, retransmission, FEC, and related transport settings.
 - Serve a browser-based WebRTC player with playback controls, connection diagnostics, stream statistics, PWA support, and configurable latency-management behavior.
-- Terminate HTTPS/WSS locally with automatically issued Let's Encrypt certificates and optionally require a native viewer login across the player and signaling sockets.
+- Terminate HTTPS/WSS locally with automatically issued Let's Encrypt certificates or a custom uploaded certificate, with plaintext transport available as an alternative to TLS.
+- Require native, multi-account viewer login across the player and signaling sockets, with optional per-account TOTP two-factor authentication (and a "remember this device" option to skip repeated codes), live session revocation, automatic expiry redirects, and an option to preserve authenticated sessions across stream restarts.
 - Preserve explicit control over active pipeline options: disabled settings should not silently modify the generated command line.
+
+## Requirements
+
+Running GStreamer Glass requires:
+
+- **[GStreamer 1.28.X MSVC 64-bit runtime](https://gstreamer.freedesktop.org/download/#windows)** — install the official MSVC 64-bit runtime (or runtime + development) installer for Windows from the GStreamer project's own download page.
+- A Windows x64-compatible system.
 
 ## Build Requirements
 
-Building GStreamer Glass requires:
+Building GStreamer Glass requires everything in [Requirements](#requirements) above, plus:
 
-- A Windows x64-compatible system.
 - PowerShell.
 - The [`ps12exe`](https://www.powershellgallery.com/packages/ps12exe) PowerShell module.
-- Inno Setup 6 or 7.
+- **[Inno Setup](https://jrsoftware.org/isdl.php)** 6 or 7.
 - A local clone of this repository.
 
 Install `ps12exe` for the current user:
