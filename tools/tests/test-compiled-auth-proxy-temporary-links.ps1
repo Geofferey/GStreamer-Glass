@@ -108,7 +108,15 @@ try {
     Assert-CompiledTemporaryLink (-not [bool]$createReply.Link.SingleUse) 'Compiled auth worker changed the reusable-link flag.'
 
     $redeemTarget = '/auth/session?token=' + [Uri]::EscapeDataString([string]$createReply.Link.Token) + '&return=%2Flive%2F'
-    $redeemResponse = Send-PlainRequest $externalPort "GET $redeemTarget HTTP/1.1`r`nHost: localhost`r`nConnection: close`r`n`r`n"
+    $previewResponse = Send-PlainRequest $externalPort "HEAD $redeemTarget HTTP/1.1`r`nHost: localhost`r`nConnection: close`r`n`r`n"
+    Assert-CompiledTemporaryLink $previewResponse.StartsWith('HTTP/1.1 204') 'Compiled auth worker did not safely ignore a HEAD preview probe.'
+    $previewResponse = Send-PlainRequest $externalPort "GET $redeemTarget HTTP/1.1`r`nHost: localhost`r`nConnection: close`r`n`r`n"
+    Assert-CompiledTemporaryLink $previewResponse.StartsWith('HTTP/1.1 200') 'Compiled auth worker did not return the preview-safe confirmation page.'
+    Assert-CompiledTemporaryLink ($previewResponse -match '(?im)^X-Robots-Tag:\s*noindex, nofollow, noarchive, nosnippet, noimageindex\s*$') 'Compiled auth worker confirmation page is indexable.'
+    Assert-CompiledTemporaryLink ($previewResponse -notmatch '(?im)^Set-Cookie:') 'Compiled auth worker consumed a temporary link during GET preview.'
+    $redeemBody = 'token=' + [Uri]::EscapeDataString([string]$createReply.Link.Token) + '&return=%2Flive%2F'
+    $redeemLength = [System.Text.Encoding]::UTF8.GetByteCount($redeemBody)
+    $redeemResponse = Send-PlainRequest $externalPort "POST /auth/session HTTP/1.1`r`nHost: localhost`r`nContent-Type: application/x-www-form-urlencoded`r`nContent-Length: $redeemLength`r`nConnection: close`r`n`r`n$redeemBody"
     Assert-CompiledTemporaryLink $redeemResponse.StartsWith('HTTP/1.1 303') 'Compiled auth worker could not redeem its generated temporary link.'
     $cookie = ([regex]::Match($redeemResponse, '(?im)^Set-Cookie:\s*([^;]+)')).Groups[1].Value.Trim()
     $statusResponse = Send-PlainRequest $externalPort "GET /auth/status HTTP/1.1`r`nHost: localhost`r`nCookie: $cookie`r`nConnection: close`r`n`r`n"

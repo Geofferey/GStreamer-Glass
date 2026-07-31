@@ -15,6 +15,10 @@ $settingsSource = Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'src\24-Set
 $uiSource = Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'src\90-MainWindow.ps1')
 $layoutSource = Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'src\12-MainDashboardUi.ps1')
 $rejectionImagePath = Join-Path $repoRoot 'gstwebrtc-api\dist\temporary-viewer-link-unavailable.png'
+$viewerIndexSource = Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'gstwebrtc-api\dist\index.html')
+$viewerRobotsSource = Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'gstwebrtc-api\dist\robots.txt')
+$viewerManifestSource = Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'gstwebrtc-api\dist\gstglass-webui-manifest.json')
+$iisProxySource = Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'tools\examples\IIS\live\web.config')
 
 function Assert-TemporaryLink {
     param([bool]$Condition, [string]$Message)
@@ -51,11 +55,30 @@ function Send-PlainRequest {
     finally { $client.Dispose() }
 }
 
+function Get-LinkTarget {
+    param([string]$Token)
+    return '/auth/session?token=' + [Uri]::EscapeDataString($Token) + '&return=%2Flive%2F'
+}
+
+function Open-Link {
+    param([int]$Port, [string]$Token, [string]$ForwardedFor = '')
+    $xff = if ($ForwardedFor) { "X-Forwarded-For: $ForwardedFor`r`n" } else { '' }
+    $target = Get-LinkTarget $Token
+    return Send-PlainRequest $Port "GET $target HTTP/1.1`r`nHost: localhost`r`n${xff}Connection: close`r`n`r`n"
+}
+
+function Head-Link {
+    param([int]$Port, [string]$Token)
+    $target = Get-LinkTarget $Token
+    return Send-PlainRequest $Port "HEAD $target HTTP/1.1`r`nHost: localhost`r`nConnection: close`r`n`r`n"
+}
+
 function Redeem-Link {
     param([int]$Port, [string]$Token, [string]$ForwardedFor = '')
     $xff = if ($ForwardedFor) { "X-Forwarded-For: $ForwardedFor`r`n" } else { '' }
-    $target = '/auth/session?token=' + [Uri]::EscapeDataString($Token) + '&return=%2Flive%2F'
-    return Send-PlainRequest $Port "GET $target HTTP/1.1`r`nHost: localhost`r`n${xff}Connection: close`r`n`r`n"
+    $body = 'token=' + [Uri]::EscapeDataString($Token) + '&return=%2Flive%2F'
+    $length = [System.Text.Encoding]::UTF8.GetByteCount($body)
+    return Send-PlainRequest $Port "POST /auth/session HTTP/1.1`r`nHost: localhost`r`n${xff}Content-Type: application/x-www-form-urlencoded`r`nContent-Length: $length`r`nConnection: close`r`n`r`n$body"
 }
 
 $account = [TlsTerminatingProxy+AuthenticationAccount]::new()
@@ -70,6 +93,14 @@ Start-Sleep -Milliseconds 75
 
 try {
     $reusable = $proxy.CreateTemporaryAuthenticationLink('viewer', 5, $false, '')
+    $response = Head-Link $port $reusable.Token
+    Assert-TemporaryLink $response.StartsWith('HTTP/1.1 204') 'A HEAD preview probe did not receive a bodyless response.'
+    $response = Open-Link $port $reusable.Token
+    Assert-TemporaryLink $response.StartsWith('HTTP/1.1 200') 'A valid temporary-link GET did not show its confirmation page.'
+    Assert-TemporaryLink ($response -match 'Continue to broadcast') 'Temporary-link confirmation page is missing its explicit redemption action.'
+    Assert-TemporaryLink ($response -match '(?im)^X-Robots-Tag:\s*noindex, nofollow, noarchive, nosnippet, noimageindex\s*$') 'Temporary-link confirmation response is indexable.'
+    Assert-TemporaryLink ($response -match '<meta name="robots" content="noindex,nofollow,noarchive,nosnippet,noimageindex">') 'Temporary-link confirmation HTML is missing its robots policy.'
+    Assert-TemporaryLink ($response -notmatch '(?im)^Set-Cookie:') 'A preview-safe temporary-link GET created an authenticated session.'
     $response = Redeem-Link $port $reusable.Token
     Assert-TemporaryLink $response.StartsWith('HTTP/1.1 303') 'Reusable temporary link was not accepted.'
     $cookieHeader = ([regex]::Match($response, '(?im)^Set-Cookie:\s*(.+)$')).Groups[1].Value.Trim()
@@ -84,6 +115,10 @@ try {
     Assert-TemporaryLink ($response -match '\{"authenticated":true\}') 'Temporary-link session cookie did not authenticate the viewer.'
 
     $singleUse = $proxy.CreateTemporaryAuthenticationLink('viewer', 5, $true, '')
+    $response = Open-Link $port $singleUse.Token
+    Assert-TemporaryLink $response.StartsWith('HTTP/1.1 200') 'Single-use link preview consumed or rejected the link.'
+    $response = Open-Link $port $singleUse.Token
+    Assert-TemporaryLink $response.StartsWith('HTTP/1.1 200') 'Repeated preview consumed a single-use link.'
     $response = Redeem-Link $port $singleUse.Token
     Assert-TemporaryLink $response.StartsWith('HTTP/1.1 303') 'Single-use temporary link failed on first redemption.'
     Assert-TemporaryLink (Test-Path -LiteralPath $rejectionImagePath -PathType Leaf) 'Temporary-link rejection image is missing.'
@@ -127,6 +162,20 @@ try {
     Assert-TemporaryLink ($response -match '\{"authenticated":false\}') 'A session issued by a revoked temporary link remained authenticated.'
     $replacementLink = $proxy.CreateTemporaryAuthenticationLink('viewer', 5, $false, '')
     Assert-TemporaryLink (-not [string]::IsNullOrWhiteSpace([string]$replacementLink.Token)) 'Revoking link sessions removed or disabled the underlying password account.'
+
+    $response = Send-PlainRequest $port "GET /robots.txt HTTP/1.1`r`nHost: localhost`r`nConnection: close`r`n`r`n"
+    Assert-TemporaryLink $response.StartsWith('HTTP/1.1 200') 'The auth proxy did not serve the origin-level robots policy.'
+    Assert-TemporaryLink ($response -match 'User-agent:\s*\*' -and $response -match 'Disallow:\s*/') 'The origin-level robots policy does not deny all crawling.'
+
+    $policyMethod = [TlsTerminatingProxy].GetMethod('InjectResponsePolicyHeaders', [System.Reflection.BindingFlags]'NonPublic,Static')
+    Assert-TemporaryLink ($null -ne $policyMethod) 'The forwarded-response policy injector is missing.'
+    $upstreamHeader = [System.Text.Encoding]::ASCII.GetBytes("HTTP/1.1 200 OK`r`nContent-Type: text/css`r`nCache-Control: public, max-age=3600`r`n`r`n")
+    $policyArgs = New-Object object[] 2
+    $policyArgs[0] = $upstreamHeader
+    $policyArgs[1] = $false
+    $rewrittenHeader = [System.Text.Encoding]::ASCII.GetString([byte[]]$policyMethod.Invoke($null, $policyArgs))
+    Assert-TemporaryLink ($rewrittenHeader -match '(?im)^X-Robots-Tag:\s*noindex, nofollow, noarchive, nosnippet, noimageindex\s*$') 'A forwarded viewer asset did not receive the site-wide robots header.'
+    Assert-TemporaryLink ($rewrittenHeader -match '(?im)^Cache-Control:\s*public, max-age=3600\s*$') 'Site-wide robots protection unnecessarily disabled ordinary asset caching.'
 }
 finally {
     $proxy.Stop()
@@ -262,6 +311,10 @@ Assert-TemporaryLink ($layoutSource -match 'Restrict to client IP') 'Client-IP r
 Assert-TemporaryLink ($settingsSource -match 'ViewerAuthenticationTemporaryLinkMinutes') 'Temporary-link defaults are not persisted.'
 Assert-TemporaryLink ($settingsSource -match 'ViewerAuthenticationTemporaryLinkProxyDomain') 'The temporary-link proxy domain is not persisted.'
 Assert-TemporaryLink ($proxySource -match "Type\s*=\s*'CreateTemporaryLink'") 'Temporary-link creation is not wired to the auth worker.'
+Assert-TemporaryLink ($viewerIndexSource -match '<meta name="robots" content="noindex, nofollow, noarchive, nosnippet, noimageindex">') 'The viewer document is missing its no-index policy.'
+Assert-TemporaryLink ($viewerRobotsSource -match '(?ms)^User-agent:\s*\*.*^Disallow:\s*/\s*$') 'The bundled web root is missing its deny-all robots.txt.'
+Assert-TemporaryLink ($viewerManifestSource -match '"robots\.txt"') 'The web UI manifest does not deploy robots.txt to the working web root.'
+Assert-TemporaryLink ($iisProxySource -match 'X-Robots-Tag.*noindex, nofollow, noarchive, nosnippet, noimageindex') 'The IIS proxy example does not mark the entire proxied viewer non-indexable.'
 Assert-TemporaryLink ($proxySource -match "Type\s*=\s*'RevokeTemporaryLink'") 'Temporary-link revocation is not wired to the auth worker.'
 
 Write-Output 'Reusable, single-use, account-session revocation, expiry-bounded, and IP-bound temporary viewer links passed.'

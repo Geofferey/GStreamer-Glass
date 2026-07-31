@@ -1869,6 +1869,7 @@ public class TlsTerminatingProxy
     private const string CanonicalVerifyPath = "/auth/verify";
     private const string CanonicalStatusPath = "/auth/status";
     private const string CanonicalTemporarySessionPath = "/auth/session";
+    private const string CanonicalRobotsPath = "/robots.txt";
     private const string LegacyLoginPath = "/__gstglass/auth/login";
     private const string LegacyLogoutPath = "/__gstglass/auth/logout";
     private const string LegacySimpleLogoutPath = "/logout";
@@ -2562,6 +2563,7 @@ public class TlsTerminatingProxy
                     int effectivePort = targetPort;
                     byte[] headerBytes = new byte[0];
                     bool suppressDocumentCaching = false;
+                    bool rewriteHttpResponseHeaders = false;
                     if (pathRoutes.Count > 0 ||
                         authenticationEnabled ||
                         !string.IsNullOrEmpty(DirectoryRedirectPath) ||
@@ -2645,8 +2647,9 @@ public class TlsTerminatingProxy
                         bool isWebSocketUpgrade = IsWebSocketUpgradeRequest(headerBytes);
                         if (!isWebSocketUpgrade)
                         {
+                            rewriteHttpResponseHeaders = true;
                             headerBytes = ForceConnectionCloseHeader(headerBytes);
-                            // See InjectNoStoreCacheControlHeader's comment -- a
+                            // See InjectResponsePolicyHeaders' comment -- a
                             // stale cached copy of the viewer document served
                             // straight from disk cache after a real logout is
                             // exactly what let a logged-out browser keep showing
@@ -2705,8 +2708,8 @@ public class TlsTerminatingProxy
                             {
                                 if (headerBytes.Length > 0) await upstreamStream.WriteAsync(headerBytes, 0, headerBytes.Length);
                                 Task toUpstream = PumpAsync(stream, upstreamStream);
-                                Task toClient = suppressDocumentCaching
-                                    ? PumpResponseWithNoStoreAsync(upstreamStream, stream)
+                                Task toClient = rewriteHttpResponseHeaders
+                                    ? PumpResponseWithPolicyHeadersAsync(upstreamStream, stream, suppressDocumentCaching)
                                     : PumpAsync(upstreamStream, stream);
                                 await Task.WhenAny(toUpstream, toClient);
                             }
@@ -2790,12 +2793,27 @@ public class TlsTerminatingProxy
         bool isVerifyEndpoint = string.Equals(path, CanonicalVerifyPath, StringComparison.OrdinalIgnoreCase);
         bool isStatusEndpoint = string.Equals(path, CanonicalStatusPath, StringComparison.OrdinalIgnoreCase);
         bool isTemporarySessionEndpoint = string.Equals(path, CanonicalTemporarySessionPath, StringComparison.OrdinalIgnoreCase);
+        bool isRobotsEndpoint = string.Equals(path, CanonicalRobotsPath, StringComparison.OrdinalIgnoreCase);
         bool isAuthenticationRoot =
             string.Equals(path, "/auth", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(path, "/auth/", StringComparison.OrdinalIgnoreCase);
         bool isCanonicalAuthenticationPath =
             string.Equals(path, "/auth", StringComparison.OrdinalIgnoreCase) ||
             path.StartsWith("/auth/", StringComparison.OrdinalIgnoreCase);
+
+        if (isRobotsEndpoint)
+        {
+            if (!string.Equals(method, "GET", StringComparison.OrdinalIgnoreCase) && !string.Equals(method, "HEAD", StringComparison.OrdinalIgnoreCase))
+            {
+                Dictionary<string, string> methodHeaders = new Dictionary<string, string>();
+                methodHeaders["Allow"] = "GET, HEAD";
+                await WriteHttpResponseAsync(stream, 405, "Method Not Allowed", "text/plain; charset=utf-8", "Method not allowed.", methodHeaders);
+                return true;
+            }
+            string robotsBody = string.Equals(method, "HEAD", StringComparison.OrdinalIgnoreCase) ? "" : "User-agent: *\r\nDisallow: /\r\n";
+            await WriteHttpResponseAsync(stream, 200, "OK", "text/plain; charset=utf-8", robotsBody, null);
+            return true;
+        }
 
         if (isLogoutEndpoint)
         {
@@ -2843,10 +2861,13 @@ public class TlsTerminatingProxy
 
         if (isTemporarySessionEndpoint)
         {
-            if (!string.Equals(method, "GET", StringComparison.OrdinalIgnoreCase))
+            bool isTemporaryGet = string.Equals(method, "GET", StringComparison.OrdinalIgnoreCase);
+            bool isTemporaryHead = string.Equals(method, "HEAD", StringComparison.OrdinalIgnoreCase);
+            bool isTemporaryPost = string.Equals(method, "POST", StringComparison.OrdinalIgnoreCase);
+            if (!isTemporaryGet && !isTemporaryHead && !isTemporaryPost)
             {
                 Dictionary<string, string> methodHeaders = new Dictionary<string, string>();
-                methodHeaders["Allow"] = "GET";
+                methodHeaders["Allow"] = "GET, HEAD, POST";
                 await WriteHttpResponseAsync(stream, 405, "Method Not Allowed", "text/plain; charset=utf-8", "Method not allowed.", methodHeaders);
                 return true;
             }
@@ -2855,29 +2876,72 @@ public class TlsTerminatingProxy
                 await WriteHttpResponseAsync(stream, 404, "Not Found", "text/plain; charset=utf-8", "Authentication endpoint not found.", null);
                 return true;
             }
-            string temporaryReturnTarget = GetQueryValue(rawTarget, "return");
+
+            // HEAD is useful to note-taking apps and link scanners, but it
+            // must never validate or consume a bearer token. A bodyless 204
+            // plus the response-wide robots directives gives them nothing to
+            // index while leaving the real browser GET untouched.
+            if (isTemporaryHead)
+            {
+                await WriteHttpResponseAsync(stream, 204, "No Content", "text/plain; charset=utf-8", "", null);
+                return true;
+            }
+
+            string temporaryToken;
+            string temporaryReturnTarget;
+            if (isTemporaryPost)
+            {
+                int temporaryContentLength;
+                if (!TryGetContentLength(headers, out temporaryContentLength) || temporaryContentLength < 0 || temporaryContentLength > 8192)
+                {
+                    await WriteHttpResponseAsync(stream, 413, "Payload Too Large", "text/plain; charset=utf-8", "Invalid temporary-link request.", null);
+                    return true;
+                }
+                byte[] temporaryBodyBytes = await ReadExactAsync(stream, temporaryContentLength);
+                if (temporaryBodyBytes.Length != temporaryContentLength)
+                {
+                    await WriteHttpResponseAsync(stream, 400, "Bad Request", "text/plain; charset=utf-8", "Incomplete temporary-link request.", null);
+                    return true;
+                }
+                Dictionary<string, string> temporaryForm = ParseUrlEncoded(Encoding.UTF8.GetString(temporaryBodyBytes));
+                temporaryToken = temporaryForm.ContainsKey("token") ? temporaryForm["token"] : "";
+                temporaryReturnTarget = temporaryForm.ContainsKey("return") ? temporaryForm["return"] : "";
+            }
+            else
+            {
+                temporaryToken = GetQueryValue(rawTarget, "token");
+                temporaryReturnTarget = GetQueryValue(rawTarget, "return");
+            }
             if (string.IsNullOrWhiteSpace(temporaryReturnTarget)) temporaryReturnTarget = GetMountedViewerPath();
             if (HasValidAuthenticationCookie(headers, remoteAddress))
             {
                 await WriteRedirectAsync(stream, temporaryReturnTarget);
                 return true;
             }
-            string temporaryToken = GetQueryValue(rawTarget, "token");
             TemporaryAuthenticationLinkState temporaryLink;
             string rejectionReason;
             int rejectionStatus;
-            if (!TryRedeemTemporaryAuthenticationLink(temporaryToken, remoteAddress, out temporaryLink, out rejectionReason, out rejectionStatus))
+            if (!TryValidateTemporaryAuthenticationLink(temporaryToken, remoteAddress, out temporaryLink, out rejectionReason, out rejectionStatus))
             {
                 pendingLog.Enqueue("temporary viewer link rejected from " + remoteAddress + ": " + rejectionReason);
-                byte[] rejectionImage = temporaryLinkUnavailableImageBytes;
-                if (rejectionImage.Length > 0)
-                {
-                    await WriteHttpResponseBytesAsync(stream, rejectionStatus, rejectionStatus == 403 ? "Forbidden" : "Gone", "image/png", rejectionImage, null);
-                }
-                else
-                {
-                    await WriteHttpResponseAsync(stream, rejectionStatus, rejectionStatus == 403 ? "Forbidden" : "Gone", "text/plain; charset=utf-8", "This temporary viewer link is invalid, expired, already used, or unavailable from this client.", null);
-                }
+                await WriteTemporaryLinkRejectedAsync(stream, rejectionStatus);
+                return true;
+            }
+
+            // GET is intentionally safe and idempotent. Link-preview bots can
+            // fetch this confirmation page without creating a viewer session
+            // or burning a single-use token; only the explicit form POST below
+            // performs redemption.
+            if (isTemporaryGet)
+            {
+                await WriteTemporaryLinkConfirmationPageAsync(stream, temporaryToken, temporaryReturnTarget, temporaryLink);
+                return true;
+            }
+
+            if (!TryRedeemTemporaryAuthenticationLink(temporaryToken, remoteAddress, out temporaryLink, out rejectionReason, out rejectionStatus))
+            {
+                pendingLog.Enqueue("temporary viewer link redemption rejected from " + remoteAddress + ": " + rejectionReason);
+                await WriteTemporaryLinkRejectedAsync(stream, rejectionStatus);
                 return true;
             }
             await IssueAuthenticationSessionResponseAsync(
@@ -3195,6 +3259,7 @@ public class TlsTerminatingProxy
     private bool IsAuthenticationEndpointPath(string path)
     {
         if (string.IsNullOrEmpty(path)) return false;
+        if (string.Equals(path, CanonicalRobotsPath, StringComparison.OrdinalIgnoreCase)) return true;
         // Every canonical path (login, logout, and any other /auth/* child)
         // already starts with "/auth" or "/auth/", so only the legacy,
         // non-canonical alias paths need their own explicit comparisons below.
@@ -3405,6 +3470,37 @@ public class TlsTerminatingProxy
         await WriteHttpResponseAsync(stream, statusCode, reason, "text/html; charset=utf-8", html, additionalHeaders, scriptNonce);
     }
 
+    private async Task WriteTemporaryLinkConfirmationPageAsync(Stream stream, string token, string returnTarget, TemporaryAuthenticationLinkState link)
+    {
+        string safeReturn = GetSafeReturnTarget(returnTarget);
+        string linkDescription = link != null && link.SingleUse
+            ? "This single-use link will only be consumed after you continue."
+            : "This temporary link remains reusable until it expires or is revoked.";
+        string html = "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">" +
+            "<meta name=\"robots\" content=\"noindex,nofollow,noarchive,nosnippet,noimageindex\">" +
+            "<title>GStreamer Glass - Open Broadcast</title><style>html{color-scheme:dark}*{box-sizing:border-box}" +
+            "body{margin:0;min-height:100vh;display:grid;place-items:center;background:#05070b;color:#e8edf5;font:16px system-ui,-apple-system,Segoe UI,sans-serif}" +
+            "body::before{content:\"\";position:fixed;inset:0;z-index:-1;background:radial-gradient(560px circle at 18% 20%,rgba(79,140,255,.40),transparent 60%),radial-gradient(520px circle at 85% 75%,rgba(53,215,137,.30),transparent 58%),radial-gradient(640px circle at 60% 100%,rgba(255,93,108,.20),transparent 60%),#05070b}" +
+            "main{width:min(92vw,460px);padding:32px;border:1px solid rgba(255,255,255,.12);border-radius:16px;background:linear-gradient(180deg,rgba(10,14,22,.82),rgba(10,14,22,.48));backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);box-shadow:0 14px 44px rgba(0,0,0,.35)}" +
+            ".bars{height:10px;margin:-8px 0 24px;border-radius:99px;background:linear-gradient(90deg,#fff 0 14%,#ffe500 14% 28%,#00e5e5 28% 42%,#19ef18 42% 56%,#ed38eb 56% 70%,#ff2626 70% 84%,#1515ef 84%)}" +
+            "h1{margin:0 0 10px;font-size:1.65rem}p{margin:0;color:#aab6c8;line-height:1.55}button{width:100%;margin-top:24px;padding:13px;border:0;border-radius:9px;background:#4f8cff;color:white;font:inherit;font-weight:750;cursor:pointer}</style></head>" +
+            "<body><main><div class=\"bars\" aria-hidden=\"true\"></div><h1>Open broadcast?</h1><p>" + WebUtility.HtmlEncode(linkDescription) + "</p>" +
+            "<form method=\"post\" action=\"/auth/session\"><input type=\"hidden\" name=\"token\" value=\"" + WebUtility.HtmlEncode(token ?? "") + "\">" +
+            "<input type=\"hidden\" name=\"return\" value=\"" + WebUtility.HtmlEncode(safeReturn) + "\"><button type=\"submit\">Continue to broadcast</button></form></main></body></html>";
+        await WriteHttpResponseAsync(stream, 200, "OK", "text/html; charset=utf-8", html, null);
+    }
+
+    private async Task WriteTemporaryLinkRejectedAsync(Stream stream, int rejectionStatus)
+    {
+        byte[] rejectionImage = temporaryLinkUnavailableImageBytes;
+        if (rejectionImage.Length > 0)
+        {
+            await WriteHttpResponseBytesAsync(stream, rejectionStatus, rejectionStatus == 403 ? "Forbidden" : "Gone", "image/png", rejectionImage, null);
+            return;
+        }
+        await WriteHttpResponseAsync(stream, rejectionStatus, rejectionStatus == 403 ? "Forbidden" : "Gone", "text/plain; charset=utf-8", "This temporary viewer link is invalid, expired, already used, or unavailable from this client.", null);
+    }
+
     private async Task WriteTotpChallengePageAsync(Stream stream, string pendingToken, string returnTarget, bool invalid, int statusCode, string reason)
     {
         await WriteTotpChallengePageAsync(stream, pendingToken, returnTarget, invalid, statusCode, reason, null);
@@ -3465,6 +3561,11 @@ public class TlsTerminatingProxy
         response.Append("Cache-Control: no-store, no-cache, must-revalidate, max-age=0\r\n");
         response.Append("Pragma: no-cache\r\n");
         response.Append("Expires: 0\r\n");
+        // Authentication pages, bearer-link responses, status JSON, and
+        // rejection artwork are never public discovery surfaces. This is a
+        // crawler hint rather than an authorization control; the gate remains
+        // the actual security boundary.
+        response.Append("X-Robots-Tag: noindex, nofollow, noarchive, nosnippet, noimageindex\r\n");
         // script-src is omitted (falling back to default-src 'none', blocking
         // all script execution) unless a caller explicitly opts a specific
         // response into running one nonce-tagged inline script -- see
@@ -3788,9 +3889,9 @@ public class TlsTerminatingProxy
         }
     }
 
-    private bool TryRedeemTemporaryAuthenticationLink(string token, string remoteAddress, out TemporaryAuthenticationLinkState redeemed, out string reason, out int statusCode)
+    private bool TryValidateTemporaryAuthenticationLink(string token, string remoteAddress, out TemporaryAuthenticationLinkState validated, out string reason, out int statusCode)
     {
-        redeemed = null;
+        validated = null;
         reason = "not found";
         statusCode = 410;
         if (string.IsNullOrWhiteSpace(token)) return false;
@@ -3815,6 +3916,20 @@ public class TlsTerminatingProxy
         {
             reason = "client IP does not match restriction";
             statusCode = 403;
+            return false;
+        }
+        validated = CloneTemporaryAuthenticationLink(current);
+        reason = "accepted";
+        statusCode = 200;
+        return true;
+    }
+
+    private bool TryRedeemTemporaryAuthenticationLink(string token, string remoteAddress, out TemporaryAuthenticationLinkState redeemed, out string reason, out int statusCode)
+    {
+        redeemed = null;
+        TemporaryAuthenticationLinkState current;
+        if (!TryValidateTemporaryAuthenticationLink(token, remoteAddress, out current, out reason, out statusCode))
+        {
             return false;
         }
         if (current.SingleUse)
@@ -4028,21 +4143,19 @@ public class TlsTerminatingProxy
         }
     }
 
-    // Same as PumpAsync, but for the one response this proxy actually cares
-    // about the caching behavior of (see IsDocumentEntryPath/
-    // InjectNoStoreCacheControlHeader): peeks and rewrites just the
-    // upstream's response header block, writes that out, then falls back to
-    // a plain transparent copy for the body/rest of the connection exactly
-    // like PumpAsync. Never parses/buffers the body itself, so this stays
-    // safe for arbitrarily large responses.
-    private static async Task PumpResponseWithNoStoreAsync(Stream source, Stream destination)
+    // Same as PumpAsync, but peeks at a normal HTTP response header so every
+    // viewer resource can receive the site-wide robots policy. The navigable
+    // document additionally receives no-store while auth is enabled. The
+    // body is still copied as a transparent stream, so arbitrarily large
+    // assets remain safe and WebSocket upgrades never enter this path.
+    private static async Task PumpResponseWithPolicyHeadersAsync(Stream source, Stream destination, bool suppressDocumentCaching)
     {
         try
         {
             byte[] responseHeader = await ReadHttpHeaderBlockAsync(source);
             if (responseHeader.Length > 0)
             {
-                byte[] rewritten = InjectNoStoreCacheControlHeader(responseHeader);
+                byte[] rewritten = InjectResponsePolicyHeaders(responseHeader, suppressDocumentCaching);
                 await destination.WriteAsync(rewritten, 0, rewritten.Length);
             }
             await source.CopyToAsync(destination);
@@ -4058,7 +4171,7 @@ public class TlsTerminatingProxy
     // this makes no assumptions about which side of the connection it's
     // reading), used both for the client's initial request (this runs once
     // per connection at setup, not on the media data path, so simplicity
-    // wins over throughput here) and, in PumpResponseWithNoStoreAsync, for
+    // wins over throughput here) and, in PumpResponseWithPolicyHeadersAsync, for
     // peeking the upstream's response headers on the way back out. Whatever
     // is read is later replayed verbatim so no bytes are lost to the peek.
     // Bails out (returning what it has) past a generous cap so a non-HTTP or
@@ -4224,23 +4337,23 @@ public class TlsTerminatingProxy
     // become cacheable while auth is in play at all": a stale cached copy
     // of /live/ served straight from disk cache after a real logout is
     // exactly what let a logged-out browser keep showing the player instead
-    // of ever re-hitting this gate. Only touches the Cache-Control header
-    // (see InjectNoStoreCacheControlHeader) -- everything else about the
-    // forwarded response is untouched. Deliberately NOT applied when
-    // authenticationEnabled is false: with no session to protect, this
-    // would just be an unrequested behavior change with no upside.
-    private static byte[] InjectNoStoreCacheControlHeader(byte[] header)
+    // of ever re-hitting this gate. Cache suppression remains limited to
+    // authenticated document responses; the site-wide X-Robots-Tag is
+    // independently applied to every ordinary proxied HTTP response.
+    private static byte[] InjectResponsePolicyHeaders(byte[] header, bool suppressDocumentCaching)
     {
-        // no-store alone is the strongest, spec-correct directive, but the
-        // full belt-and-suspenders set (matching WriteHttpResponseAsync's
-        // own locally-answered responses) costs nothing and covers
-        // older/nonstandard caches that only honor Pragma/Expires.
         Dictionary<string, string> replacements = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
-            { "Cache-Control", "Cache-Control: no-store, no-cache, must-revalidate, max-age=0" },
-            { "Pragma", "Pragma: no-cache" },
-            { "Expires", "Expires: 0" }
+            { "X-Robots-Tag", "X-Robots-Tag: noindex, nofollow, noarchive, nosnippet, noimageindex" }
         };
+        if (suppressDocumentCaching)
+        {
+            // no-store alone is the strongest, spec-correct directive, but
+            // these matching legacy headers cover nonstandard caches too.
+            replacements["Cache-Control"] = "Cache-Control: no-store, no-cache, must-revalidate, max-age=0";
+            replacements["Pragma"] = "Pragma: no-cache";
+            replacements["Expires"] = "Expires: 0";
+        }
         string text;
         try { text = Encoding.ASCII.GetString(header); }
         catch { return header; }
