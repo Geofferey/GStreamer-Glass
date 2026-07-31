@@ -12,6 +12,8 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $ExecutablePath = (Resolve-Path -LiteralPath $ExecutablePath).Path
+$repoRoot = Resolve-Path (Join-Path $PSScriptRoot '..\..')
+$rejectionImagePath = Join-Path $repoRoot 'gstwebrtc-api\dist\temporary-viewer-link-unavailable.png'
 
 function Assert-CompiledTemporaryLink {
     param([bool]$Condition, [string]$Message)
@@ -83,6 +85,7 @@ try {
         CertificatePfxBase64 = ''
         AuthenticationEnabled = $true
         AuthenticationMountPath = '/live'
+        TemporaryLinkUnavailableImagePath = $rejectionImagePath
         TrustedForwardingProxyAddresses = @()
         Accounts = @(@{ Username = 'viewer'; PasswordHash = 'compiled-smoke-placeholder'; TotpSecret = '' })
         SessionKeyBase64 = [Convert]::ToBase64String($sessionKey)
@@ -120,6 +123,9 @@ try {
     Assert-CompiledTemporaryLink ([bool]$revokeReply.Removed) 'Compiled auth worker did not remove the selected temporary link.'
     Assert-CompiledTemporaryLink ([string]$revokeReply.Username -eq 'viewer') 'Compiled auth worker link revocation lost the affected username.'
     Assert-CompiledTemporaryLink ([int]$revokeReply.SessionsRevoked -ge 1) 'Compiled auth worker did not invalidate the redeemed viewer session.'
+    $redeemResponse = Send-PlainRequest $externalPort "GET $redeemTarget HTTP/1.1`r`nHost: localhost`r`nConnection: close`r`n`r`n"
+    Assert-CompiledTemporaryLink $redeemResponse.StartsWith('HTTP/1.1 410') 'Compiled auth worker accepted a revoked temporary link.'
+    Assert-CompiledTemporaryLink ($redeemResponse -match '(?im)^Content-Type:\s*image/png\s*$') 'Compiled auth worker did not serve the temporary-link rejection image.'
     $statusResponse = Send-PlainRequest $externalPort "GET /auth/status HTTP/1.1`r`nHost: localhost`r`nCookie: $cookie`r`nConnection: close`r`n`r`n"
     Assert-CompiledTemporaryLink ($statusResponse -match '\{"authenticated":false\}') 'Compiled auth worker still authenticated a session after its link was revoked.'
     $listReply = Send-WorkerCommand @{ Type = 'ListTemporaryLinks' }

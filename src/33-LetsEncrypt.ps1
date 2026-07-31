@@ -2100,6 +2100,22 @@ function Stop-AuthProxyWorkerIfViewerAuthenticationDisabled {
     return $true
 }
 
+function Resolve-ViewerAuthenticationTemporaryLinkUnavailableImagePath {
+    $fileName = 'temporary-viewer-link-unavailable.png'
+    foreach ($directory in @(
+        (Get-DirectWebRtcWorkingWebDirectory),
+        (Get-BundledDirectWebRtcWebDirectory)
+    )) {
+        if ([string]::IsNullOrWhiteSpace([string]$directory)) { continue }
+        try {
+            $candidate = Join-Path ([System.IO.Path]::GetFullPath([string]$directory)) $fileName
+            if (Test-Path -LiteralPath $candidate -PathType Leaf) { return $candidate }
+        }
+        catch {}
+    }
+    return ''
+}
+
 function Start-LetsEncryptTlsProxies {
     if (-not (Test-EmbeddedTlsActive)) { return }
 
@@ -2125,6 +2141,7 @@ function Start-LetsEncryptTlsProxies {
     }
     $viewerMountSegment = [string](Get-DirectWebRtcWebServerPathSegment)
     $authenticationMountPath = if ([string]::IsNullOrWhiteSpace($viewerMountSegment)) { '' } else { "/$($viewerMountSegment.Trim('/'))" }
+    $temporaryLinkUnavailableImagePath = Resolve-ViewerAuthenticationTemporaryLinkUnavailableImagePath
 
     # Account data is deliberately NOT part of this signature -- adding,
     # removing, or editing viewer accounts is handled live via
@@ -2136,6 +2153,7 @@ function Start-LetsEncryptTlsProxies {
         [string]$certificate.Thumbprint,
         [string]$authenticationEnabled,
         [string]$authenticationMountPath,
+        [string]$temporaryLinkUnavailableImagePath,
         [string]($trustedForwardingProxyAddresses -join ','),
         [string]$numViewerAuthenticationSessionHours.Value,
         [string]$numDirectWebRtcSignalingPort.Value,
@@ -2210,6 +2228,7 @@ function Start-LetsEncryptTlsProxies {
         Family                  = 'LetsEncrypt'
         Ports                   = @($ports)
         AuthenticationMountPath = $authenticationMountPath
+        TemporaryLinkUnavailableImagePath = $temporaryLinkUnavailableImagePath
         AuthenticationEnabled   = [bool]$authenticationEnabled
         Accounts                = (Get-ViewerAuthenticationAccountObjects -Accounts $authenticationAccounts)
         SessionHours            = [int]$numViewerAuthenticationSessionHours.Value
@@ -2275,11 +2294,13 @@ function Start-PlaintextAuthProxies {
 
     $viewerMountSegment = [string](Get-DirectWebRtcWebServerPathSegment)
     $authenticationMountPath = if ([string]::IsNullOrWhiteSpace($viewerMountSegment)) { '' } else { "/$($viewerMountSegment.Trim('/'))" }
+    $temporaryLinkUnavailableImagePath = Resolve-ViewerAuthenticationTemporaryLinkUnavailableImagePath
 
     # Account data deliberately excluded -- see the matching comment in
     # Start-LetsEncryptTlsProxies.
     $configurationSignature = @(
         [string]$authenticationMountPath,
+        [string]$temporaryLinkUnavailableImagePath,
         [string]($trustedForwardingProxyAddresses -join ','),
         [string]$numViewerAuthenticationSessionHours.Value,
         [string]$numDirectWebRtcSignalingPort.Value,
@@ -2344,6 +2365,7 @@ function Start-PlaintextAuthProxies {
         Family                  = 'Plaintext'
         Ports                   = @($workerPorts)
         AuthenticationMountPath = $authenticationMountPath
+        TemporaryLinkUnavailableImagePath = $temporaryLinkUnavailableImagePath
         AuthenticationEnabled   = $true
         Accounts                = (Get-ViewerAuthenticationAccountObjects -Accounts $authenticationAccounts)
         SessionHours            = [int]$numViewerAuthenticationSessionHours.Value

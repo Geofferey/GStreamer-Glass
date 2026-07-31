@@ -1946,6 +1946,11 @@ public class TlsTerminatingProxy
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, long> activeAuthenticationSessions = new System.Collections.Concurrent.ConcurrentDictionary<string, long>();
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, string> authenticationSessionBoundAddresses = new System.Collections.Concurrent.ConcurrentDictionary<string, string>();
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, TemporaryAuthenticationLinkState> temporaryAuthenticationLinks = new System.Collections.Concurrent.ConcurrentDictionary<string, TemporaryAuthenticationLinkState>();
+    // Shared by every proxy instance in this worker so the ~1 MB artwork is
+    // loaded only once even when video, audio, and viewer ports are all gated.
+    private static readonly object temporaryLinkUnavailableImageLock = new object();
+    private static byte[] temporaryLinkUnavailableImageBytes = new byte[0];
+    private static string temporaryLinkUnavailableImagePath = "";
 
     // Async continuations resume on arbitrary ThreadPool threads with no
     // PowerShell runspace bound to them, so failures here cannot invoke a
@@ -1955,6 +1960,42 @@ public class TlsTerminatingProxy
     // via PollLogMessage(), the same pattern PollTerminalMessage() uses
     // for GstControlledScenePreview/GstWebRtcConsumerPortRange.
     private readonly System.Collections.Concurrent.ConcurrentQueue<string> pendingLog = new System.Collections.Concurrent.ConcurrentQueue<string>();
+
+    public void ConfigureTemporaryLinkUnavailableImage(string imagePath)
+    {
+        string normalizedPath = imagePath ?? "";
+        try
+        {
+            if (!string.IsNullOrWhiteSpace(normalizedPath)) normalizedPath = Path.GetFullPath(normalizedPath);
+        }
+        catch
+        {
+            normalizedPath = "";
+        }
+
+        lock (temporaryLinkUnavailableImageLock)
+        {
+            if (string.Equals(temporaryLinkUnavailableImagePath, normalizedPath, StringComparison.OrdinalIgnoreCase) && temporaryLinkUnavailableImageBytes.Length > 0) return;
+            temporaryLinkUnavailableImagePath = normalizedPath;
+            temporaryLinkUnavailableImageBytes = new byte[0];
+            if (string.IsNullOrEmpty(normalizedPath)) return;
+
+            try
+            {
+                byte[] imageBytes = File.ReadAllBytes(normalizedPath);
+                bool isPng = imageBytes.Length >= 8 &&
+                    imageBytes[0] == 0x89 && imageBytes[1] == 0x50 && imageBytes[2] == 0x4E && imageBytes[3] == 0x47 &&
+                    imageBytes[4] == 0x0D && imageBytes[5] == 0x0A && imageBytes[6] == 0x1A && imageBytes[7] == 0x0A;
+                if (!isPng) throw new InvalidDataException("The configured file is not a PNG image.");
+                temporaryLinkUnavailableImageBytes = imageBytes;
+                pendingLog.Enqueue("loaded temporary-link rejection image from " + normalizedPath);
+            }
+            catch (Exception ex)
+            {
+                pendingLog.Enqueue("could not load temporary-link rejection image; using the text fallback: " + ex.Message);
+            }
+        }
+    }
 
     // Optional path -> internal-port overrides, checked against the decrypted
     // HTTP request's path before falling back to the default target. Lets one
@@ -2828,7 +2869,15 @@ public class TlsTerminatingProxy
             if (!TryRedeemTemporaryAuthenticationLink(temporaryToken, remoteAddress, out temporaryLink, out rejectionReason, out rejectionStatus))
             {
                 pendingLog.Enqueue("temporary viewer link rejected from " + remoteAddress + ": " + rejectionReason);
-                await WriteHttpResponseAsync(stream, rejectionStatus, rejectionStatus == 403 ? "Forbidden" : "Gone", "text/plain; charset=utf-8", "This temporary viewer link is invalid, expired, already used, or unavailable from this client.", null);
+                byte[] rejectionImage = temporaryLinkUnavailableImageBytes;
+                if (rejectionImage.Length > 0)
+                {
+                    await WriteHttpResponseBytesAsync(stream, rejectionStatus, rejectionStatus == 403 ? "Forbidden" : "Gone", "image/png", rejectionImage, null);
+                }
+                else
+                {
+                    await WriteHttpResponseAsync(stream, rejectionStatus, rejectionStatus == 403 ? "Forbidden" : "Gone", "text/plain; charset=utf-8", "This temporary viewer link is invalid, expired, already used, or unavailable from this client.", null);
+                }
                 return true;
             }
             await IssueAuthenticationSessionResponseAsync(
@@ -3399,6 +3448,12 @@ public class TlsTerminatingProxy
     private static async Task WriteHttpResponseAsync(Stream stream, int statusCode, string reason, string contentType, string body, Dictionary<string, string> additionalHeaders, string scriptNonce = null, IEnumerable<string> extraSetCookieHeaders = null)
     {
         byte[] bodyBytes = Encoding.UTF8.GetBytes(body ?? "");
+        await WriteHttpResponseBytesAsync(stream, statusCode, reason, contentType, bodyBytes, additionalHeaders, scriptNonce, extraSetCookieHeaders);
+    }
+
+    private static async Task WriteHttpResponseBytesAsync(Stream stream, int statusCode, string reason, string contentType, byte[] bodyBytes, Dictionary<string, string> additionalHeaders, string scriptNonce = null, IEnumerable<string> extraSetCookieHeaders = null)
+    {
+        if (bodyBytes == null) bodyBytes = new byte[0];
         StringBuilder response = new StringBuilder();
         response.Append("HTTP/1.1 ").Append(statusCode).Append(' ').Append(reason).Append("\r\n");
         response.Append("Content-Type: ").Append(contentType).Append("\r\n");
@@ -4300,6 +4355,7 @@ if ($AuthProxyWorker) {
                         $proxy = New-Object TlsTerminatingProxy
                         $proxy.Label = [string]$portInfo.Label
                         $proxy.AuthenticationMountPath = [string]$Command.AuthenticationMountPath
+                        $proxy.ConfigureTemporaryLinkUnavailableImage([string]$Command.TemporaryLinkUnavailableImagePath)
                         $proxy.ConfigureTrustedForwardingProxies([string[]]@($Command.TrustedForwardingProxyAddresses))
                         foreach ($route in @($portInfo.PathRoutes)) {
                             $proxy.AddPathRoute([string]$route.Path, [int]$route.Port)

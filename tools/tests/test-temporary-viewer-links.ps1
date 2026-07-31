@@ -14,6 +14,7 @@ $proxySource = Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'src\33-LetsEn
 $settingsSource = Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'src\24-Settings.ps1')
 $uiSource = Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'src\90-MainWindow.ps1')
 $layoutSource = Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'src\12-MainDashboardUi.ps1')
+$rejectionImagePath = Join-Path $repoRoot 'gstwebrtc-api\dist\temporary-viewer-link-unavailable.png'
 
 function Assert-TemporaryLink {
     param([bool]$Condition, [string]$Message)
@@ -85,8 +86,14 @@ try {
     $singleUse = $proxy.CreateTemporaryAuthenticationLink('viewer', 5, $true, '')
     $response = Redeem-Link $port $singleUse.Token
     Assert-TemporaryLink $response.StartsWith('HTTP/1.1 303') 'Single-use temporary link failed on first redemption.'
+    Assert-TemporaryLink (Test-Path -LiteralPath $rejectionImagePath -PathType Leaf) 'Temporary-link rejection image is missing.'
+    $proxy.ConfigureTemporaryLinkUnavailableImage($rejectionImagePath)
     $response = Redeem-Link $port $singleUse.Token
     Assert-TemporaryLink $response.StartsWith('HTTP/1.1 410') 'Single-use temporary link was accepted more than once.'
+    Assert-TemporaryLink ($response -match '(?im)^Content-Type:\s*image/png\s*$') 'Rejected temporary link did not return the PNG error image.'
+    $imageContentLength = [long]([regex]::Match($response, '(?im)^Content-Length:\s*(\d+)\s*$').Groups[1].Value)
+    Assert-TemporaryLink ($imageContentLength -eq (Get-Item -LiteralPath $rejectionImagePath).Length) 'Rejected temporary link returned incomplete image bytes.'
+    $proxy.ConfigureTemporaryLinkUnavailableImage('')
 
     $bound = $proxy.CreateTemporaryAuthenticationLink('viewer', 5, $false, '198.51.100.10')
     $response = Redeem-Link $port $bound.Token '203.0.113.20'
