@@ -59,7 +59,7 @@ $ui = Get-Content -Raw -LiteralPath $uiPath
 $settings = Get-Content -Raw -LiteralPath $settingsPath
 $pipeline = Get-Content -Raw -LiteralPath $pipelinePath
 $player = Get-Content -Raw -LiteralPath $playerPath
-Assert-AdditionalIceHost ($ui -match "Proxy / host mapping") 'Network tab proxy/host section is missing.'
+Assert-AdditionalIceHost ($ui -match "ICE candidate overrides") 'Network tab ICE candidates section is missing.'
 Assert-AdditionalIceHost ($ui -match 'btnDirectWebRtcAdditionalIceHostAdd') 'Additional ICE host Add button is missing from the Network tab.'
 Assert-AdditionalIceHost ($ui -match 'btnDirectWebRtcAdditionalIceHostUp') 'Additional ICE host Move Up button is missing from the Network tab.'
 Assert-AdditionalIceHost ($ui -match 'btnDirectWebRtcAdditionalIceHostDown') 'Additional ICE host Move Down button is missing from the Network tab.'

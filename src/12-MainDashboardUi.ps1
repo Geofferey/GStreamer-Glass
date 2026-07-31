@@ -1124,7 +1124,7 @@ function Apply-ModernDashboardUi {
     # ---------------- Network ----------------
     $paneNetwork = New-SettingsPane $tabNetwork
 
-    $s = Add-CollapsibleSection $paneNetwork 'Proxy / host mapping'
+    $s = Add-CollapsibleSection $paneNetwork 'ICE candidate overrides'
     $r = Add-Row $s
     Add-Field $r -Label 'Public host / IP' -Control $txtDirectWebRtcAdditionalIceHost -Width 330 | Out-Null
     Add-Field $r -Control $btnDirectWebRtcAdditionalIceHostAdd -Width 70 | Out-Null

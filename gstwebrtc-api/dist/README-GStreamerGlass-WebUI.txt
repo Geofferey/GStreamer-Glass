@@ -35,7 +35,7 @@ Current viewer authentication and signaling behavior (3.8.36):
 - PROXY, LAN, and AUTO keep their media/ICE behavior independent from the
   WebSocket transport. Configured proxy paths are tried first and mapped/direct
   same-host ports remain fallbacks when they satisfy the active security mode.
-- Network > Proxy / host mapping accepts an ordered list of public IPv4 or DNS
+- Network > ICE candidate overrides accepts an ordered list of public IPv4 or DNS
   hosts for a manually or UPnP-mapped 1:1 RTP range. Glass resolves and
   de-duplicates the list in order, then adds a public candidate with the same
   UDP port as each private webrtcsink host candidate. In WAN (internal
