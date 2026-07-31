@@ -139,6 +139,28 @@ try {
     $listReply = Send-WorkerCommand @{ Type = 'ListTemporaryLinks' }
     Assert-CompiledTemporaryLink (@($listReply.TemporaryLinks | Where-Object { $null -ne $_ }).Count -eq 0) "Compiled auth worker still listed a revoked temporary link: $($listReply | ConvertTo-Json -Compress -Depth 5)"
 
+    # Account setup uses the same packaged-worker JSON boundary but returns a
+    # derived credential update to the UI through PollLog. Exercise that path
+    # here because console PowerShell can mask CLR-field serialization issues.
+    $setupReply = Send-WorkerCommand @{ Type = 'CreateAccountSetupLink'; Username = 'viewer'; DurationMinutes = 5; RequireTotp = $false; BoundAddress = '' }
+    Assert-CompiledTemporaryLink ([string]$setupReply.Status -eq 'Ready') "Compiled auth worker failed to create an account setup link: $($setupReply.Error)"
+    Assert-CompiledTemporaryLink ([string]$setupReply.Link.Purpose -eq 'setup' -and [bool]$setupReply.Link.SingleUse) 'Compiled auth worker lost the account setup link purpose or single-use flag.'
+    $setupTarget = '/auth/setup?token=' + [Uri]::EscapeDataString([string]$setupReply.Link.Token) + '&return=%2Flive%2F'
+    $setupResponse = Send-PlainRequest $externalPort "GET $setupTarget HTTP/1.1`r`nHost: localhost`r`nConnection: close`r`n`r`n"
+    Assert-CompiledTemporaryLink $setupResponse.StartsWith('HTTP/1.1 200') 'Compiled auth worker did not serve its account setup form.'
+    $setupBody = 'token=' + [Uri]::EscapeDataString([string]$setupReply.Link.Token) + '&return=%2Flive%2F&password=compiled-setup-password-123%21&confirm=compiled-setup-password-123%21&code='
+    $setupLength = [System.Text.Encoding]::UTF8.GetByteCount($setupBody)
+    $setupResponse = Send-PlainRequest $externalPort "POST /auth/setup HTTP/1.1`r`nHost: localhost`r`nContent-Type: application/x-www-form-urlencoded`r`nContent-Length: $setupLength`r`nConnection: close`r`n`r`n$setupBody"
+    Assert-CompiledTemporaryLink $setupResponse.StartsWith('HTTP/1.1 303') 'Compiled auth worker could not complete account password setup.'
+    $pollReply = Send-WorkerCommand @{ Type = 'PollLog' }
+    $accountUpdates = @($pollReply.AccountUpdates | Where-Object { $null -ne $_ })
+    Assert-CompiledTemporaryLink ($accountUpdates.Count -eq 1) 'Compiled auth worker did not return exactly one completed account update.'
+    Assert-CompiledTemporaryLink ([string]$accountUpdates[0].Username -eq 'viewer') 'Compiled auth worker account update lost its username.'
+    Assert-CompiledTemporaryLink ([string]$accountUpdates[0].PasswordHash -match '^pbkdf2-sha256\$600000\$') 'Compiled auth worker account update lost its derived password hash.'
+    Assert-CompiledTemporaryLink ([string]$accountUpdates[0].PasswordHash -notmatch 'compiled-setup-password') 'Compiled auth worker leaked the plaintext setup password.'
+    $setupResponse = Send-PlainRequest $externalPort "GET $setupTarget HTTP/1.1`r`nHost: localhost`r`nConnection: close`r`n`r`n"
+    Assert-CompiledTemporaryLink $setupResponse.StartsWith('HTTP/1.1 410') 'Compiled auth worker accepted a completed setup link a second time.'
+
     $null = Send-WorkerCommand @{ Type = 'Shutdown' }
     if (-not $worker.WaitForExit(5000)) { throw 'Compiled auth worker did not exit after Shutdown.' }
 }

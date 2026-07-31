@@ -209,9 +209,9 @@ $script:TemporaryLinkUrlBuildCalls = 0
 function Update-ViewerAuthenticationTemporaryLinkUi {}
 function Append-Log { param([string]$Message) }
 function Get-ViewerAuthenticationTemporaryLinkUrl {
-    param([Parameter(Mandatory)][string]$Token)
+    param([Parameter(Mandatory)][string]$Token, [string]$Purpose = 'session')
     $script:TemporaryLinkUrlBuildCalls++
-    return "https://viewer.example/auth/session?token=$Token"
+    return "https://viewer.example/auth/${Purpose}?token=$Token"
 }
 $lstViewerAuthenticationTemporaryLinks.Add_SelectedIndexChanged({ Show-SelectedViewerAuthenticationTemporaryLink })
 
@@ -310,7 +310,10 @@ Assert-TemporaryLink ($layoutSource -match 'Proxy domain \(link only\)') 'The pr
 Assert-TemporaryLink ($layoutSource -match 'Restrict to client IP') 'Client-IP restriction is missing from the Viewer Authentication layout.'
 Assert-TemporaryLink ($settingsSource -match 'ViewerAuthenticationTemporaryLinkMinutes') 'Temporary-link defaults are not persisted.'
 Assert-TemporaryLink ($settingsSource -match 'ViewerAuthenticationTemporaryLinkProxyDomain') 'The temporary-link proxy domain is not persisted.'
+Assert-TemporaryLink ($settingsSource -match 'ViewerAuthenticationSetupLinkRequireTotp') 'The account-setup-link 2FA option is not persisted.'
 Assert-TemporaryLink ($proxySource -match "Type\s*=\s*'CreateTemporaryLink'") 'Temporary-link creation is not wired to the auth worker.'
+Assert-TemporaryLink ($proxySource -match "Type\s*=\s*'CreateAccountSetupLink'") 'Account setup link creation is not wired to the auth worker.'
+Assert-TemporaryLink ($uiSource -match 'Generate account setup link') 'Account setup link generation is missing from the UI.'
 Assert-TemporaryLink ($viewerIndexSource -match '<meta name="robots" content="noindex, nofollow, noarchive, nosnippet, noimageindex">') 'The viewer document is missing its no-index policy.'
 Assert-TemporaryLink ($viewerRobotsSource -match '(?ms)^User-agent:\s*\*.*^Disallow:\s*/\s*$') 'The bundled web root is missing its deny-all robots.txt.'
 Assert-TemporaryLink ($viewerManifestSource -match '"robots\.txt"') 'The web UI manifest does not deploy robots.txt to the working web root.'
