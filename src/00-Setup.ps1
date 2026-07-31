@@ -1470,6 +1470,19 @@ if ($ControlledLiveWorker) {
         $start = $startLine | ConvertFrom-Json
         if ([string]$start.Type -ne 'Start') { throw 'The first worker command was not Start.' }
 
+        # NOT [uint32](if (...) {...} else {...}) -- an if-statement wrapped
+        # in bare parens with a type-cast prefix is not a valid PowerShell
+        # expression (PowerShell tries to invoke "if" itself as a command,
+        # failing with "The term 'if' is not recognized..."), regardless of
+        # which branch would have been taken. This is exactly why going live
+        # with the controlled worker always failed here while plain preview
+        # (which never reaches this pipe-command handler at all -- see
+        # GstControlledScenePreview::Start) never did. Precomputing into
+        # plain variables first matches the already-working `$x = if (...)
+        # {...} else {...}` (no wrapping parens) pattern used elsewhere in
+        # this codebase, e.g. 27-StreamLifecycle.ps1's $workerMinRtpPort.
+        $workerMinRtpPort = if ($start.MinRtpPort) { [uint32]$start.MinRtpPort } else { [uint32]0 }
+        $workerMaxRtpPort = if ($start.MaxRtpPort) { [uint32]$start.MaxRtpPort } else { [uint32]0 }
         [GstControlledScenePreview]::StartLive(
             [string]$start.Pipeline,
             [int64]$start.WindowHandle,
@@ -1477,8 +1490,8 @@ if ($ControlledLiveWorker) {
             [int]$start.Height,
             [string]$start.DesktopPad,
             [string]$start.WebcamPad,
-            [uint32](if ($start.MinRtpPort) { $start.MinRtpPort } else { 0 }),
-            [uint32](if ($start.MaxRtpPort) { $start.MaxRtpPort } else { 0 })
+            $workerMinRtpPort,
+            $workerMaxRtpPort
         )
         $pipeWriter.WriteLine((@{ Status = 'Ready'; Error = '' } | ConvertTo-Json -Compress))
 
