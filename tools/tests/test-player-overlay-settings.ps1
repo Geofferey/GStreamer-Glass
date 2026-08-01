@@ -18,12 +18,12 @@ $pipPosition = $utilityMarkup.Value.IndexOf('id="viewerPipButton"', [System.Stri
 $settingsPosition = $utilityMarkup.Value.IndexOf('id="viewerSettingsButton"', [System.StringComparison]::Ordinal)
 Assert-OverlaySettings ($debugPosition -ge 0 -and $pipPosition -gt $debugPosition -and $settingsPosition -gt $pipPosition) 'The PiP shortcut must appear immediately left of the settings gear.'
 
-foreach ($id in @('viewerSettingsPanel', 'viewerSettingStatus', 'viewerSettingStats', 'viewerSettingControls', 'viewerSettingNativeControls', 'viewerSettingPip', 'viewerSettingMediaNotificationAnchor', 'viewerSettingDebug')) {
+foreach ($id in @('viewerSettingsPanel', 'viewerSettingStatus', 'viewerSettingStats', 'viewerSettingControls', 'viewerSettingNativeControls', 'viewerSettingPip', 'viewerSettingPipDisablesBackgroundAudio', 'viewerSettingMediaNotificationAnchor', 'viewerSettingDebug')) {
     Assert-OverlaySettings ($index.Contains("id=`"$id`"")) "Missing viewer setting control '$id'."
 }
 
 Assert-OverlaySettings ($player.Contains("VIEWER_DISPLAY_SETTINGS_KEY = 'gstglass-viewer-display-v1'")) 'Viewer display preferences are not persisted under a stable key.'
-foreach ($setting in @('statusOverlay', 'statsOverlay', 'playbackControls', 'nativeMediaControls', 'pictureInPictureShortcut', 'mediaNotificationAnchor', 'debugShortcut')) {
+foreach ($setting in @('statusOverlay', 'statsOverlay', 'playbackControls', 'nativeMediaControls', 'pictureInPictureShortcut', 'pipDisablesBackgroundAudio', 'mediaNotificationAnchor', 'debugShortcut')) {
     Assert-OverlaySettings ($player.Contains($setting)) "Player does not implement viewer setting '$setting'."
 }
 Assert-OverlaySettings ($player.Contains("localStorage.setItem(VIEWER_DISPLAY_SETTINGS_KEY")) 'Viewer settings are not written to local storage.'
@@ -36,6 +36,6 @@ Assert-OverlaySettings ($player.Contains("video.controlsList.remove('nofullscree
 Assert-OverlaySettings ($player.Contains('video.disableRemotePlayback = !enabled')) 'Native mode does not restore the browser remote-playback policy.'
 Assert-OverlaySettings ($player -match "function handleVideoActivation[\s\S]*?if \(nativeMediaControlsEnabled\(\)\)") 'Glass still intercepts clicks intended for the native media controls.'
 Assert-OverlaySettings ($player.Contains("applyLogicalMediaState('native-video-pause')")) 'Native pause is not bridged into the logical media controller.'
-Assert-OverlaySettings ($serviceWorker.Contains("gstglass-pwa-3.8-viewer-auth-54")) 'Service-worker cache no longer includes the viewer settings release.'
+Assert-OverlaySettings ($serviceWorker.Contains("gstglass-pwa-3.8-viewer-auth-55")) 'Service-worker cache no longer includes the viewer settings release.'
 
 Write-Host 'PASS: viewer overlay settings are persistent and the gear is to the right of debug.'

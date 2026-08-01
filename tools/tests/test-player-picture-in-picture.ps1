@@ -17,6 +17,7 @@ $settingsPosition = $utilityMarkup.Value.IndexOf('id="viewerSettingsButton"', [S
 Assert-PictureInPicture ($pipPosition -ge 0 -and $settingsPosition -gt $pipPosition) 'The PiP button is not immediately left of the settings gear.'
 
 Assert-PictureInPicture ($index.Contains('id="viewerSettingPip"')) 'The settings panel cannot control PiP shortcut visibility.'
+Assert-PictureInPicture ($index.Contains('id="viewerSettingPipDisablesBackgroundAudio"')) 'The settings panel cannot control PiP background-audio suspension.'
 Assert-PictureInPicture ($index.Contains('> Background audio</label>')) 'The media notification anchor was not renamed to Background audio.'
 Assert-PictureInPicture (-not $index.Contains('Android status-bar controls')) 'The obsolete Android status-bar label is still visible.'
 Assert-PictureInPicture ($player.Contains('document.pictureInPictureEnabled === true')) 'The player does not feature-detect standard Picture-in-Picture.'
@@ -25,6 +26,12 @@ Assert-PictureInPicture ($player.Contains('await document.exitPictureInPicture()
 Assert-PictureInPicture ($player.Contains("video.addEventListener('enterpictureinpicture'")) 'The PiP button does not observe entry state.'
 Assert-PictureInPicture ($player.Contains("video.addEventListener('leavepictureinpicture'")) 'The PiP button does not observe exit state.'
 Assert-PictureInPicture ($player.Contains("viewerDisplaySetting('pictureInPictureShortcut', true)")) 'PiP shortcut visibility is not persistent or enabled by default.'
+Assert-PictureInPicture ($player.Contains("viewerDisplaySetting('pipDisablesBackgroundAudio', false)")) 'PiP background-audio suspension is not persistent or opt-in by default.'
+Assert-PictureInPicture ($player.Contains("reason === 'viewer-shortcut' && pipDisablesBackgroundAudioEnabled()")) 'Background audio suspension is not scoped to entry through the dedicated PiP shortcut.'
+Assert-PictureInPicture ($player.Contains("destroyMediaNotificationAnchor('picture-in-picture-active')")) 'PiP does not suspend the Background audio anchor.'
+Assert-PictureInPicture ($player.Contains("anchorState.status = 'suspended-for-pip'")) 'The Background audio anchor does not expose its temporary PiP state.'
+Assert-PictureInPicture ($player.Contains("restoreBackgroundAudioAfterPictureInPicture('entry-failed')")) 'Failed PiP entry does not restore Background audio.'
+Assert-PictureInPicture ($player.Contains("video.addEventListener('leavepictureinpicture', handlePictureInPictureExit)")) 'Leaving PiP does not restore Background audio through the lifecycle event.'
 Assert-PictureInPicture ($css -match '\.viewerPipButton\.isActive') 'Active PiP state has no visible styling.'
 
 Write-Host 'PASS: Picture-in-Picture is available beside settings and persistently configurable.'

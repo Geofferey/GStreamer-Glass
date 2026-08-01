@@ -39,7 +39,7 @@ if ($index -notmatch [regex]::Escape('player.css?v=3.8.28') -or
 if ($setup -notmatch [regex]::Escape('manifest.webmanifest?v=3.8.40')) {
     throw "The authentication login page does not advertise the same established PWA manifest URL."
 }
-if ($serviceWorker -notmatch "CACHE_NAME\s*=\s*'gstglass-pwa-3\.8-viewer-auth-54'") {
+if ($serviceWorker -notmatch "CACHE_NAME\s*=\s*'gstglass-pwa-3\.8-viewer-auth-55'") {
     throw "The service-worker cache no longer includes the immersive viewer-theme update."
 }
 

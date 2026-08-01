@@ -1,5 +1,5 @@
 (() => {
-  const FRONTEND_VERSION = '3.8-viewer-auth-46';
+  const FRONTEND_VERSION = '3.8-viewer-auth-47';
   const VIEWER_THEME_COLOR = '#000000';
   const VIEWER_DISPLAY_SETTINGS_KEY = 'gstglass-viewer-display-v1';
   console.info(`[GStreamer Glass Live] frontend ${FRONTEND_VERSION}`);
@@ -42,6 +42,7 @@
     playbackControls: document.getElementById('viewerSettingControls'),
     nativeMediaControls: document.getElementById('viewerSettingNativeControls'),
     pictureInPictureShortcut: document.getElementById('viewerSettingPip'),
+    pipDisablesBackgroundAudio: document.getElementById('viewerSettingPipDisablesBackgroundAudio'),
     mediaNotificationAnchor: document.getElementById('viewerSettingMediaNotificationAnchor'),
     debugShortcut: document.getElementById('viewerSettingDebug')
   };
@@ -160,6 +161,7 @@
     liveEdgeFaultActive: false,
     lastCompactStatus: '',
     videoZoom: { scale: 1, x: 0, y: 0, pointers: new Map(), pinchStart: null, panStart: null, gestureMoved: false, suppressTapUntil: 0 },
+    pipBackgroundAudioSuspended: false,
     splitAudio: { ws: null, pc: null, sessionId: null, peerId: null, remotePeerId: null, pendingIce: [], pendingRemoteIce: [], producers: new Map(), ready: false, url: '', route: '', candidates: [], attemptToken: 0, status: 'idle', reconnectTimer: null, reconnectAttempts: 0, proxyPairRetryCount: 0, proxyPairRetrying: false, proxyPairLocalTicks: 0, lastRouteLine: '', connectTimer: null, keepAliveTimer: null, keepAliveCount: 0, lastKeepAliveAt: 0, lastError: '', lastTrackKind: '', lastInboundStats: null, lastHealthyAt: 0, lastRecoverAt: 0, recoveryCount: 0, stallTicks: 0, offsetHighTicks: 0, lastAvOffsetMs: NaN, syncHealth: 'free-run', connectStartedAt: 0, trackReceivedAt: 0, warmupUntil: 0, avOffsetBaselineMs: NaN, avOffsetBaselineSamples: 0, avOffsetBaselineLocked: false, avOffsetDeltaMs: NaN, avOffsetBaselineReason: 'none' },
     mediaNotificationAnchor: { element: null, objectUrl: '', playAttempt: 0, status: 'idle', lastError: '' },
     controller: { userPaused: false, userMuted: false, volume: 1, uiPinned: false, initialized: false, installPrompt: null, bar: null, playButton: null, muteButton: null, volumeInput: null, spacer: null, reconnectButton: null, routeButton: null, logoutButton: null, installButton: null, zoomButton: null, pinButton: null, fullscreenButton: null, status: null, lastAppliedAt: 0 }
@@ -259,6 +261,26 @@
     return viewerDisplaySetting('pictureInPictureShortcut', true);
   }
 
+  function pipDisablesBackgroundAudioEnabled() {
+    return viewerDisplaySetting('pipDisablesBackgroundAudio', false);
+  }
+
+  function suspendBackgroundAudioForPictureInPicture(reason = 'enter') {
+    if (state.pipBackgroundAudioSuspended) return;
+    state.pipBackgroundAudioSuspended = true;
+    syncMediaNotificationAnchor(`picture-in-picture-suspend:${reason}`);
+    syncViewerSettingsControls();
+    if (jbufDebugEnabled()) log('Background audio suspended for Picture-in-Picture', reason);
+  }
+
+  function restoreBackgroundAudioAfterPictureInPicture(reason = 'exit') {
+    if (!state.pipBackgroundAudioSuspended) return;
+    state.pipBackgroundAudioSuspended = false;
+    syncMediaNotificationAnchor(`picture-in-picture-restore:${reason}`);
+    syncViewerSettingsControls();
+    if (jbufDebugEnabled()) log('Background audio restored after Picture-in-Picture', reason);
+  }
+
   function applyNativeMediaControlsPolicy() {
     const enabled = nativeMediaControlsEnabled();
     video.controls = enabled;
@@ -307,6 +329,8 @@
       return false;
     }
     recordUserInteraction(`picture-in-picture:${reason}`);
+    const suspendBackgroundAudio = reason === 'viewer-shortcut' && pipDisablesBackgroundAudioEnabled();
+    if (suspendBackgroundAudio) suspendBackgroundAudioForPictureInPicture(reason);
     try {
       if (document.fullscreenElement && typeof document.exitFullscreen === 'function') {
         await document.exitFullscreen();
@@ -315,6 +339,7 @@
       updatePictureInPictureButton();
       return true;
     } catch (err) {
+      if (suspendBackgroundAudio) restoreBackgroundAudioAfterPictureInPicture('entry-failed');
       const message = err && err.message ? err.message : String(err);
       log('Picture-in-Picture request failed', reason, message);
       setStatus('Picture-in-Picture unavailable', message, 'warn');
@@ -327,6 +352,7 @@
     if (!pictureInPictureActive()) return enterPictureInPicture(reason);
     try {
       await document.exitPictureInPicture();
+      restoreBackgroundAudioAfterPictureInPicture('button-exit');
       updatePictureInPictureButton();
       return true;
     } catch (err) {
@@ -338,6 +364,11 @@
     }
   }
 
+  function handlePictureInPictureExit() {
+    restoreBackgroundAudioAfterPictureInPicture('leave-event');
+    updatePictureInPictureButton();
+  }
+
   function syncViewerSettingsControls() {
     const values = {
       statusOverlay: viewerDisplaySetting('statusOverlay', true),
@@ -345,6 +376,7 @@
       playbackControls: viewerDisplaySetting('playbackControls', true),
       nativeMediaControls: nativeMediaControlsEnabled(),
       pictureInPictureShortcut: pictureInPictureShortcutEnabled(),
+      pipDisablesBackgroundAudio: pipDisablesBackgroundAudioEnabled(),
       mediaNotificationAnchor: mediaNotificationAnchorEnabled(),
       debugShortcut: viewerDisplaySetting('debugShortcut', true)
     };
@@ -355,6 +387,9 @@
   }
 
   function applyViewerDisplaySettings() {
+    if (state.pipBackgroundAudioSuspended && !pipDisablesBackgroundAudioEnabled()) {
+      restoreBackgroundAudioAfterPictureInPicture('setting-disabled');
+    }
     document.body.classList.toggle('hideStatusOverlay', !viewerDisplaySetting('statusOverlay', true));
     if (debugLink) debugLink.hidden = !viewerDisplaySetting('debugShortcut', true);
     updatePictureInPictureButton();
@@ -2913,6 +2948,11 @@
       else anchorState.status = 'disabled';
       return;
     }
+    if (state.pipBackgroundAudioSuspended) {
+      if (anchorState.element || anchorState.objectUrl) destroyMediaNotificationAnchor('picture-in-picture-active');
+      anchorState.status = 'suspended-for-pip';
+      return;
+    }
 
     const anchor = ensureMediaNotificationAnchor();
     const shouldPlay = (state.started || mediaSessionHasLiveSource()) &&
@@ -4223,7 +4263,7 @@
     });
   }
   video.addEventListener('enterpictureinpicture', updatePictureInPictureButton);
-  video.addEventListener('leavepictureinpicture', updatePictureInPictureButton);
+  video.addEventListener('leavepictureinpicture', handlePictureInPictureExit);
   video.addEventListener('loadedmetadata', updatePictureInPictureButton);
   video.addEventListener('emptied', updatePictureInPictureButton);
   video.addEventListener('play', () => {
@@ -4989,7 +5029,7 @@
     route: (mode) => setConnectionMode(mode, 'console'),
     pictureInPicture: () => togglePictureInPicture('console'),
     notificationAnchor: (enabled = true) => setViewerDisplaySetting('mediaNotificationAnchor', !!enabled),
-    state: () => ({ paused: state.controller.userPaused, muted: state.controller.userMuted, volume: state.controller.volume, connectionMode: connectionMode(), mediaRoutePolicy: mediaRoutePolicyLine(), signalingRoute: state.signalingRoute, signalingUrl: state.signalingUrl, signalingCandidates: [...state.signalingCandidates], signalingTransport: signalingTransportStatusLine(), screenWakeLock: screenWakeLockLine(), splitAudio: splitAudioStatusLine(), splitSync: splitSyncStatusLine(), pictureInPicture: { supported: pictureInPictureSupported(), active: pictureInPictureActive(), shortcut: pictureInPictureShortcutEnabled() }, mediaNotificationAnchor: { enabled: mediaNotificationAnchorEnabled(), status: state.mediaNotificationAnchor.status, lastError: state.mediaNotificationAnchor.lastError, paused: state.mediaNotificationAnchor.element ? state.mediaNotificationAnchor.element.paused : true, currentTime: state.mediaNotificationAnchor.element ? state.mediaNotificationAnchor.element.currentTime : 0, duration: state.mediaNotificationAnchor.element ? state.mediaNotificationAnchor.element.duration : NaN }, videoPaused: video.paused, audioPaused: audio.paused, videoMuted: video.muted, audioMuted: audio.muted, ownPublicIp: state.ownPublicIp })
+    state: () => ({ paused: state.controller.userPaused, muted: state.controller.userMuted, volume: state.controller.volume, connectionMode: connectionMode(), mediaRoutePolicy: mediaRoutePolicyLine(), signalingRoute: state.signalingRoute, signalingUrl: state.signalingUrl, signalingCandidates: [...state.signalingCandidates], signalingTransport: signalingTransportStatusLine(), screenWakeLock: screenWakeLockLine(), splitAudio: splitAudioStatusLine(), splitSync: splitSyncStatusLine(), pictureInPicture: { supported: pictureInPictureSupported(), active: pictureInPictureActive(), shortcut: pictureInPictureShortcutEnabled(), disablesBackgroundAudio: pipDisablesBackgroundAudioEnabled(), backgroundAudioSuspended: state.pipBackgroundAudioSuspended }, mediaNotificationAnchor: { enabled: mediaNotificationAnchorEnabled(), status: state.mediaNotificationAnchor.status, lastError: state.mediaNotificationAnchor.lastError, paused: state.mediaNotificationAnchor.element ? state.mediaNotificationAnchor.element.paused : true, currentTime: state.mediaNotificationAnchor.element ? state.mediaNotificationAnchor.element.currentTime : 0, duration: state.mediaNotificationAnchor.element ? state.mediaNotificationAnchor.element.duration : NaN }, videoPaused: video.paused, audioPaused: audio.paused, videoMuted: video.muted, audioMuted: audio.muted, ownPublicIp: state.ownPublicIp })
   };
 
   startConfigReloadTimer();

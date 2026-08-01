@@ -1,4 +1,4 @@
-const CACHE_NAME = 'gstglass-pwa-3.8-viewer-auth-54';
+const CACHE_NAME = 'gstglass-pwa-3.8-viewer-auth-55';
 const SHELL_KEY = new URL('./index.html', self.registration.scope).href;
 const APP_SHELL = [
   './index.html',
