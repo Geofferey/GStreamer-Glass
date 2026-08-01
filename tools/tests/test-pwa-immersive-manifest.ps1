@@ -39,8 +39,8 @@ if ($index -notmatch [regex]::Escape('player.css?v=3.8.26') -or
 if ($setup -notmatch [regex]::Escape('manifest.webmanifest?v=3.8.40')) {
     throw "The authentication login page does not advertise the same established PWA manifest URL."
 }
-if ($serviceWorker -notmatch "CACHE_NAME\s*=\s*'gstglass-pwa-3\.8-viewer-auth-48'") {
-    throw "The service-worker cache was not advanced for the immersive manifest update."
+if ($serviceWorker -notmatch "CACHE_NAME\s*=\s*'gstglass-pwa-3\.8-viewer-auth-49'") {
+    throw "The service-worker cache was not advanced for the immersive viewer-theme update."
 }
 
 if ($player -notmatch [regex]::Escape("['fullscreen', 'standalone', 'minimal-ui']")) {
@@ -51,6 +51,16 @@ if ($player -notmatch "pwaDisplayMode\(\)\s*===\s*'fullscreen'") {
 }
 if ($playerCss -notmatch 'overscroll-behavior:\s*none') {
     throw "The player viewport does not suppress disruptive PWA overscroll actions."
+}
+if ($manifest.theme_color -ne '#000000' -or
+    $index -notmatch '<meta\s+name="theme-color"\s+content="#000000">') {
+    throw "The installed viewer and its manifest do not use a black system-bar theme."
+}
+if ($setup -notmatch '<meta name=\\"theme-color\\" content=\\"#07111f\\">') {
+    throw "The authentication page no longer preserves its blue theme color."
+}
+if ($player -notmatch 'applyViewerThemeColor' -or $player -notmatch "VIEWER_THEME_COLOR\s*=\s*'#000000'") {
+    throw "The viewer does not re-apply its black theme after PWA navigation or resume."
 }
 
 Write-Host 'PASS: the PWA requests immersive fullscreen mode with an installed-app fallback.'

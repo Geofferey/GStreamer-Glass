@@ -9,7 +9,7 @@
   "display": "fullscreen",
   "orientation": "any",
   "background_color": "#000000",
-  "theme_color": "#07111f",
+  "theme_color": "#000000",
   "icons": [
     {
       "src": "./icons/gstreamer-glass-192.png",

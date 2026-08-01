@@ -1,6 +1,27 @@
 (() => {
-  const FRONTEND_VERSION = '3.8-viewer-auth-40';
+  const FRONTEND_VERSION = '3.8-viewer-auth-41';
+  const VIEWER_THEME_COLOR = '#000000';
   console.info(`[GStreamer Glass Live] frontend ${FRONTEND_VERSION}`);
+
+  function applyViewerThemeColor() {
+    let theme = document.querySelector('meta[name="theme-color"]');
+    if (!theme) {
+      theme = document.createElement('meta');
+      theme.name = 'theme-color';
+      document.head.appendChild(theme);
+    }
+    // Re-assign on pageshow/resume as a deliberate Chromium repaint hint.
+    // The login document keeps its blue page-level theme; once /live/ owns
+    // the window this black hint must replace any system-bar color retained
+    // across the authentication navigation.
+    theme.setAttribute('content', VIEWER_THEME_COLOR);
+  }
+
+  applyViewerThemeColor();
+  window.addEventListener('pageshow', applyViewerThemeColor);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') applyViewerThemeColor();
+  });
   const playerRoot = document.getElementById('playerRoot');
   const video = document.getElementById('video');
   const overlay = document.getElementById('overlay');
