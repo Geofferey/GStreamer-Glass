@@ -16,15 +16,17 @@ $player = Get-Content -LiteralPath $playerPath -Raw
 $playerCss = Get-Content -LiteralPath $playerCssPath -Raw
 $setup = Get-Content -LiteralPath $setupPath -Raw
 
-if ($manifest.display -ne 'fullscreen') {
-    throw "PWA manifest display must request fullscreen immersive mode."
+if ($manifest.display -ne 'standalone') {
+    throw "PWA manifest display must request standalone mode."
 }
 
 $displayOverride = @($manifest.display_override)
-if ($displayOverride.Count -lt 2 -or $displayOverride[0] -ne 'fullscreen' -or $displayOverride[1] -ne 'standalone') {
-    throw "PWA display_override must prefer fullscreen and fall back to standalone."
+if ($displayOverride.Count -ne 1 -or $displayOverride[0] -ne 'standalone') {
+    throw "PWA display_override must consistently request standalone mode."
 }
-
+if ($manifest.start_url -ne './?source=pwa') {
+    throw "The PWA start URL no longer uses the established mounted-viewer launch marker."
+}
 $stableManifestUrl = 'manifest.webmanifest?v=3.8.40'
 if ($index -notmatch [regex]::Escape($stableManifestUrl)) {
     throw "index.html changed the established manifest URL; installed PWA updates require it to remain stable."
@@ -39,8 +41,8 @@ if ($index -notmatch [regex]::Escape('player.css?v=3.8.30') -or
 if ($setup -notmatch [regex]::Escape('manifest.webmanifest?v=3.8.40')) {
     throw "The authentication login page does not advertise the same established PWA manifest URL."
 }
-if ($serviceWorker -notmatch "CACHE_NAME\s*=\s*'gstglass-pwa-3\.8-viewer-auth-58'") {
-    throw "The service-worker cache no longer includes the immersive viewer-theme update."
+if ($serviceWorker -notmatch "CACHE_NAME\s*=\s*'gstglass-pwa-3\.8-viewer-auth-59'") {
+    throw "The service-worker cache no longer includes the current immersive viewer release."
 }
 
 if ($player -notmatch [regex]::Escape("['fullscreen', 'standalone', 'minimal-ui']")) {
@@ -49,18 +51,27 @@ if ($player -notmatch [regex]::Escape("['fullscreen', 'standalone', 'minimal-ui'
 if ($player -notmatch "pwaDisplayMode\(\)\s*===\s*'fullscreen'") {
     throw "The player does not treat manifest fullscreen as an already immersive application window."
 }
+if ($player -notmatch 'function\s+elementFullscreenActive\s*\(' -or
+    $player -notmatch 'function\s+togglePlayerFullscreen[\s\S]*?elementFullscreenActive\(\)') {
+    throw "The player does not keep PWA immersive state separate from interactive element fullscreen."
+}
 if ($playerCss -notmatch 'overscroll-behavior:\s*none') {
     throw "The player viewport does not suppress disruptive PWA overscroll actions."
 }
-if ($manifest.theme_color -ne '#000000' -or
-    $index -notmatch '<meta\s+name="theme-color"\s+content="#000000">') {
-    throw "The installed viewer and its manifest do not use a black system-bar theme."
+if ($manifest.theme_color -ne '#07111f') {
+    throw "The installed PWA no longer provides a dark-blue launch fallback for Android system chrome."
 }
-if ($setup -notmatch '<meta name=\\"theme-color\\" content=\\"#07111f\\">') {
-    throw "The authentication page no longer preserves its blue theme color."
+if ($index -notmatch '<meta\s+name="theme-color"\s+content="#000000">') {
+    throw "The live viewer page does not request black system chrome."
+}
+if ($setup -notmatch '<meta name=\\"theme-color\\" content=\\"#07111f\\">' -or
+    $setup -notmatch '--system-chrome-color:#07111f' -or
+    $setup -notmatch "getPropertyValue\('--system-chrome-color'\)" -or
+    $setup -notmatch "addEventListener\('pageshow',theme\)") {
+    throw "The authentication page does not dynamically reapply its CSS-owned system-chrome color."
 }
 if ($player -notmatch 'applyViewerThemeColor' -or $player -notmatch "VIEWER_THEME_COLOR\s*=\s*'#000000'") {
-    throw "The viewer does not re-apply its black theme after PWA navigation or resume."
+    throw "The viewer does not force and re-apply black system chrome after PWA navigation or resume."
 }
 
-Write-Host 'PASS: the PWA requests immersive fullscreen mode with an installed-app fallback.'
+Write-Host 'PASS: the standalone PWA dynamically paints login chrome, forces the player black, and retains element fullscreen.'

@@ -5,11 +5,11 @@
   "id": "./",
   "start_url": "./?source=pwa",
   "scope": "/",
-  "display_override": ["fullscreen", "standalone"],
-  "display": "fullscreen",
+  "display_override": ["standalone"],
+  "display": "standalone",
   "orientation": "any",
   "background_color": "#000000",
-  "theme_color": "#000000",
+  "theme_color": "#07111f",
   "icons": [
     {
       "src": "./icons/gstreamer-glass-192.png",

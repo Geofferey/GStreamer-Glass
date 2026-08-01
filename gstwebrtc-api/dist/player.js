@@ -1,5 +1,5 @@
 (() => {
-  const FRONTEND_VERSION = '3.8-viewer-auth-48';
+  const FRONTEND_VERSION = '3.8-viewer-auth-49';
   const VIEWER_THEME_COLOR = '#000000';
   const VIEWER_DISPLAY_SETTINGS_KEY = 'gstglass-viewer-display-v1';
   console.info(`[GStreamer Glass Live] frontend ${FRONTEND_VERSION}`);
@@ -2103,25 +2103,29 @@
     video.addEventListener('lostpointercapture', finishPointer);
   }
 
+  function elementFullscreenActive() {
+    return !!(document.fullscreenElement || document.webkitFullscreenElement || document.msFullscreenElement || video.webkitDisplayingFullscreen);
+  }
+
   function isFullscreen() {
     // Manifest fullscreen controls the application window independently from
-    // the element-level Fullscreen API, so document.fullscreenElement remains
-    // null even when an installed PWA is already immersive.
-    return pwaDisplayMode() === 'fullscreen' ||
-      !!(document.fullscreenElement || document.webkitFullscreenElement || document.msFullscreenElement || video.webkitDisplayingFullscreen);
+    // the element-level Fullscreen API. Keep both states immersive for styling,
+    // but never use the manifest state to short-circuit an element transition.
+    return pwaDisplayMode() === 'fullscreen' || elementFullscreenActive();
   }
 
   function setFullscreenState() {
     const active = isFullscreen();
+    const elementActive = elementFullscreenActive();
     document.body.classList.toggle('isFullscreen', active);
     document.body.classList.toggle('fsWanted', fullscreenEnabled() && document.body.classList.contains('playing') && !isFullscreen());
     if (active) document.body.classList.remove('fsBlocked');
     const button = state.controller && state.controller.fullscreenButton;
     if (button) {
-      button.textContent = active ? '⧢' : '⛶';
-      button.title = active ? 'Exit fullscreen' : 'Enter fullscreen';
+      button.textContent = '⛶';
+      button.title = elementActive ? 'Exit fullscreen' : 'Enter fullscreen';
       button.setAttribute('aria-label', button.title);
-      button.setAttribute('aria-pressed', active ? 'true' : 'false');
+      button.setAttribute('aria-pressed', elementActive ? 'true' : 'false');
     }
   }
 
@@ -2229,7 +2233,7 @@
 
   async function requestVideoFullscreen(reason = 'manual') {
     if (!fullscreenEnabled()) return false;
-    if (isFullscreen()) return true;
+    if (elementFullscreenActive()) return true;
     const target = androidContainerFullscreen && playerRoot ? playerRoot : video;
     try {
       if (target.requestFullscreen) {
@@ -2259,7 +2263,7 @@
   }
 
   async function exitPlayerFullscreen(reason = 'manual') {
-    if (!isFullscreen()) return true;
+    if (!elementFullscreenActive()) return true;
     try {
       const domFullscreen = document.fullscreenElement || document.webkitFullscreenElement || document.msFullscreenElement;
       if (domFullscreen && document.exitFullscreen) {
@@ -2284,7 +2288,7 @@
   }
 
   async function togglePlayerFullscreen(reason = 'controller') {
-    return isFullscreen()
+    return elementFullscreenActive()
       ? exitPlayerFullscreen(reason)
       : requestVideoFullscreen(reason);
   }
@@ -4327,17 +4331,19 @@
       syncMediaNotificationAnchor('native-media-control');
       return;
     }
+    // touchend is deliberately non-passive. Cancel its synthetic click so one
+    // physical tap performs one enter/reveal gesture instead of two.
+    ev.preventDefault();
+    ev.stopPropagation();
     if (Date.now() < state.videoZoom.suppressTapUntil) {
-      ev.preventDefault();
-      ev.stopPropagation();
       return;
     }
     if (state.manualResumeRequired) {
-      ev.preventDefault();
-      ev.stopPropagation();
       toggleLogicalPause();
       return;
     }
+    // The video surface is intentionally enter-only. Once fullscreen, tapping
+    // it reveals the overlays; the player-bar fullscreen control owns exit.
     noteUserGesture(true);
   }
   video.addEventListener('click', handleVideoActivation);

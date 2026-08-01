@@ -3664,8 +3664,10 @@ public class TlsTerminatingProxy
         string heartbeatScript =
             "<script nonce=\"" + scriptNonce + "\" data-return=\"" + WebUtility.HtmlEncode(safeReturn) + "\">" +
             "(function(){var t=document.currentScript.getAttribute('data-return')||'/live/';" +
+            "function theme(){var m=document.querySelector('meta[name=\"theme-color\"]'),c=getComputedStyle(document.documentElement).getPropertyValue('--system-chrome-color').trim();if(m&&c)m.setAttribute('content',c);}" +
             "function check(){fetch('/auth/status',{cache:'no-store'}).then(function(r){return r.ok?r.json():null;})" +
             ".then(function(d){if(d&&d.authenticated){location.replace(t);}}).catch(function(){});}" +
+            "theme();addEventListener('pageshow',theme);document.addEventListener('visibilitychange',function(){if(document.visibilityState==='visible')theme();});" +
             "check();setInterval(check,2000);})();</script>";
         // Installable from here too, not just the player -- the whole point
         // being that an installed PWA always reopens to wherever it was
@@ -3686,13 +3688,16 @@ public class TlsTerminatingProxy
         string manifestUrl = pwaMountPath + "manifest.webmanifest?v=3.8.40";
         string iconUrl = pwaMountPath + "icons/gstreamer-glass-192.png";
         string html = "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1,viewport-fit=cover\">" +
+            // Keep a valid initial color in the document so Android never
+            // paints its light default before the page-owned CSS value is
+            // dynamically applied by the nonce-tagged script below.
             "<meta name=\"theme-color\" content=\"#07111f\"><meta name=\"mobile-web-app-capable\" content=\"yes\">" +
             "<meta name=\"apple-mobile-web-app-capable\" content=\"yes\"><meta name=\"apple-mobile-web-app-status-bar-style\" content=\"black-translucent\">" +
             "<meta name=\"apple-mobile-web-app-title\" content=\"Glass Live\">" +
             "<link rel=\"manifest\" href=\"" + WebUtility.HtmlEncode(manifestUrl) + "\" crossorigin=\"use-credentials\">" +
             "<link rel=\"icon\" type=\"image/png\" sizes=\"192x192\" href=\"" + WebUtility.HtmlEncode(iconUrl) + "\">" +
             "<link rel=\"apple-touch-icon\" href=\"" + WebUtility.HtmlEncode(iconUrl) + "\">" +
-            "<title>GStreamer Glass - Viewer Login</title><style>html{color-scheme:dark}*{box-sizing:border-box}" +
+            "<title>GStreamer Glass - Viewer Login</title><style>html{color-scheme:dark;--system-chrome-color:#07111f}*{box-sizing:border-box}" +
             // backdrop-filter blur only produces a visible effect when there is
             // actual detail behind the element to blur -- the in-player .overlay
             // is visibly frosted because it sits over real video. A smooth flat

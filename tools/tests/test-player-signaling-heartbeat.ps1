@@ -33,8 +33,8 @@ Assert-SignalingHeartbeat ($player.Contains("log('primary signaling closed'")) '
 Assert-SignalingHeartbeat ($player.Contains('lastSignalingCloseCode') -and $player.Contains('lastSignalingCloseReason')) 'Primary close code and reason are not retained for diagnostics.'
 Assert-SignalingHeartbeat ($player.Contains('signalingHeartbeat: { enabled:')) 'Heartbeat health is not exposed through GstGlassPlayer.state().'
 
-Assert-SignalingHeartbeat ($player.Contains("FRONTEND_VERSION = '3.8-viewer-auth-48'")) 'The frontend version was not advanced for signaling heartbeat recovery.'
-Assert-SignalingHeartbeat ($serviceWorker.Contains("gstglass-pwa-3.8-viewer-auth-58")) 'The PWA cache was not advanced for signaling heartbeat recovery.'
-Assert-SignalingHeartbeat ($webUiManifest.webUiVersion -eq '3.8.56') 'The packaged Web UI version was not advanced for signaling heartbeat recovery.'
+Assert-SignalingHeartbeat ($player.Contains("FRONTEND_VERSION = '3.8-viewer-auth-49'")) 'The frontend version was not advanced for the current viewer release.'
+Assert-SignalingHeartbeat ($serviceWorker.Contains("gstglass-pwa-3.8-viewer-auth-59")) 'The PWA cache was not advanced for the current viewer release.'
+Assert-SignalingHeartbeat ($webUiManifest.webUiVersion -eq '3.8.57') 'The packaged Web UI version was not advanced for the current viewer release.'
 
 Write-Host 'PASS: primary and split-audio signaling heartbeats detect stale sockets and recover safely after timer suspension.'
