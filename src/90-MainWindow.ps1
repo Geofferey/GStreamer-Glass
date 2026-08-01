@@ -2759,7 +2759,7 @@ $lowerTabs.Anchor = 'Top,Bottom,Left,Right'
 $form.Controls.Add($lowerTabs)
 
 $tabLog = New-Object System.Windows.Forms.TabPage
-$tabLog.Text = 'Output Log'
+$tabLog.Text = 'Console'
 $tabLog.Padding = New-Object System.Windows.Forms.Padding(6)
 $null = $lowerTabs.TabPages.Add($tabLog)
 
@@ -2915,6 +2915,10 @@ $trayShowItem = New-Object System.Windows.Forms.ToolStripMenuItem
 $trayShowItem.Text = 'Show GStreamer Glass'
 $trayShowItem.Font = New-Object System.Drawing.Font($trayShowItem.Font, [System.Drawing.FontStyle]::Bold)
 $null = $trayMenu.Items.Add($trayShowItem)
+
+$trayConsoleItem = New-Object System.Windows.Forms.ToolStripMenuItem
+$trayConsoleItem.Text = 'Console'
+$null = $trayMenu.Items.Add($trayConsoleItem)
 
 $null = $trayMenu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
 
@@ -3927,6 +3931,10 @@ function Show-LogPopoutWindow {
         if ($script:LogPopoutForm.WindowState -eq [System.Windows.Forms.FormWindowState]::Minimized) {
             $script:LogPopoutForm.WindowState = [System.Windows.Forms.FormWindowState]::Normal
         }
+        if (-not $script:LogPopoutForm.Visible) {
+            $script:LogPopoutForm.Show()
+        }
+        $script:LogPopoutForm.BringToFront()
         $script:LogPopoutForm.Activate()
         return
     }
@@ -3934,14 +3942,30 @@ function Show-LogPopoutWindow {
     $popout = New-Object System.Windows.Forms.Form
     $popout.Text = "$($script:AppName) - Log Console"
     $popout.StartPosition = 'Manual'
-    $mainBounds = $form.Bounds
-    $popout.Location = New-Object System.Drawing.Point(($mainBounds.Right + 12), $mainBounds.Top)
     $popout.Size = New-Object System.Drawing.Size(720, 600)
     $popout.MinimumSize = New-Object System.Drawing.Size(360, 240)
+    $popout.ShowInTaskbar = $true
     $popout.BackColor = $script:ColorBg
     $popout.ForeColor = $script:ColorText
     $popout.Font = New-Object System.Drawing.Font('Segoe UI', 9)
     if ($script:AppIcon) { $popout.Icon = $script:AppIcon }
+
+    # Keep the console centered over the main window's normal bounds, even
+    # when opened from the tray while the main form is minimized or hidden.
+    # Clamp the result to that monitor so the console cannot open off-screen.
+    $mainBounds = $form.Bounds
+    if (
+        $form.WindowState -ne [System.Windows.Forms.FormWindowState]::Normal -and
+        -not $form.RestoreBounds.IsEmpty
+    ) {
+        $mainBounds = $form.RestoreBounds
+    }
+    $workingArea = [System.Windows.Forms.Screen]::FromRectangle($mainBounds).WorkingArea
+    $consoleX = [int][Math]::Round($mainBounds.Left + (($mainBounds.Width - $popout.Width) / 2))
+    $consoleY = [int][Math]::Round($mainBounds.Top + (($mainBounds.Height - $popout.Height) / 2))
+    $consoleX = [Math]::Max($workingArea.Left, [Math]::Min($consoleX, ($workingArea.Right - $popout.Width)))
+    $consoleY = [Math]::Max($workingArea.Top, [Math]::Min($consoleY, ($workingArea.Bottom - $popout.Height)))
+    $popout.Location = New-Object System.Drawing.Point($consoleX, $consoleY)
 
     $popoutTextBox = New-Object System.Windows.Forms.TextBox
     $popoutTextBox.Multiline = $true
@@ -3968,7 +3992,9 @@ function Show-LogPopoutWindow {
 
     $script:LogPopoutForm = $popout
     $script:LogPopoutTextBox = $popoutTextBox
-    $popout.Show($form)
+    # Do not assign the main form as owner. Owned WinForms windows minimize and
+    # hide with their owner, which made the console inaccessible in tray mode.
+    $popout.Show()
     Scroll-TextBoxToBottom -TextBox $popoutTextBox
 }
 
@@ -5166,6 +5192,7 @@ $notifyIcon.Add_MouseDoubleClick({
 })
 $trayMenu.Add_Opening({ Update-TrayMenuState })
 $trayShowItem.Add_Click({ Show-MainWindow })
+$trayConsoleItem.Add_Click({ Show-LogPopoutWindow })
 $trayStartItem.Add_Click({
     $lowerTabs.SelectedTab = $tabLog
     Start-GstStream
