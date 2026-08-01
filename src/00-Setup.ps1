@@ -5066,6 +5066,9 @@ $script:MediaMtxStdOutPosition = [int64]0
 $script:MediaMtxStdErrPosition = [int64]0
 $script:PreviewHwnd = [IntPtr]::Zero
 $script:PreviewParkForm = $null
+$script:CustomArgsEditorForm = $null
+$script:CustomArgsEditorTextBox = $null
+$script:CustomArgsEditorEnabledCheckBox = $null
 $script:PreviewParked = $false
 $script:PipelineHasPreview = $false
 # Cache of the last preview geometry/visibility actually pushed to the embedded

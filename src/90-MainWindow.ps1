@@ -2768,11 +2768,6 @@ $tabCommand.Text = 'Generated Command'
 $tabCommand.Padding = New-Object System.Windows.Forms.Padding(6)
 $null = $lowerTabs.TabPages.Add($tabCommand)
 
-$tabCustomGstArgs = New-Object System.Windows.Forms.TabPage
-$tabCustomGstArgs.Text = 'Custom Args'
-$tabCustomGstArgs.Padding = New-Object System.Windows.Forms.Padding(6, 6, 10, 6)
-$null = $lowerTabs.TabPages.Add($tabCustomGstArgs)
-
 # Appends no longer force a scroll while the log tab is hidden, so catch the
 # tail up whenever the log becomes visible again.
 $lowerTabs.Add_SelectedIndexChanged({
@@ -2793,67 +2788,14 @@ $txtCommand.Font = New-Object System.Drawing.Font('Consolas', 9)
 $txtCommand.Dock = 'Fill'
 $tabCommand.Controls.Add($txtCommand)
 
-$customArgsTopPanel = New-Object System.Windows.Forms.Panel
-$customArgsTopPanel.Dock = 'Top'
-$customArgsTopPanel.Height = 76
-$tabCustomGstArgs.Controls.Add($customArgsTopPanel)
-
-$customArgsButtonRow = New-Object System.Windows.Forms.FlowLayoutPanel
-$customArgsButtonRow.Dock = 'Right'
-$customArgsButtonRow.FlowDirection = 'RightToLeft'
-$customArgsButtonRow.WrapContents = $false
-$customArgsButtonRow.AutoSize = $true
-$customArgsButtonRow.AutoSizeMode = 'GrowAndShrink'
-$customArgsButtonRow.Margin = New-Object System.Windows.Forms.Padding(0)
-$customArgsButtonRow.Padding = New-Object System.Windows.Forms.Padding(0, 6, 8, 0)
-$customArgsTopPanel.Controls.Add($customArgsButtonRow)
-
+# These controls retain the persisted custom-argument state consumed by the
+# settings and pipeline layers. They are intentionally not parented into the
+# main UI; Show-CustomGstArgsEditor is the only visual editor for this state.
 $chkCustomGstArgumentsEnabled = New-Object System.Windows.Forms.CheckBox
 $chkCustomGstArgumentsEnabled.Text = 'Use custom gst-launch args override'
-$chkCustomGstArgumentsEnabled.AutoSize = $true
-$chkCustomGstArgumentsEnabled.Location = New-Object System.Drawing.Point(8, 8)
-$customArgsTopPanel.Controls.Add($chkCustomGstArgumentsEnabled)
-
-$lblCustomGstArgumentsHelp = New-Object System.Windows.Forms.Label
-$lblCustomGstArgumentsHelp.Text = 'Arguments only: paste everything after gst-launch-1.0.exe. Shell wrappers/operators are rejected.'
-$lblCustomGstArgumentsHelp.AutoSize = $true
-$lblCustomGstArgumentsHelp.Location = New-Object System.Drawing.Point(8, 38)
-$customArgsTopPanel.Controls.Add($lblCustomGstArgumentsHelp)
-
-# Docked (not Anchor+absolute-Location) so these stay correctly placed
-# regardless of the panel's actual width when it's first laid out --
-# Anchor='Top,Right' with a hardcoded X assumes the panel is already at its
-# final docked width the moment the control is added, which it isn't yet.
-$btnClearCustomGstArgs = New-Object System.Windows.Forms.Button
-$btnClearCustomGstArgs.Text = 'Clear'
-$btnClearCustomGstArgs.Size = New-Object System.Drawing.Size(80, 28)
-$btnClearCustomGstArgs.Margin = New-Object System.Windows.Forms.Padding(8, 0, 0, 0)
-$customArgsButtonRow.Controls.Add($btnClearCustomGstArgs)
-
-$btnUseGeneratedAsCustomGstArgs = New-Object System.Windows.Forms.Button
-$btnUseGeneratedAsCustomGstArgs.Text = 'Use Generated'
-$btnUseGeneratedAsCustomGstArgs.Size = New-Object System.Drawing.Size(112, 28)
-$btnUseGeneratedAsCustomGstArgs.Margin = New-Object System.Windows.Forms.Padding(8, 0, 0, 0)
-$customArgsButtonRow.Controls.Add($btnUseGeneratedAsCustomGstArgs)
-
-$btnPopOutCustomGstArgs = New-Object System.Windows.Forms.Button
-$btnPopOutCustomGstArgs.Text = 'Pop Out'
-$btnPopOutCustomGstArgs.Size = New-Object System.Drawing.Size(90, 28)
-$btnPopOutCustomGstArgs.Margin = New-Object System.Windows.Forms.Padding(8, 0, 0, 0)
-$toolTip.SetToolTip($btnPopOutCustomGstArgs, 'Open the custom args in a larger, resizable editor window.')
-$customArgsButtonRow.Controls.Add($btnPopOutCustomGstArgs)
 
 $txtCustomGstArguments = New-Object System.Windows.Forms.TextBox
 $txtCustomGstArguments.Multiline = $true
-$txtCustomGstArguments.ScrollBars = 'Vertical'
-$txtCustomGstArguments.WordWrap = $true
-$txtCustomGstArguments.HideSelection = $false
-$txtCustomGstArguments.AcceptsReturn = $true
-$txtCustomGstArguments.AcceptsTab = $true
-$txtCustomGstArguments.Font = New-Object System.Drawing.Font('Consolas', 9)
-$txtCustomGstArguments.Dock = 'Fill'
-$tabCustomGstArgs.Controls.Add($txtCustomGstArguments)
-$customArgsTopPanel.BringToFront()
 
 $lowerTabs.SelectedTab = $tabLog
 
@@ -2919,6 +2861,10 @@ $null = $trayMenu.Items.Add($trayShowItem)
 $trayConsoleItem = New-Object System.Windows.Forms.ToolStripMenuItem
 $trayConsoleItem.Text = 'Console'
 $null = $trayMenu.Items.Add($trayConsoleItem)
+
+$trayCommandItem = New-Object System.Windows.Forms.ToolStripMenuItem
+$trayCommandItem.Text = 'Command'
+$null = $trayMenu.Items.Add($trayCommandItem)
 
 $null = $trayMenu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
 
@@ -3977,40 +3923,95 @@ function Show-LogPopoutWindow {
 }
 
 function Show-CustomGstArgsEditor {
+    if ($script:CustomArgsEditorForm -and -not $script:CustomArgsEditorForm.IsDisposed) {
+        if ($script:CustomArgsEditorForm.WindowState -eq [System.Windows.Forms.FormWindowState]::Minimized) {
+            $script:CustomArgsEditorForm.WindowState = [System.Windows.Forms.FormWindowState]::Normal
+        }
+        if (-not $script:CustomArgsEditorForm.Visible) {
+            $script:CustomArgsEditorForm.Show()
+        }
+        $script:CustomArgsEditorForm.BringToFront()
+        $script:CustomArgsEditorForm.Activate()
+        return
+    }
+
     $editor = New-Object System.Windows.Forms.Form
     $editor.Text = 'Custom gst-launch Arguments'
-    $editor.StartPosition = 'CenterParent'
+    $editor.StartPosition = 'Manual'
     $editor.Size = New-Object System.Drawing.Size(1000, 560)
-    $editor.MinimumSize = New-Object System.Drawing.Size(560, 300)
+    $editor.MinimumSize = New-Object System.Drawing.Size(760, 300)
     $editor.BackColor = $script:ColorBg
     $editor.ForeColor = $script:ColorText
     $editor.Font = New-Object System.Drawing.Font('Segoe UI', 9)
-    $editor.ShowInTaskbar = $false
+    $editor.ShowInTaskbar = $true
     if ($script:AppIcon) { $editor.Icon = $script:AppIcon }
+
+    $mainBounds = $form.Bounds
+    if (
+        $form.WindowState -ne [System.Windows.Forms.FormWindowState]::Normal -and
+        -not $form.RestoreBounds.IsEmpty
+    ) {
+        $mainBounds = $form.RestoreBounds
+    }
+    $workingArea = [System.Windows.Forms.Screen]::FromRectangle($mainBounds).WorkingArea
+    $editorX = [int][Math]::Round($mainBounds.Left + (($mainBounds.Width - $editor.Width) / 2))
+    $editorY = [int][Math]::Round($mainBounds.Top + (($mainBounds.Height - $editor.Height) / 2))
+    $editorX = [Math]::Max($workingArea.Left, [Math]::Min($editorX, ($workingArea.Right - $editor.Width)))
+    $editorY = [Math]::Max($workingArea.Top, [Math]::Min($editorY, ($workingArea.Bottom - $editor.Height)))
+    $editor.Location = New-Object System.Drawing.Point($editorX, $editorY)
 
     $buttonPanel = New-Object System.Windows.Forms.Panel
     $buttonPanel.Dock = 'Bottom'
-    $buttonPanel.Height = 44
+    $buttonPanel.Height = 48
     $buttonPanel.BackColor = $script:ColorSurface
     $editor.Controls.Add($buttonPanel)
+
+    $editorEnabledCheckBox = New-Object System.Windows.Forms.CheckBox
+    $editorEnabledCheckBox.Text = 'Use custom gst-launch args override'
+    $editorEnabledCheckBox.AutoSize = $true
+    $editorEnabledCheckBox.Location = New-Object System.Drawing.Point(8, 14)
+    $editorEnabledCheckBox.Checked = [bool]$chkCustomGstArgumentsEnabled.Checked
+    $editorEnabledCheckBox.FlatStyle = [System.Windows.Forms.FlatStyle]::Standard
+    $editorEnabledCheckBox.UseVisualStyleBackColor = $false
+    $editorEnabledCheckBox.BackColor = $script:ColorSurface
+    $editorEnabledCheckBox.ForeColor = $script:ColorText
+    $buttonPanel.Controls.Add($editorEnabledCheckBox)
+
+    $editorButtonRow = New-Object System.Windows.Forms.FlowLayoutPanel
+    $editorButtonRow.Dock = 'Right'
+    $editorButtonRow.FlowDirection = 'RightToLeft'
+    $editorButtonRow.WrapContents = $false
+    $editorButtonRow.AutoSize = $true
+    $editorButtonRow.AutoSizeMode = 'GrowAndShrink'
+    $editorButtonRow.Margin = New-Object System.Windows.Forms.Padding(0)
+    $editorButtonRow.Padding = New-Object System.Windows.Forms.Padding(0, 8, 8, 0)
+    $buttonPanel.Controls.Add($editorButtonRow)
 
     $btnEditorCancel = New-Object System.Windows.Forms.Button
     $btnEditorCancel.Text = 'Cancel'
     $btnEditorCancel.Size = New-Object System.Drawing.Size(90, 28)
-    $btnEditorCancel.Anchor = 'Top,Right'
-    $btnEditorCancel.Location = New-Object System.Drawing.Point(($editor.ClientSize.Width - 98), 8)
-    $btnEditorCancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
-    $buttonPanel.Controls.Add($btnEditorCancel)
+    $btnEditorCancel.Margin = New-Object System.Windows.Forms.Padding(8, 0, 0, 0)
+    $editorButtonRow.Controls.Add($btnEditorCancel)
 
     $btnEditorApply = New-Object System.Windows.Forms.Button
     $btnEditorApply.Text = 'Apply'
     $btnEditorApply.Size = New-Object System.Drawing.Size(90, 28)
-    $btnEditorApply.Anchor = 'Top,Right'
-    $btnEditorApply.Location = New-Object System.Drawing.Point(($editor.ClientSize.Width - 196), 8)
-    $btnEditorApply.DialogResult = [System.Windows.Forms.DialogResult]::OK
-    $buttonPanel.Controls.Add($btnEditorApply)
+    $btnEditorApply.Margin = New-Object System.Windows.Forms.Padding(8, 0, 0, 0)
+    $editorButtonRow.Controls.Add($btnEditorApply)
 
-    foreach ($editorButton in @($btnEditorApply, $btnEditorCancel)) {
+    $btnEditorClear = New-Object System.Windows.Forms.Button
+    $btnEditorClear.Text = 'Clear'
+    $btnEditorClear.Size = New-Object System.Drawing.Size(80, 28)
+    $btnEditorClear.Margin = New-Object System.Windows.Forms.Padding(8, 0, 0, 0)
+    $editorButtonRow.Controls.Add($btnEditorClear)
+
+    $btnEditorUseGenerated = New-Object System.Windows.Forms.Button
+    $btnEditorUseGenerated.Text = 'Use Generated'
+    $btnEditorUseGenerated.Size = New-Object System.Drawing.Size(112, 28)
+    $btnEditorUseGenerated.Margin = New-Object System.Windows.Forms.Padding(8, 0, 0, 0)
+    $editorButtonRow.Controls.Add($btnEditorUseGenerated)
+
+    foreach ($editorButton in @($btnEditorUseGenerated, $btnEditorClear, $btnEditorApply, $btnEditorCancel)) {
         $editorButton.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
         $editorButton.FlatAppearance.BorderColor = $script:ColorBorder
         $editorButton.BackColor = [System.Drawing.ColorTranslator]::FromHtml('#1F2937')
@@ -4032,15 +4033,87 @@ function Show-CustomGstArgsEditor {
     $editorTextBox.Dock = 'Fill'
     $editorTextBox.Text = $txtCustomGstArguments.Text
     $editor.Controls.Add($editorTextBox)
+    $buttonPanel.BringToFront()
+
+    $toolTip.SetToolTip(
+        $editorTextBox,
+        'Arguments only: paste everything after gst-launch-1.0.exe. Shell wrappers and operators are rejected.'
+    )
+
+    $script:CustomArgsEditorForm = $editor
+    $script:CustomArgsEditorTextBox = $editorTextBox
+    $script:CustomArgsEditorEnabledCheckBox = $editorEnabledCheckBox
+
+    $btnEditorUseGenerated.Add_Click({
+        $originalRecordingRequest = [bool]$script:RecordingPipelineRequested
+        try {
+            $pipelineRunning = $script:GstProcess -and -not $script:GstProcess.HasExited
+            if (-not $pipelineRunning) {
+                $script:RecordingPipelineRequested = [bool](
+                    $chkRecordingEnabled -and
+                    $chkRecordingEnabled.Checked -and
+                    $chkRecordWithStream -and
+                    $chkRecordWithStream.Checked -and
+                    ((-not $chkTransportEnabled) -or $chkTransportEnabled.Checked)
+                )
+            }
+
+            $script:CustomArgsEditorTextBox.Text = Build-GstArguments
+            $script:CustomArgsEditorEnabledCheckBox.Checked = $true
+        }
+        catch {
+            [System.Windows.Forms.MessageBox]::Show(
+                "Could not seed custom args from the generated command.`r`n`r`n$($_.Exception.Message)",
+                $script:AppName,
+                'OK',
+                'Warning'
+            ) | Out-Null
+        }
+        finally {
+            $script:RecordingPipelineRequested = $originalRecordingRequest
+        }
+    })
+
+    $btnEditorClear.Add_Click({
+        if ($script:CustomArgsEditorTextBox -and -not $script:CustomArgsEditorTextBox.IsDisposed) {
+            $script:CustomArgsEditorTextBox.Clear()
+        }
+    })
+
+    $btnEditorApply.Add_Click({
+        try {
+            $txtCustomGstArguments.Text = [string]$script:CustomArgsEditorTextBox.Text
+            $chkCustomGstArgumentsEnabled.Checked = [bool]$script:CustomArgsEditorEnabledCheckBox.Checked
+            Save-Settings
+            Update-CommandPreview
+            $script:CustomArgsEditorForm.Close()
+        }
+        catch {
+            [System.Windows.Forms.MessageBox]::Show(
+                "Could not apply custom arguments.`r`n`r`n$($_.Exception.Message)",
+                $script:AppName,
+                'OK',
+                'Warning'
+            ) | Out-Null
+        }
+    })
+
+    $btnEditorCancel.Add_Click({
+        if ($script:CustomArgsEditorForm -and -not $script:CustomArgsEditorForm.IsDisposed) {
+            $script:CustomArgsEditorForm.Close()
+        }
+    })
+
+    $editor.Add_FormClosed({
+        $script:CustomArgsEditorForm = $null
+        $script:CustomArgsEditorTextBox = $null
+        $script:CustomArgsEditorEnabledCheckBox = $null
+    })
 
     $editor.AcceptButton = $btnEditorApply
     $editor.CancelButton = $btnEditorCancel
-
-    $result = $editor.ShowDialog($form)
-    if ($result -eq [System.Windows.Forms.DialogResult]::OK) {
-        $txtCustomGstArguments.Text = $editorTextBox.Text
-    }
-    $editor.Dispose()
+    $editor.Show()
+    $editorTextBox.Focus()
 }
 
 $chkCustomGstArgumentsEnabled.Add_CheckedChanged({
@@ -4052,46 +4125,6 @@ $txtCustomGstArguments.Add_TextChanged({
     if ($script:LoadingSettings) { return }
     Save-Settings
     Update-CommandPreview
-})
-$btnUseGeneratedAsCustomGstArgs.Add_Click({
-    $originalRecordingRequest = [bool]$script:RecordingPipelineRequested
-    try {
-        $pipelineRunning = $script:GstProcess -and -not $script:GstProcess.HasExited
-        if (-not $pipelineRunning) {
-            $script:RecordingPipelineRequested = [bool](
-                $chkRecordingEnabled -and
-                $chkRecordingEnabled.Checked -and
-                $chkRecordWithStream -and
-                $chkRecordWithStream.Checked -and
-                ((-not $chkTransportEnabled) -or $chkTransportEnabled.Checked)
-            )
-        }
-
-        $txtCustomGstArguments.Text = Build-GstArguments
-        $chkCustomGstArgumentsEnabled.Checked = $true
-        Save-Settings
-        Update-CommandPreview
-        $lowerTabs.SelectedTab = $tabCustomGstArgs
-    }
-    catch {
-        [System.Windows.Forms.MessageBox]::Show(
-            "Could not seed custom args from the generated command.`r`n`r`n$($_.Exception.Message)",
-            $script:AppName,
-            'OK',
-            'Warning'
-        ) | Out-Null
-    }
-    finally {
-        $script:RecordingPipelineRequested = $originalRecordingRequest
-    }
-})
-$btnClearCustomGstArgs.Add_Click({
-    $txtCustomGstArguments.Clear()
-    Save-Settings
-    Update-CommandPreview
-})
-$btnPopOutCustomGstArgs.Add_Click({
-    Show-CustomGstArgsEditor
 })
 $txtGstPath.Add_TextChanged($previewHandler)
 $txtDestination.Add_TextChanged({
@@ -5165,6 +5198,7 @@ $notifyIcon.Add_MouseDoubleClick({
 $trayMenu.Add_Opening({ Update-TrayMenuState })
 $trayShowItem.Add_Click({ Show-MainWindow })
 $trayConsoleItem.Add_Click({ Show-LogPopoutWindow })
+$trayCommandItem.Add_Click({ Show-CustomGstArgsEditor })
 $trayStartItem.Add_Click({
     $lowerTabs.SelectedTab = $tabLog
     Start-GstStream

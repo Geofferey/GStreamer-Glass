@@ -263,7 +263,7 @@ function Apply-ModernDashboardUi {
         $sidebar.Controls.Add((New-SidebarHeading 'Output'))
         $script:SidebarNavButtons['Console'] = New-SidebarButton "  $($script:Glyph.Logs)   Console" 0 { Show-LogPopoutWindow }
         $sidebar.Controls.Add($script:SidebarNavButtons['Console'])
-        $script:SidebarNavButtons['Command'] = New-SidebarButton "  $($script:Glyph.Command)   Command" 0 { $lowerTabs.SelectedTab = $tabCommand }
+        $script:SidebarNavButtons['Command'] = New-SidebarButton "  $($script:Glyph.Command)   Command" 0 { Show-CustomGstArgsEditor }
         $sidebar.Controls.Add($script:SidebarNavButtons['Command'])
 
         $sidebarStatus = New-Object System.Windows.Forms.Label
@@ -1428,24 +1428,17 @@ function Apply-ModernDashboardUi {
 
     $tabLog.Text = " $($script:Glyph.Logs)  Console "
     $tabCommand.Text = " $($script:Glyph.Command)  Command Preview "
-    $tabCustomGstArgs.Text = " $($script:Glyph.Command)  Custom Args "
     $txtLog.BackColor = [System.Drawing.ColorTranslator]::FromHtml('#08111F')
     $txtLog.ForeColor = [System.Drawing.ColorTranslator]::FromHtml('#D1D5DB')
     $txtLog.BorderStyle = [System.Windows.Forms.BorderStyle]::None
     $txtCommand.BackColor = [System.Drawing.ColorTranslator]::FromHtml('#08111F')
     $txtCommand.ForeColor = [System.Drawing.ColorTranslator]::FromHtml('#D1D5DB')
     $txtCommand.BorderStyle = [System.Windows.Forms.BorderStyle]::None
-    $txtCustomGstArguments.BackColor = [System.Drawing.ColorTranslator]::FromHtml('#08111F')
-    $txtCustomGstArguments.ForeColor = [System.Drawing.ColorTranslator]::FromHtml('#D1D5DB')
-    $txtCustomGstArguments.BorderStyle = [System.Windows.Forms.BorderStyle]::None
-    $lblCustomGstArgumentsHelp.ForeColor = $script:ColorMuted
-    $customArgsTopPanel.BackColor = $script:ColorSurface
-
     Style-Tree $form
 
     # Style-Tree gives ordinary text inputs a form-field treatment. The command
     # panes are code editors, so restyle them after the recursive pass.
-    foreach ($editor in @($txtCommand, $txtCustomGstArguments)) {
+    foreach ($editor in @($txtCommand)) {
         if ($editor) {
             $editor.BackColor = [System.Drawing.ColorTranslator]::FromHtml('#08111F')
             $editor.ForeColor = [System.Drawing.ColorTranslator]::FromHtml('#D1D5DB')
@@ -1453,9 +1446,6 @@ function Apply-ModernDashboardUi {
             $editor.Font = New-Object System.Drawing.Font('Consolas', 9)
         }
     }
-    if ($customArgsTopPanel) { $customArgsTopPanel.BackColor = $script:ColorSurface }
-    if ($lblCustomGstArgumentsHelp) { $lblCustomGstArgumentsHelp.ForeColor = $script:ColorMuted }
-
     foreach ($realControl in @(
         $chkTransportEnabled, $cmbProtocol, $lblDestination, $txtDestination,
         $cmbCaptureMethod, $lblCaptureModeStatus, $numMonitor, $chkCursor,
@@ -1514,7 +1504,6 @@ function Apply-ModernDashboardUi {
         $btnResetRecording, $btnResetNetwork, $btnResetOptions, $btnExportLabConfig, $btnResetAll,
         $txtGstPath, $btnBrowseGst, $btnDetectGst, $btnCheckGst,
         $chkPreview, $chkHidePreviewDuringStream, $chkAutoRestart, $chkVerbose, $chkDiskProcessLogging, $chkMinimizeToTray,
-        $chkCustomGstArgumentsEnabled, $txtCustomGstArguments, $btnUseGeneratedAsCustomGstArgs, $btnClearCustomGstArgs,
         $chkStartMinimized, $chkPsDebug, $btnRedrawScenePreview
     )) {
         if ($realControl) {
@@ -1544,7 +1533,6 @@ function Apply-ModernDashboardUi {
         $chkEmbeddedTlsEnabled, $chkTlsAllowInsecurePorts,
         $chkLetsEncryptEnabled, $chkLetsEncryptStaging, $chkViewerAuthenticationEnabled, $chkViewerAuthenticationAllowPlaintext, $chkViewerAuthenticationKeepOnRestart, $chkViewerAuthenticationKeepOnExit, $chkViewerAuthenticationTemporaryLinkSingleUse, $chkViewerAuthenticationSetupLinkRequireTotp,
         $chkPreview, $chkHidePreviewDuringStream, $chkAutoRestart, $chkVerbose, $chkDiskProcessLogging,
-        $chkCustomGstArgumentsEnabled,
         $chkMinimizeToTray, $chkStartMinimized, $chkPsDebug
     )) {
         # This list is hand-maintained and has occasionally picked up non-CheckBox
@@ -1583,7 +1571,4 @@ function Apply-ModernDashboardUi {
     $previewPlaceholder.ForeColor = $script:ColorMuted
     $txtLog.BackColor = [System.Drawing.ColorTranslator]::FromHtml('#08111F')
     $txtCommand.BackColor = [System.Drawing.ColorTranslator]::FromHtml('#08111F')
-    $txtCustomGstArguments.BackColor = [System.Drawing.ColorTranslator]::FromHtml('#08111F')
-    $txtCustomGstArguments.ForeColor = [System.Drawing.ColorTranslator]::FromHtml('#D1D5DB')
-    $txtCustomGstArguments.BorderStyle = [System.Windows.Forms.BorderStyle]::None
 }

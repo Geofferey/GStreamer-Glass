@@ -95,6 +95,17 @@ function Invoke-ApplicationCleanup {
         $script:LogPopoutForm = $null
         $script:LogPopoutTextBox = $null
 
+        if ($script:CustomArgsEditorForm -and -not $script:CustomArgsEditorForm.IsDisposed) {
+            # FormClosed clears the script reference synchronously, so retain a
+            # local reference long enough to finish deterministic disposal.
+            $customArgsEditorToDispose = $script:CustomArgsEditorForm
+            $customArgsEditorToDispose.Close()
+            $customArgsEditorToDispose.Dispose()
+        }
+        $script:CustomArgsEditorForm = $null
+        $script:CustomArgsEditorTextBox = $null
+        $script:CustomArgsEditorEnabledCheckBox = $null
+
         $trayMenu.Dispose()
     }
     catch {}
