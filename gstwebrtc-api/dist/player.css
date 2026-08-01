@@ -379,11 +379,11 @@ body.hasGlassControls.isFullscreen .statsOverlay {
   border: 0;
   border-top: 1px solid rgba(255,255,255,.14);
   border-radius: 0;
-  background: var(--glass-overlay-background);
+  background: linear-gradient(180deg, rgba(9,13,20,.82), rgba(5,8,13,.94));
   color: #eef4ff;
   box-shadow: 0 -12px 34px rgba(0,0,0,.34);
-  -webkit-backdrop-filter: var(--glass-overlay-blur);
-  backdrop-filter: var(--glass-overlay-blur);
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
   z-index: 10;
 }
 .glassControls[hidden] { display: none !important; }
