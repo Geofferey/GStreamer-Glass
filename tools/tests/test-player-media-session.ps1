@@ -33,7 +33,7 @@ Assert-MediaSession ($player.Contains('anchor.muted = false') -and $player.Conta
 Assert-MediaSession ($player.Contains("syncMediaNotificationAnchor('session-stop')")) 'The notification anchor is not paused when the WebRTC session stops.'
 Assert-MediaSession ($player.Contains("destroyMediaNotificationAnchor('unload')")) 'The notification anchor is not released when the page unloads.'
 Assert-MediaSession ($player.Contains("FRONTEND_VERSION = '3.8-viewer-auth-49'")) 'The frontend version was not advanced for the current viewer release.'
-Assert-MediaSession ($serviceWorker.Contains("gstglass-pwa-3.8-viewer-auth-59")) 'The PWA cache was not advanced for the current viewer release.'
-Assert-MediaSession ($webUiManifest.webUiVersion -eq '3.8.57') 'The packaged Web UI version was not advanced for the current viewer release.'
+Assert-MediaSession ($serviceWorker.Contains("gstglass-pwa-3.8-viewer-auth-60")) 'The PWA cache was not advanced for the current viewer release.'
+Assert-MediaSession ($webUiManifest.webUiVersion -eq '3.8.58') 'The packaged Web UI version was not advanced for the current viewer release.'
 
 Write-Host 'PASS: the live PWA exposes synchronized OS media playback controls.'

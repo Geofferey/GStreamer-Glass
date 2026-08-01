@@ -3664,10 +3664,14 @@ public class TlsTerminatingProxy
         string heartbeatScript =
             "<script nonce=\"" + scriptNonce + "\" data-return=\"" + WebUtility.HtmlEncode(safeReturn) + "\">" +
             "(function(){var t=document.currentScript.getAttribute('data-return')||'/live/';" +
+            "var vv=window.visualViewport,liftTimer=0,appliedLift=0;" +
             "function theme(){var m=document.querySelector('meta[name=\"theme-color\"]'),c=getComputedStyle(document.documentElement).getPropertyValue('--system-chrome-color').trim();if(m&&c)m.setAttribute('content',c);}" +
+            "function lift(){var card=document.querySelector('main');if(!card)return;requestAnimationFrame(function(){var pageTop=vv?(typeof vv.pageTop==='number'?vv.pageTop:scrollY+vv.offsetTop):scrollY,bottom=pageTop+(vv?vv.height:innerHeight),cardBottom=card.offsetTop+card.offsetHeight,overlap=Math.max(0,Math.ceil(cardBottom-bottom)),amount=overlap?overlap+32:0;if(amount===appliedLift)return;appliedLift=amount;card.style.transform=amount?'translateY(-'+amount+'px)':'';});}" +
+            "function queueLift(){clearTimeout(liftTimer);liftTimer=setTimeout(lift,80);setTimeout(lift,320);}" +
             "function check(){fetch('/auth/status',{cache:'no-store'}).then(function(r){return r.ok?r.json():null;})" +
             ".then(function(d){if(d&&d.authenticated){location.replace(t);}}).catch(function(){});}" +
-            "theme();addEventListener('pageshow',theme);document.addEventListener('visibilitychange',function(){if(document.visibilityState==='visible')theme();});" +
+            "theme();addEventListener('pageshow',function(){theme();queueLift();});document.addEventListener('visibilitychange',function(){if(document.visibilityState==='visible'){theme();queueLift();}});" +
+            "document.addEventListener('pointerdown',function(e){if(e.target&&e.target.matches('input'))queueLift();});document.addEventListener('focusin',function(e){if(e.target&&e.target.matches('input'))queueLift();});if(vv)vv.addEventListener('resize',queueLift);if(navigator.virtualKeyboard)navigator.virtualKeyboard.addEventListener('geometrychange',queueLift);" +
             "check();setInterval(check,2000);})();</script>";
         // Installable from here too, not just the player -- the whole point
         // being that an installed PWA always reopens to wherever it was
@@ -3714,7 +3718,7 @@ public class TlsTerminatingProxy
             // Same frosted-glass treatment as the in-player .overlay (top-left
             // status card): translucent gradient fill + backdrop-filter blur,
             // so the login page matches the rest of the viewer chrome.
-            "main{width:min(92vw,420px);padding:32px;border:1px solid rgba(255,255,255,.12);border-radius:16px;background:linear-gradient(180deg,rgba(10,14,22,.82),rgba(10,14,22,.48));backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);box-shadow:0 14px 44px rgba(0,0,0,.35)}h1{margin:0 0 8px;font-size:1.55rem}p{color:#aab6c8}.error{color:#ff9b9b}" +
+            "main{width:min(92vw,420px);padding:32px;border:1px solid rgba(255,255,255,.12);border-radius:16px;background:linear-gradient(180deg,rgba(10,14,22,.82),rgba(10,14,22,.48));backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);box-shadow:0 14px 44px rgba(0,0,0,.35);transition:transform .16s ease-out}h1{margin:0 0 8px;font-size:1.55rem}p{color:#aab6c8}.error{color:#ff9b9b}" +
             "label{display:block;margin:18px 0 6px;font-weight:650}input{width:100%;padding:12px;border:1px solid #35435a;border-radius:9px;background:#090f19;color:#fff;font:inherit}button{width:100%;margin-top:22px;padding:12px;border:0;border-radius:9px;background:#4f8cff;color:white;font:inherit;font-weight:750;cursor:pointer}</style></head>" +
             "<body><main><h1>GStreamer Glass</h1><p>This broadcast requires viewer authentication.</p>" + error +
             "<form method=\"post\" action=\"./login\"><input type=\"hidden\" name=\"return\" value=\"" + WebUtility.HtmlEncode(safeReturn) + "\">" +

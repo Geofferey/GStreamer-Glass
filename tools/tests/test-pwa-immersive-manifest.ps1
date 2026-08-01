@@ -41,8 +41,19 @@ if ($index -notmatch [regex]::Escape('player.css?v=3.8.30') -or
 if ($setup -notmatch [regex]::Escape('manifest.webmanifest?v=3.8.40')) {
     throw "The authentication login page does not advertise the same established PWA manifest URL."
 }
-if ($serviceWorker -notmatch "CACHE_NAME\s*=\s*'gstglass-pwa-3\.8-viewer-auth-59'") {
+if ($serviceWorker -notmatch "CACHE_NAME\s*=\s*'gstglass-pwa-3\.8-viewer-auth-60'") {
     throw "The service-worker cache no longer includes the current immersive viewer release."
+}
+if ($setup -notmatch 'window\.visualViewport' -or
+    $setup -notmatch 'navigator\.virtualKeyboard' -or
+    $setup -notmatch "cardBottom=card\.offsetTop\+card\.offsetHeight" -or
+    $setup -notmatch "overlap=Math\.max\(0,Math\.ceil\(cardBottom-bottom\)\)" -or
+    $setup -notmatch "amount=overlap\?overlap\+32:0" -or
+    $setup -notmatch "if\(amount===appliedLift\)return" -or
+    $setup -match "card\.style\.transform='';requestAnimationFrame" -or
+    $setup -notmatch "'translateY\(-'\+amount\+'px\)'" -or
+    $setup -match '@media\(display-mode:standalone\)\{main\{(?:transform|padding-block):') {
+    throw "The login card no longer stays centered until the detected keyboard boundary requires an upward lift."
 }
 
 if ($player -notmatch [regex]::Escape("['fullscreen', 'standalone', 'minimal-ui']")) {
@@ -67,7 +78,7 @@ if ($index -notmatch '<meta\s+name="theme-color"\s+content="#000000">') {
 if ($setup -notmatch '<meta name=\\"theme-color\\" content=\\"#07111f\\">' -or
     $setup -notmatch '--system-chrome-color:#07111f' -or
     $setup -notmatch "getPropertyValue\('--system-chrome-color'\)" -or
-    $setup -notmatch "addEventListener\('pageshow',theme\)") {
+    $setup -notmatch "addEventListener\('pageshow',function\(\)\{theme\(\);queueLift\(\);\}\)") {
     throw "The authentication page does not dynamically reapply its CSS-owned system-chrome color."
 }
 if ($player -notmatch 'applyViewerThemeColor' -or $player -notmatch "VIEWER_THEME_COLOR\s*=\s*'#000000'") {
