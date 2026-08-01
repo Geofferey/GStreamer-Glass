@@ -1,5 +1,5 @@
 (() => {
-  const FRONTEND_VERSION = '3.8-viewer-auth-44';
+  const FRONTEND_VERSION = '3.8-viewer-auth-45';
   const VIEWER_THEME_COLOR = '#000000';
   const VIEWER_DISPLAY_SETTINGS_KEY = 'gstglass-viewer-display-v1';
   console.info(`[GStreamer Glass Live] frontend ${FRONTEND_VERSION}`);
@@ -40,6 +40,7 @@
     statsOverlay: document.getElementById('viewerSettingStats'),
     playbackControls: document.getElementById('viewerSettingControls'),
     nativeMediaControls: document.getElementById('viewerSettingNativeControls'),
+    mediaNotificationAnchor: document.getElementById('viewerSettingMediaNotificationAnchor'),
     debugShortcut: document.getElementById('viewerSettingDebug')
   };
   let viewerDisplaySettings = loadViewerDisplaySettings();
@@ -158,6 +159,7 @@
     lastCompactStatus: '',
     videoZoom: { scale: 1, x: 0, y: 0, pointers: new Map(), pinchStart: null, panStart: null, gestureMoved: false, suppressTapUntil: 0 },
     splitAudio: { ws: null, pc: null, sessionId: null, peerId: null, remotePeerId: null, pendingIce: [], pendingRemoteIce: [], producers: new Map(), ready: false, url: '', route: '', candidates: [], attemptToken: 0, status: 'idle', reconnectTimer: null, reconnectAttempts: 0, proxyPairRetryCount: 0, proxyPairRetrying: false, proxyPairLocalTicks: 0, lastRouteLine: '', connectTimer: null, keepAliveTimer: null, keepAliveCount: 0, lastKeepAliveAt: 0, lastError: '', lastTrackKind: '', lastInboundStats: null, lastHealthyAt: 0, lastRecoverAt: 0, recoveryCount: 0, stallTicks: 0, offsetHighTicks: 0, lastAvOffsetMs: NaN, syncHealth: 'free-run', connectStartedAt: 0, trackReceivedAt: 0, warmupUntil: 0, avOffsetBaselineMs: NaN, avOffsetBaselineSamples: 0, avOffsetBaselineLocked: false, avOffsetDeltaMs: NaN, avOffsetBaselineReason: 'none' },
+    mediaNotificationAnchor: { element: null, objectUrl: '', playAttempt: 0, status: 'idle', lastError: '' },
     controller: { userPaused: false, userMuted: false, volume: 1, uiPinned: false, initialized: false, installPrompt: null, bar: null, playButton: null, muteButton: null, volumeInput: null, spacer: null, reconnectButton: null, routeButton: null, logoutButton: null, installButton: null, zoomButton: null, pinButton: null, fullscreenButton: null, status: null, lastAppliedAt: 0 }
   };
 
@@ -247,6 +249,10 @@
     return viewerDisplaySetting('nativeMediaControls', false);
   }
 
+  function mediaNotificationAnchorEnabled() {
+    return viewerDisplaySetting('mediaNotificationAnchor', false);
+  }
+
   function applyNativeMediaControlsPolicy() {
     const enabled = nativeMediaControlsEnabled();
     video.controls = enabled;
@@ -269,6 +275,7 @@
       statsOverlay: viewerDisplaySetting('statsOverlay', configuredStatsOverlayEnabled()),
       playbackControls: viewerDisplaySetting('playbackControls', true),
       nativeMediaControls: nativeMediaControlsEnabled(),
+      mediaNotificationAnchor: mediaNotificationAnchorEnabled(),
       debugShortcut: viewerDisplaySetting('debugShortcut', true)
     };
     Object.keys(viewerSettingInputs).forEach((name) => {
@@ -2726,6 +2733,7 @@
       if (splitLike) requestMediaPlayback(audio, 'audio', reason);
     }
 
+    syncMediaNotificationAnchor(reason);
     updatePlayerControls();
     syncMediaSessionPlaybackState();
     syncScreenWakeLock(`media-state:${reason}`, reason === 'gesture' || reason === 'pause-toggle');
@@ -2736,6 +2744,133 @@
       const source = element && element.srcObject;
       if (!source || typeof source.getTracks !== 'function') return false;
       return source.getTracks().some((track) => track.readyState === 'live');
+    });
+  }
+
+  function createMediaNotificationAnchorBlob(durationSeconds = 60) {
+    // Chromium treats MediaStream-backed elements as uncontrollable one-shot
+    // players on Android. This ordinary, long-duration PCM resource gives the
+    // document a normal media player without adding audible program material.
+    const sampleRate = 8000;
+    const sampleCount = sampleRate * Math.max(10, Math.round(durationSeconds));
+    const buffer = new ArrayBuffer(44 + sampleCount);
+    const view = new DataView(buffer);
+    const bytes = new Uint8Array(buffer);
+    const writeAscii = (offset, value) => {
+      for (let index = 0; index < value.length; index += 1) view.setUint8(offset + index, value.charCodeAt(index));
+    };
+    writeAscii(0, 'RIFF');
+    view.setUint32(4, 36 + sampleCount, true);
+    writeAscii(8, 'WAVE');
+    writeAscii(12, 'fmt ');
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true);
+    view.setUint16(22, 1, true);
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate, true);
+    view.setUint16(32, 1, true);
+    view.setUint16(34, 8, true);
+    writeAscii(36, 'data');
+    view.setUint32(40, sampleCount, true);
+    bytes.fill(128, 44);
+    return new Blob([buffer], { type: 'audio/wav' });
+  }
+
+  function ensureMediaNotificationAnchor() {
+    const anchorState = state.mediaNotificationAnchor;
+    if (anchorState.element) return anchorState.element;
+    const anchor = document.createElement('audio');
+    anchor.id = 'gstGlassMediaNotificationAnchor';
+    anchor.loop = true;
+    anchor.preload = 'auto';
+    anchor.controls = false;
+    anchor.muted = false;
+    anchor.volume = 1;
+    anchor.setAttribute('aria-hidden', 'true');
+    anchor.style.position = 'fixed';
+    anchor.style.width = '1px';
+    anchor.style.height = '1px';
+    anchor.style.opacity = '0';
+    anchor.style.pointerEvents = 'none';
+    anchor.style.left = '-2px';
+    anchor.style.bottom = '-2px';
+    anchorState.objectUrl = URL.createObjectURL(createMediaNotificationAnchorBlob());
+    anchor.src = anchorState.objectUrl;
+    anchor.addEventListener('playing', () => {
+      anchorState.status = 'playing';
+      anchorState.lastError = '';
+      if (jbufDebugEnabled()) log('media notification anchor playing');
+    });
+    anchor.addEventListener('pause', () => {
+      if (anchorState.status !== 'destroyed') anchorState.status = 'paused';
+    });
+    anchor.addEventListener('error', () => {
+      anchorState.status = 'error';
+      anchorState.lastError = anchor.error ? `media error ${anchor.error.code}` : 'media error';
+      log('media notification anchor error', anchorState.lastError);
+    });
+    (playerRoot || document.body).appendChild(anchor);
+    anchorState.element = anchor;
+    anchorState.status = 'ready';
+    return anchor;
+  }
+
+  function destroyMediaNotificationAnchor(reason = 'disabled') {
+    const anchorState = state.mediaNotificationAnchor;
+    anchorState.playAttempt += 1;
+    if (anchorState.element) {
+      try { anchorState.element.pause(); } catch (_) {}
+      anchorState.element.removeAttribute('src');
+      try { anchorState.element.load(); } catch (_) {}
+      anchorState.element.remove();
+    }
+    if (anchorState.objectUrl) {
+      try { URL.revokeObjectURL(anchorState.objectUrl); } catch (_) {}
+    }
+    anchorState.element = null;
+    anchorState.objectUrl = '';
+    anchorState.status = 'destroyed';
+    anchorState.lastError = '';
+    if (jbufDebugEnabled()) log('media notification anchor destroyed', reason);
+  }
+
+  function syncMediaNotificationAnchor(reason = 'state') {
+    const anchorState = state.mediaNotificationAnchor;
+    if (!mediaNotificationAnchorEnabled()) {
+      if (anchorState.element || anchorState.objectUrl) destroyMediaNotificationAnchor('setting-disabled');
+      else anchorState.status = 'disabled';
+      return;
+    }
+
+    const anchor = ensureMediaNotificationAnchor();
+    const shouldPlay = (state.started || mediaSessionHasLiveSource()) &&
+      !state.controller.userPaused && !state.manualResumeRequired;
+    if (!shouldPlay) {
+      anchorState.playAttempt += 1;
+      if (!anchor.paused) {
+        try { anchor.pause(); } catch (_) {}
+      }
+      anchorState.status = 'paused';
+      return;
+    }
+    if (!anchor.paused) {
+      anchorState.status = 'playing';
+      return;
+    }
+
+    const attempt = ++anchorState.playAttempt;
+    anchorState.status = 'starting';
+    anchorState.lastError = '';
+    let promise;
+    try { promise = anchor.play(); } catch (err) { promise = Promise.reject(err); }
+    Promise.resolve(promise).then(() => {
+      if (attempt !== anchorState.playAttempt || anchorState.element !== anchor) return;
+      anchorState.status = 'playing';
+    }).catch((err) => {
+      if (attempt !== anchorState.playAttempt || anchorState.element !== anchor) return;
+      anchorState.status = String(err && err.name || '') === 'NotAllowedError' ? 'interaction-required' : 'error';
+      anchorState.lastError = err && err.message ? err.message : String(err);
+      log('media notification anchor play failed', reason, anchorState.lastError);
     });
   }
 
@@ -3924,6 +4059,7 @@
       splitDisconnectAudio(options.reason || 'primary-stopped');
     }
     setFullscreenState();
+    syncMediaNotificationAnchor('session-stop');
     updatePlayerControls();
     syncMediaSessionPlaybackState();
   }
@@ -3988,6 +4124,7 @@
     // The resulting play/pause/volume events are bridged below instead.
     if (nativeMediaControlsEnabled()) {
       recordUserInteraction('native-media-control');
+      syncMediaNotificationAnchor('native-media-control');
       return;
     }
     if (Date.now() < state.videoZoom.suppressTapUntil) {
@@ -4649,6 +4786,7 @@
     stopKeepAlive();
     stopSession(true);
     splitDisconnectAudio('unload');
+    destroyMediaNotificationAnchor('unload');
   });
 
   setFullscreenState();
@@ -4765,7 +4903,8 @@
     unmute: () => { state.controller.userMuted = false; applyLogicalMediaState('console-unmute'); },
     volume: (value) => { const n = Number(value); if (Number.isFinite(n)) state.controller.volume = Math.max(0, Math.min(n, 1)); applyLogicalMediaState('console-volume'); },
     route: (mode) => setConnectionMode(mode, 'console'),
-    state: () => ({ paused: state.controller.userPaused, muted: state.controller.userMuted, volume: state.controller.volume, connectionMode: connectionMode(), mediaRoutePolicy: mediaRoutePolicyLine(), signalingRoute: state.signalingRoute, signalingUrl: state.signalingUrl, signalingCandidates: [...state.signalingCandidates], signalingTransport: signalingTransportStatusLine(), screenWakeLock: screenWakeLockLine(), splitAudio: splitAudioStatusLine(), splitSync: splitSyncStatusLine(), videoPaused: video.paused, audioPaused: audio.paused, videoMuted: video.muted, audioMuted: audio.muted, ownPublicIp: state.ownPublicIp })
+    notificationAnchor: (enabled = true) => setViewerDisplaySetting('mediaNotificationAnchor', !!enabled),
+    state: () => ({ paused: state.controller.userPaused, muted: state.controller.userMuted, volume: state.controller.volume, connectionMode: connectionMode(), mediaRoutePolicy: mediaRoutePolicyLine(), signalingRoute: state.signalingRoute, signalingUrl: state.signalingUrl, signalingCandidates: [...state.signalingCandidates], signalingTransport: signalingTransportStatusLine(), screenWakeLock: screenWakeLockLine(), splitAudio: splitAudioStatusLine(), splitSync: splitSyncStatusLine(), mediaNotificationAnchor: { enabled: mediaNotificationAnchorEnabled(), status: state.mediaNotificationAnchor.status, lastError: state.mediaNotificationAnchor.lastError, paused: state.mediaNotificationAnchor.element ? state.mediaNotificationAnchor.element.paused : true, currentTime: state.mediaNotificationAnchor.element ? state.mediaNotificationAnchor.element.currentTime : 0, duration: state.mediaNotificationAnchor.element ? state.mediaNotificationAnchor.element.duration : NaN }, videoPaused: video.paused, audioPaused: audio.paused, videoMuted: video.muted, audioMuted: audio.muted, ownPublicIp: state.ownPublicIp })
   };
 
   startConfigReloadTimer();
