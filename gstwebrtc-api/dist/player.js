@@ -1,5 +1,5 @@
 (() => {
-  const FRONTEND_VERSION = '3.8-viewer-auth-42';
+  const FRONTEND_VERSION = '3.8-viewer-auth-44';
   const VIEWER_THEME_COLOR = '#000000';
   const VIEWER_DISPLAY_SETTINGS_KEY = 'gstglass-viewer-display-v1';
   console.info(`[GStreamer Glass Live] frontend ${FRONTEND_VERSION}`);
@@ -39,6 +39,7 @@
     statusOverlay: document.getElementById('viewerSettingStatus'),
     statsOverlay: document.getElementById('viewerSettingStats'),
     playbackControls: document.getElementById('viewerSettingControls'),
+    nativeMediaControls: document.getElementById('viewerSettingNativeControls'),
     debugShortcut: document.getElementById('viewerSettingDebug')
   };
   let viewerDisplaySettings = loadViewerDisplaySettings();
@@ -242,11 +243,32 @@
     return !!configValue('statsOverlay', true);
   }
 
+  function nativeMediaControlsEnabled() {
+    return viewerDisplaySetting('nativeMediaControls', false);
+  }
+
+  function applyNativeMediaControlsPolicy() {
+    const enabled = nativeMediaControlsEnabled();
+    video.controls = enabled;
+    try { video.disableRemotePlayback = !enabled; } catch (_) {}
+    document.body.classList.toggle('nativeMediaControls', enabled);
+    if (androidContainerFullscreen) {
+      try {
+        if (enabled) video.controlsList.remove('nofullscreen');
+        else video.controlsList.add('nofullscreen');
+      } catch (_) {
+        if (enabled) video.removeAttribute('controlsList');
+        else video.setAttribute('controlsList', 'nofullscreen');
+      }
+    }
+  }
+
   function syncViewerSettingsControls() {
     const values = {
       statusOverlay: viewerDisplaySetting('statusOverlay', true),
       statsOverlay: viewerDisplaySetting('statsOverlay', configuredStatsOverlayEnabled()),
       playbackControls: viewerDisplaySetting('playbackControls', true),
+      nativeMediaControls: nativeMediaControlsEnabled(),
       debugShortcut: viewerDisplaySetting('debugShortcut', true)
     };
     Object.keys(viewerSettingInputs).forEach((name) => {
@@ -259,8 +281,9 @@
     document.body.classList.toggle('hideStatusOverlay', !viewerDisplaySetting('statusOverlay', true));
     if (debugLink) debugLink.hidden = !viewerDisplaySetting('debugShortcut', true);
     if (statsOverlay) statsOverlay.style.display = statsOverlayEnabled() ? '' : 'none';
+    applyNativeMediaControlsPolicy();
     syncViewerSettingsControls();
-    if (state.controller.initialized) updatePlayerControls();
+    if (state.controller.initialized) applyLogicalMediaState('viewer-display-settings');
   }
 
   function setViewerDisplaySetting(name, enabled) {
@@ -2574,22 +2597,28 @@
   function updatePlayerControls() {
     const ctl = ensurePlayerControls();
     const active = viewerDisplaySetting('playbackControls', true);
+    const nativeControls = nativeMediaControlsEnabled();
     document.body.classList.toggle('hasGlassControls', active);
     document.body.classList.toggle('splitAudioMode', splitAudioEnabled());
     document.body.classList.toggle('uiPinned', !!ctl.uiPinned);
     if (ctl.bar) ctl.bar.hidden = !active;
     if (ctl.playButton) {
+      ctl.playButton.hidden = nativeControls;
       const showPlay = ctl.userPaused || state.manualResumeRequired;
       ctl.playButton.textContent = showPlay ? '▶' : '❚❚';
       ctl.playButton.title = showPlay ? 'Play' : 'Pause';
       ctl.playButton.setAttribute('aria-label', ctl.playButton.title);
     }
     if (ctl.muteButton) {
+      ctl.muteButton.hidden = nativeControls;
       ctl.muteButton.textContent = ctl.userMuted ? '🔇' : '🔊';
       ctl.muteButton.title = ctl.userMuted ? 'Unmute' : 'Mute';
       ctl.muteButton.setAttribute('aria-label', ctl.muteButton.title);
     }
-    if (ctl.volumeInput && document.activeElement !== ctl.volumeInput) ctl.volumeInput.value = String(ctl.volume);
+    if (ctl.volumeInput) {
+      ctl.volumeInput.hidden = nativeControls;
+      if (document.activeElement !== ctl.volumeInput) ctl.volumeInput.value = String(ctl.volume);
+    }
     if (ctl.reconnectButton) ctl.reconnectButton.hidden = !splitAudioEnabled();
     updateConnectionModeControl();
     if (ctl.installButton) ctl.installButton.hidden = isInstalledPwa() || !ctl.installPrompt;
@@ -2668,7 +2697,10 @@
     const ctl = state.controller;
     ctl.lastAppliedAt = Date.now();
     const splitLike = logicalSplitControlsActive();
+    const nativeControls = nativeMediaControlsEnabled();
     const vol = Math.max(0, Math.min(Number(ctl.volume) || 0, 1));
+
+    applyNativeMediaControlsPolicy();
 
     try { video.volume = vol; } catch (_) {}
     try { audio.volume = vol; } catch (_) {}
@@ -2677,11 +2709,9 @@
       // In split/decoupled mode the visible video element is not the authority
       // for audio. Keep it muted and drive audible state through the separate
       // audio element. Native video mute/pause controls cannot see that element.
-      video.muted = true;
-      video.controls = false;
+      video.muted = nativeControls ? !!ctl.userMuted : true;
       audio.muted = !!ctl.userMuted;
     } else {
-      video.controls = false;
       video.muted = !!ctl.userMuted;
       audio.muted = true;
     }
@@ -2697,7 +2727,79 @@
     }
 
     updatePlayerControls();
+    syncMediaSessionPlaybackState();
     syncScreenWakeLock(`media-state:${reason}`, reason === 'gesture' || reason === 'pause-toggle');
+  }
+
+  function mediaSessionHasLiveSource() {
+    return [video, audio].some((element) => {
+      const source = element && element.srcObject;
+      if (!source || typeof source.getTracks !== 'function') return false;
+      return source.getTracks().some((track) => track.readyState === 'live');
+    });
+  }
+
+  function syncMediaSessionPlaybackState() {
+    if (!('mediaSession' in navigator)) return;
+    const hasSession = state.started || mediaSessionHasLiveSource();
+    const paused = state.controller.userPaused || state.manualResumeRequired;
+    try {
+      navigator.mediaSession.playbackState = hasSession
+        ? (paused ? 'paused' : 'playing')
+        : 'none';
+    } catch (_) {}
+  }
+
+  function mediaSessionPlay() {
+    if (state.manualResumeRequired && state.streamStateKnown && !state.intentionalStopMarker) {
+      toggleLogicalPause();
+      return;
+    }
+    if (!state.controller.userPaused) {
+      syncMediaSessionPlaybackState();
+      return;
+    }
+    state.controller.userPaused = false;
+    recordUserInteraction('media-session-play');
+    applyLogicalMediaState('media-session-play');
+  }
+
+  function mediaSessionPause(reason = 'media-session-pause') {
+    state.controller.userPaused = true;
+    applyLogicalMediaState(reason);
+  }
+
+  function installMediaSessionAction(action, handler) {
+    try {
+      navigator.mediaSession.setActionHandler(action, handler);
+    } catch (err) {
+      if (jbufDebugEnabled()) log(`media session action unavailable: ${action}`, err);
+    }
+  }
+
+  function setupMediaSession() {
+    if (!('mediaSession' in navigator) || typeof window.MediaMetadata !== 'function') return;
+    const artworkBase = document.baseURI;
+    try {
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title: document.title || 'GStreamer Glass Live',
+        artist: location.host || location.hostname || 'Local viewer',
+        album: 'Live WebRTC stream',
+        artwork: [
+          { src: new URL('./icons/gstreamer-glass-192.png', artworkBase).href, sizes: '192x192', type: 'image/png' },
+          { src: new URL('./icons/gstreamer-glass-512.png', artworkBase).href, sizes: '512x512', type: 'image/png' }
+        ]
+      });
+    } catch (err) {
+      if (jbufDebugEnabled()) log('media session metadata unavailable', err);
+    }
+
+    installMediaSessionAction('play', mediaSessionPlay);
+    installMediaSessionAction('pause', () => mediaSessionPause('media-session-pause'));
+    // Keep Stop reversible for a live stream. Tearing down WebRTC here would
+    // remove the OS notification and leave no way for its Play action to resume.
+    installMediaSessionAction('stop', () => mediaSessionPause('media-session-stop'));
+    syncMediaSessionPlaybackState();
   }
 
   function toggleLogicalPause() {
@@ -3823,6 +3925,7 @@
     }
     setFullscreenState();
     updatePlayerControls();
+    syncMediaSessionPlaybackState();
   }
 
   function handleMessage(msg) {
@@ -3881,6 +3984,12 @@
   }
 
   function handleVideoActivation(ev) {
+    // Leave clicks inside Chromium/Firefox's native control surface alone.
+    // The resulting play/pause/volume events are bridged below instead.
+    if (nativeMediaControlsEnabled()) {
+      recordUserInteraction('native-media-control');
+      return;
+    }
     if (Date.now() < state.videoZoom.suppressTapUntil) {
       ev.preventDefault();
       ev.stopPropagation();
@@ -3897,16 +4006,30 @@
   video.addEventListener('click', handleVideoActivation);
   video.addEventListener('touchend', handleVideoActivation, { passive: false });
   video.addEventListener('play', () => {
+    if (nativeMediaControlsEnabled() && state.controller.userPaused) {
+      state.controller.userPaused = false;
+      recordUserInteraction('native-media-play');
+    }
     if (!state.controller.userPaused) applyLogicalMediaState('native-video-play');
     syncScreenWakeLock('native-video-play', true);
   });
   video.addEventListener('pause', () => {
+    if (nativeMediaControlsEnabled() && !state.controller.userPaused && !video.ended && (state.started || mediaSessionHasLiveSource())) {
+      state.controller.userPaused = true;
+      applyLogicalMediaState('native-video-pause');
+      return;
+    }
     if (logicalSplitControlsActive() && !state.controller.userPaused && !video.ended && document.visibilityState !== 'hidden') updatePlayerControls();
+    syncMediaSessionPlaybackState();
     syncScreenWakeLock('native-video-pause');
   });
-  audio.addEventListener('play', () => updatePlayerControls());
+  audio.addEventListener('play', () => {
+    updatePlayerControls();
+    syncMediaSessionPlaybackState();
+  });
   audio.addEventListener('pause', () => {
     updatePlayerControls();
+    syncMediaSessionPlaybackState();
     // A teardown clears/replaces srcObject before this deferred check runs.
     // If the same live split-audio source remains unexpectedly paused, resume
     // it without misclassifying the pause/play race as an autoplay block.
@@ -3924,6 +4047,16 @@
       state.controller.volume = Number.isFinite(audio.volume) ? audio.volume : state.controller.volume;
       updatePlayerControls();
     }
+  });
+  video.addEventListener('volumechange', () => {
+    if (!nativeMediaControlsEnabled()) return;
+    state.controller.userMuted = !!video.muted;
+    state.controller.volume = Number.isFinite(video.volume) ? video.volume : state.controller.volume;
+    if (logicalSplitControlsActive()) {
+      try { audio.volume = state.controller.volume; } catch (_) {}
+      audio.muted = state.controller.userMuted;
+    }
+    updatePlayerControls();
   });
   window.addEventListener('beforeinstallprompt', (ev) => {
     // Chromium supplies this event only after the manifest/app meets its
@@ -4637,6 +4770,7 @@
 
   startConfigReloadTimer();
   registerPwaServiceWorker();
+  setupMediaSession();
 
   if (jbufDebugEnabled()) {
     log('player config', playerConfigLine(), window.GST_GLASS_CONFIG || {});
