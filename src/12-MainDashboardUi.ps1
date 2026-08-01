@@ -233,7 +233,7 @@ function Apply-ModernDashboardUi {
         $brandBox.SetColumnSpan($ver, 2)
 
         # Sidebar navigation mirrors the settings tab strip one-to-one (same names,
-        # same order) plus the two bottom output views. The leading glyph is a real
+        # same order), followed by output actions. The leading glyph is a real
         # Unicode symbol; Segoe UI on Windows 10+ resolves these through emoji/symbol
         # fallback, so no icon font or embedded image resources are required.
         $script:SidebarNavButtons = @{}
@@ -261,8 +261,8 @@ function Apply-ModernDashboardUi {
         $sidebar.Controls.Add($script:SidebarNavButtons['Profiles'])
 
         $sidebar.Controls.Add((New-SidebarHeading 'Output'))
-        $script:SidebarNavButtons['Logs'] = New-SidebarButton "  $($script:Glyph.Logs)   Logs" 0 { $lowerTabs.SelectedTab = $tabLog }
-        $sidebar.Controls.Add($script:SidebarNavButtons['Logs'])
+        $script:SidebarNavButtons['Console'] = New-SidebarButton "  $($script:Glyph.Logs)   Console" 0 { Show-LogPopoutWindow }
+        $sidebar.Controls.Add($script:SidebarNavButtons['Console'])
         $script:SidebarNavButtons['Command'] = New-SidebarButton "  $($script:Glyph.Command)   Command" 0 { $lowerTabs.SelectedTab = $tabCommand }
         $sidebar.Controls.Add($script:SidebarNavButtons['Command'])
 
@@ -1426,7 +1426,7 @@ function Apply-ModernDashboardUi {
     $lowerTabs.Dock = 'Fill'
     $lowerTabs.SelectedTab = $tabLog
 
-    $tabLog.Text = " $($script:Glyph.Logs)  Logs "
+    $tabLog.Text = " $($script:Glyph.Logs)  Console "
     $tabCommand.Text = " $($script:Glyph.Command)  Command Preview "
     $tabCustomGstArgs.Text = " $($script:Glyph.Command)  Custom Args "
     $txtLog.BackColor = [System.Drawing.ColorTranslator]::FromHtml('#08111F')

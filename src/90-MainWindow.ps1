@@ -1396,7 +1396,7 @@ $chkPsDebug.Location = New-Object System.Drawing.Point(480, 186)
 $chkPsDebug.Size = New-Object System.Drawing.Size(170, 23)
 $chkPsDebug.Checked = $script:DefaultPsDebugEnabled
 $settingsGroup.Controls.Add($chkPsDebug)
-$toolTip.SetToolTip($chkPsDebug, 'Off by default. This is GStreamer Glass wrapper script diagnostics (not gst-launch/GST_DEBUG output): app lifecycle, settings load/save, and dialog tracing. Written to a psdebug-*.log file in the same log folder as everything else, and shown live in the Logs tab, regardless of Write process logs to disk.')
+$toolTip.SetToolTip($chkPsDebug, 'Off by default. This is GStreamer Glass wrapper script diagnostics (not gst-launch/GST_DEBUG output): app lifecycle, settings load/save, and dialog tracing. Written to a psdebug-*.log file in the same log folder as everything else, and shown live in the Console tab, regardless of Write process logs to disk.')
 
 $chkMinimizeToTray = New-Object System.Windows.Forms.CheckBox
 $chkMinimizeToTray.Text = 'Minimize to tray'
@@ -2946,27 +2946,6 @@ $notifyIcon.Text = $script:AppName
 $notifyIcon.ContextMenuStrip = $trayMenu
 $notifyIcon.Visible = $true
 
-$logTopPanel = New-Object System.Windows.Forms.Panel
-$logTopPanel.Dock = 'Top'
-$logTopPanel.Height = 36
-$tabLog.Controls.Add($logTopPanel)
-
-$logButtonRow = New-Object System.Windows.Forms.FlowLayoutPanel
-$logButtonRow.Dock = 'Right'
-$logButtonRow.FlowDirection = 'RightToLeft'
-$logButtonRow.WrapContents = $false
-$logButtonRow.AutoSize = $true
-$logButtonRow.AutoSizeMode = 'GrowAndShrink'
-$logButtonRow.Margin = New-Object System.Windows.Forms.Padding(0)
-$logButtonRow.Padding = New-Object System.Windows.Forms.Padding(0, 4, 8, 0)
-$logTopPanel.Controls.Add($logButtonRow)
-
-$btnPopOutLog = New-Object System.Windows.Forms.Button
-$btnPopOutLog.Text = 'Pop Out'
-$btnPopOutLog.Size = New-Object System.Drawing.Size(90, 28)
-$toolTip.SetToolTip($btnPopOutLog, 'Open a separate, resizable log window that stays live while you use the rest of the app.')
-$logButtonRow.Controls.Add($btnPopOutLog)
-
 $txtLog = New-Object System.Windows.Forms.TextBox
 $txtLog.Multiline = $true
 $txtLog.ScrollBars = 'Both'
@@ -2976,7 +2955,6 @@ $txtLog.HideSelection = $false
 $txtLog.Font = New-Object System.Drawing.Font('Consolas', 9)
 $txtLog.Dock = 'Fill'
 $tabLog.Controls.Add($txtLog)
-$logTopPanel.BringToFront()
 
 # Experimental scene controls. Scenes remain off by default, preserving the
 # original single-source capture path byte-for-byte until explicitly enabled.
@@ -4115,12 +4093,6 @@ $btnClearCustomGstArgs.Add_Click({
 $btnPopOutCustomGstArgs.Add_Click({
     Show-CustomGstArgsEditor
 })
-$btnPopOutLog.Add_Click({
-    Show-LogPopoutWindow
-})
-
-
-
 $txtGstPath.Add_TextChanged($previewHandler)
 $txtDestination.Add_TextChanged({
     $protocol = [string]$cmbProtocol.SelectedItem
