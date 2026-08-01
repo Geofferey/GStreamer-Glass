@@ -3679,7 +3679,11 @@ public class TlsTerminatingProxy
         // the viewer mount, so GetMountedViewerPath() builds an absolute
         // reference to the same manifest/icons index.html uses.
         string pwaMountPath = GetMountedViewerPath();
-        string manifestUrl = pwaMountPath + "manifest.webmanifest";
+        // This must remain byte-for-byte identical to index.html's manifest
+        // href. Chromium associates installed-app metadata updates with the
+        // manifest URL, so changing it (including only its query string) can
+        // strand an existing WebAPK on an older display mode.
+        string manifestUrl = pwaMountPath + "manifest.webmanifest?v=3.8.40";
         string iconUrl = pwaMountPath + "icons/gstreamer-glass-192.png";
         string html = "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1,viewport-fit=cover\">" +
             "<meta name=\"theme-color\" content=\"#07111f\"><meta name=\"mobile-web-app-capable\" content=\"yes\">" +

@@ -126,8 +126,15 @@
     controller: { userPaused: false, userMuted: false, volume: 1, uiPinned: false, initialized: false, installPrompt: null, bar: null, playButton: null, muteButton: null, volumeInput: null, spacer: null, reconnectButton: null, routeButton: null, logoutButton: null, installButton: null, zoomButton: null, pinButton: null, fullscreenButton: null, status: null, lastAppliedAt: 0 }
   };
 
-  function isStandalonePwa() {
-    return !!(window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) || navigator.standalone === true;
+  function pwaDisplayMode() {
+    if (navigator.standalone === true) return 'standalone-ios';
+    if (!window.matchMedia) return 'browser';
+    return ['fullscreen', 'standalone', 'minimal-ui']
+      .find((mode) => window.matchMedia(`(display-mode: ${mode})`).matches) || 'browser';
+  }
+
+  function isInstalledPwa() {
+    return pwaDisplayMode() !== 'browser';
   }
 
   function registerPwaServiceWorker() {
@@ -1839,7 +1846,11 @@
   }
 
   function isFullscreen() {
-    return !!(document.fullscreenElement || document.webkitFullscreenElement || document.msFullscreenElement || video.webkitDisplayingFullscreen);
+    // Manifest fullscreen controls the application window independently from
+    // the element-level Fullscreen API, so document.fullscreenElement remains
+    // null even when an installed PWA is already immersive.
+    return pwaDisplayMode() === 'fullscreen' ||
+      !!(document.fullscreenElement || document.webkitFullscreenElement || document.msFullscreenElement || video.webkitDisplayingFullscreen);
   }
 
   function setFullscreenState() {
@@ -2480,7 +2491,7 @@
     if (ctl.volumeInput && document.activeElement !== ctl.volumeInput) ctl.volumeInput.value = String(ctl.volume);
     if (ctl.reconnectButton) ctl.reconnectButton.hidden = !splitAudioEnabled();
     updateConnectionModeControl();
-    if (ctl.installButton) ctl.installButton.hidden = isStandalonePwa() || !ctl.installPrompt;
+    if (ctl.installButton) ctl.installButton.hidden = isInstalledPwa() || !ctl.installPrompt;
     updateVideoZoomControl();
     if (ctl.pinButton) {
       ctl.pinButton.classList.toggle('isPinned', !!ctl.uiPinned);
@@ -3829,9 +3840,12 @@
     log('PWA installed');
   });
   if (window.matchMedia) {
-    const displayMode = window.matchMedia('(display-mode: standalone)');
-    if (displayMode.addEventListener) displayMode.addEventListener('change', () => updatePlayerControls());
+    ['fullscreen', 'standalone'].forEach((mode) => {
+      const displayMode = window.matchMedia(`(display-mode: ${mode})`);
+      if (displayMode.addEventListener) displayMode.addEventListener('change', () => updatePlayerControls());
+    });
   }
+  log('PWA display mode', pwaDisplayMode());
   ensurePlayerControls();
   applyLogicalMediaState('startup');
   if (fullscreenButton) {

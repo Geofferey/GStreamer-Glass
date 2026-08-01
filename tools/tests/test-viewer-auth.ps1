@@ -225,7 +225,7 @@ try {
     # installable too, not just the player, so that install anchor is
     # self-correcting (valid session redirects through; invalid just shows
     # this same form) instead of stuck showing stale player content.
-    Assert-ViewerAuth ($response -match 'rel="manifest" href="/live/manifest\.webmanifest"') 'Login page was missing a manifest link.'
+    Assert-ViewerAuth ($response -match 'rel="manifest" href="/live/manifest\.webmanifest\?v=3\.8\.40"') 'Login page was missing the canonical stable manifest link.'
     Assert-ViewerAuth ($response -match 'name="mobile-web-app-capable" content="yes"') 'Login page was missing PWA capability meta tags.'
     # The manifest/icon <link> tags are useless if the page's own CSP then
     # blocks the browser from actually fetching them -- default-src 'none'
