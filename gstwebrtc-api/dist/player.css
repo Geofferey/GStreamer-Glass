@@ -6,6 +6,8 @@
   --good: #35d789;
   --warn: #ffbc4b;
   --bad: #ff5d6c;
+  --glass-overlay-background: linear-gradient(180deg, rgba(10,14,22,.82), rgba(10,14,22,.48));
+  --glass-overlay-blur: blur(10px);
 }
 * { box-sizing: border-box; }
 html, body {
@@ -52,8 +54,9 @@ body.videoZoomed video:active { cursor: grabbing; }
   padding: 12px 14px;
   border: 1px solid rgba(255,255,255,.12);
   border-radius: 16px;
-  background: linear-gradient(180deg, rgba(10,14,22,.82), rgba(10,14,22,.48));
-  backdrop-filter: blur(10px);
+  background: var(--glass-overlay-background);
+  -webkit-backdrop-filter: var(--glass-overlay-blur);
+  backdrop-filter: var(--glass-overlay-blur);
   box-shadow: 0 14px 44px rgba(0,0,0,.35);
   transition: opacity .25s ease, transform .25s ease;
   z-index: 5;
@@ -101,10 +104,11 @@ body.fsBlocked .hint { display: block; }
   padding: 12px 18px;
   border: 1px solid rgba(255,255,255,.18);
   border-radius: 999px;
-  background: rgba(12,18,28,.78);
+  background: var(--glass-overlay-background);
   color: #eef4ff;
   box-shadow: 0 16px 48px rgba(0,0,0,.42);
-  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: var(--glass-overlay-blur);
+  backdrop-filter: var(--glass-overlay-blur);
   font: 750 14px/1 "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
   letter-spacing: .01em;
   opacity: .92;
@@ -144,9 +148,11 @@ body:not(.playing) .fullscreenButton {
   padding: 7px 9px;
   border-radius: 999px;
   border: 1px solid rgba(255,255,255,.12);
-  background: rgba(8,12,18,.58);
+  background: var(--glass-overlay-background);
   color: rgba(238,244,255,.48);
   opacity: .34;
+  -webkit-backdrop-filter: var(--glass-overlay-blur);
+  backdrop-filter: var(--glass-overlay-blur);
   transition: opacity .18s ease, color .18s ease, background .18s ease;
 }
 .debugLink {
@@ -195,10 +201,11 @@ body.settingsOpen .viewerSettingsButton {
   padding: 12px;
   border: 1px solid rgba(255,255,255,.14);
   border-radius: 14px;
-  background: linear-gradient(180deg, rgba(10,14,22,.96), rgba(6,9,15,.94));
+  background: var(--glass-overlay-background);
   color: #eef4ff;
   box-shadow: 0 18px 54px rgba(0,0,0,.48);
-  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: var(--glass-overlay-blur);
+  backdrop-filter: var(--glass-overlay-blur);
   z-index: 12;
 }
 .viewerSettingsPanel[hidden] { display: none !important; }
@@ -247,7 +254,6 @@ body.settingsOpen .viewerSettingsButton {
 .viewerSettingsClose:hover,
 .viewerSettingsReset:hover { background: rgba(143,179,255,.16); }
 body.hideStatusOverlay .overlay { display: none !important; }
-}
 body.playing .overlay {
   opacity: 0;
   pointer-events: none;
@@ -312,18 +318,18 @@ body.isFullscreen.settingsOpen .viewerUtilityBar {
   padding: 9px 11px;
   border: 1px solid rgba(255,255,255,.10);
   border-radius: 13px;
-  background: rgba(6,10,16,.58);
+  background: var(--glass-overlay-background);
   color: rgba(238,244,255,.76);
-  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: var(--glass-overlay-blur);
+  backdrop-filter: var(--glass-overlay-blur);
   box-shadow: 0 12px 36px rgba(0,0,0,.28);
   font: 11px/1.35 Consolas, "Cascadia Mono", monospace;
   white-space: pre-wrap;
   pointer-events: none;
-  opacity: .70;
+  opacity: 1;
   z-index: 6;
 }
 body:not(.playing) .statsOverlay { display: none; }
-body.isFullscreen .statsOverlay { opacity: .35; }
 @media (pointer: coarse), (max-width: 860px) {
   .statsOverlay {
     left: max(8px, env(safe-area-inset-left));
@@ -332,7 +338,6 @@ body.isFullscreen .statsOverlay { opacity: .35; }
     max-width: none;
     min-width: 0;
     font-size: 10px;
-    opacity: .58;
   }
 }
 
@@ -343,7 +348,6 @@ body.hasGlassControls .statsOverlay {
 }
 body.hasGlassControls.isFullscreen .statsOverlay {
   bottom: calc(max(14px, env(safe-area-inset-bottom)) + 62px);
-  opacity: .50;
 }
 @media (pointer: coarse), (max-width: 860px) {
   body.hasGlassControls .statsOverlay {
@@ -375,10 +379,11 @@ body.hasGlassControls.isFullscreen .statsOverlay {
   border: 0;
   border-top: 1px solid rgba(255,255,255,.14);
   border-radius: 0;
-  background: linear-gradient(180deg, rgba(9,13,20,.82), rgba(5,8,13,.94));
+  background: var(--glass-overlay-background);
   color: #eef4ff;
   box-shadow: 0 -12px 34px rgba(0,0,0,.34);
-  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: var(--glass-overlay-blur);
+  backdrop-filter: var(--glass-overlay-blur);
   z-index: 10;
 }
 .glassControls[hidden] { display: none !important; }
@@ -450,11 +455,8 @@ body.hasGlassControls.isFullscreen .statsOverlay {
 body.hasGlassControls .fullscreenButton { display: none !important; }
 body.isFullscreen .glassControls { opacity: .42; }
 body.isFullscreen.uiActive .glassControls { opacity: .96; }
-body.isFullscreen.uiActive .statsOverlay { opacity: .70; }
 body.uiPinned .glassControls,
 body.isFullscreen.uiPinned .glassControls { opacity: .98; }
-body.uiPinned .statsOverlay,
-body.isFullscreen.uiPinned .statsOverlay { opacity: .78; }
 body.showStatus .glassControls,
 body:not(.playing) .glassControls { opacity: .96; }
 @media (pointer: coarse), (max-width: 860px) {
