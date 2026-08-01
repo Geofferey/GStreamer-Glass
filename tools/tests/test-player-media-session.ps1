@@ -32,8 +32,8 @@ Assert-MediaSession (-not ($player -match 'anchor\.srcObject\s*=')) "The notific
 Assert-MediaSession ($player.Contains('anchor.muted = false') -and $player.Contains('anchor.volume = 1')) 'The notification anchor cannot request normal audio focus.'
 Assert-MediaSession ($player.Contains("syncMediaNotificationAnchor('session-stop')")) 'The notification anchor is not paused when the WebRTC session stops.'
 Assert-MediaSession ($player.Contains("destroyMediaNotificationAnchor('unload')")) 'The notification anchor is not released when the page unloads.'
-Assert-MediaSession ($player.Contains("FRONTEND_VERSION = '3.8-viewer-auth-47'")) 'The frontend version was not advanced for Picture-in-Picture background-audio policy.'
-Assert-MediaSession ($serviceWorker.Contains("gstglass-pwa-3.8-viewer-auth-57")) 'The PWA cache was not advanced for the current viewer surface release.'
-Assert-MediaSession ($webUiManifest.webUiVersion -eq '3.8.55') 'The packaged Web UI version was not advanced for Picture-in-Picture background-audio policy.'
+Assert-MediaSession ($player.Contains("FRONTEND_VERSION = '3.8-viewer-auth-48'")) 'The frontend version was not advanced for signaling heartbeat recovery.'
+Assert-MediaSession ($serviceWorker.Contains("gstglass-pwa-3.8-viewer-auth-58")) 'The PWA cache was not advanced for signaling heartbeat recovery.'
+Assert-MediaSession ($webUiManifest.webUiVersion -eq '3.8.56') 'The packaged Web UI version was not advanced for signaling heartbeat recovery.'
 
 Write-Host 'PASS: the live PWA exposes synchronized OS media playback controls.'

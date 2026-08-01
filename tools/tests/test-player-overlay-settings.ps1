@@ -48,6 +48,6 @@ Assert-OverlaySettings ($player.Contains("video.controlsList.remove('nofullscree
 Assert-OverlaySettings ($player.Contains('video.disableRemotePlayback = !enabled')) 'Native mode does not restore the browser remote-playback policy.'
 Assert-OverlaySettings ($player -match "function handleVideoActivation[\s\S]*?if \(nativeMediaControlsEnabled\(\)\)") 'Glass still intercepts clicks intended for the native media controls.'
 Assert-OverlaySettings ($player.Contains("applyLogicalMediaState('native-video-pause')")) 'Native pause is not bridged into the logical media controller.'
-Assert-OverlaySettings ($serviceWorker.Contains("gstglass-pwa-3.8-viewer-auth-57")) 'Service-worker cache no longer includes the viewer settings release.'
+Assert-OverlaySettings ($serviceWorker.Contains("gstglass-pwa-3.8-viewer-auth-58")) 'Service-worker cache no longer includes the viewer settings release.'
 
 Write-Host 'PASS: viewer overlay settings are persistent and the gear is to the right of debug.'

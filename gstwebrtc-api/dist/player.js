@@ -1,5 +1,5 @@
 (() => {
-  const FRONTEND_VERSION = '3.8-viewer-auth-47';
+  const FRONTEND_VERSION = '3.8-viewer-auth-48';
   const VIEWER_THEME_COLOR = '#000000';
   const VIEWER_DISPLAY_SETTINGS_KEY = 'gstglass-viewer-display-v1';
   console.info(`[GStreamer Glass Live] frontend ${FRONTEND_VERSION}`);
@@ -112,6 +112,13 @@
     keepAliveTimer: null,
     keepAliveCount: 0,
     lastKeepAliveAt: 0,
+    lastKeepAliveResponseAt: 0,
+    lastSignalingMessageAt: 0,
+    keepAliveOutstandingSince: 0,
+    lastKeepAliveTickAt: 0,
+    signalingRecoveryCount: 0,
+    lastSignalingCloseCode: 0,
+    lastSignalingCloseReason: '',
     signalingAttemptToken: 0,
     connectionModeOverride: '',
     signalingRoute: 'proxy',
@@ -162,7 +169,7 @@
     lastCompactStatus: '',
     videoZoom: { scale: 1, x: 0, y: 0, pointers: new Map(), pinchStart: null, panStart: null, gestureMoved: false, suppressTapUntil: 0 },
     pipBackgroundAudioSuspended: false,
-    splitAudio: { ws: null, pc: null, sessionId: null, peerId: null, remotePeerId: null, pendingIce: [], pendingRemoteIce: [], producers: new Map(), ready: false, url: '', route: '', candidates: [], attemptToken: 0, status: 'idle', reconnectTimer: null, reconnectAttempts: 0, proxyPairRetryCount: 0, proxyPairRetrying: false, proxyPairLocalTicks: 0, lastRouteLine: '', connectTimer: null, keepAliveTimer: null, keepAliveCount: 0, lastKeepAliveAt: 0, lastError: '', lastTrackKind: '', lastInboundStats: null, lastHealthyAt: 0, lastRecoverAt: 0, recoveryCount: 0, stallTicks: 0, offsetHighTicks: 0, lastAvOffsetMs: NaN, syncHealth: 'free-run', connectStartedAt: 0, trackReceivedAt: 0, warmupUntil: 0, avOffsetBaselineMs: NaN, avOffsetBaselineSamples: 0, avOffsetBaselineLocked: false, avOffsetDeltaMs: NaN, avOffsetBaselineReason: 'none' },
+    splitAudio: { ws: null, pc: null, sessionId: null, peerId: null, remotePeerId: null, pendingIce: [], pendingRemoteIce: [], producers: new Map(), ready: false, url: '', route: '', candidates: [], attemptToken: 0, status: 'idle', reconnectTimer: null, reconnectAttempts: 0, proxyPairRetryCount: 0, proxyPairRetrying: false, proxyPairLocalTicks: 0, lastRouteLine: '', connectTimer: null, keepAliveTimer: null, keepAliveCount: 0, lastKeepAliveAt: 0, lastKeepAliveResponseAt: 0, lastSignalingMessageAt: 0, keepAliveOutstandingSince: 0, lastKeepAliveTickAt: 0, signalingRecoveryCount: 0, lastCloseCode: 0, lastCloseReason: '', lastError: '', lastTrackKind: '', lastInboundStats: null, lastHealthyAt: 0, lastRecoverAt: 0, recoveryCount: 0, stallTicks: 0, offsetHighTicks: 0, lastAvOffsetMs: NaN, syncHealth: 'free-run', connectStartedAt: 0, trackReceivedAt: 0, warmupUntil: 0, avOffsetBaselineMs: NaN, avOffsetBaselineSamples: 0, avOffsetBaselineLocked: false, avOffsetDeltaMs: NaN, avOffsetBaselineReason: 'none' },
     mediaNotificationAnchor: { element: null, objectUrl: '', playAttempt: 0, status: 'idle', lastError: '' },
     controller: { userPaused: false, userMuted: false, volume: 1, uiPinned: false, initialized: false, installPrompt: null, bar: null, playButton: null, muteButton: null, volumeInput: null, spacer: null, reconnectButton: null, routeButton: null, logoutButton: null, installButton: null, zoomButton: null, pinButton: null, fullscreenButton: null, status: null, lastAppliedAt: 0 }
   };
@@ -1291,6 +1298,20 @@
     const n = Number.parseInt(raw, 10);
     if (!Number.isFinite(n) || n <= 0) return 0;
     return Math.max(5, Math.min(n, 300)) * 1000;
+  }
+
+  function signalingHeartbeatTimeoutMs() {
+    const interval = keepAliveMs();
+    if (!interval) return 0;
+    // Three unanswered probes at the configured cadence constitutes a stale
+    // signalling transport. Keep a reasonable floor for deliberately short
+    // test/user intervals so normal packet loss cannot create reconnect churn.
+    return Math.max(15000, interval * 3);
+  }
+
+  function signalingAgeSeconds(timestamp) {
+    if (!timestamp) return 'never';
+    return `${Math.max(0, Math.round((performance.now() - timestamp) / 1000))}s`;
   }
 
 
@@ -3110,6 +3131,68 @@
   function stopKeepAlive() {
     if (state.keepAliveTimer) clearInterval(state.keepAliveTimer);
     state.keepAliveTimer = null;
+    state.keepAliveOutstandingSince = 0;
+    state.lastKeepAliveTickAt = 0;
+  }
+
+  function notePrimarySignalingMessage(type = '') {
+    const now = performance.now();
+    state.lastSignalingMessageAt = now;
+    state.keepAliveOutstandingSince = 0;
+    if (type === 'list' || type === 'listConsumers') state.lastKeepAliveResponseAt = now;
+  }
+
+  function reconnectStalePrimarySignaling(reason) {
+    const ws = state.ws;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+    state.signalingRecoveryCount += 1;
+    const detail = `${reason}; last message ${signalingAgeSeconds(state.lastSignalingMessageAt)} ago`;
+    log('primary signaling heartbeat stale', state.signalingUrl, detail);
+    setStatus('Reconnecting signaling', detail, 'warn');
+    try { ws.close(4000, 'signaling heartbeat timeout'); }
+    catch (err) { log('could not close stale primary signaling socket', err); }
+    return true;
+  }
+
+  function sendPrimaryKeepAliveProbe(reason = 'interval', resetOutstanding = false) {
+    if (!state.ws || state.ws.readyState !== WebSocket.OPEN) return false;
+    const now = performance.now();
+    // Resume/focus/pageshow can arrive as a cluster. One fresh probe is enough.
+    if (reason !== 'interval' && state.lastKeepAliveAt && now - state.lastKeepAliveAt < 1000) return true;
+    if (resetOutstanding) state.keepAliveOutstandingSince = 0;
+    if (!state.keepAliveOutstandingSince) state.keepAliveOutstandingSince = now;
+    state.keepAliveCount += 1;
+    state.lastKeepAliveAt = now;
+    try {
+      send({ type: 'list' }, true);
+      if (state.keepAliveCount % 4 === 0) send({ type: 'listConsumers' }, true);
+      if (jbufDebugEnabled()) log('primary signaling keepalive', reason, state.keepAliveCount);
+      return true;
+    } catch (err) {
+      log('primary signaling keepalive send failed', reason, err);
+      return reconnectStalePrimarySignaling('heartbeat send failed');
+    }
+  }
+
+  function primaryKeepAliveTick() {
+    if (!state.ws || state.ws.readyState !== WebSocket.OPEN) return;
+    const now = performance.now();
+    const timeout = signalingHeartbeatTimeoutMs();
+    // Android may freeze the renderer instead of running timers late. On the
+    // first tick after a long scheduling gap, issue a fresh probe and grant a
+    // full response window rather than declaring a healthy resumed socket dead.
+    const resumedAfterTimerGap = state.lastKeepAliveTickAt && timeout && now - state.lastKeepAliveTickAt > timeout;
+    state.lastKeepAliveTickAt = now;
+    if (resumedAfterTimerGap) {
+      state.keepAliveOutstandingSince = 0;
+      sendPrimaryKeepAliveProbe('timer-resume', true);
+      return;
+    }
+    if (timeout && state.keepAliveOutstandingSince && now - state.keepAliveOutstandingSince >= timeout) {
+      reconnectStalePrimarySignaling(`no signaling response for ${Math.round((now - state.keepAliveOutstandingSince) / 1000)}s`);
+      return;
+    }
+    sendPrimaryKeepAliveProbe('interval');
   }
 
   function startKeepAlive() {
@@ -3118,13 +3201,12 @@
     if (!interval) return;
     state.keepAliveCount = 0;
     state.lastKeepAliveAt = 0;
-    state.keepAliveTimer = setInterval(() => {
-      if (!state.ws || state.ws.readyState !== WebSocket.OPEN) return;
-      state.keepAliveCount += 1;
-      state.lastKeepAliveAt = performance.now();
-      send({ type: 'list' }, true);
-      if (state.keepAliveCount % 4 === 0) send({ type: 'listConsumers' }, true);
-    }, interval);
+    state.lastKeepAliveResponseAt = 0;
+    state.lastSignalingMessageAt = performance.now();
+    state.keepAliveOutstandingSince = 0;
+    state.lastKeepAliveTickAt = performance.now();
+    sendPrimaryKeepAliveProbe('open', true);
+    state.keepAliveTimer = setInterval(primaryKeepAliveTick, interval);
   }
 
   function makeRtcConfig() {
@@ -3304,7 +3386,11 @@
         }
         state.ws = null;
         state.ready = false;
+        state.lastSignalingCloseCode = ev && Number.isFinite(ev.code) ? ev.code : 0;
+        state.lastSignalingCloseReason = ev && ev.reason ? ev.reason : '';
         stopKeepAlive();
+        log('primary signaling closed', route, url, state.lastSignalingCloseCode,
+          state.lastSignalingCloseReason || '', `last message ${signalingAgeSeconds(state.lastSignalingMessageAt)} ago`);
         stopSession(false, { stopSplitAudio: true, reason: 'primary-ws-close' });
         // An established signaling path disappearing invalidates the cached
         // running state. Do not touch any signaling URL again until a fresh
@@ -3324,6 +3410,7 @@
         if (token !== state.signalingAttemptToken || state.ws !== ws) return;
         let msg;
         try { msg = JSON.parse(ev.data); } catch (err) { log('bad message', err, ev.data); return; }
+        notePrimarySignalingMessage(msg && msg.type ? msg.type : 'message');
         handleMessage(msg);
       });
     };
@@ -4449,7 +4536,7 @@
   // (not just a one-off check) on both also recovers from the interval
   // itself having been frozen/killed during the background period.
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') { syncScreenWakeLock('visibility-visible', true); scheduleFullscreenRenderRecovery('visibility-visible', 200); startConfigReloadTimer(); }
+    if (document.visibilityState === 'visible') { syncScreenWakeLock('visibility-visible', true); scheduleFullscreenRenderRecovery('visibility-visible', 200); startConfigReloadTimer(); probeSignalingOnResume('visibility-visible'); }
     else syncScreenWakeLock('visibility-hidden');
   });
   window.addEventListener('pageshow', (event) => {
@@ -4467,8 +4554,10 @@
       return;
     }
     startConfigReloadTimer();
+    probeSignalingOnResume('pageshow');
   });
-  window.addEventListener('focus', () => { syncScreenWakeLock('window-focus', true); scheduleFullscreenRenderRecovery('window-focus', 200); });
+  window.addEventListener('focus', () => { syncScreenWakeLock('window-focus', true); scheduleFullscreenRenderRecovery('window-focus', 200); probeSignalingOnResume('window-focus'); });
+  window.addEventListener('online', () => probeSignalingOnResume('online'));
 
 
   function splitSend(obj, allowBeforeReady = false) {
@@ -4483,6 +4572,68 @@
     const sa = state.splitAudio;
     if (sa.keepAliveTimer) clearInterval(sa.keepAliveTimer);
     sa.keepAliveTimer = null;
+    sa.keepAliveOutstandingSince = 0;
+    sa.lastKeepAliveTickAt = 0;
+  }
+
+  function noteSplitSignalingMessage(type = '') {
+    const sa = state.splitAudio;
+    const now = performance.now();
+    sa.lastSignalingMessageAt = now;
+    sa.keepAliveOutstandingSince = 0;
+    if (type === 'list' || type === 'listConsumers') sa.lastKeepAliveResponseAt = now;
+  }
+
+  function reconnectStaleSplitSignaling(reason) {
+    const sa = state.splitAudio;
+    const ws = sa.ws;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+    sa.signalingRecoveryCount += 1;
+    sa.lastError = reason;
+    log('split audio signaling heartbeat stale', sa.url, reason,
+      `last message ${signalingAgeSeconds(sa.lastSignalingMessageAt)} ago`);
+    try { ws.close(4000, 'signaling heartbeat timeout'); }
+    catch (err) { log('could not close stale split audio signaling socket', err); }
+    return true;
+  }
+
+  function sendSplitKeepAliveProbe(reason = 'interval', resetOutstanding = false) {
+    const sa = state.splitAudio;
+    if (!sa.ws || sa.ws.readyState !== WebSocket.OPEN) return false;
+    const now = performance.now();
+    if (reason !== 'interval' && sa.lastKeepAliveAt && now - sa.lastKeepAliveAt < 1000) return true;
+    if (resetOutstanding) sa.keepAliveOutstandingSince = 0;
+    if (!sa.keepAliveOutstandingSince) sa.keepAliveOutstandingSince = now;
+    sa.keepAliveCount += 1;
+    sa.lastKeepAliveAt = now;
+    try {
+      splitSend({ type: 'list' }, true);
+      if (sa.keepAliveCount % 4 === 0) splitSend({ type: 'listConsumers' }, true);
+      if (jbufDebugEnabled()) log('split audio keepalive', reason, sa.keepAliveCount);
+      return true;
+    } catch (err) {
+      log('split audio signaling keepalive send failed', reason, err);
+      return reconnectStaleSplitSignaling('heartbeat send failed');
+    }
+  }
+
+  function splitKeepAliveTick() {
+    const sa = state.splitAudio;
+    if (!sa.ws || sa.ws.readyState !== WebSocket.OPEN) return;
+    const now = performance.now();
+    const timeout = signalingHeartbeatTimeoutMs();
+    const resumedAfterTimerGap = sa.lastKeepAliveTickAt && timeout && now - sa.lastKeepAliveTickAt > timeout;
+    sa.lastKeepAliveTickAt = now;
+    if (resumedAfterTimerGap) {
+      sa.keepAliveOutstandingSince = 0;
+      sendSplitKeepAliveProbe('timer-resume', true);
+      return;
+    }
+    if (timeout && sa.keepAliveOutstandingSince && now - sa.keepAliveOutstandingSince >= timeout) {
+      reconnectStaleSplitSignaling(`no signaling response for ${Math.round((now - sa.keepAliveOutstandingSince) / 1000)}s`);
+      return;
+    }
+    sendSplitKeepAliveProbe('interval');
   }
 
   function splitStartKeepAlive(reason = 'open') {
@@ -4492,31 +4643,42 @@
     if (!interval) return;
     sa.keepAliveCount = 0;
     sa.lastKeepAliveAt = 0;
-    sa.keepAliveTimer = setInterval(() => {
-      if (!sa.ws || sa.ws.readyState !== WebSocket.OPEN) return;
-      sa.keepAliveCount += 1;
-      sa.lastKeepAliveAt = performance.now();
-      splitSend({ type: 'list' }, true);
-      if (sa.keepAliveCount % 4 === 0) splitSend({ type: 'listConsumers' }, true);
-      if (jbufDebugEnabled()) log('split audio keepalive', reason, sa.keepAliveCount);
-    }, interval);
+    sa.lastKeepAliveResponseAt = 0;
+    sa.lastSignalingMessageAt = performance.now();
+    sa.keepAliveOutstandingSince = 0;
+    sa.lastKeepAliveTickAt = performance.now();
+    sendSplitKeepAliveProbe(reason, true);
+    sa.keepAliveTimer = setInterval(splitKeepAliveTick, interval);
   }
 
   function signalingKeepAliveLine() {
     const primaryState = state.ws ? ['connecting', 'open', 'closing', 'closed'][state.ws.readyState] || String(state.ws.readyState) : 'no-ws';
-    const primaryKa = state.keepAliveTimer ? String(state.keepAliveCount || 0) : 'off';
+    const primaryKa = state.keepAliveTimer
+      ? `${state.keepAliveCount || 0}, ack ${signalingAgeSeconds(state.lastKeepAliveResponseAt)}`
+      : 'off';
     if (!splitAudioEnabled()) {
       return `${connectionModeStatusLine()} · KA ${primaryKa} (${primaryState})`;
     }
     const sa = state.splitAudio;
     const audioState = sa.ws ? ['connecting', 'open', 'closing', 'closed'][sa.ws.readyState] || String(sa.ws.readyState) : 'no-ws';
-    const audioKa = sa.keepAliveTimer ? String(sa.keepAliveCount || 0) : 'off';
+    const audioKa = sa.keepAliveTimer
+      ? `${sa.keepAliveCount || 0}, ack ${signalingAgeSeconds(sa.lastKeepAliveResponseAt)}`
+      : 'off';
     if (sharedSignalingEnabled()) {
       return `${connectionModeStatusLine()} · shared signaling · KA V${primaryKa}/A${audioKa} (${primaryState}/${audioState})`;
     }
     let audioEndpoint = 'audio endpoint';
     try { audioEndpoint = new URL(splitAudioWsUrl(), location.href).host || audioEndpoint; } catch (_) {}
     return `${connectionModeStatusLine()} · KA video ${primaryKa} (${primaryState}) · audio ${audioEndpoint} KA ${audioKa} (${audioState})`;
+  }
+
+  function probeSignalingOnResume(reason = 'resume') {
+    // A browser can freeze timer callbacks while preserving an apparently-open
+    // WebSocket object. Probe both transports as soon as execution resumes;
+    // each receives a new full response window instead of inheriting a stale
+    // pre-suspension heartbeat deadline.
+    sendPrimaryKeepAliveProbe(reason, true);
+    if (splitAudioEnabled()) sendSplitKeepAliveProbe(reason, true);
   }
 
   function splitAudioSummaryLine() {
@@ -4873,10 +5035,13 @@
         const shouldReconnect = splitAudioEnabled() && sa.url === url;
         sa.ready = false;
         sa.status = shouldReconnect ? 'reconnecting' : 'closed';
+        sa.lastCloseCode = ev && Number.isFinite(ev.code) ? ev.code : 0;
+        sa.lastCloseReason = ev && ev.reason ? ev.reason : '';
         sa.lastError = ev && ev.reason ? ev.reason : '';
         splitStopKeepAlive();
         splitStopSession(false);
-        log('split audio signaling closed', route, url, ev.code, ev.reason || '', shouldReconnect ? 'retrying' : 'not retrying');
+        log('split audio signaling closed', route, url, sa.lastCloseCode, sa.lastCloseReason,
+          `last message ${signalingAgeSeconds(sa.lastSignalingMessageAt)} ago`, shouldReconnect ? 'retrying' : 'not retrying');
         updatePlayerControls();
         if (shouldReconnect) scheduleSplitReconnect();
       });
@@ -4895,6 +5060,7 @@
         if (token !== sa.attemptToken || sa.ws !== ws) return;
         let msg;
         try { msg = JSON.parse(ev.data); } catch (err) { log('split audio bad message', err, ev.data); return; }
+        noteSplitSignalingMessage(msg && msg.type ? msg.type : 'message');
         if (jbufDebugEnabled()) log('split audio msg', msg.type, msg);
         splitHandleMessage(msg);
       });
@@ -4966,9 +5132,16 @@
       primaryKeepAliveEnabled: !!state.keepAliveTimer,
       primaryKeepAliveCount: state.keepAliveCount || 0,
       primaryLastKeepAliveAt: state.lastKeepAliveAt || 0,
+      primaryLastKeepAliveResponseAt: state.lastKeepAliveResponseAt || 0,
+      primaryLastSignalingMessageAt: state.lastSignalingMessageAt || 0,
+      primarySignalingRecoveries: state.signalingRecoveryCount || 0,
       keepAliveEnabled: !!state.splitAudio.keepAliveTimer,
       keepAliveCount: state.splitAudio.keepAliveCount || 0,
       lastKeepAliveAt: state.splitAudio.lastKeepAliveAt || 0,
+      lastKeepAliveResponseAt: state.splitAudio.lastKeepAliveResponseAt || 0,
+      lastSignalingMessageAt: state.splitAudio.lastSignalingMessageAt || 0,
+      signalingRecoveries: state.splitAudio.signalingRecoveryCount || 0,
+      lastSignalingClose: { code: state.splitAudio.lastCloseCode || 0, reason: state.splitAudio.lastCloseReason || '' },
       state: splitAudioStatusLine(),
       sync: splitSyncStatusLine(),
       syncMode: splitPlayerSyncMode(),
@@ -5029,7 +5202,7 @@
     route: (mode) => setConnectionMode(mode, 'console'),
     pictureInPicture: () => togglePictureInPicture('console'),
     notificationAnchor: (enabled = true) => setViewerDisplaySetting('mediaNotificationAnchor', !!enabled),
-    state: () => ({ paused: state.controller.userPaused, muted: state.controller.userMuted, volume: state.controller.volume, connectionMode: connectionMode(), mediaRoutePolicy: mediaRoutePolicyLine(), signalingRoute: state.signalingRoute, signalingUrl: state.signalingUrl, signalingCandidates: [...state.signalingCandidates], signalingTransport: signalingTransportStatusLine(), screenWakeLock: screenWakeLockLine(), splitAudio: splitAudioStatusLine(), splitSync: splitSyncStatusLine(), pictureInPicture: { supported: pictureInPictureSupported(), active: pictureInPictureActive(), shortcut: pictureInPictureShortcutEnabled(), disablesBackgroundAudio: pipDisablesBackgroundAudioEnabled(), backgroundAudioSuspended: state.pipBackgroundAudioSuspended }, mediaNotificationAnchor: { enabled: mediaNotificationAnchorEnabled(), status: state.mediaNotificationAnchor.status, lastError: state.mediaNotificationAnchor.lastError, paused: state.mediaNotificationAnchor.element ? state.mediaNotificationAnchor.element.paused : true, currentTime: state.mediaNotificationAnchor.element ? state.mediaNotificationAnchor.element.currentTime : 0, duration: state.mediaNotificationAnchor.element ? state.mediaNotificationAnchor.element.duration : NaN }, videoPaused: video.paused, audioPaused: audio.paused, videoMuted: video.muted, audioMuted: audio.muted, ownPublicIp: state.ownPublicIp })
+    state: () => ({ paused: state.controller.userPaused, muted: state.controller.userMuted, volume: state.controller.volume, connectionMode: connectionMode(), mediaRoutePolicy: mediaRoutePolicyLine(), signalingRoute: state.signalingRoute, signalingUrl: state.signalingUrl, signalingCandidates: [...state.signalingCandidates], signalingTransport: signalingTransportStatusLine(), signalingHeartbeat: { enabled: !!state.keepAliveTimer, intervalMs: keepAliveMs(), timeoutMs: signalingHeartbeatTimeoutMs(), count: state.keepAliveCount || 0, lastSentAt: state.lastKeepAliveAt || 0, lastResponseAt: state.lastKeepAliveResponseAt || 0, lastMessageAt: state.lastSignalingMessageAt || 0, outstandingSince: state.keepAliveOutstandingSince || 0, recoveries: state.signalingRecoveryCount || 0, lastClose: { code: state.lastSignalingCloseCode || 0, reason: state.lastSignalingCloseReason || '' } }, screenWakeLock: screenWakeLockLine(), splitAudio: splitAudioStatusLine(), splitSync: splitSyncStatusLine(), pictureInPicture: { supported: pictureInPictureSupported(), active: pictureInPictureActive(), shortcut: pictureInPictureShortcutEnabled(), disablesBackgroundAudio: pipDisablesBackgroundAudioEnabled(), backgroundAudioSuspended: state.pipBackgroundAudioSuspended }, mediaNotificationAnchor: { enabled: mediaNotificationAnchorEnabled(), status: state.mediaNotificationAnchor.status, lastError: state.mediaNotificationAnchor.lastError, paused: state.mediaNotificationAnchor.element ? state.mediaNotificationAnchor.element.paused : true, currentTime: state.mediaNotificationAnchor.element ? state.mediaNotificationAnchor.element.currentTime : 0, duration: state.mediaNotificationAnchor.element ? state.mediaNotificationAnchor.element.duration : NaN }, videoPaused: video.paused, audioPaused: audio.paused, videoMuted: video.muted, audioMuted: audio.muted, ownPublicIp: state.ownPublicIp })
   };
 
   startConfigReloadTimer();
