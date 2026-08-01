@@ -137,25 +137,26 @@ function Get-UpnpRequiredMappings {
     if ([string]$cmbProtocol.SelectedItem -ne $script:DirectWebRtcProtocolName) { return @() }
 
     $mappings = @()
-    # Once embedded TLS termination is active, the TlsTerminatingProxy is
-    # what's actually listening on this machine's LAN IP for these
-    # services, not webrtcsink's original port -- that's what the router
+    # Once either authenticated proxy family is active, TlsTerminatingProxy
+    # is what's actually listening on this machine's LAN IP for these
+    # services, not webrtcsink's original loopback port -- that's what the router
     # needs to reach. Mapped 1:1 like RTP: the proxy already applied its
     # own external-port override when it started listening
     # (Get-LetsEncryptSignalingProxyPort etc. in 33-LetsEncrypt.ps1), so a
     # second remap here would just be a confusing second layer of the same
     # thing -- UPnP's own external-port-override fields don't apply in this
     # mode.
-    $tlsActive = Test-EmbeddedTlsActive
+    $authenticationProxyActive = Test-AuthenticationProxyListenerActive
+    $authenticationProxyLabel = if (Test-EmbeddedTlsActive) { 'TLS' } else { 'plaintext auth' }
 
     if ($chkUpnpMapSignaling -and $chkUpnpMapSignaling.Checked) {
-        if ($tlsActive) {
+        if ($authenticationProxyActive) {
             $proxyPort = Get-LetsEncryptSignalingProxyPort
             $mappings += [pscustomobject]@{
                 ExternalPort = $proxyPort
                 InternalPort = $proxyPort
                 Protocol     = 'TCP'
-                Description  = "${script:UpnpMappingTag}Video signalling (TLS)"
+                Description  = "${script:UpnpMappingTag}Video signalling ($authenticationProxyLabel)"
             }
         }
         else {
@@ -174,13 +175,13 @@ function Get-UpnpRequiredMappings {
         # signalling toggle) -- matches the same condition
         # Write-DirectWebRtcWebClientConfig already uses for splitAudioSignalingPort.
         if ((Test-DirectWebRtcSplitAvPipelines) -and -not (Test-DirectWebRtcUnifiedPublisher) -and -not (Test-DirectWebRtcSharedSignaling)) {
-            if ($tlsActive) {
+            if ($authenticationProxyActive) {
                 $splitProxyPort = Get-LetsEncryptSplitAudioProxyPort
                 $mappings += [pscustomobject]@{
                     ExternalPort = $splitProxyPort
                     InternalPort = $splitProxyPort
                     Protocol     = 'TCP'
-                    Description  = "${script:UpnpMappingTag}Audio signalling (TLS)"
+                    Description  = "${script:UpnpMappingTag}Audio signalling ($authenticationProxyLabel)"
                 }
             }
             else {
@@ -202,17 +203,17 @@ function Get-UpnpRequiredMappings {
     # browser has to reach before it can even open the signalling socket.
     if ($chkUpnpMapWebServer -and $chkUpnpMapWebServer.Checked) {
         try {
-            $bindAddress = if ($tlsActive) { Get-DirectWebRtcWebServerBindAddress -Destination $txtDestination.Text } else { Normalize-DirectWebRtcWebAddress $txtDestination.Text }
+            $bindAddress = if ($authenticationProxyActive) { Get-DirectWebRtcWebServerBindAddress -Destination $txtDestination.Text } else { Normalize-DirectWebRtcWebAddress $txtDestination.Text }
             $webUri = [System.Uri]$bindAddress
             $webPort = $webUri.Port
-            if ($tlsActive) {
+            if ($authenticationProxyActive) {
                 $webProxyPort = Get-LetsEncryptWebServerProxyPort -InternalPort $webPort
                 if ($webPort -gt 0 -and -not ($mappings | Where-Object { $_.ExternalPort -eq $webProxyPort -and $_.Protocol -eq 'TCP' })) {
                     $mappings += [pscustomobject]@{
                         ExternalPort = $webProxyPort
                         InternalPort = $webProxyPort
                         Protocol     = 'TCP'
-                        Description  = "${script:UpnpMappingTag}Web viewer (TLS)"
+                        Description  = "${script:UpnpMappingTag}Web viewer ($authenticationProxyLabel)"
                     }
                 }
             }

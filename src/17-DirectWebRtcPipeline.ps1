@@ -275,15 +275,16 @@ function Get-DirectWebRtcWebServerBindAddress {
 }
 
 # The external port a browser should actually use for video signalling.
-# Populated for either of two independent reasons: UPnP has mapped an
-# external port (WAN reachability over plain ws://), or embedded TLS
-# termination is active (the TlsTerminatingProxy's external port is the
-# preferred wss:// route). TLS takes precedence when both are configured,
-# since that reflects what's actually listening externally.
+# Populated for either of two independent reasons: an authentication/TLS
+# proxy listener is active, or UPnP has mapped an external port for an
+# otherwise-direct ws:// listener. Proxying takes precedence when both are
+# configured because it is the gate the browser must actually reach. Merely
+# entering a proxy-port override never changes generated player/pipeline
+# behavior while both proxy families remain disabled.
 # Shared by Write-DirectWebRtcWebClientConfig and
 # Add-DirectWebRtcViewerQuery so this isn't computed two different ways.
 function Get-DirectWebRtcEffectiveExternalSignalingPort {
-    if (Test-EmbeddedTlsActive) { return Get-LetsEncryptSignalingProxyPort }
+    if (Test-AuthenticationProxyListenerActive) { return Get-LetsEncryptSignalingProxyPort }
     if (Test-UpnpSignalingMappedExternally) { return [int]$numUpnpSignalingExternalPort.Value }
     return 0
 }
@@ -291,7 +292,7 @@ function Get-DirectWebRtcEffectiveExternalSignalingPort {
 # Split-audio counterpart to Get-DirectWebRtcEffectiveExternalSignalingPort.
 function Get-DirectWebRtcEffectiveSplitAudioExternalSignalingPort {
     if (-not ((Test-DirectWebRtcSplitAvPipelines) -and -not (Test-DirectWebRtcUnifiedPublisher))) { return 0 }
-    if (Test-EmbeddedTlsActive) { return Get-LetsEncryptSplitAudioProxyPort }
+    if (Test-AuthenticationProxyListenerActive) { return Get-LetsEncryptSplitAudioProxyPort }
     if (Test-UpnpSignalingMappedExternally) { return [int]$numUpnpSplitAudioExternalPort.Value }
     return 0
 }

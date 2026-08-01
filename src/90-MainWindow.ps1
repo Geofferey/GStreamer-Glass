@@ -861,7 +861,7 @@ $numLetsEncryptSignalingExternalPort.Minimum = 0
 $numLetsEncryptSignalingExternalPort.Maximum = 65535
 $numLetsEncryptSignalingExternalPort.Value = $script:DefaultLetsEncryptSignalingExternalPort
 $settingsGroup.Controls.Add($numLetsEncryptSignalingExternalPort)
-$toolTip.SetToolTip($numLetsEncryptSignalingExternalPort, 'External (WAN-side) HTTPS/WSS port for video signalling once TLS termination is wired in. 0 = same as the internal signalling port.')
+$toolTip.SetToolTip($numLetsEncryptSignalingExternalPort, 'External listener port for the authenticated video-signalling proxy (TLS or allowed plaintext auth). 0 = same as the internal signalling port. Stored but inactive when no authentication/TLS proxy is enabled.')
 
 $numLetsEncryptSplitAudioExternalPort = New-Object System.Windows.Forms.NumericUpDown
 $numLetsEncryptSplitAudioExternalPort.Location = New-Object System.Drawing.Point(15, 548)
@@ -870,7 +870,7 @@ $numLetsEncryptSplitAudioExternalPort.Minimum = 0
 $numLetsEncryptSplitAudioExternalPort.Maximum = 65535
 $numLetsEncryptSplitAudioExternalPort.Value = $script:DefaultLetsEncryptSplitAudioExternalPort
 $settingsGroup.Controls.Add($numLetsEncryptSplitAudioExternalPort)
-$toolTip.SetToolTip($numLetsEncryptSplitAudioExternalPort, 'External (WAN-side) HTTPS/WSS port for split-audio signalling, when active. 0 = same as the internal port.')
+$toolTip.SetToolTip($numLetsEncryptSplitAudioExternalPort, 'External listener port for the authenticated split-audio signalling proxy (TLS or allowed plaintext auth), when active. 0 = same as the internal port. Stored but inactive when no authentication/TLS proxy is enabled.')
 
 $numLetsEncryptWebServerExternalPort = New-Object System.Windows.Forms.NumericUpDown
 $numLetsEncryptWebServerExternalPort.Location = New-Object System.Drawing.Point(15, 548)
@@ -879,7 +879,7 @@ $numLetsEncryptWebServerExternalPort.Minimum = 0
 $numLetsEncryptWebServerExternalPort.Maximum = 65535
 $numLetsEncryptWebServerExternalPort.Value = $script:DefaultLetsEncryptWebServerExternalPort
 $settingsGroup.Controls.Add($numLetsEncryptWebServerExternalPort)
-$toolTip.SetToolTip($numLetsEncryptWebServerExternalPort, 'External (WAN-side) HTTPS port for the web viewer once TLS termination is wired in. 0 = same as the internal port.')
+$toolTip.SetToolTip($numLetsEncryptWebServerExternalPort, 'External listener port for the authenticated web-viewer proxy (TLS or allowed plaintext auth). 0 = same as the internal port. Stored but inactive when no authentication/TLS proxy is enabled.')
 
 $btnLetsEncryptIssueNow = New-Object System.Windows.Forms.Button
 $btnLetsEncryptIssueNow.Text = 'Issue/Renew Now'

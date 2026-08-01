@@ -925,9 +925,11 @@ function Update-LetsEncryptUi {
 }
 
 # Master/detail UI toggling for the SSL/TLS Security section -- the "Use
-# embedded TLS" master switch gates the custom cert/key path overrides and
-# the three proxy port fields, independent of whether Let's Encrypt is
-# also enabled. "Allow insecure listeners" is deliberately NOT gated here
+# embedded TLS" master switch gates only the custom cert/key path overrides.
+# The three external proxy-listener ports always remain editable: they also
+# configure the plaintext authentication family when that is the active gate,
+# and are deliberately inert while neither proxy family is active.
+# "Allow insecure listeners" is deliberately NOT gated here
 # (see below) -- it also matters for "Allow plaintext auth", which is
 # independent of embedded TLS. Also surfaces whether a certificate
 # actually resolves right now, so a broadcaster who checked the box
@@ -936,10 +938,14 @@ function Update-LetsEncryptUi {
 function Update-EmbeddedTlsUi {
     $enabled = [bool]($chkEmbeddedTlsEnabled -and $chkEmbeddedTlsEnabled.Checked)
     foreach ($control in @(
-        $txtTlsCertificatePath, $btnBrowseTlsCertificatePath, $txtTlsPrivateKeyPath, $btnBrowseTlsPrivateKeyPath,
-        $numLetsEncryptSignalingExternalPort, $numLetsEncryptSplitAudioExternalPort, $numLetsEncryptWebServerExternalPort
+        $txtTlsCertificatePath, $btnBrowseTlsCertificatePath, $txtTlsPrivateKeyPath, $btnBrowseTlsPrivateKeyPath
     )) {
         if ($control) { $control.Enabled = $enabled }
+    }
+    foreach ($control in @(
+        $numLetsEncryptSignalingExternalPort, $numLetsEncryptSplitAudioExternalPort, $numLetsEncryptWebServerExternalPort
+    )) {
+        if ($control) { $control.Enabled = $true }
     }
     # Not gated by "Use embedded TLS" -- this also matters for "Allow
     # plaintext auth" (Test-PlaintextAuthActive), which is independent of
@@ -978,6 +984,14 @@ function Test-ViewerAuthenticationEnabled {
 # broadcaster has otherwise accepted that risk.
 function Test-PlaintextAuthActive {
     return [bool]($chkViewerAuthenticationAllowPlaintext -and $chkViewerAuthenticationAllowPlaintext.Checked -and (Test-ViewerAuthenticationEnabled))
+}
+
+# True only when one of the listener families that consumes the three
+# external proxy-port overrides can actually run. Keeping this separate from
+# the controls' always-editable UI state prevents a saved override from
+# changing player config, UPnP, or generated transport behavior by itself.
+function Test-AuthenticationProxyListenerActive {
+    return [bool]((Test-EmbeddedTlsActive) -or (Test-PlaintextAuthActive))
 }
 
 # Whether the embedded-TLS/plaintext-auth proxies should stay running
@@ -1781,19 +1795,25 @@ function Disable-ViewerAuthenticationTotp {
 # (Get-LetsEncryptSignalingProxyPort etc.) Start-LetsEncryptTlsProxies
 # itself uses, so this can never disagree with what actually gets started.
 function Get-EmbeddedTlsPortConflicts {
-    if (Test-EmbeddedTlsInsecurePortsRestricted) { return @() }
+    # Loopback-only upstreams normally allow a proxy to reuse the same port
+    # number. The exception is simultaneous TLS + plaintext authentication:
+    # the plaintext proxy already owns the internal-number listener on
+    # 0.0.0.0, so the TLS family must use distinct override ports.
+    $simultaneousTlsAndPlaintext = (Test-EmbeddedTlsActive) -and (Test-PlaintextAuthActive)
+    if ((Test-EmbeddedTlsInsecurePortsRestricted) -and -not $simultaneousTlsAndPlaintext) { return @() }
     $conflicts = @()
+    $listenerDescription = if ($simultaneousTlsAndPlaintext) { ' while plaintext auth owns the internal listener' } else { ' while insecure ports stay on 0.0.0.0' }
 
     $videoInternalPort = [int]$numDirectWebRtcSignalingPort.Value
     if ((Get-LetsEncryptSignalingProxyPort) -eq $videoInternalPort) {
-        $conflicts += "Video signalling: external TLS port must differ from the internal port ($videoInternalPort) while insecure ports stay on 0.0.0.0."
+        $conflicts += "Video signalling: external TLS port must differ from the internal port ($videoInternalPort)$listenerDescription."
     }
 
     $splitAudioActive = (Test-DirectWebRtcSplitAvPipelines) -and -not (Test-DirectWebRtcUnifiedPublisher) -and -not (Test-DirectWebRtcSharedSignaling)
     if ($splitAudioActive) {
         $audioInternalPort = [int](Get-DirectWebRtcSplitAudioSignalingPort)
         if ((Get-LetsEncryptSplitAudioProxyPort) -eq $audioInternalPort) {
-            $conflicts += "Split-audio signalling: external TLS port must differ from the internal port ($audioInternalPort) while insecure ports stay on 0.0.0.0."
+            $conflicts += "Split-audio signalling: external TLS port must differ from the internal port ($audioInternalPort)$listenerDescription."
         }
     }
 
@@ -1801,7 +1821,7 @@ function Get-EmbeddedTlsPortConflicts {
         $webUri = [System.Uri](Get-DirectWebRtcWebServerBindAddress -Destination $txtDestination.Text)
         $webInternalPort = $webUri.Port
         if ($webInternalPort -gt 0 -and (Get-LetsEncryptWebServerProxyPort -InternalPort $webInternalPort) -eq $webInternalPort) {
-            $conflicts += "Web viewer: external TLS port must differ from the internal port ($webInternalPort) while insecure ports stay on 0.0.0.0."
+            $conflicts += "Web viewer: external TLS port must differ from the internal port ($webInternalPort)$listenerDescription."
         }
     }
     catch {}
@@ -1820,9 +1840,11 @@ function Get-EmbeddedTlsPortConflicts {
 # automatic restart-in-place doesn't tear them down (see
 # Stop-LetsEncryptTlsProxies), so this just leaves the still-live ones
 # alone rather than failing on an address-already-in-use retry.
-# The TLS proxy's own effective port for each of the three exposed
+# The authentication/TLS proxy's effective listener port for each exposed
 # services (0 = same number as webrtcsink's/the web server's real internal
-# port). Shared by Start-LetsEncryptTlsProxies (what to listen on),
+# port). The legacy LetsEncrypt control/function names are retained for saved-
+# settings compatibility, but the values are shared by TLS and plaintext auth.
+# Used by Start-LetsEncryptTlsProxies (what to listen on),
 # Get-DirectWebRtcEffectiveExternalSignalingPort/-SplitAudio... in
 # 17-DirectWebRtcPipeline.ps1 (what to tell the browser), and
 # Get-UpnpRequiredMappings in 31-UpnpPortForwarding.ps1 (what the router
@@ -1845,6 +1867,26 @@ function Get-LetsEncryptWebServerProxyPort {
     $override = [int]$numLetsEncryptWebServerExternalPort.Value
     if ($override -gt 0) { return $override }
     return $InternalPort
+}
+
+# When plaintext auth is the only proxy family, the same three external-port
+# overrides select its listeners. If embedded TLS is simultaneously active,
+# that family already owns the override ports; retain the plaintext family's
+# established same-as-internal listeners so HTTPS/WSS and HTTP/WS can coexist.
+function Get-PlaintextAuthSignalingProxyPort {
+    if (Test-EmbeddedTlsActive) { return [int]$numDirectWebRtcSignalingPort.Value }
+    return Get-LetsEncryptSignalingProxyPort
+}
+
+function Get-PlaintextAuthSplitAudioProxyPort {
+    if (Test-EmbeddedTlsActive) { return [int](Get-DirectWebRtcSplitAudioSignalingPort) }
+    return Get-LetsEncryptSplitAudioProxyPort
+}
+
+function Get-PlaintextAuthWebServerProxyPort {
+    param([int]$InternalPort)
+    if (Test-EmbeddedTlsActive) { return $InternalPort }
+    return Get-LetsEncryptWebServerProxyPort -InternalPort $InternalPort
 }
 
 # Builds the [TlsTerminatingProxy+AuthenticationAccount[]] array a proxy's
@@ -2327,11 +2369,10 @@ function Start-LetsEncryptTlsProxies {
 # "Allow plaintext auth" counterpart to Start-LetsEncryptTlsProxies: runs
 # the exact same login/session/routing gate (TlsTerminatingProxy) directly
 # on the plain HTTP/WS ports, with certificate = null so it never attempts
-# a TLS handshake. Transparently takes over each service's normal port
-# number (external == internal -- there's no separate override field for
-# this, since the whole point is standing in for webrtcsink's own server
-# on the port a client already expects), and correspondingly forces that
-# service's real server to loopback-only via
+# a TLS handshake. The shared Video/Audio/Web external fields select its
+# listener ports when plaintext auth is the only active proxy family; 0 keeps
+# the established same-as-internal behavior. The real services remain on
+# their original internal ports and are forced loopback-only via
 # Get-DirectWebRtcSignalingServerBindHost/-WebServerBindAddress
 # (Test-EmbeddedTlsInsecurePortsRestricted always returns true whenever
 # Test-PlaintextAuthActive is true).
@@ -2366,6 +2407,9 @@ function Start-PlaintextAuthProxies {
         [string]$numViewerAuthenticationSessionHours.Value,
         [string]$numDirectWebRtcSignalingPort.Value,
         [string](Get-DirectWebRtcSplitAudioSignalingPort),
+        [string](Get-PlaintextAuthSignalingProxyPort),
+        [string](Get-PlaintextAuthSplitAudioProxyPort),
+        [string]$numLetsEncryptWebServerExternalPort.Value,
         [string]$txtPlayerVideoSignalingProxyPath.Text,
         [string]$txtPlayerAudioSignalingProxyPath.Text
     ) -join '|'
@@ -2376,27 +2420,30 @@ function Start-PlaintextAuthProxies {
     }
 
     $ports = @()
-    $videoPort = [int]$numDirectWebRtcSignalingPort.Value
-    $ports += [pscustomobject]@{ Label = 'video signalling (plaintext auth)'; Port = $videoPort; PathRoutes = @() }
+    $videoInternalPort = [int]$numDirectWebRtcSignalingPort.Value
+    $videoExternalPort = Get-PlaintextAuthSignalingProxyPort
+    $ports += [pscustomobject]@{ Label = 'video signalling (plaintext auth)'; ExternalPort = $videoExternalPort; InternalPort = $videoInternalPort; PathRoutes = @() }
 
     $splitAudioActive = (Test-DirectWebRtcSplitAvPipelines) -and -not (Test-DirectWebRtcUnifiedPublisher) -and -not (Test-DirectWebRtcSharedSignaling)
-    $audioPort = 0
+    $audioInternalPort = 0
     if ($splitAudioActive) {
-        $audioPort = [int](Get-DirectWebRtcSplitAudioSignalingPort)
-        $ports += [pscustomobject]@{ Label = 'split-audio signalling (plaintext auth)'; Port = $audioPort; PathRoutes = @() }
+        $audioInternalPort = [int](Get-DirectWebRtcSplitAudioSignalingPort)
+        $audioExternalPort = Get-PlaintextAuthSplitAudioProxyPort
+        $ports += [pscustomobject]@{ Label = 'split-audio signalling (plaintext auth)'; ExternalPort = $audioExternalPort; InternalPort = $audioInternalPort; PathRoutes = @() }
     }
 
     try {
         $webUri = [System.Uri](Get-DirectWebRtcWebServerBindAddress -Destination $txtDestination.Text)
-        $webPort = $webUri.Port
-        if ($webPort -gt 0 -and -not (@($ports) | Where-Object { $_.Port -eq $webPort })) {
-            $webPathRoutes = @([pscustomobject]@{ Path = [string]$txtPlayerVideoSignalingProxyPath.Text; Port = $videoPort })
+        $webInternalPort = $webUri.Port
+        $webExternalPort = Get-PlaintextAuthWebServerProxyPort -InternalPort $webInternalPort
+        if ($webInternalPort -gt 0 -and -not (@($ports) | Where-Object { $_.ExternalPort -eq $webExternalPort })) {
+            $webPathRoutes = @([pscustomobject]@{ Path = [string]$txtPlayerVideoSignalingProxyPath.Text; Port = $videoInternalPort })
             if ($splitAudioActive) {
-                $webPathRoutes += [pscustomobject]@{ Path = [string]$txtPlayerAudioSignalingProxyPath.Text; Port = $audioPort }
+                $webPathRoutes += [pscustomobject]@{ Path = [string]$txtPlayerAudioSignalingProxyPath.Text; Port = $audioInternalPort }
             }
             $webDirectorySegment = [string](Get-DirectWebRtcWebServerPathSegment)
             $webDirectoryRedirectPath = if ([string]::IsNullOrWhiteSpace($webDirectorySegment)) { '' } else { "/$webDirectorySegment" }
-            $ports += [pscustomobject]@{ Label = 'web viewer (plaintext auth)'; Port = $webPort; PathRoutes = $webPathRoutes; DirectoryRedirectPath = $webDirectoryRedirectPath }
+            $ports += [pscustomobject]@{ Label = 'web viewer (plaintext auth)'; ExternalPort = $webExternalPort; InternalPort = $webInternalPort; PathRoutes = $webPathRoutes; DirectoryRedirectPath = $webDirectoryRedirectPath }
         }
     }
     catch {
@@ -2408,23 +2455,10 @@ function Start-PlaintextAuthProxies {
         return
     }
 
-    # Port descriptors need an ExternalPort/InternalPort shape identical to
-    # the TLS family's (both cross the same StartFamily command) -- external
-    # == internal here, since plaintext auth transparently takes over each
-    # service's normal port number rather than using a separate one.
-    $workerPorts = @($ports) | ForEach-Object {
-        [pscustomobject]@{
-            Label                  = $_.Label
-            ExternalPort           = $_.Port
-            InternalPort           = $_.Port
-            PathRoutes             = $_.PathRoutes
-            DirectoryRedirectPath  = $_.DirectoryRedirectPath
-        }
-    }
     $reply = Send-AuthProxyWorkerCommand -TimeoutMs 8000 -Command @{
         Type                    = 'StartFamily'
         Family                  = 'Plaintext'
-        Ports                   = @($workerPorts)
+        Ports                   = @($ports)
         AuthenticationMountPath = $authenticationMountPath
         TemporaryLinkUnavailableImagePath = $temporaryLinkUnavailableImagePath
         AuthenticationEnabled   = $true
@@ -2447,7 +2481,7 @@ function Start-PlaintextAuthProxies {
         Append-Log "AUTH: plaintext auth partially started: $([string]$reply.Error)"
     }
     foreach ($portInfo in $ports) {
-        Append-Log "AUTH: plaintext auth active for $($portInfo.Label): 0.0.0.0:$($portInfo.Port) -> 127.0.0.1:$($portInfo.Port)."
+        Append-Log "AUTH: plaintext auth active for $($portInfo.Label): 0.0.0.0:$($portInfo.ExternalPort) -> 127.0.0.1:$($portInfo.InternalPort)."
     }
     $script:PlaintextAuthProxies = $ports
     $script:PlaintextAuthProxyConfigurationSignature = $configurationSignature
