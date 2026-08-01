@@ -1,6 +1,7 @@
 (() => {
-  const FRONTEND_VERSION = '3.8-viewer-auth-41';
+  const FRONTEND_VERSION = '3.8-viewer-auth-42';
   const VIEWER_THEME_COLOR = '#000000';
+  const VIEWER_DISPLAY_SETTINGS_KEY = 'gstglass-viewer-display-v1';
   console.info(`[GStreamer Glass Live] frontend ${FRONTEND_VERSION}`);
 
   function applyViewerThemeColor() {
@@ -29,6 +30,18 @@
   const detailEl = document.getElementById('detail');
   const fullscreenButton = document.getElementById('fullscreenButton');
   const statsOverlay = document.getElementById('statsOverlay');
+  const debugLink = document.getElementById('debugLink');
+  const viewerSettingsButton = document.getElementById('viewerSettingsButton');
+  const viewerSettingsPanel = document.getElementById('viewerSettingsPanel');
+  const viewerSettingsClose = document.getElementById('viewerSettingsClose');
+  const viewerSettingsReset = document.getElementById('viewerSettingsReset');
+  const viewerSettingInputs = {
+    statusOverlay: document.getElementById('viewerSettingStatus'),
+    statsOverlay: document.getElementById('viewerSettingStats'),
+    playbackControls: document.getElementById('viewerSettingControls'),
+    debugShortcut: document.getElementById('viewerSettingDebug')
+  };
+  let viewerDisplaySettings = loadViewerDisplaySettings();
   const audio = document.getElementById('audio') || (() => {
     const el = document.createElement('audio');
     el.id = 'audio';
@@ -204,6 +217,73 @@
   function configValue(name, fallback) {
     const cfg = window.GST_GLASS_CONFIG || {};
     return cfg[name] !== undefined && cfg[name] !== null ? cfg[name] : fallback;
+  }
+
+  function loadViewerDisplaySettings() {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(VIEWER_DISPLAY_SETTINGS_KEY) || '{}');
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+    } catch (_) {
+      return {};
+    }
+  }
+
+  function viewerDisplaySetting(name, fallback) {
+    return typeof viewerDisplaySettings[name] === 'boolean' ? viewerDisplaySettings[name] : !!fallback;
+  }
+
+  function persistViewerDisplaySettings() {
+    try { localStorage.setItem(VIEWER_DISPLAY_SETTINGS_KEY, JSON.stringify(viewerDisplaySettings)); } catch (_) {}
+  }
+
+  function configuredStatsOverlayEnabled() {
+    const raw = query('stats');
+    if (raw !== null) return !['0', 'false', 'off', 'no'].includes(String(raw).toLowerCase());
+    return !!configValue('statsOverlay', true);
+  }
+
+  function syncViewerSettingsControls() {
+    const values = {
+      statusOverlay: viewerDisplaySetting('statusOverlay', true),
+      statsOverlay: viewerDisplaySetting('statsOverlay', configuredStatsOverlayEnabled()),
+      playbackControls: viewerDisplaySetting('playbackControls', true),
+      debugShortcut: viewerDisplaySetting('debugShortcut', true)
+    };
+    Object.keys(viewerSettingInputs).forEach((name) => {
+      const input = viewerSettingInputs[name];
+      if (input) input.checked = values[name];
+    });
+  }
+
+  function applyViewerDisplaySettings() {
+    document.body.classList.toggle('hideStatusOverlay', !viewerDisplaySetting('statusOverlay', true));
+    if (debugLink) debugLink.hidden = !viewerDisplaySetting('debugShortcut', true);
+    if (statsOverlay) statsOverlay.style.display = statsOverlayEnabled() ? '' : 'none';
+    syncViewerSettingsControls();
+    if (state.controller.initialized) updatePlayerControls();
+  }
+
+  function setViewerDisplaySetting(name, enabled) {
+    viewerDisplaySettings[name] = !!enabled;
+    persistViewerDisplaySettings();
+    applyViewerDisplaySettings();
+    revealPlayerUi(`viewer-setting:${name}`, 3500);
+  }
+
+  function setViewerSettingsOpen(open) {
+    if (!viewerSettingsPanel || !viewerSettingsButton) return;
+    const next = !!open;
+    viewerSettingsPanel.hidden = !next;
+    viewerSettingsButton.setAttribute('aria-expanded', next ? 'true' : 'false');
+    document.body.classList.toggle('settingsOpen', next);
+    if (next) {
+      document.body.classList.add('uiActive');
+      syncViewerSettingsControls();
+      if (playerUiHideTimer) clearTimeout(playerUiHideTimer);
+      playerUiHideTimer = null;
+    } else {
+      revealPlayerUi('viewer-settings-close');
+    }
   }
 
   function configSignature(cfg) {
@@ -1891,7 +1971,7 @@
   let playerUiHideTimer = null;
 
   function hidePlayerUi() {
-    if (state.controller.uiPinned) return;
+    if (state.controller.uiPinned || document.body.classList.contains('settingsOpen')) return;
     if (playerUiHideTimer) clearTimeout(playerUiHideTimer);
     playerUiHideTimer = null;
     document.body.classList.remove('uiActive');
@@ -2493,7 +2573,7 @@
 
   function updatePlayerControls() {
     const ctl = ensurePlayerControls();
-    const active = true;
+    const active = viewerDisplaySetting('playbackControls', true);
     document.body.classList.toggle('hasGlassControls', active);
     document.body.classList.toggle('splitAudioMode', splitAudioEnabled());
     document.body.classList.toggle('uiPinned', !!ctl.uiPinned);
@@ -2525,6 +2605,7 @@
       ctl.status.textContent = '';
       ctl.status.hidden = true;
     }
+    syncViewerSettingsControls();
   }
 
   function invalidateMediaPlay(kind) {
@@ -3112,9 +3193,7 @@
   }
 
   function statsOverlayEnabled() {
-    const raw = query('stats');
-    if (raw !== null) return !['0', 'false', 'off', 'no'].includes(String(raw).toLowerCase());
-    return !!configValue('statsOverlay', true);
+    return viewerDisplaySetting('statsOverlay', configuredStatsOverlayEnabled());
   }
 
   function fmtMs(secondsOrMs, alreadyMs = false) {
@@ -3866,6 +3945,50 @@
       if (displayMode.addEventListener) displayMode.addEventListener('change', () => updatePlayerControls());
     });
   }
+  if (viewerSettingsButton && viewerSettingsPanel) {
+    viewerSettingsButton.addEventListener('click', (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      setViewerSettingsOpen(viewerSettingsPanel.hidden);
+    });
+    viewerSettingsPanel.addEventListener('click', (ev) => ev.stopPropagation());
+    viewerSettingsPanel.addEventListener('pointerdown', (ev) => ev.stopPropagation());
+    if (viewerSettingsClose) {
+      viewerSettingsClose.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        setViewerSettingsOpen(false);
+        viewerSettingsButton.focus();
+      });
+    }
+    Object.keys(viewerSettingInputs).forEach((name) => {
+      const input = viewerSettingInputs[name];
+      if (!input) return;
+      input.addEventListener('change', () => setViewerDisplaySetting(name, input.checked));
+    });
+    if (viewerSettingsReset) {
+      viewerSettingsReset.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        viewerDisplaySettings = {};
+        try { localStorage.removeItem(VIEWER_DISPLAY_SETTINGS_KEY); } catch (_) {}
+        applyViewerDisplaySettings();
+        revealPlayerUi('viewer-settings-reset', 3500);
+      });
+    }
+    document.addEventListener('pointerdown', (ev) => {
+      if (viewerSettingsPanel.hidden || viewerSettingsPanel.contains(ev.target) || viewerSettingsButton.contains(ev.target)) return;
+      setViewerSettingsOpen(false);
+    });
+    document.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Escape' && !viewerSettingsPanel.hidden) {
+        ev.preventDefault();
+        setViewerSettingsOpen(false);
+        viewerSettingsButton.focus();
+      }
+    });
+  }
+  applyViewerDisplaySettings();
   log('PWA display mode', pwaDisplayMode());
   ensurePlayerControls();
   applyLogicalMediaState('startup');

@@ -128,25 +128,108 @@ body.isFullscreen .fullscreenButton,
 body:not(.playing) .fullscreenButton {
   display: none;
 }
-.debugLink {
+.viewerUtilityBar {
   position: fixed;
   right: max(14px, env(safe-area-inset-right));
   bottom: max(14px, env(safe-area-inset-bottom));
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  z-index: 11;
+  transition: opacity .18s ease;
+}
+.debugLink,
+.viewerSettingsButton {
   padding: 7px 9px;
   border-radius: 999px;
   border: 1px solid rgba(255,255,255,.12);
   background: rgba(8,12,18,.58);
   color: rgba(238,244,255,.48);
-  text-decoration: none;
-  font-size: 12px;
   opacity: .34;
   transition: opacity .18s ease, color .18s ease, background .18s ease;
-  z-index: 7;
 }
-.debugLink:hover {
+.debugLink {
+  text-decoration: none;
+  font-size: 12px;
+}
+.debugLink[hidden] { display: none !important; }
+.viewerSettingsButton {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  color: rgba(238,244,255,.62);
+  font: 17px/1 "Segoe UI Symbol", "Segoe UI", system-ui, sans-serif;
+  cursor: pointer;
+}
+.debugLink:hover,
+.viewerSettingsButton:hover,
+.viewerSettingsButton:focus-visible,
+body.settingsOpen .viewerSettingsButton {
   opacity: 1;
   color: var(--text);
   background: rgba(20,30,44,.88);
+  outline: none;
+}
+.viewerSettingsPanel {
+  position: fixed;
+  right: max(14px, env(safe-area-inset-right));
+  bottom: calc(max(14px, env(safe-area-inset-bottom)) + 42px);
+  width: min(290px, calc(100vw - 28px));
+  padding: 12px;
+  border: 1px solid rgba(255,255,255,.14);
+  border-radius: 14px;
+  background: linear-gradient(180deg, rgba(10,14,22,.96), rgba(6,9,15,.94));
+  color: #eef4ff;
+  box-shadow: 0 18px 54px rgba(0,0,0,.48);
+  backdrop-filter: blur(14px);
+  z-index: 12;
+}
+.viewerSettingsPanel[hidden] { display: none !important; }
+.viewerSettingsHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+  color: #b9d0ff;
+  font-size: 13px;
+}
+.viewerSettingsPanel label {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 36px;
+  padding: 5px 6px;
+  border-radius: 8px;
+  color: rgba(238,244,255,.88);
+  font-size: 13px;
+  cursor: pointer;
+}
+.viewerSettingsPanel label:hover { background: rgba(143,179,255,.10); }
+.viewerSettingsPanel input { accent-color: #8fb3ff; }
+.viewerSettingsClose,
+.viewerSettingsReset {
+  border: 1px solid rgba(255,255,255,.12);
+  background: rgba(255,255,255,.05);
+  color: #eef4ff;
+  cursor: pointer;
+}
+.viewerSettingsClose {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: 999px;
+  font: 20px/1 system-ui, sans-serif;
+}
+.viewerSettingsReset {
+  width: 100%;
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  font: 650 12px/1.2 "Segoe UI", system-ui, sans-serif;
+}
+.viewerSettingsClose:hover,
+.viewerSettingsReset:hover { background: rgba(143,179,255,.16); }
+body.hideStatusOverlay .overlay { display: none !important; }
 }
 body.playing .overlay {
   opacity: 0;
@@ -159,11 +242,13 @@ body:not(.playing) .overlay {
   opacity: 1;
   pointer-events: auto;
 }
-body.isFullscreen .debugLink {
+body.isFullscreen .viewerUtilityBar {
   opacity: 0;
   pointer-events: none;
 }
-body.isFullscreen.uiPinned .debugLink {
+body.isFullscreen.uiActive .viewerUtilityBar,
+body.isFullscreen.uiPinned .viewerUtilityBar,
+body.isFullscreen.settingsOpen .viewerUtilityBar {
   opacity: .72;
   pointer-events: auto;
 }
@@ -187,11 +272,17 @@ body.isFullscreen.uiPinned .debugLink {
     font-size: 15px;
     opacity: .96;
   }
-  .debugLink {
+  .viewerUtilityBar {
     right: max(10px, env(safe-area-inset-right));
     top: max(10px, env(safe-area-inset-top));
     bottom: auto;
-    opacity: .22;
+  }
+  .debugLink,
+  .viewerSettingsButton { opacity: .22; }
+  .viewerSettingsPanel {
+    right: max(10px, env(safe-area-inset-right));
+    top: calc(max(10px, env(safe-area-inset-top)) + 42px);
+    bottom: auto;
   }
 }
 .statsOverlay {
@@ -375,7 +466,7 @@ body:not(.playing) .glassControls { opacity: .96; }
 body.playing:not(.uiActive):not(.uiPinned) .fullscreenButton,
 body.playing:not(.uiActive):not(.uiPinned) .statsOverlay,
 body.playing:not(.uiActive):not(.uiPinned) .glassControls,
-body.playing:not(.uiActive):not(.uiPinned) .debugLink {
+body.playing:not(.uiActive):not(.uiPinned):not(.settingsOpen) .viewerUtilityBar {
   opacity: 0 !important;
   visibility: hidden;
   pointer-events: none;
