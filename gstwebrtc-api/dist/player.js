@@ -1,5 +1,5 @@
 (() => {
-  const FRONTEND_VERSION = '3.8-viewer-auth-45';
+  const FRONTEND_VERSION = '3.8-viewer-auth-46';
   const VIEWER_THEME_COLOR = '#000000';
   const VIEWER_DISPLAY_SETTINGS_KEY = 'gstglass-viewer-display-v1';
   console.info(`[GStreamer Glass Live] frontend ${FRONTEND_VERSION}`);
@@ -31,6 +31,7 @@
   const fullscreenButton = document.getElementById('fullscreenButton');
   const statsOverlay = document.getElementById('statsOverlay');
   const debugLink = document.getElementById('debugLink');
+  const viewerPipButton = document.getElementById('viewerPipButton');
   const viewerSettingsButton = document.getElementById('viewerSettingsButton');
   const viewerSettingsPanel = document.getElementById('viewerSettingsPanel');
   const viewerSettingsClose = document.getElementById('viewerSettingsClose');
@@ -40,6 +41,7 @@
     statsOverlay: document.getElementById('viewerSettingStats'),
     playbackControls: document.getElementById('viewerSettingControls'),
     nativeMediaControls: document.getElementById('viewerSettingNativeControls'),
+    pictureInPictureShortcut: document.getElementById('viewerSettingPip'),
     mediaNotificationAnchor: document.getElementById('viewerSettingMediaNotificationAnchor'),
     debugShortcut: document.getElementById('viewerSettingDebug')
   };
@@ -253,6 +255,10 @@
     return viewerDisplaySetting('mediaNotificationAnchor', false);
   }
 
+  function pictureInPictureShortcutEnabled() {
+    return viewerDisplaySetting('pictureInPictureShortcut', true);
+  }
+
   function applyNativeMediaControlsPolicy() {
     const enabled = nativeMediaControlsEnabled();
     video.controls = enabled;
@@ -269,12 +275,76 @@
     }
   }
 
+  function pictureInPictureSupported() {
+    return document.pictureInPictureEnabled === true &&
+      typeof video.requestPictureInPicture === 'function' &&
+      !video.disablePictureInPicture;
+  }
+
+  function pictureInPictureActive() {
+    return document.pictureInPictureElement === video;
+  }
+
+  function updatePictureInPictureButton() {
+    if (!viewerPipButton) return;
+    const supported = pictureInPictureSupported();
+    const active = pictureInPictureActive();
+    const visible = pictureInPictureShortcutEnabled() && supported;
+    const ready = active || (!!video.srcObject && video.readyState > HTMLMediaElement.HAVE_NOTHING);
+    viewerPipButton.hidden = !visible;
+    viewerPipButton.disabled = visible && !ready;
+    viewerPipButton.classList.toggle('isActive', active);
+    viewerPipButton.setAttribute('aria-pressed', active ? 'true' : 'false');
+    viewerPipButton.title = active ? 'Exit Picture-in-Picture' : 'Enter Picture-in-Picture';
+    viewerPipButton.setAttribute('aria-label', viewerPipButton.title);
+  }
+
+  async function enterPictureInPicture(reason = 'button') {
+    if (pictureInPictureActive()) return true;
+    if (!pictureInPictureSupported() || !video.srcObject || video.readyState === HTMLMediaElement.HAVE_NOTHING) {
+      updatePictureInPictureButton();
+      setStatus('Picture-in-Picture unavailable', 'Wait for the live video to start.', 'warn');
+      return false;
+    }
+    recordUserInteraction(`picture-in-picture:${reason}`);
+    try {
+      if (document.fullscreenElement && typeof document.exitFullscreen === 'function') {
+        await document.exitFullscreen();
+      }
+      await video.requestPictureInPicture();
+      updatePictureInPictureButton();
+      return true;
+    } catch (err) {
+      const message = err && err.message ? err.message : String(err);
+      log('Picture-in-Picture request failed', reason, message);
+      setStatus('Picture-in-Picture unavailable', message, 'warn');
+      updatePictureInPictureButton();
+      return false;
+    }
+  }
+
+  async function togglePictureInPicture(reason = 'button') {
+    if (!pictureInPictureActive()) return enterPictureInPicture(reason);
+    try {
+      await document.exitPictureInPicture();
+      updatePictureInPictureButton();
+      return true;
+    } catch (err) {
+      const message = err && err.message ? err.message : String(err);
+      log('Picture-in-Picture exit failed', reason, message);
+      setStatus('Could not exit Picture-in-Picture', message, 'warn');
+      updatePictureInPictureButton();
+      return false;
+    }
+  }
+
   function syncViewerSettingsControls() {
     const values = {
       statusOverlay: viewerDisplaySetting('statusOverlay', true),
       statsOverlay: viewerDisplaySetting('statsOverlay', configuredStatsOverlayEnabled()),
       playbackControls: viewerDisplaySetting('playbackControls', true),
       nativeMediaControls: nativeMediaControlsEnabled(),
+      pictureInPictureShortcut: pictureInPictureShortcutEnabled(),
       mediaNotificationAnchor: mediaNotificationAnchorEnabled(),
       debugShortcut: viewerDisplaySetting('debugShortcut', true)
     };
@@ -287,6 +357,7 @@
   function applyViewerDisplaySettings() {
     document.body.classList.toggle('hideStatusOverlay', !viewerDisplaySetting('statusOverlay', true));
     if (debugLink) debugLink.hidden = !viewerDisplaySetting('debugShortcut', true);
+    updatePictureInPictureButton();
     if (statsOverlay) statsOverlay.style.display = statsOverlayEnabled() ? '' : 'none';
     applyNativeMediaControlsPolicy();
     syncViewerSettingsControls();
@@ -2630,6 +2701,7 @@
     updateConnectionModeControl();
     if (ctl.installButton) ctl.installButton.hidden = isInstalledPwa() || !ctl.installPrompt;
     updateVideoZoomControl();
+    updatePictureInPictureButton();
     if (ctl.pinButton) {
       ctl.pinButton.classList.toggle('isPinned', !!ctl.uiPinned);
       ctl.pinButton.title = ctl.uiPinned ? 'Unpin diagnostics and controls' : 'Pin diagnostics and controls';
@@ -2934,6 +3006,7 @@
     // Keep Stop reversible for a live stream. Tearing down WebRTC here would
     // remove the OS notification and leave no way for its Play action to resume.
     installMediaSessionAction('stop', () => mediaSessionPause('media-session-stop'));
+    installMediaSessionAction('enterpictureinpicture', () => enterPictureInPicture('media-session'));
     syncMediaSessionPlaybackState();
   }
 
@@ -4142,6 +4215,17 @@
   }
   video.addEventListener('click', handleVideoActivation);
   video.addEventListener('touchend', handleVideoActivation, { passive: false });
+  if (viewerPipButton) {
+    viewerPipButton.addEventListener('click', (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      togglePictureInPicture('viewer-shortcut');
+    });
+  }
+  video.addEventListener('enterpictureinpicture', updatePictureInPictureButton);
+  video.addEventListener('leavepictureinpicture', updatePictureInPictureButton);
+  video.addEventListener('loadedmetadata', updatePictureInPictureButton);
+  video.addEventListener('emptied', updatePictureInPictureButton);
   video.addEventListener('play', () => {
     if (nativeMediaControlsEnabled() && state.controller.userPaused) {
       state.controller.userPaused = false;
@@ -4903,8 +4987,9 @@
     unmute: () => { state.controller.userMuted = false; applyLogicalMediaState('console-unmute'); },
     volume: (value) => { const n = Number(value); if (Number.isFinite(n)) state.controller.volume = Math.max(0, Math.min(n, 1)); applyLogicalMediaState('console-volume'); },
     route: (mode) => setConnectionMode(mode, 'console'),
+    pictureInPicture: () => togglePictureInPicture('console'),
     notificationAnchor: (enabled = true) => setViewerDisplaySetting('mediaNotificationAnchor', !!enabled),
-    state: () => ({ paused: state.controller.userPaused, muted: state.controller.userMuted, volume: state.controller.volume, connectionMode: connectionMode(), mediaRoutePolicy: mediaRoutePolicyLine(), signalingRoute: state.signalingRoute, signalingUrl: state.signalingUrl, signalingCandidates: [...state.signalingCandidates], signalingTransport: signalingTransportStatusLine(), screenWakeLock: screenWakeLockLine(), splitAudio: splitAudioStatusLine(), splitSync: splitSyncStatusLine(), mediaNotificationAnchor: { enabled: mediaNotificationAnchorEnabled(), status: state.mediaNotificationAnchor.status, lastError: state.mediaNotificationAnchor.lastError, paused: state.mediaNotificationAnchor.element ? state.mediaNotificationAnchor.element.paused : true, currentTime: state.mediaNotificationAnchor.element ? state.mediaNotificationAnchor.element.currentTime : 0, duration: state.mediaNotificationAnchor.element ? state.mediaNotificationAnchor.element.duration : NaN }, videoPaused: video.paused, audioPaused: audio.paused, videoMuted: video.muted, audioMuted: audio.muted, ownPublicIp: state.ownPublicIp })
+    state: () => ({ paused: state.controller.userPaused, muted: state.controller.userMuted, volume: state.controller.volume, connectionMode: connectionMode(), mediaRoutePolicy: mediaRoutePolicyLine(), signalingRoute: state.signalingRoute, signalingUrl: state.signalingUrl, signalingCandidates: [...state.signalingCandidates], signalingTransport: signalingTransportStatusLine(), screenWakeLock: screenWakeLockLine(), splitAudio: splitAudioStatusLine(), splitSync: splitSyncStatusLine(), pictureInPicture: { supported: pictureInPictureSupported(), active: pictureInPictureActive(), shortcut: pictureInPictureShortcutEnabled() }, mediaNotificationAnchor: { enabled: mediaNotificationAnchorEnabled(), status: state.mediaNotificationAnchor.status, lastError: state.mediaNotificationAnchor.lastError, paused: state.mediaNotificationAnchor.element ? state.mediaNotificationAnchor.element.paused : true, currentTime: state.mediaNotificationAnchor.element ? state.mediaNotificationAnchor.element.currentTime : 0, duration: state.mediaNotificationAnchor.element ? state.mediaNotificationAnchor.element.duration : NaN }, videoPaused: video.paused, audioPaused: audio.paused, videoMuted: video.muted, audioMuted: audio.muted, ownPublicIp: state.ownPublicIp })
   };
 
   startConfigReloadTimer();

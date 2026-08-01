@@ -14,7 +14,7 @@
   <link rel="manifest" href="./manifest.webmanifest?v=3.8.40" crossorigin="use-credentials">
   <link rel="icon" type="image/png" sizes="192x192" href="./icons/gstreamer-glass-192.png">
   <link rel="apple-touch-icon" href="./icons/gstreamer-glass-192.png">
-  <link rel="stylesheet" href="./player.css?v=3.8.27">
+  <link rel="stylesheet" href="./player.css?v=3.8.28">
 </head>
 <body>
   <main id="playerRoot" class="playerRoot">
@@ -35,6 +35,7 @@
 
     <div id="viewerUtilityBar" class="viewerUtilityBar">
       <a id="debugLink" class="debugLink" href="./debug/" title="Open Direct WebRTC debug interface">debug</a>
+      <button id="viewerPipButton" class="viewerPipButton" type="button" title="Enter Picture-in-Picture" aria-label="Enter Picture-in-Picture" aria-pressed="false">PiP</button>
       <button id="viewerSettingsButton" class="viewerSettingsButton" type="button" title="Viewer display settings" aria-label="Viewer display settings" aria-expanded="false" aria-controls="viewerSettingsPanel">⚙</button>
     </div>
 
@@ -47,7 +48,8 @@
       <label><input id="viewerSettingStats" type="checkbox"> Connection statistics</label>
       <label><input id="viewerSettingControls" type="checkbox"> Glass playback controls</label>
       <label><input id="viewerSettingNativeControls" type="checkbox"> Native browser media controls</label>
-      <label title="Experimental: play a silent normal media resource so Chromium can expose controls for the live WebRTC stream."><input id="viewerSettingMediaNotificationAnchor" type="checkbox"> Android status-bar controls (experimental)</label>
+      <label><input id="viewerSettingPip" type="checkbox"> Picture-in-picture button</label>
+      <label title="Play a silent normal media resource so Chromium can keep audio active behind the live WebRTC stream."><input id="viewerSettingMediaNotificationAnchor" type="checkbox"> Background audio</label>
       <label><input id="viewerSettingDebug" type="checkbox"> Debug shortcut</label>
       <button id="viewerSettingsReset" class="viewerSettingsReset" type="button">Reset display settings</button>
     </section>

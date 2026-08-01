@@ -139,6 +139,7 @@ body:not(.playing) .fullscreenButton {
   transition: opacity .18s ease;
 }
 .debugLink,
+.viewerPipButton,
 .viewerSettingsButton {
   padding: 7px 9px;
   border-radius: 999px;
@@ -153,6 +154,19 @@ body:not(.playing) .fullscreenButton {
   font-size: 12px;
 }
 .debugLink[hidden] { display: none !important; }
+.viewerPipButton[hidden] { display: none !important; }
+.viewerPipButton {
+  min-width: 40px;
+  height: 32px;
+  padding: 0 9px;
+  color: rgba(238,244,255,.62);
+  font: 600 11px/1 system-ui, sans-serif;
+  cursor: pointer;
+}
+.viewerPipButton:disabled {
+  cursor: default;
+  opacity: .18;
+}
 .viewerSettingsButton {
   width: 32px;
   height: 32px;
@@ -162,6 +176,9 @@ body:not(.playing) .fullscreenButton {
   cursor: pointer;
 }
 .debugLink:hover,
+.viewerPipButton:hover:not(:disabled),
+.viewerPipButton:focus-visible,
+.viewerPipButton.isActive,
 .viewerSettingsButton:hover,
 .viewerSettingsButton:focus-visible,
 body.settingsOpen .viewerSettingsButton {
@@ -278,6 +295,7 @@ body.isFullscreen.settingsOpen .viewerUtilityBar {
     bottom: auto;
   }
   .debugLink,
+  .viewerPipButton,
   .viewerSettingsButton { opacity: .22; }
   .viewerSettingsPanel {
     right: max(10px, env(safe-area-inset-right));

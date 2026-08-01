@@ -32,14 +32,14 @@ if ($index -notmatch [regex]::Escape($stableManifestUrl)) {
 if ($serviceWorker -notmatch [regex]::Escape($stableManifestUrl)) {
     throw "The service worker does not cache the established PWA manifest URL."
 }
-if ($index -notmatch [regex]::Escape('player.css?v=3.8.27') -or
-    $serviceWorker -notmatch [regex]::Escape('player.css?v=3.8.27')) {
+if ($index -notmatch [regex]::Escape('player.css?v=3.8.28') -or
+    $serviceWorker -notmatch [regex]::Escape('player.css?v=3.8.28')) {
     throw "The immersive player stylesheet version is inconsistent between the page and service worker."
 }
 if ($setup -notmatch [regex]::Escape('manifest.webmanifest?v=3.8.40')) {
     throw "The authentication login page does not advertise the same established PWA manifest URL."
 }
-if ($serviceWorker -notmatch "CACHE_NAME\s*=\s*'gstglass-pwa-3\.8-viewer-auth-53'") {
+if ($serviceWorker -notmatch "CACHE_NAME\s*=\s*'gstglass-pwa-3\.8-viewer-auth-54'") {
     throw "The service-worker cache no longer includes the immersive viewer-theme update."
 }
 

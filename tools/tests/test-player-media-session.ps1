@@ -19,6 +19,7 @@ Assert-MediaSession ($player.Contains("./icons/gstreamer-glass-192.png") -and $p
 foreach ($action in @('play', 'pause', 'stop')) {
     Assert-MediaSession ($player.Contains("installMediaSessionAction('$action'")) "Missing Media Session '$action' action."
 }
+Assert-MediaSession ($player.Contains("installMediaSessionAction('enterpictureinpicture'")) 'The media session does not expose the supported Picture-in-Picture action.'
 
 Assert-MediaSession (-not $player.Contains("installMediaSessionAction('seek")) 'A live WebRTC stream must not advertise seek controls.'
 Assert-MediaSession (-not $player.Contains('setPositionState(')) 'A live WebRTC stream must not publish a finite playback position.'
@@ -31,8 +32,8 @@ Assert-MediaSession (-not ($player -match 'anchor\.srcObject\s*=')) "The notific
 Assert-MediaSession ($player.Contains('anchor.muted = false') -and $player.Contains('anchor.volume = 1')) 'The notification anchor cannot request normal audio focus.'
 Assert-MediaSession ($player.Contains("syncMediaNotificationAnchor('session-stop')")) 'The notification anchor is not paused when the WebRTC session stops.'
 Assert-MediaSession ($player.Contains("destroyMediaNotificationAnchor('unload')")) 'The notification anchor is not released when the page unloads.'
-Assert-MediaSession ($player.Contains("FRONTEND_VERSION = '3.8-viewer-auth-45'")) 'The frontend version was not advanced for the Android notification workaround.'
-Assert-MediaSession ($serviceWorker.Contains("gstglass-pwa-3.8-viewer-auth-53")) 'The PWA cache was not advanced for the Android notification workaround.'
-Assert-MediaSession ($webUiManifest.webUiVersion -eq '3.8.53') 'The packaged Web UI version was not advanced for the Android notification workaround.'
+Assert-MediaSession ($player.Contains("FRONTEND_VERSION = '3.8-viewer-auth-46'")) 'The frontend version was not advanced for Picture-in-Picture support.'
+Assert-MediaSession ($serviceWorker.Contains("gstglass-pwa-3.8-viewer-auth-54")) 'The PWA cache was not advanced for Picture-in-Picture support.'
+Assert-MediaSession ($webUiManifest.webUiVersion -eq '3.8.54') 'The packaged Web UI version was not advanced for Picture-in-Picture support.'
 
 Write-Host 'PASS: the live PWA exposes synchronized OS media playback controls.'
