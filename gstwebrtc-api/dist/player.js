@@ -1,7 +1,8 @@
 (() => {
-  const FRONTEND_VERSION = '3.8-viewer-auth-51';
+  const FRONTEND_VERSION = '3.8-viewer-auth-52';
   const VIEWER_THEME_COLOR = '#000000';
   const VIEWER_DISPLAY_SETTINGS_KEY = 'gstglass-viewer-display-v1';
+  const RESTART_PAGE_GRACE_MS = 7000;
   console.info(`[GStreamer Glass Live] frontend ${FRONTEND_VERSION}`);
 
   function applyViewerThemeColor() {
@@ -104,6 +105,7 @@
     streamTransitionToken: null,
     authRevokedToken: null,
     restartPending: false,
+    restartPageTimer: null,
     manualResumeRequired: false,
     stopResumeLocked: false,
     proxyPairRetryCount: 0,
@@ -505,6 +507,7 @@
   }
 
   function finishRestart() {
+    cancelRestartPageRedirect();
     state.restartPending = false;
     if (state.stopResumeLocked) {
       state.manualResumeRequired = true;
@@ -517,11 +520,31 @@
     connect();
   }
 
+  function cancelRestartPageRedirect() {
+    if (state.restartPageTimer) clearTimeout(state.restartPageTimer);
+    state.restartPageTimer = null;
+  }
+
+  function scheduleRestartPageRedirect() {
+    if (state.restartPageTimer) return;
+    state.restartPageTimer = setTimeout(() => {
+      state.restartPageTimer = null;
+      // A successful state poll clears restartPending through finishRestart().
+      // Keep this flag intact when the proxy has already paused forwarding and
+      // the state-file request itself starts returning the holding page.
+      if (!state.restartPending) return;
+      const viewerUrl = new URL('./', window.location.href);
+      log('Stream restart exceeded grace period; opening restart page', viewerUrl.href);
+      location.replace(viewerUrl.href);
+    }, RESTART_PAGE_GRACE_MS);
+  }
+
   // Authentication is a permanent origin-level gate, independent of the
   // viewer mount (see logout.js) -- /auth/login always lives at the
   // origin root, never relative to wherever this page happens to be
   // served from. Mirrors logout.js's own redirect construction.
   function redirectToLogin() {
+    cancelRestartPageRedirect();
     const loginUrl = new URL('/auth/login', window.location.href);
     loginUrl.searchParams.set('return', window.location.pathname + window.location.search);
     location.replace(loginUrl.href);
@@ -584,7 +607,19 @@
         location.replace(res.url);
         return;
       }
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (!res.ok) {
+        // Settings-driven and automatic pipeline rebuilds can pause the auth
+        // proxy without emitting the explicit viewer-restart marker first.
+        // Its local 503 is deliberately identifiable by the retry target it
+        // owns, so prolonged pauses still reach the holding page while an
+        // unrelated upstream/network failure does not force a navigation.
+        const refreshHeader = String(res.headers.get('Refresh') || '');
+        if (res.status === 503 && /^\s*2\s*;\s*url=/i.test(refreshHeader)) {
+          state.restartPending = true;
+          scheduleRestartPageRedirect();
+        }
+        throw new Error(`HTTP ${res.status}`);
+      }
       const data = await res.json();
       const transition = String(data.transition || '');
       const transitionToken = String(data.transitionToken || '');
@@ -618,13 +653,16 @@
         state.manualResumeRequired = state.stopResumeLocked;
         stopSignaling('restarting');
         setStatus('Restarting', 'Waiting for the stream to return.', 'warn');
+        scheduleRestartPageRedirect();
       } else if (state.intentionalStopMarker) {
+        cancelRestartPageRedirect();
         state.restartPending = false;
         state.manualResumeRequired = true;
         state.stopResumeLocked = true;
         stopSignaling('intentional-stop');
         setStatus('Stream stopped', 'The broadcaster intentionally stopped the stream.', 'warn');
       } else if (transitionChanged && transition === 'stop') {
+        cancelRestartPageRedirect();
         state.restartPending = false;
         state.manualResumeRequired = true;
         state.stopResumeLocked = true;

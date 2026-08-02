@@ -82,7 +82,7 @@ function Split-HttpResponse([byte[]]$ResponseBytes) {
     return @{ Header = $header; Body = $body }
 }
 
-function Invoke-PausedProxyResponse([string]$ImagePath) {
+function Invoke-PausedProxyResponse([string]$ImagePath, [string]$DirectoryRedirectPath = '/live') {
     $port = Get-FreeTcpPort
     $proxy = [TlsTerminatingProxy]::new()
     try {
@@ -90,7 +90,7 @@ function Invoke-PausedProxyResponse([string]$ImagePath) {
         # Force the proxy to consume the request header before returning its
         # local response. Closing a Windows socket with unread request bytes can
         # generate an RST that discards an otherwise-valid response in transit.
-        $proxy.DirectoryRedirectPath = '/live'
+        $proxy.DirectoryRedirectPath = $DirectoryRedirectPath
         $proxy.Start($port, '127.0.0.1', $port, $null)
         $proxy.PauseForwarding()
         Start-Sleep -Milliseconds 100
@@ -104,10 +104,17 @@ $expectedImage = [System.IO.File]::ReadAllBytes($restartImagePath)
 Assert-RestartImage $imageResponse.Header.StartsWith('HTTP/1.1 503 Service Unavailable') 'Paused proxy did not return HTTP 503.'
 Assert-RestartImage ($imageResponse.Header -match '(?im)^Content-Type:\s*text/html; charset=utf-8\s*$') 'Paused proxy did not return the restart artwork in a message page.'
 Assert-RestartImage ($imageResponse.Header -match '(?im)^Retry-After:\s*2\s*$') 'Paused proxy lost its retry guidance.'
+Assert-RestartImage ($imageResponse.Header -match '(?im)^Refresh:\s*2; url=/live/\s*$') 'Paused proxy does not retry the configured viewer mount.'
 $imageHtml = [System.Text.Encoding]::UTF8.GetString($imageResponse.Body)
 Assert-RestartImage ($imageHtml.Contains('html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#000')) 'Restart message page does not enforce a black viewport.'
+Assert-RestartImage ($imageHtml.Contains('<meta http-equiv="refresh" content="2;url=/live/">')) 'Restart message page does not navigate back to the viewer mount.'
 Assert-RestartImage ($imageHtml.Contains('data:image/png;base64,' + [Convert]::ToBase64String($expectedImage))) 'Restart message page does not contain the configured artwork.'
 Assert-RestartImage ($imageResponse.Header -match "(?im)^Content-Security-Policy:.*img-src 'self' data:") 'Restart message page CSP blocks its embedded artwork.'
+
+$customMountResponse = Invoke-PausedProxyResponse $restartImagePath '/watch'
+$customMountHtml = [System.Text.Encoding]::UTF8.GetString($customMountResponse.Body)
+Assert-RestartImage ($customMountResponse.Header -match '(?im)^Refresh:\s*2; url=/watch/\s*$') 'Paused proxy hardcodes the default viewer mount instead of using Web Player Hosting URL path.'
+Assert-RestartImage ($customMountHtml.Contains('<meta http-equiv="refresh" content="2;url=/watch/">')) 'Restart page hardcodes the default viewer mount instead of using Web Player Hosting URL path.'
 
 $fallbackResponse = Invoke-PausedProxyResponse ''
 $fallbackText = [System.Text.Encoding]::UTF8.GetString($fallbackResponse.Body)

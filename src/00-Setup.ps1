@@ -2775,11 +2775,19 @@ public class TlsTerminatingProxy
                     // own listener instead of failing cleanly.
                     if (forwardingPaused)
                     {
-                        Dictionary<string, string> restartHeaders = new Dictionary<string, string> { { "Retry-After", "2" } };
+                        string restartReturnPath = string.IsNullOrWhiteSpace(DirectoryRedirectPath)
+                            ? "/live/"
+                            : DirectoryRedirectPath.TrimEnd('/') + "/";
+                        restartReturnPath = GetSafeReturnTarget(restartReturnPath);
+                        Dictionary<string, string> restartHeaders = new Dictionary<string, string>
+                        {
+                            { "Retry-After", "2" },
+                            { "Refresh", "2; url=" + restartReturnPath }
+                        };
                         byte[] restartImage = restartImageBytes;
                         if (restartImage.Length > 0)
                         {
-                            await WriteImageMessagePageAsync(stream, 503, "Service Unavailable", restartImage, "We'll Be Right Back!", restartHeaders);
+                            await WriteImageMessagePageAsync(stream, 503, "Service Unavailable", restartImage, "We'll Be Right Back!", restartHeaders, restartReturnPath);
                         }
                         else
                         {
@@ -3893,12 +3901,15 @@ public class TlsTerminatingProxy
         await WriteHttpResponseBytesAsync(stream, statusCode, reason, contentType, bodyBytes, additionalHeaders, scriptNonce, extraSetCookieHeaders);
     }
 
-    private static async Task WriteImageMessagePageAsync(Stream stream, int statusCode, string reason, byte[] imageBytes, string alternativeText, Dictionary<string, string> additionalHeaders)
+    private static async Task WriteImageMessagePageAsync(Stream stream, int statusCode, string reason, byte[] imageBytes, string alternativeText, Dictionary<string, string> additionalHeaders, string refreshTarget = null)
     {
         string encodedImage = Convert.ToBase64String(imageBytes ?? new byte[0]);
         string safeAlternativeText = WebUtility.HtmlEncode(alternativeText ?? "GStreamer Glass message");
+        string refreshMetadata = string.IsNullOrWhiteSpace(refreshTarget)
+            ? ""
+            : "<meta http-equiv=\"refresh\" content=\"2;url=" + WebUtility.HtmlEncode(GetSafeReturnTarget(refreshTarget)) + "\">";
         string html = "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1,viewport-fit=cover\">" +
-            "<meta name=\"robots\" content=\"noindex,nofollow,noarchive,nosnippet,noimageindex\"><title>" + safeAlternativeText + "</title>" +
+            refreshMetadata + "<meta name=\"robots\" content=\"noindex,nofollow,noarchive,nosnippet,noimageindex\"><title>" + safeAlternativeText + "</title>" +
             "<style>html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#000;color-scheme:dark}body{display:grid;place-items:center}" +
             "img{display:block;max-width:100vw;max-height:100vh;width:auto;height:auto;object-fit:contain}</style></head>" +
             "<body><img src=\"data:image/png;base64," + encodedImage + "\" alt=\"" + safeAlternativeText + "\"></body></html>";
