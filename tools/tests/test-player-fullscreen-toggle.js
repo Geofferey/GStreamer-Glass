@@ -6,6 +6,9 @@ const vm = require('vm');
 const repoRoot = path.resolve(__dirname, '..', '..');
 const playerSource = fs.readFileSync(path.join(repoRoot, 'gstwebrtc-api', 'dist', 'player.js'), 'utf8');
 
+assert(!playerSource.includes('attemptAutoFullscreen'), 'fullscreen must never be requested automatically');
+assert(!playerSource.includes("requestVideoFullscreen('auto')"), 'fullscreen requests require a direct viewer gesture');
+
 function extractFunction(name) {
   const marker = `function ${name}`;
   const start = playerSource.indexOf(marker);

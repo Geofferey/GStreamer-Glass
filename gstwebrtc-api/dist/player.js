@@ -1,5 +1,5 @@
 (() => {
-  const FRONTEND_VERSION = '3.8-viewer-auth-50';
+  const FRONTEND_VERSION = '3.8-viewer-auth-51';
   const VIEWER_THEME_COLOR = '#000000';
   const VIEWER_DISPLAY_SETTINGS_KEY = 'gstglass-viewer-display-v1';
   console.info(`[GStreamer Glass Live] frontend ${FRONTEND_VERSION}`);
@@ -133,7 +133,6 @@
     screenWakeLockRetryTimer: null,
     statsTimer: null,
     lastIceProtocol: '',
-    fullscreenAutoTried: false,
     fullscreenRenderRecoveryToken: 0,
     fullscreenRenderRecoveryTimer: null,
     fullscreenRenderRecoveryCount: 0,
@@ -2270,7 +2269,7 @@
       return true;
     } catch (err) {
       log('fullscreen request blocked', reason, err && err.message ? err.message : err);
-      if (reason !== 'auto') document.body.classList.add('fsBlocked');
+      document.body.classList.add('fsBlocked');
       setFullscreenState();
       return false;
     }
@@ -2305,19 +2304,6 @@
     return elementFullscreenActive()
       ? exitPlayerFullscreen(reason)
       : requestVideoFullscreen(reason);
-  }
-
-  function attemptAutoFullscreen() {
-    if (state.fullscreenAutoTried || !fullscreenEnabled() || isFullscreen()) return;
-    state.fullscreenAutoTried = true;
-    // Browsers usually block fullscreen without a user gesture. We still try once
-    // so desktop/kiosk/browser-policy cases can enter fullscreen automatically.
-    requestVideoFullscreen('auto').then((ok) => {
-      if (!ok) {
-        document.body.classList.add('fsBlocked');
-        setFullscreenState();
-      }
-    });
   }
 
   function recordUserInteraction(reason = 'gesture') {
@@ -3583,7 +3569,6 @@
       setFullscreenState();
       setStatus('Live', `${ev.track.kind} track received · ${playerConfigLine()}${adaptiveJitterEnabled() ? ' · adaptive' : ''}`, 'good');
       applyLogicalMediaState('primary-track');
-      attemptAutoFullscreen();
     });
 
     if (state.jitterApplyTimer) clearInterval(state.jitterApplyTimer);
@@ -4517,9 +4502,6 @@
       setFullscreenState();
       applyVideoZoom(state.videoZoom.scale, state.videoZoom.x, state.videoZoom.y, 'orientationchange');
       syncScreenWakeLock('orientationchange', true);
-      if (document.body.classList.contains('playing') && matchMedia('(orientation: landscape)').matches) {
-        attemptAutoFullscreen();
-      }
     }, 250);
   });
 
