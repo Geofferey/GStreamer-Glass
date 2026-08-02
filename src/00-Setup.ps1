@@ -1959,6 +1959,9 @@ public class TlsTerminatingProxy
     private static readonly object temporaryLinkUnavailableImageLock = new object();
     private static byte[] temporaryLinkUnavailableImageBytes = new byte[0];
     private static string temporaryLinkUnavailableImagePath = "";
+    private static readonly object restartImageLock = new object();
+    private static byte[] restartImageBytes = new byte[0];
+    private static string restartImagePath = "";
 
     // Async continuations resume on arbitrary ThreadPool threads with no
     // PowerShell runspace bound to them, so failures here cannot invoke a
@@ -2001,6 +2004,42 @@ public class TlsTerminatingProxy
             catch (Exception ex)
             {
                 pendingLog.Enqueue("could not load temporary-link rejection image; using the text fallback: " + ex.Message);
+            }
+        }
+    }
+
+    public void ConfigureRestartImage(string imagePath)
+    {
+        string normalizedPath = imagePath ?? "";
+        try
+        {
+            if (!string.IsNullOrWhiteSpace(normalizedPath)) normalizedPath = Path.GetFullPath(normalizedPath);
+        }
+        catch
+        {
+            normalizedPath = "";
+        }
+
+        lock (restartImageLock)
+        {
+            if (string.Equals(restartImagePath, normalizedPath, StringComparison.OrdinalIgnoreCase) && restartImageBytes.Length > 0) return;
+            restartImagePath = normalizedPath;
+            restartImageBytes = new byte[0];
+            if (string.IsNullOrEmpty(normalizedPath)) return;
+
+            try
+            {
+                byte[] imageBytes = File.ReadAllBytes(normalizedPath);
+                bool isPng = imageBytes.Length >= 8 &&
+                    imageBytes[0] == 0x89 && imageBytes[1] == 0x50 && imageBytes[2] == 0x4E && imageBytes[3] == 0x47 &&
+                    imageBytes[4] == 0x0D && imageBytes[5] == 0x0A && imageBytes[6] == 0x1A && imageBytes[7] == 0x0A;
+                if (!isPng) throw new InvalidDataException("The configured file is not a PNG image.");
+                restartImageBytes = imageBytes;
+                pendingLog.Enqueue("loaded stream-restart image from " + normalizedPath);
+            }
+            catch (Exception ex)
+            {
+                pendingLog.Enqueue("could not load stream-restart image; using the text fallback: " + ex.Message);
             }
         }
     }
@@ -2736,14 +2775,16 @@ public class TlsTerminatingProxy
                     // own listener instead of failing cleanly.
                     if (forwardingPaused)
                     {
-                        await WriteHttpResponseAsync(
-                            stream,
-                            503,
-                            "Service Unavailable",
-                            "text/plain; charset=utf-8",
-                            "Stream is restarting.",
-                            new Dictionary<string, string> { { "Retry-After", "2" } }
-                        );
+                        Dictionary<string, string> restartHeaders = new Dictionary<string, string> { { "Retry-After", "2" } };
+                        byte[] restartImage = restartImageBytes;
+                        if (restartImage.Length > 0)
+                        {
+                            await WriteHttpResponseBytesAsync(stream, 503, "Service Unavailable", "image/png", restartImage, restartHeaders);
+                        }
+                        else
+                        {
+                            await WriteHttpResponseAsync(stream, 503, "Service Unavailable", "text/plain; charset=utf-8", "Stream is restarting.", restartHeaders);
+                        }
                         return;
                     }
 
@@ -4793,6 +4834,7 @@ if ($AuthProxyWorker) {
                         $proxy.Label = [string]$portInfo.Label
                         $proxy.AuthenticationMountPath = [string]$Command.AuthenticationMountPath
                         $proxy.ConfigureTemporaryLinkUnavailableImage([string]$Command.TemporaryLinkUnavailableImagePath)
+                        $proxy.ConfigureRestartImage([string]$Command.RestartImagePath)
                         $proxy.ConfigureTrustedForwardingProxies([string[]]@($Command.TrustedForwardingProxyAddresses))
                         foreach ($route in @($portInfo.PathRoutes)) {
                             $proxy.AddPathRoute([string]$route.Path, [int]$route.Port)
