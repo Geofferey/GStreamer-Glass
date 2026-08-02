@@ -1,5 +1,5 @@
 (() => {
-  const FRONTEND_VERSION = '3.8-viewer-auth-49';
+  const FRONTEND_VERSION = '3.8-viewer-auth-50';
   const VIEWER_THEME_COLOR = '#000000';
   const VIEWER_DISPLAY_SETTINGS_KEY = 'gstglass-viewer-display-v1';
   console.info(`[GStreamer Glass Live] frontend ${FRONTEND_VERSION}`);
@@ -60,8 +60,9 @@
   // Chromium on Android promotes a fullscreen <video> into its native media
   // surface. That surface can queue frames after WebRTC's reported jitter
   // buffer, creating visible latency while receiver statistics stay nominal.
-  // Firefox Android and desktop browsers keep their established behavior.
+  // Firefox Android and iOS keep their established native-video behavior.
   const userAgent = navigator.userAgent || '';
+  const mobileBrowser = /Android|iPhone|iPad|iPod/i.test(userAgent);
   const androidContainerFullscreen = /Android/i.test(userAgent) && !/Firefox/i.test(userAgent);
   if (androidContainerFullscreen) {
     // Keep Chrome's native controls but remove their direct video-fullscreen
@@ -2231,15 +2232,28 @@
     }, Math.max(350, Number(delayMs) + 700));
   }
 
+  function fullscreenTarget() {
+    // Preserve established mobile behavior. On desktop, make the fullscreen
+    // surface honor the viewer's control preference: container fullscreen
+    // keeps Glass overlays/media controls, while video fullscreen deliberately
+    // hands the surface to the browser's native player controls.
+    const desktopCustomControls = !mobileBrowser && !nativeMediaControlsEnabled();
+    return (androidContainerFullscreen || desktopCustomControls) && playerRoot
+      ? playerRoot
+      : video;
+  }
+
   async function requestVideoFullscreen(reason = 'manual') {
     if (!fullscreenEnabled()) return false;
     if (elementFullscreenActive()) return true;
-    const target = androidContainerFullscreen && playerRoot ? playerRoot : video;
+    const target = fullscreenTarget();
     try {
       if (target.requestFullscreen) {
         await target.requestFullscreen({ navigationUI: 'hide' });
       } else if (target.webkitRequestFullscreen) {
         target.webkitRequestFullscreen();
+      } else if (target !== video && document.documentElement.requestFullscreen) {
+        await document.documentElement.requestFullscreen({ navigationUI: 'hide' });
       } else if (video.webkitEnterFullscreen) {
         // iOS fallback only. Android Chromium is deliberately kept out of the
         // native <video> fullscreen surface to avoid hidden render buffering.

@@ -24,7 +24,7 @@ function extractFunction(name) {
   throw new Error(`unterminated body for ${name}`);
 }
 
-const calls = { request: 0, exit: 0, toggle: [], gestures: [] };
+const calls = { rootRequest: 0, videoRequest: 0, exit: 0, toggle: [], gestures: [] };
 const classNames = new Set();
 const fullscreenButton = {
   textContent: '',
@@ -50,10 +50,16 @@ const document = {
     document.fullscreenElement = null;
   }
 };
-const video = { webkitDisplayingFullscreen: false };
+const video = {
+  webkitDisplayingFullscreen: false,
+  requestFullscreen: async () => {
+    calls.videoRequest += 1;
+    document.fullscreenElement = video;
+  }
+};
 const playerRoot = {
   requestFullscreen: async () => {
-    calls.request += 1;
+    calls.rootRequest += 1;
     document.fullscreenElement = playerRoot;
   }
 };
@@ -65,6 +71,7 @@ const context = vm.createContext({
   document,
   video,
   playerRoot,
+  mobileBrowser: true,
   androidContainerFullscreen: true,
   fullscreenEnabled: () => true,
   pwaDisplayMode: () => 'fullscreen',
@@ -88,6 +95,7 @@ const context = vm.createContext({
   'elementFullscreenActive',
   'isFullscreen',
   'setFullscreenState',
+  'fullscreenTarget',
   'requestVideoFullscreen',
   'exitPlayerFullscreen',
   'togglePlayerFullscreen',
@@ -101,7 +109,7 @@ const context = vm.createContext({
   assert.strictEqual(fullscreenButton.textContent, '⛶', 'the enter state should use the standard fullscreen glyph');
 
   assert.strictEqual(await context.togglePlayerFullscreen('test-enter'), true);
-  assert.strictEqual(calls.request, 1, 'the PWA should still request element fullscreen');
+  assert.strictEqual(calls.rootRequest, 1, 'Android should retain its established container-fullscreen behavior');
   assert.strictEqual(context.elementFullscreenActive(), true);
   context.setFullscreenState();
   assert.strictEqual(fullscreenButton.textContent, '⛶', 'the exit state should retain the standard fullscreen glyph');
@@ -111,6 +119,16 @@ const context = vm.createContext({
   assert.strictEqual(calls.exit, 1, 'the second toggle should exit element fullscreen');
   assert.strictEqual(context.elementFullscreenActive(), false);
   assert.strictEqual(context.isFullscreen(), true, 'exiting the element must not lose manifest immersive styling');
+
+  context.androidContainerFullscreen = false;
+  context.mobileBrowser = false;
+  context.nativeMediaControlsEnabled = () => false;
+  assert.strictEqual(context.fullscreenTarget(), playerRoot, 'desktop custom controls should fullscreen the complete Glass player');
+  context.nativeMediaControlsEnabled = () => true;
+  assert.strictEqual(context.fullscreenTarget(), video, 'desktop native controls should fullscreen the video surface');
+  context.mobileBrowser = true;
+  context.nativeMediaControlsEnabled = () => false;
+  assert.strictEqual(context.fullscreenTarget(), video, 'non-Android mobile behavior should remain unchanged');
 
   context.togglePlayerFullscreen = (reason) => calls.toggle.push(reason);
   const touchEvent = {
