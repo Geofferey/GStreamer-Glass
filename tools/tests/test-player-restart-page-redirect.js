@@ -34,6 +34,7 @@ const context = vm.createContext({
   window: { location: { href: 'https://stream.example.test:8889/watch/?quality=high#debug' } },
   location: { replace: (target) => navigations.push(target) },
   log: () => {},
+  writeStreamStateSnapshot: () => {},
   setTimeout: (callback, delay) => {
     const id = nextTimer++;
     scheduled.set(id, { callback, delay, cleared: false });

@@ -1251,6 +1251,8 @@ function Apply-ModernDashboardUi {
     $r = Add-Row $s
     Add-Field $r -Control $chkViewerAuthenticationKeepOnExit -Width 420 | Out-Null
     $r = Add-Row $s
+    Add-Field $r -Control $chkViewerAuthenticationStartOnLaunch -Width 420 | Out-Null
+    $r = Add-Row $s
     Add-Field $r -Control $lblViewerAuthenticationExitCacheStatus -Width 440 | Out-Null
     $r = Add-Row $s
     Add-Field $r -Control $btnViewerAuthenticationSaveExitCache -Width 145 | Out-Null
@@ -1491,7 +1493,7 @@ function Apply-ModernDashboardUi {
         $txtViewerAuthenticationNewUsername, $txtViewerAuthenticationNewPassword,
         $btnViewerAuthenticationAddAccount, $btnViewerAuthenticationRemoveAccount,
         $btnViewerAuthenticationEnableTotp, $btnViewerAuthenticationDisableTotp,
-        $numViewerAuthenticationSessionHours, $chkViewerAuthenticationAllowPlaintext, $chkViewerAuthenticationKeepOnRestart, $chkViewerAuthenticationKeepOnExit,
+        $numViewerAuthenticationSessionHours, $chkViewerAuthenticationAllowPlaintext, $chkViewerAuthenticationKeepOnRestart, $chkViewerAuthenticationKeepOnExit, $chkViewerAuthenticationStartOnLaunch,
         $lblViewerAuthenticationExitCacheStatus, $btnViewerAuthenticationSaveExitCache, $btnViewerAuthenticationDestroyExitCache,
         $txtViewerAuthenticationTemporaryLinkProxyDomain, $numViewerAuthenticationTemporaryLinkMinutes, $chkViewerAuthenticationTemporaryLinkSingleUse,
         $txtViewerAuthenticationTemporaryLinkRestrictedIp, $chkViewerAuthenticationSetupLinkRequireTotp,
@@ -1531,7 +1533,7 @@ function Apply-ModernDashboardUi {
         $chkRecordingTemporalAq, $chkRecordingDesktopAudio, $chkRecordingMic,
         $chkDdnsEnabled, $chkDdnsCloudflareProxied,
         $chkEmbeddedTlsEnabled, $chkTlsAllowInsecurePorts,
-        $chkLetsEncryptEnabled, $chkLetsEncryptStaging, $chkViewerAuthenticationEnabled, $chkViewerAuthenticationAllowPlaintext, $chkViewerAuthenticationKeepOnRestart, $chkViewerAuthenticationKeepOnExit, $chkViewerAuthenticationTemporaryLinkSingleUse, $chkViewerAuthenticationSetupLinkRequireTotp,
+        $chkLetsEncryptEnabled, $chkLetsEncryptStaging, $chkViewerAuthenticationEnabled, $chkViewerAuthenticationAllowPlaintext, $chkViewerAuthenticationKeepOnRestart, $chkViewerAuthenticationKeepOnExit, $chkViewerAuthenticationStartOnLaunch, $chkViewerAuthenticationTemporaryLinkSingleUse, $chkViewerAuthenticationSetupLinkRequireTotp,
         $chkPreview, $chkHidePreviewDuringStream, $chkAutoRestart, $chkVerbose, $chkDiskProcessLogging,
         $chkMinimizeToTray, $chkStartMinimized, $chkPsDebug
     )) {

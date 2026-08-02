@@ -14,6 +14,8 @@ $ErrorActionPreference = 'Stop'
 $ExecutablePath = (Resolve-Path -LiteralPath $ExecutablePath).Path
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot '..\..')
 $rejectionImagePath = Join-Path $repoRoot 'gstwebrtc-api\dist\temporary-viewer-link-unavailable.png'
+$rejectionMp4Path = Join-Path $repoRoot 'gstwebrtc-api\dist\temporary-viewer-link-unavailable-glitch.mp4'
+$rejectionWebmPath = Join-Path $repoRoot 'gstwebrtc-api\dist\temporary-viewer-link-unavailable-glitch.webm'
 
 function Assert-CompiledTemporaryLink {
     param([bool]$Condition, [string]$Message)
@@ -86,6 +88,11 @@ try {
         AuthenticationEnabled = $true
         AuthenticationMountPath = '/live'
         TemporaryLinkUnavailableImagePath = $rejectionImagePath
+        TemporaryLinkUnavailableVideoMp4Path = $rejectionMp4Path
+        TemporaryLinkUnavailableVideoWebmPath = $rejectionWebmPath
+        RestartImagePath = ''
+        RestartVideoMp4Path = ''
+        RestartVideoWebmPath = ''
         TrustedForwardingProxyAddresses = @()
         Accounts = @(@{ Username = 'viewer'; PasswordHash = 'compiled-smoke-placeholder'; TotpSecret = '' })
         SessionKeyBase64 = [Convert]::ToBase64String($sessionKey)
@@ -135,7 +142,9 @@ try {
     Assert-CompiledTemporaryLink $redeemResponse.StartsWith('HTTP/1.1 410') 'Compiled auth worker accepted a revoked temporary link.'
     Assert-CompiledTemporaryLink ($redeemResponse -match '(?im)^Content-Type:\s*text/html; charset=utf-8\s*$') 'Compiled auth worker did not serve the temporary-link artwork message page.'
     Assert-CompiledTemporaryLink ($redeemResponse.Contains('html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#000')) 'Compiled auth worker temporary-link message page does not enforce a black viewport.'
-    Assert-CompiledTemporaryLink ($redeemResponse.Contains('data:image/png;base64,')) 'Compiled auth worker temporary-link message page did not embed its rejection artwork.'
+    Assert-CompiledTemporaryLink ($redeemResponse.Contains('<video autoplay muted loop playsinline')) 'Compiled auth worker temporary-link message page did not render its looping rejection video.'
+    Assert-CompiledTemporaryLink ($redeemResponse.Contains('/auth/assets/temporary-link-unavailable.webm')) 'Compiled auth worker temporary-link message page omitted its WebM source.'
+    Assert-CompiledTemporaryLink ($redeemResponse.Contains('/auth/assets/temporary-link-unavailable.mp4')) 'Compiled auth worker temporary-link message page omitted its MP4 source.'
     $statusResponse = Send-PlainRequest $externalPort "GET /auth/status HTTP/1.1`r`nHost: localhost`r`nCookie: $cookie`r`nConnection: close`r`n`r`n"
     Assert-CompiledTemporaryLink ($statusResponse -match '\{"authenticated":false\}') 'Compiled auth worker still authenticated a session after its link was revoked.'
     $listReply = Send-WorkerCommand @{ Type = 'ListTemporaryLinks' }

@@ -90,6 +90,7 @@ function Save-Settings {
             ViewerAuthenticationAllowPlaintext = [bool]$chkViewerAuthenticationAllowPlaintext.Checked
             ViewerAuthenticationKeepOnRestart = [bool]$chkViewerAuthenticationKeepOnRestart.Checked
             ViewerAuthenticationKeepOnExit = [bool]$chkViewerAuthenticationKeepOnExit.Checked
+            ViewerAuthenticationStartOnLaunch = [bool]$chkViewerAuthenticationStartOnLaunch.Checked
             ViewerAuthenticationTemporaryLinkProxyDomain = [string]$txtViewerAuthenticationTemporaryLinkProxyDomain.Text
             ViewerAuthenticationTemporaryLinkMinutes = [int]$numViewerAuthenticationTemporaryLinkMinutes.Value
             ViewerAuthenticationTemporaryLinkSingleUse = [bool]$chkViewerAuthenticationTemporaryLinkSingleUse.Checked
@@ -520,6 +521,7 @@ function Restore-SettingsFromObject {
         if ($null -ne $settings.ViewerAuthenticationAllowPlaintext) { $chkViewerAuthenticationAllowPlaintext.Checked = [bool]$settings.ViewerAuthenticationAllowPlaintext }
         if ($null -ne $settings.ViewerAuthenticationKeepOnRestart) { $chkViewerAuthenticationKeepOnRestart.Checked = [bool]$settings.ViewerAuthenticationKeepOnRestart }
         if ($null -ne $settings.ViewerAuthenticationKeepOnExit) { $chkViewerAuthenticationKeepOnExit.Checked = [bool]$settings.ViewerAuthenticationKeepOnExit }
+        if ($null -ne $settings.ViewerAuthenticationStartOnLaunch) { $chkViewerAuthenticationStartOnLaunch.Checked = [bool]$settings.ViewerAuthenticationStartOnLaunch }
         if ($null -ne $settings.ViewerAuthenticationTemporaryLinkProxyDomain) { $txtViewerAuthenticationTemporaryLinkProxyDomain.Text = [string]$settings.ViewerAuthenticationTemporaryLinkProxyDomain }
         if ($null -ne $settings.ViewerAuthenticationTemporaryLinkMinutes) { $numViewerAuthenticationTemporaryLinkMinutes.Value = [decimal]([Math]::Min(43200, [Math]::Max(1, [int]$settings.ViewerAuthenticationTemporaryLinkMinutes))) }
         if ($null -ne $settings.ViewerAuthenticationTemporaryLinkSingleUse) { $chkViewerAuthenticationTemporaryLinkSingleUse.Checked = [bool]$settings.ViewerAuthenticationTemporaryLinkSingleUse }

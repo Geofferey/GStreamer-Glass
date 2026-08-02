@@ -991,6 +991,14 @@ $chkViewerAuthenticationKeepOnExit.Checked = $script:DefaultViewerAuthentication
 $settingsGroup.Controls.Add($chkViewerAuthenticationKeepOnExit)
 $toolTip.SetToolTip($chkViewerAuthenticationKeepOnExit, "Off by default. When Glass exits normally, encrypts the active viewer-session registry and signing keys for the current Windows user. On the next launch, unexpired browser sessions are restored when the authentication proxy starts. Unchecking this immediately deletes the saved state.")
 
+$chkViewerAuthenticationStartOnLaunch = New-Object System.Windows.Forms.CheckBox
+$chkViewerAuthenticationStartOnLaunch.Text = 'Start auth on launch'
+$chkViewerAuthenticationStartOnLaunch.Location = New-Object System.Drawing.Point(15, 548)
+$chkViewerAuthenticationStartOnLaunch.Size = New-Object System.Drawing.Size(420, 24)
+$chkViewerAuthenticationStartOnLaunch.Checked = $script:DefaultViewerAuthenticationStartOnLaunch
+$settingsGroup.Controls.Add($chkViewerAuthenticationStartOnLaunch)
+$toolTip.SetToolTip($chkViewerAuthenticationStartOnLaunch, "Off by default. Starts the enabled TLS/plaintext viewer-authentication proxy listeners when Glass launches, before the stream starts. Forwarding remains paused so viewers receive the restart page until GStreamer is running; this also prevents recursive forwarding on same-port mappings.")
+
 $lblViewerAuthenticationExitCacheStatus = New-Object System.Windows.Forms.Label
 $lblViewerAuthenticationExitCacheStatus.Text = 'Exit auth cache: not inspected'
 $lblViewerAuthenticationExitCacheStatus.Location = New-Object System.Drawing.Point(15, 548)
@@ -4403,6 +4411,10 @@ $chkViewerAuthenticationKeepOnExit.Add_CheckedChanged({
         Update-PersistedAuthenticationStateUi
     }
 })
+$chkViewerAuthenticationStartOnLaunch.Add_CheckedChanged({
+    Update-ViewerAuthenticationUi
+    if (-not $script:LoadingSettings) { Save-Settings }
+})
 $btnViewerAuthenticationSaveExitCache.Add_Click({
     $lowerTabs.SelectedTab = $tabLog
     try {
@@ -5624,6 +5636,8 @@ $form.Add_Shown({
     Update-RecordingUi
     Update-DdnsUi
     Update-LetsEncryptUi
+    try { $null = Start-AuthenticationOnApplicationLaunch }
+    catch { Append-Log "AUTH: start-on-launch failed: $($_.Exception.Message)" }
     Update-SceneUi
     Refresh-ProfileList
     Update-CommandPreview

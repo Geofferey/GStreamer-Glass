@@ -1868,9 +1868,16 @@ public class TlsTerminatingProxy
     private const string CanonicalLogoutPath = "/auth/logout";
     private const string CanonicalVerifyPath = "/auth/verify";
     private const string CanonicalStatusPath = "/auth/status";
+    private const string CanonicalStreamStatusPath = "/auth/stream-status";
     private const string CanonicalTemporarySessionPath = "/auth/session";
     private const string CanonicalAccountSetupPath = "/auth/setup";
     private const string CanonicalRobotsPath = "/robots.txt";
+    private const string TemporaryLinkUnavailableImageAssetPath = "/auth/assets/temporary-link-unavailable.png";
+    private const string TemporaryLinkUnavailableMp4AssetPath = "/auth/assets/temporary-link-unavailable.mp4";
+    private const string TemporaryLinkUnavailableWebmAssetPath = "/auth/assets/temporary-link-unavailable.webm";
+    private const string RestartImageAssetPath = "/auth/assets/well-be-right-back.png";
+    private const string RestartMp4AssetPath = "/auth/assets/well-be-right-back.mp4";
+    private const string RestartWebmAssetPath = "/auth/assets/well-be-right-back.webm";
     private const string LegacyLoginPath = "/__gstglass/auth/login";
     private const string LegacyLogoutPath = "/__gstglass/auth/logout";
     private const string LegacySimpleLogoutPath = "/logout";
@@ -1954,14 +1961,23 @@ public class TlsTerminatingProxy
     // channel. PollLog drains this queue and applies each update to every live
     // proxy before returning it to the UI for persistence.
     private static readonly System.Collections.Concurrent.ConcurrentQueue<AuthenticationAccountUpdateState> pendingAuthenticationAccountUpdates = new System.Collections.Concurrent.ConcurrentQueue<AuthenticationAccountUpdateState>();
-    // Shared by every proxy instance in this worker so the ~1 MB artwork is
-    // loaded only once even when video, audio, and viewer ports are all gated.
+    // Shared by every proxy instance in this worker so the message artwork
+    // and video loops are loaded only once even when video, audio, and viewer
+    // ports are all gated.
     private static readonly object temporaryLinkUnavailableImageLock = new object();
     private static byte[] temporaryLinkUnavailableImageBytes = new byte[0];
     private static string temporaryLinkUnavailableImagePath = "";
+    private static byte[] temporaryLinkUnavailableMp4Bytes = new byte[0];
+    private static byte[] temporaryLinkUnavailableWebmBytes = new byte[0];
+    private static string temporaryLinkUnavailableMp4Path = "";
+    private static string temporaryLinkUnavailableWebmPath = "";
     private static readonly object restartImageLock = new object();
     private static byte[] restartImageBytes = new byte[0];
     private static string restartImagePath = "";
+    private static byte[] restartMp4Bytes = new byte[0];
+    private static byte[] restartWebmBytes = new byte[0];
+    private static string restartMp4Path = "";
+    private static string restartWebmPath = "";
 
     // Async continuations resume on arbitrary ThreadPool threads with no
     // PowerShell runspace bound to them, so failures here cannot invoke a
@@ -2042,6 +2058,64 @@ public class TlsTerminatingProxy
                 pendingLog.Enqueue("could not load stream-restart image; using the text fallback: " + ex.Message);
             }
         }
+    }
+
+    private byte[] LoadMessageVideo(string videoPath, bool webm, string description)
+    {
+        if (string.IsNullOrWhiteSpace(videoPath)) return new byte[0];
+        try
+        {
+            string normalizedPath = Path.GetFullPath(videoPath);
+            byte[] videoBytes = File.ReadAllBytes(normalizedPath);
+            bool valid = webm
+                ? videoBytes.Length >= 4 && videoBytes[0] == 0x1A && videoBytes[1] == 0x45 && videoBytes[2] == 0xDF && videoBytes[3] == 0xA3
+                : videoBytes.Length >= 12 && videoBytes[4] == 0x66 && videoBytes[5] == 0x74 && videoBytes[6] == 0x79 && videoBytes[7] == 0x70;
+            if (!valid) throw new InvalidDataException("The configured file is not a valid " + (webm ? "WebM" : "MP4") + " video.");
+            pendingLog.Enqueue("loaded " + description + " video from " + normalizedPath);
+            return videoBytes;
+        }
+        catch (Exception ex)
+        {
+            pendingLog.Enqueue("could not load " + description + " video: " + ex.Message);
+            return new byte[0];
+        }
+    }
+
+    public void ConfigureTemporaryLinkUnavailableVideos(string mp4Path, string webmPath)
+    {
+        string normalizedMp4Path = NormalizeMessageAssetPath(mp4Path);
+        string normalizedWebmPath = NormalizeMessageAssetPath(webmPath);
+        lock (temporaryLinkUnavailableImageLock)
+        {
+            if (string.Equals(temporaryLinkUnavailableMp4Path, normalizedMp4Path, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(temporaryLinkUnavailableWebmPath, normalizedWebmPath, StringComparison.OrdinalIgnoreCase)) return;
+            temporaryLinkUnavailableMp4Path = normalizedMp4Path;
+            temporaryLinkUnavailableWebmPath = normalizedWebmPath;
+            temporaryLinkUnavailableMp4Bytes = LoadMessageVideo(normalizedMp4Path, false, "temporary-link rejection MP4");
+            temporaryLinkUnavailableWebmBytes = LoadMessageVideo(normalizedWebmPath, true, "temporary-link rejection WebM");
+        }
+    }
+
+    public void ConfigureRestartVideos(string mp4Path, string webmPath)
+    {
+        string normalizedMp4Path = NormalizeMessageAssetPath(mp4Path);
+        string normalizedWebmPath = NormalizeMessageAssetPath(webmPath);
+        lock (restartImageLock)
+        {
+            if (string.Equals(restartMp4Path, normalizedMp4Path, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(restartWebmPath, normalizedWebmPath, StringComparison.OrdinalIgnoreCase)) return;
+            restartMp4Path = normalizedMp4Path;
+            restartWebmPath = normalizedWebmPath;
+            restartMp4Bytes = LoadMessageVideo(normalizedMp4Path, false, "stream-restart MP4");
+            restartWebmBytes = LoadMessageVideo(normalizedWebmPath, true, "stream-restart WebM");
+        }
+    }
+
+    private static string NormalizeMessageAssetPath(string assetPath)
+    {
+        if (string.IsNullOrWhiteSpace(assetPath)) return "";
+        try { return Path.GetFullPath(assetPath); }
+        catch { return ""; }
     }
 
     // Optional path -> internal-port overrides, checked against the decrypted
@@ -2781,13 +2855,19 @@ public class TlsTerminatingProxy
                         restartReturnPath = GetSafeReturnTarget(restartReturnPath);
                         Dictionary<string, string> restartHeaders = new Dictionary<string, string>
                         {
-                            { "Retry-After", "2" },
-                            { "Refresh", "2; url=" + restartReturnPath }
+                            { "Retry-After", "2" }
                         };
                         byte[] restartImage = restartImageBytes;
-                        if (restartImage.Length > 0)
+                        byte[] restartMp4 = restartMp4Bytes;
+                        byte[] restartWebm = restartWebmBytes;
+                        if (restartImage.Length > 0 || restartMp4.Length > 0 || restartWebm.Length > 0)
                         {
-                            await WriteImageMessagePageAsync(stream, 503, "Service Unavailable", restartImage, "We'll Be Right Back!", restartHeaders, restartReturnPath);
+                            await WriteMediaMessagePageAsync(
+                                stream, 503, "Service Unavailable",
+                                restartImage, restartMp4, restartWebm,
+                                RestartImageAssetPath, RestartMp4AssetPath, RestartWebmAssetPath,
+                                "We'll Be Right Back!", restartHeaders, restartReturnPath
+                            );
                         }
                         else
                         {
@@ -2909,6 +2989,7 @@ public class TlsTerminatingProxy
             string.Equals(path, mountedLegacyLoginPath, StringComparison.OrdinalIgnoreCase);
         bool isVerifyEndpoint = string.Equals(path, CanonicalVerifyPath, StringComparison.OrdinalIgnoreCase);
         bool isStatusEndpoint = string.Equals(path, CanonicalStatusPath, StringComparison.OrdinalIgnoreCase);
+        bool isStreamStatusEndpoint = string.Equals(path, CanonicalStreamStatusPath, StringComparison.OrdinalIgnoreCase);
         bool isTemporarySessionEndpoint = string.Equals(path, CanonicalTemporarySessionPath, StringComparison.OrdinalIgnoreCase);
         bool isAccountSetupEndpoint = string.Equals(path, CanonicalAccountSetupPath, StringComparison.OrdinalIgnoreCase);
         bool isRobotsEndpoint = string.Equals(path, CanonicalRobotsPath, StringComparison.OrdinalIgnoreCase);
@@ -2918,6 +2999,30 @@ public class TlsTerminatingProxy
         bool isCanonicalAuthenticationPath =
             string.Equals(path, "/auth", StringComparison.OrdinalIgnoreCase) ||
             path.StartsWith("/auth/", StringComparison.OrdinalIgnoreCase);
+
+        byte[] messageAssetBytes;
+        string messageAssetContentType;
+        if (TryGetMessageAsset(path, out messageAssetBytes, out messageAssetContentType))
+        {
+            bool isAssetGet = string.Equals(method, "GET", StringComparison.OrdinalIgnoreCase);
+            bool isAssetHead = string.Equals(method, "HEAD", StringComparison.OrdinalIgnoreCase);
+            if (!isAssetGet && !isAssetHead)
+            {
+                Dictionary<string, string> assetMethodHeaders = new Dictionary<string, string>();
+                assetMethodHeaders["Allow"] = "GET, HEAD";
+                await WriteHttpResponseAsync(stream, 405, "Method Not Allowed", "text/plain; charset=utf-8", "Method not allowed.", assetMethodHeaders);
+                return true;
+            }
+            await WriteHttpResponseBytesAsync(
+                stream,
+                200,
+                "OK",
+                messageAssetContentType,
+                isAssetHead ? new byte[0] : messageAssetBytes,
+                null
+            );
+            return true;
+        }
 
         if (isRobotsEndpoint)
         {
@@ -3360,6 +3465,27 @@ public class TlsTerminatingProxy
             return true;
         }
 
+        if (isStreamStatusEndpoint)
+        {
+            if (!string.Equals(method, "GET", StringComparison.OrdinalIgnoreCase))
+            {
+                Dictionary<string, string> streamStatusMethodHeaders = new Dictionary<string, string>();
+                streamStatusMethodHeaders["Allow"] = "GET";
+                await WriteHttpResponseAsync(stream, 405, "Method Not Allowed", "text/plain; charset=utf-8", "Method not allowed.", streamStatusMethodHeaders);
+                return true;
+            }
+            bool authenticated = !authenticationEnabled || HasValidAuthenticationCookie(headers, remoteAddress);
+            await WriteHttpResponseAsync(
+                stream,
+                200,
+                "OK",
+                "application/json; charset=utf-8",
+                "{\"authenticated\":" + (authenticated ? "true" : "false") + ",\"forwardingPaused\":" + (forwardingPaused ? "true" : "false") + "}",
+                null
+            );
+            return true;
+        }
+
         if (isAuthenticationRoot)
         {
             if (authenticationEnabled && !HasValidAuthenticationCookie(headers, remoteAddress))
@@ -3379,7 +3505,7 @@ public class TlsTerminatingProxy
         // /auth/ is a permanently reserved gate namespace. Unknown children
         // are answered locally and are never eligible for authenticated
         // forwarding to the viewer or signaling upstreams.
-        if (isCanonicalAuthenticationPath && !isLoginEndpoint && !isVerifyEndpoint && !isTemporarySessionEndpoint && !isAccountSetupEndpoint)
+        if (isCanonicalAuthenticationPath && !isLoginEndpoint && !isVerifyEndpoint && !isStatusEndpoint && !isStreamStatusEndpoint && !isTemporarySessionEndpoint && !isAccountSetupEndpoint)
         {
             await WriteHttpResponseAsync(
                 stream,
@@ -3847,9 +3973,16 @@ public class TlsTerminatingProxy
     private async Task WriteTemporaryLinkRejectedAsync(Stream stream, int rejectionStatus)
     {
         byte[] rejectionImage = temporaryLinkUnavailableImageBytes;
-        if (rejectionImage.Length > 0)
+        byte[] rejectionMp4 = temporaryLinkUnavailableMp4Bytes;
+        byte[] rejectionWebm = temporaryLinkUnavailableWebmBytes;
+        if (rejectionImage.Length > 0 || rejectionMp4.Length > 0 || rejectionWebm.Length > 0)
         {
-            await WriteImageMessagePageAsync(stream, rejectionStatus, rejectionStatus == 403 ? "Forbidden" : "Gone", rejectionImage, "Temporary viewer link unavailable", null);
+            await WriteMediaMessagePageAsync(
+                stream, rejectionStatus, rejectionStatus == 403 ? "Forbidden" : "Gone",
+                rejectionImage, rejectionMp4, rejectionWebm,
+                TemporaryLinkUnavailableImageAssetPath, TemporaryLinkUnavailableMp4AssetPath, TemporaryLinkUnavailableWebmAssetPath,
+                "Temporary viewer link unavailable", null, null
+            );
             return;
         }
         await WriteHttpResponseAsync(stream, rejectionStatus, rejectionStatus == 403 ? "Forbidden" : "Gone", "text/plain; charset=utf-8", "This temporary viewer link is invalid, expired, already used, or unavailable from this client.", null);
@@ -3901,19 +4034,67 @@ public class TlsTerminatingProxy
         await WriteHttpResponseBytesAsync(stream, statusCode, reason, contentType, bodyBytes, additionalHeaders, scriptNonce, extraSetCookieHeaders);
     }
 
-    private static async Task WriteImageMessagePageAsync(Stream stream, int statusCode, string reason, byte[] imageBytes, string alternativeText, Dictionary<string, string> additionalHeaders, string refreshTarget = null)
+    private static bool TryGetMessageAsset(string path, out byte[] assetBytes, out string contentType)
     {
-        string encodedImage = Convert.ToBase64String(imageBytes ?? new byte[0]);
+        assetBytes = new byte[0];
+        contentType = "application/octet-stream";
+        if (string.Equals(path, TemporaryLinkUnavailableImageAssetPath, StringComparison.OrdinalIgnoreCase)) { assetBytes = temporaryLinkUnavailableImageBytes; contentType = "image/png"; }
+        else if (string.Equals(path, TemporaryLinkUnavailableMp4AssetPath, StringComparison.OrdinalIgnoreCase)) { assetBytes = temporaryLinkUnavailableMp4Bytes; contentType = "video/mp4"; }
+        else if (string.Equals(path, TemporaryLinkUnavailableWebmAssetPath, StringComparison.OrdinalIgnoreCase)) { assetBytes = temporaryLinkUnavailableWebmBytes; contentType = "video/webm"; }
+        else if (string.Equals(path, RestartImageAssetPath, StringComparison.OrdinalIgnoreCase)) { assetBytes = restartImageBytes; contentType = "image/png"; }
+        else if (string.Equals(path, RestartMp4AssetPath, StringComparison.OrdinalIgnoreCase)) { assetBytes = restartMp4Bytes; contentType = "video/mp4"; }
+        else if (string.Equals(path, RestartWebmAssetPath, StringComparison.OrdinalIgnoreCase)) { assetBytes = restartWebmBytes; contentType = "video/webm"; }
+        return assetBytes != null && assetBytes.Length > 0;
+    }
+
+    private static async Task WriteMediaMessagePageAsync(
+        Stream stream, int statusCode, string reason,
+        byte[] imageBytes, byte[] mp4Bytes, byte[] webmBytes,
+        string imageAssetPath, string mp4AssetPath, string webmAssetPath,
+        string alternativeText, Dictionary<string, string> additionalHeaders, string refreshTarget)
+    {
         string safeAlternativeText = WebUtility.HtmlEncode(alternativeText ?? "GStreamer Glass message");
-        string refreshMetadata = string.IsNullOrWhiteSpace(refreshTarget)
-            ? ""
-            : "<meta http-equiv=\"refresh\" content=\"2;url=" + WebUtility.HtmlEncode(GetSafeReturnTarget(refreshTarget)) + "\">";
+        bool hasImage = imageBytes != null && imageBytes.Length > 0;
+        bool hasMp4 = mp4Bytes != null && mp4Bytes.Length > 0;
+        bool hasWebm = webmBytes != null && webmBytes.Length > 0;
+        string poster = hasImage ? " poster=\"" + WebUtility.HtmlEncode(imageAssetPath) + "\"" : "";
+        string mediaMarkup;
+        if (hasMp4 || hasWebm)
+        {
+            string sources =
+                (hasWebm ? "<source src=\"" + WebUtility.HtmlEncode(webmAssetPath) + "\" type=\"video/webm\">" : "") +
+                (hasMp4 ? "<source src=\"" + WebUtility.HtmlEncode(mp4AssetPath) + "\" type=\"video/mp4\">" : "");
+            mediaMarkup = "<video autoplay muted loop playsinline preload=\"auto\"" + poster + " aria-label=\"" + safeAlternativeText + "\">" + sources + "</video>";
+        }
+        else
+        {
+            mediaMarkup = "<img src=\"" + WebUtility.HtmlEncode(imageAssetPath) + "\" alt=\"" + safeAlternativeText + "\">";
+        }
+
+        string scriptNonce = null;
+        string script = "";
+        if (!string.IsNullOrWhiteSpace(refreshTarget))
+        {
+            byte[] nonceBytes = new byte[16];
+            using (RandomNumberGenerator random = RandomNumberGenerator.Create()) { random.GetBytes(nonceBytes); }
+            scriptNonce = Base64UrlEncode(nonceBytes);
+            string safeReturn = GetSafeReturnTarget(refreshTarget);
+            script = "<script nonce=\"" + scriptNonce + "\" data-return=\"" + WebUtility.HtmlEncode(safeReturn) + "\" data-title=\"" + safeAlternativeText + "\">" +
+                "(function(){var s=document.currentScript,t=s.dataset.return,title=s.dataset.title||'GStreamer Glass',v=document.querySelector('video'),w=null;" +
+                "function play(){if(v){v.muted=true;v.defaultMuted=true;var p=v.play();if(p&&p.catch)p.catch(function(){});}}" +
+                "function wake(){if(!('wakeLock' in navigator)||document.visibilityState!=='visible')return;navigator.wakeLock.request('screen').then(function(x){w=x;}).catch(function(){});}" +
+                "function check(){fetch('/auth/stream-status?reload='+Date.now(),{cache:'no-store',credentials:'same-origin'}).then(function(r){return r.ok?r.json():null;}).then(function(x){if(!x)return;if(x.authenticated===false){var u=new URL('/auth/login',location.href);u.searchParams.set('return',t);location.replace(u.href);return;}if(x.forwardingPaused===false)location.replace(t);}).catch(function(){});}" +
+                "function activate(){play();wake();}" +
+                "if('mediaSession' in navigator){try{navigator.mediaSession.metadata=new MediaMetadata({title:title,artist:'GStreamer Glass',album:'Live broadcast'});navigator.mediaSession.playbackState='playing';navigator.mediaSession.setActionHandler('play',play);}catch(e){}}" +
+                "document.addEventListener('visibilitychange',function(){if(document.visibilityState==='visible')activate();});" +
+                "document.addEventListener('pointerdown',activate,{passive:true});play();wake();check();setInterval(check,2000);})();</script>";
+        }
         string html = "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1,viewport-fit=cover\">" +
-            refreshMetadata + "<meta name=\"robots\" content=\"noindex,nofollow,noarchive,nosnippet,noimageindex\"><title>" + safeAlternativeText + "</title>" +
+            "<meta name=\"robots\" content=\"noindex,nofollow,noarchive,nosnippet,noimageindex\"><title>" + safeAlternativeText + "</title>" +
             "<style>html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#000;color-scheme:dark}body{display:grid;place-items:center}" +
-            "img{display:block;max-width:100vw;max-height:100vh;width:auto;height:auto;object-fit:contain}</style></head>" +
-            "<body><img src=\"data:image/png;base64," + encodedImage + "\" alt=\"" + safeAlternativeText + "\"></body></html>";
-        await WriteHttpResponseAsync(stream, statusCode, reason, "text/html; charset=utf-8", html, additionalHeaders);
+            "video,img{display:block;max-width:100vw;max-height:100vh;width:auto;height:auto;object-fit:contain;background:#000}</style></head>" +
+            "<body>" + mediaMarkup + script + "</body></html>";
+        await WriteHttpResponseAsync(stream, statusCode, reason, "text/html; charset=utf-8", html, additionalHeaders, scriptNonce);
     }
 
     private static async Task WriteHttpResponseBytesAsync(Stream stream, int statusCode, string reason, string contentType, byte[] bodyBytes, Dictionary<string, string> additionalHeaders, string scriptNonce = null, IEnumerable<string> extraSetCookieHeaders = null)
@@ -3946,7 +4127,7 @@ public class TlsTerminatingProxy
         // the browser silently refuses to actually fetch either one, so
         // Chrome never sees a valid manifest and never offers to install
         // the page at all, regardless of how correct the markup is.
-        string contentSecurityPolicy = "default-src 'none'; style-src 'unsafe-inline'; manifest-src 'self'; img-src 'self' data:; form-action 'self'; frame-ancestors 'none'";
+        string contentSecurityPolicy = "default-src 'none'; style-src 'unsafe-inline'; manifest-src 'self'; img-src 'self' data:; media-src 'self' data:; connect-src 'self'; form-action 'self'; frame-ancestors 'none'";
         if (!string.IsNullOrEmpty(scriptNonce))
         {
             contentSecurityPolicy += "; script-src 'nonce-" + scriptNonce + "'";
@@ -4857,7 +5038,15 @@ if ($AuthProxyWorker) {
                         $proxy.Label = [string]$portInfo.Label
                         $proxy.AuthenticationMountPath = [string]$Command.AuthenticationMountPath
                         $proxy.ConfigureTemporaryLinkUnavailableImage([string]$Command.TemporaryLinkUnavailableImagePath)
+                        $proxy.ConfigureTemporaryLinkUnavailableVideos(
+                            [string]$Command.TemporaryLinkUnavailableVideoMp4Path,
+                            [string]$Command.TemporaryLinkUnavailableVideoWebmPath
+                        )
                         $proxy.ConfigureRestartImage([string]$Command.RestartImagePath)
+                        $proxy.ConfigureRestartVideos(
+                            [string]$Command.RestartVideoMp4Path,
+                            [string]$Command.RestartVideoWebmPath
+                        )
                         $proxy.ConfigureTrustedForwardingProxies([string[]]@($Command.TrustedForwardingProxyAddresses))
                         foreach ($route in @($portInfo.PathRoutes)) {
                             $proxy.AddPathRoute([string]$route.Path, [int]$route.Port)
@@ -5307,6 +5496,7 @@ $script:DefaultViewerAuthenticationSessionHours = 12
 $script:DefaultViewerAuthenticationAllowPlaintext = $false
 $script:DefaultViewerAuthenticationKeepOnRestart = $false
 $script:DefaultViewerAuthenticationKeepOnExit = $false
+$script:DefaultViewerAuthenticationStartOnLaunch = $false
 $script:DefaultViewerAuthenticationTemporaryLinkProxyDomain = ''
 $script:DefaultViewerAuthenticationTemporaryLinkMinutes = 60
 $script:DefaultViewerAuthenticationTemporaryLinkSingleUse = $false

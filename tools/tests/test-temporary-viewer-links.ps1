@@ -15,6 +15,8 @@ $settingsSource = Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'src\24-Set
 $uiSource = Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'src\90-MainWindow.ps1')
 $layoutSource = Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'src\12-MainDashboardUi.ps1')
 $rejectionImagePath = Join-Path $repoRoot 'gstwebrtc-api\dist\temporary-viewer-link-unavailable.png'
+$rejectionMp4Path = Join-Path $repoRoot 'gstwebrtc-api\dist\temporary-viewer-link-unavailable-glitch.mp4'
+$rejectionWebmPath = Join-Path $repoRoot 'gstwebrtc-api\dist\temporary-viewer-link-unavailable-glitch.webm'
 $viewerIndexSource = Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'gstwebrtc-api\dist\index.html')
 $viewerRobotsSource = Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'gstwebrtc-api\dist\robots.txt')
 $viewerManifestSource = Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'gstwebrtc-api\dist\gstglass-webui-manifest.json')
@@ -122,14 +124,21 @@ try {
     $response = Redeem-Link $port $singleUse.Token
     Assert-TemporaryLink $response.StartsWith('HTTP/1.1 303') 'Single-use temporary link failed on first redemption.'
     Assert-TemporaryLink (Test-Path -LiteralPath $rejectionImagePath -PathType Leaf) 'Temporary-link rejection image is missing.'
+    Assert-TemporaryLink (Test-Path -LiteralPath $rejectionMp4Path -PathType Leaf) 'Temporary-link rejection MP4 is missing.'
+    Assert-TemporaryLink (Test-Path -LiteralPath $rejectionWebmPath -PathType Leaf) 'Temporary-link rejection WebM is missing.'
     $proxy.ConfigureTemporaryLinkUnavailableImage($rejectionImagePath)
+    $proxy.ConfigureTemporaryLinkUnavailableVideos($rejectionMp4Path, $rejectionWebmPath)
     $response = Redeem-Link $port $singleUse.Token
     Assert-TemporaryLink $response.StartsWith('HTTP/1.1 410') 'Single-use temporary link was accepted more than once.'
     Assert-TemporaryLink ($response -match '(?im)^Content-Type:\s*text/html; charset=utf-8\s*$') 'Rejected temporary link did not return an artwork message page.'
     Assert-TemporaryLink ($response.Contains('html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#000')) 'Temporary-link message page does not enforce a black viewport.'
-    $expectedRejectionImage = [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($rejectionImagePath))
-    Assert-TemporaryLink ($response.Contains('data:image/png;base64,' + $expectedRejectionImage)) 'Temporary-link message page did not embed the complete rejection artwork.'
+    Assert-TemporaryLink ($response.Contains('<video autoplay muted loop playsinline preload="auto" poster="/auth/assets/temporary-link-unavailable.png"')) 'Temporary-link message page does not autoplay its looping video with the PNG poster.'
+    Assert-TemporaryLink ($response.Contains('<source src="/auth/assets/temporary-link-unavailable.webm" type="video/webm">')) 'Temporary-link message page does not prefer its WebM source.'
+    Assert-TemporaryLink ($response.Contains('<source src="/auth/assets/temporary-link-unavailable.mp4" type="video/mp4">')) 'Temporary-link message page does not offer its MP4 fallback.'
+    Assert-TemporaryLink ($response -match "(?im)^Content-Security-Policy:.*media-src 'self' data:") 'Temporary-link message page CSP blocks its videos.'
+    Assert-TemporaryLink ($response -notmatch '<script') 'Terminal temporary-link rejection page unexpectedly polls or redirects.'
     $proxy.ConfigureTemporaryLinkUnavailableImage('')
+    $proxy.ConfigureTemporaryLinkUnavailableVideos('', '')
 
     $bound = $proxy.CreateTemporaryAuthenticationLink('viewer', 5, $false, '198.51.100.10')
     $response = Redeem-Link $port $bound.Token '203.0.113.20'
@@ -318,6 +327,8 @@ Assert-TemporaryLink ($uiSource -match 'Generate account setup link') 'Account s
 Assert-TemporaryLink ($viewerIndexSource -match '<meta name="robots" content="noindex, nofollow, noarchive, nosnippet, noimageindex">') 'The viewer document is missing its no-index policy.'
 Assert-TemporaryLink ($viewerRobotsSource -match '(?ms)^User-agent:\s*\*.*^Disallow:\s*/\s*$') 'The bundled web root is missing its deny-all robots.txt.'
 Assert-TemporaryLink ($viewerManifestSource -match '"robots\.txt"') 'The web UI manifest does not deploy robots.txt to the working web root.'
+Assert-TemporaryLink ($viewerManifestSource -match '"temporary-viewer-link-unavailable-glitch\.mp4"') 'The web UI manifest does not deploy the temporary-link MP4.'
+Assert-TemporaryLink ($viewerManifestSource -match '"temporary-viewer-link-unavailable-glitch\.webm"') 'The web UI manifest does not deploy the temporary-link WebM.'
 Assert-TemporaryLink ($iisProxySource -match 'X-Robots-Tag.*noindex, nofollow, noarchive, nosnippet, noimageindex') 'The IIS proxy example does not mark the entire proxied viewer non-indexable.'
 Assert-TemporaryLink ($proxySource -match "Type\s*=\s*'RevokeTemporaryLink'") 'Temporary-link revocation is not wired to the auth worker.'
 

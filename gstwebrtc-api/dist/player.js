@@ -1,7 +1,8 @@
 (() => {
-  const FRONTEND_VERSION = '3.8-viewer-auth-52';
+  const FRONTEND_VERSION = '3.8-viewer-auth-54';
   const VIEWER_THEME_COLOR = '#000000';
   const VIEWER_DISPLAY_SETTINGS_KEY = 'gstglass-viewer-display-v1';
+  const STREAM_STATE_SNAPSHOT_KEY = 'gstglass-stream-state-snapshot-v1';
   const RESTART_PAGE_GRACE_MS = 7000;
   console.info(`[GStreamer Glass Live] frontend ${FRONTEND_VERSION}`);
 
@@ -86,6 +87,34 @@
   video.setAttribute('webkit-playsinline', '');
   try { video.disableRemotePlayback = true; } catch (_) {}
 
+  function normalizeStreamStateSnapshot(data, manualResumeRequired = false) {
+    if (!data || typeof data !== 'object') return null;
+    return {
+      intentionalStop: !!data.intentionalStop,
+      restarting: !!data.restarting,
+      transition: String(data.transition || ''),
+      transitionToken: String(data.transitionToken || ''),
+      authRevokedToken: String(data.authRevokedToken || ''),
+      writtenUtc: String(data.writtenUtc || ''),
+      manualResumeRequired: !!manualResumeRequired
+    };
+  }
+
+  function loadStreamStateSnapshot() {
+    try {
+      const parsed = JSON.parse(sessionStorage.getItem(STREAM_STATE_SNAPSHOT_KEY) || 'null');
+      return normalizeStreamStateSnapshot(parsed, !!(parsed && parsed.manualResumeRequired));
+    } catch (_) { return null; }
+  }
+
+  function writeStreamStateSnapshot(snapshot) {
+    if (!snapshot) return;
+    try { sessionStorage.setItem(STREAM_STATE_SNAPSHOT_KEY, JSON.stringify(snapshot)); }
+    catch (_) {}
+  }
+
+  const restoredStreamState = loadStreamStateSnapshot();
+  const restoredStopResumeLock = !!(restoredStreamState && restoredStreamState.manualResumeRequired);
   const state = {
     ws: null,
     peerId: null,
@@ -99,15 +128,16 @@
     started: false,
     reconnectTimer: null,
     reconnectAttempts: 0,
-    intentionalStopMarker: false,
+    intentionalStopMarker: !!(restoredStreamState && restoredStreamState.intentionalStop),
     streamStateKnown: false,
     streamStateRequestToken: 0,
-    streamTransitionToken: null,
-    authRevokedToken: null,
-    restartPending: false,
+    streamTransitionToken: restoredStreamState ? restoredStreamState.transitionToken : null,
+    authRevokedToken: restoredStreamState ? restoredStreamState.authRevokedToken : null,
+    lastStreamStateSnapshot: restoredStreamState,
+    restartPending: !!(restoredStreamState && restoredStreamState.restarting),
     restartPageTimer: null,
-    manualResumeRequired: false,
-    stopResumeLocked: false,
+    manualResumeRequired: restoredStopResumeLock,
+    stopResumeLocked: restoredStopResumeLock,
     proxyPairRetryCount: 0,
     proxyPairRetrying: false,
     proxyPairLocalTicks: 0,
@@ -520,6 +550,23 @@
     connect();
   }
 
+  function setStopResumeLock(locked) {
+    state.stopResumeLocked = !!locked;
+    const source = state.lastStreamStateSnapshot || {
+      intentionalStop: state.intentionalStopMarker,
+      restarting: state.restartPending,
+      transitionToken: state.streamTransitionToken,
+      authRevokedToken: state.authRevokedToken
+    };
+    state.lastStreamStateSnapshot = normalizeStreamStateSnapshot(source, state.stopResumeLocked);
+    writeStreamStateSnapshot(state.lastStreamStateSnapshot);
+  }
+
+  function rememberStreamState(data) {
+    state.lastStreamStateSnapshot = normalizeStreamStateSnapshot(data, state.stopResumeLocked);
+    writeStreamStateSnapshot(state.lastStreamStateSnapshot);
+  }
+
   function cancelRestartPageRedirect() {
     if (state.restartPageTimer) clearTimeout(state.restartPageTimer);
     state.restartPageTimer = null;
@@ -533,6 +580,11 @@
       // Keep this flag intact when the proxy has already paused forwarding and
       // the state-file request itself starts returning the holding page.
       if (!state.restartPending) return;
+      // Preserve the last complete state document and its manual-resume bit in
+      // the current browsing session before replacing /live/ with the proxy's
+      // holding page. The next player document restores this snapshot instead
+      // of treating the return navigation as a brand-new viewer.
+      writeStreamStateSnapshot(state.lastStreamStateSnapshot);
       const viewerUrl = new URL('./', window.location.href);
       log('Stream restart exceeded grace period; opening restart page', viewerUrl.href);
       location.replace(viewerUrl.href);
@@ -621,6 +673,7 @@
         throw new Error(`HTTP ${res.status}`);
       }
       const data = await res.json();
+      rememberStreamState(data);
       const transition = String(data.transition || '');
       const transitionToken = String(data.transitionToken || '');
       const transitionChanged = state.streamTransitionToken !== null &&
@@ -658,14 +711,14 @@
         cancelRestartPageRedirect();
         state.restartPending = false;
         state.manualResumeRequired = true;
-        state.stopResumeLocked = true;
+        setStopResumeLock(true);
         stopSignaling('intentional-stop');
         setStatus('Stream stopped', 'The broadcaster intentionally stopped the stream.', 'warn');
       } else if (transitionChanged && transition === 'stop') {
         cancelRestartPageRedirect();
         state.restartPending = false;
         state.manualResumeRequired = true;
-        state.stopResumeLocked = true;
+        setStopResumeLock(true);
         stopSignaling('manual-resume-required');
         setStatus('Available', 'Press Play to connect.', 'good');
       } else if (transitionChanged && transition === 'restart') {
@@ -3116,7 +3169,7 @@
   function toggleLogicalPause() {
     if (state.manualResumeRequired && state.streamStateKnown && !state.intentionalStopMarker) {
       state.manualResumeRequired = false;
-      state.stopResumeLocked = false;
+      setStopResumeLock(false);
       state.reconnectAttempts = 0;
       state.splitAudio.reconnectAttempts = 0;
       noteUserGesture(false);

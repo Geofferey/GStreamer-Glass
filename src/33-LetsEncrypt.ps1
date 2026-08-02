@@ -1010,6 +1010,67 @@ function Test-KeepAuthenticationOnExit {
     return [bool]($chkViewerAuthenticationKeepOnExit -and $chkViewerAuthenticationKeepOnExit.Checked -and (Test-ViewerAuthenticationEnabled))
 }
 
+function Test-StartAuthenticationOnLaunch {
+    return [bool]($chkViewerAuthenticationStartOnLaunch -and $chkViewerAuthenticationStartOnLaunch.Checked -and (Test-ViewerAuthenticationEnabled))
+}
+
+function Test-ActiveAuthenticationProxyHasSamePortMapping {
+    foreach ($portInfo in @(@($script:LetsEncryptTlsProxies) + @($script:PlaintextAuthProxies))) {
+        if (-not $portInfo) { continue }
+        if ([int]$portInfo.ExternalPort -gt 0 -and [int]$portInfo.ExternalPort -eq [int]$portInfo.InternalPort) {
+            return $true
+        }
+    }
+    return $false
+}
+
+# Starts only the authentication listener families selected by the saved UI
+# configuration. GStreamer is not running yet, so forwarding remains paused and
+# authenticated viewers receive the normal restart artwork instead of a failed
+# upstream connection. For same external/internal port mappings that pause is
+# also mandatory: it prevents the listener from connecting back to itself.
+# Start-GstStream owns the matching Resume-ActiveAuthenticationProxyForwarding
+# call after the real upstream listeners have started.
+function Start-AuthenticationOnApplicationLaunch {
+    if (-not ($chkViewerAuthenticationStartOnLaunch -and $chkViewerAuthenticationStartOnLaunch.Checked)) { return $false }
+    if (-not (Test-StartAuthenticationOnLaunch)) {
+        Append-Log 'AUTH: start on launch is enabled, but Require viewer login is disabled; no auth listeners were started'
+        return $false
+    }
+
+    $tlsRequested = [bool](Test-EmbeddedTlsActive)
+    $plaintextRequested = [bool](Test-PlaintextAuthActive)
+    if (-not $tlsRequested -and -not $plaintextRequested) {
+        Append-Log 'AUTH: start on launch is enabled, but neither embedded TLS nor plaintext authentication is active'
+        return $false
+    }
+
+    if ($tlsRequested) {
+        try { Start-LetsEncryptTlsProxies }
+        catch { Append-Log "ACME: start-on-launch TLS proxy failed: $($_.Exception.Message)" }
+    }
+    if ($plaintextRequested) {
+        try { Start-PlaintextAuthProxies }
+        catch { Append-Log "AUTH: start-on-launch plaintext proxy failed: $($_.Exception.Message)" }
+    }
+
+    $started = [bool]((@($script:LetsEncryptTlsProxies).Count -gt 0) -or (@($script:PlaintextAuthProxies).Count -gt 0))
+    if (-not $started) {
+        Append-Log 'AUTH: start on launch was requested, but no authentication proxy listener started successfully'
+        return $false
+    }
+
+    $hasSamePortMapping = Test-ActiveAuthenticationProxyHasSamePortMapping
+    Suspend-ActiveAuthenticationProxyForwarding
+    if ($hasSamePortMapping) {
+        Append-Log 'AUTH: authentication proxy listeners started on application launch; same-port forwarding is paused until the stream starts'
+    }
+    else {
+        Append-Log 'AUTH: authentication proxy listeners started on application launch; forwarding is paused on the restart page until the stream starts (external and upstream ports differ)'
+    }
+    return $true
+}
+
 function Get-PersistedAuthenticationStateEntropy {
     $bytes = [System.Text.Encoding]::UTF8.GetBytes('GStreamer Glass viewer authentication state v1')
     $sha256 = $null
@@ -1632,7 +1693,7 @@ function Update-ViewerAuthenticationUi {
         $btnViewerAuthenticationAddAccount, $btnViewerAuthenticationRemoveAccount,
         $btnViewerAuthenticationEnableTotp, $btnViewerAuthenticationDisableTotp,
         $numViewerAuthenticationSessionHours, $chkViewerAuthenticationAllowPlaintext,
-        $chkViewerAuthenticationKeepOnRestart, $chkViewerAuthenticationKeepOnExit, $lstViewerAuthenticationTrustedProxies,
+        $chkViewerAuthenticationKeepOnRestart, $chkViewerAuthenticationKeepOnExit, $chkViewerAuthenticationStartOnLaunch, $lstViewerAuthenticationTrustedProxies,
         $chkViewerAuthenticationSetupLinkRequireTotp, $btnViewerAuthenticationGenerateSetupLink,
         $txtViewerAuthenticationTrustedProxy, $btnViewerAuthenticationTrustedProxyAdd,
         $btnViewerAuthenticationTrustedProxyRemove
@@ -2203,15 +2264,16 @@ function Stop-AuthProxyWorkerIfViewerAuthenticationDisabled {
     return $true
 }
 
-function Resolve-ViewerAuthenticationTemporaryLinkUnavailableImagePath {
-    $fileName = 'temporary-viewer-link-unavailable.png'
+function Resolve-ViewerAuthenticationMessageAssetPath {
+    param([Parameter(Mandatory)][string]$FileName)
+
     foreach ($directory in @(
         (Get-DirectWebRtcWorkingWebDirectory),
         (Get-BundledDirectWebRtcWebDirectory)
     )) {
         if ([string]::IsNullOrWhiteSpace([string]$directory)) { continue }
         try {
-            $candidate = Join-Path ([System.IO.Path]::GetFullPath([string]$directory)) $fileName
+            $candidate = Join-Path ([System.IO.Path]::GetFullPath([string]$directory)) $FileName
             if (Test-Path -LiteralPath $candidate -PathType Leaf) { return $candidate }
         }
         catch {}
@@ -2219,20 +2281,12 @@ function Resolve-ViewerAuthenticationTemporaryLinkUnavailableImagePath {
     return ''
 }
 
+function Resolve-ViewerAuthenticationTemporaryLinkUnavailableImagePath {
+    return Resolve-ViewerAuthenticationMessageAssetPath -FileName 'temporary-viewer-link-unavailable.png'
+}
+
 function Resolve-ViewerAuthenticationRestartImagePath {
-    $fileName = 'well-be-right-back.png'
-    foreach ($directory in @(
-        (Get-DirectWebRtcWorkingWebDirectory),
-        (Get-BundledDirectWebRtcWebDirectory)
-    )) {
-        if ([string]::IsNullOrWhiteSpace([string]$directory)) { continue }
-        try {
-            $candidate = Join-Path ([System.IO.Path]::GetFullPath([string]$directory)) $fileName
-            if (Test-Path -LiteralPath $candidate -PathType Leaf) { return $candidate }
-        }
-        catch {}
-    }
-    return ''
+    return Resolve-ViewerAuthenticationMessageAssetPath -FileName 'well-be-right-back.png'
 }
 
 function Start-LetsEncryptTlsProxies {
@@ -2261,7 +2315,11 @@ function Start-LetsEncryptTlsProxies {
     $viewerMountSegment = [string](Get-DirectWebRtcWebServerPathSegment)
     $authenticationMountPath = if ([string]::IsNullOrWhiteSpace($viewerMountSegment)) { '' } else { "/$($viewerMountSegment.Trim('/'))" }
     $temporaryLinkUnavailableImagePath = Resolve-ViewerAuthenticationTemporaryLinkUnavailableImagePath
+    $temporaryLinkUnavailableVideoMp4Path = Resolve-ViewerAuthenticationMessageAssetPath -FileName 'temporary-viewer-link-unavailable-glitch.mp4'
+    $temporaryLinkUnavailableVideoWebmPath = Resolve-ViewerAuthenticationMessageAssetPath -FileName 'temporary-viewer-link-unavailable-glitch.webm'
     $restartImagePath = Resolve-ViewerAuthenticationRestartImagePath
+    $restartVideoMp4Path = Resolve-ViewerAuthenticationMessageAssetPath -FileName 'well-be-right-back-glitch.mp4'
+    $restartVideoWebmPath = Resolve-ViewerAuthenticationMessageAssetPath -FileName 'well-be-right-back-glitch.webm'
 
     # Account data is deliberately NOT part of this signature -- adding,
     # removing, or editing viewer accounts is handled live via
@@ -2274,7 +2332,11 @@ function Start-LetsEncryptTlsProxies {
         [string]$authenticationEnabled,
         [string]$authenticationMountPath,
         [string]$temporaryLinkUnavailableImagePath,
+        [string]$temporaryLinkUnavailableVideoMp4Path,
+        [string]$temporaryLinkUnavailableVideoWebmPath,
         [string]$restartImagePath,
+        [string]$restartVideoMp4Path,
+        [string]$restartVideoWebmPath,
         [string]($trustedForwardingProxyAddresses -join ','),
         [string]$numViewerAuthenticationSessionHours.Value,
         [string]$numDirectWebRtcSignalingPort.Value,
@@ -2350,7 +2412,11 @@ function Start-LetsEncryptTlsProxies {
         Ports                   = @($ports)
         AuthenticationMountPath = $authenticationMountPath
         TemporaryLinkUnavailableImagePath = $temporaryLinkUnavailableImagePath
+        TemporaryLinkUnavailableVideoMp4Path = $temporaryLinkUnavailableVideoMp4Path
+        TemporaryLinkUnavailableVideoWebmPath = $temporaryLinkUnavailableVideoWebmPath
         RestartImagePath          = $restartImagePath
+        RestartVideoMp4Path       = $restartVideoMp4Path
+        RestartVideoWebmPath      = $restartVideoWebmPath
         AuthenticationEnabled   = [bool]$authenticationEnabled
         Accounts                = (Get-ViewerAuthenticationAccountObjects -Accounts $authenticationAccounts)
         SessionHours            = [int]$numViewerAuthenticationSessionHours.Value
@@ -2416,14 +2482,22 @@ function Start-PlaintextAuthProxies {
     $viewerMountSegment = [string](Get-DirectWebRtcWebServerPathSegment)
     $authenticationMountPath = if ([string]::IsNullOrWhiteSpace($viewerMountSegment)) { '' } else { "/$($viewerMountSegment.Trim('/'))" }
     $temporaryLinkUnavailableImagePath = Resolve-ViewerAuthenticationTemporaryLinkUnavailableImagePath
+    $temporaryLinkUnavailableVideoMp4Path = Resolve-ViewerAuthenticationMessageAssetPath -FileName 'temporary-viewer-link-unavailable-glitch.mp4'
+    $temporaryLinkUnavailableVideoWebmPath = Resolve-ViewerAuthenticationMessageAssetPath -FileName 'temporary-viewer-link-unavailable-glitch.webm'
     $restartImagePath = Resolve-ViewerAuthenticationRestartImagePath
+    $restartVideoMp4Path = Resolve-ViewerAuthenticationMessageAssetPath -FileName 'well-be-right-back-glitch.mp4'
+    $restartVideoWebmPath = Resolve-ViewerAuthenticationMessageAssetPath -FileName 'well-be-right-back-glitch.webm'
 
     # Account data deliberately excluded -- see the matching comment in
     # Start-LetsEncryptTlsProxies.
     $configurationSignature = @(
         [string]$authenticationMountPath,
         [string]$temporaryLinkUnavailableImagePath,
+        [string]$temporaryLinkUnavailableVideoMp4Path,
+        [string]$temporaryLinkUnavailableVideoWebmPath,
         [string]$restartImagePath,
+        [string]$restartVideoMp4Path,
+        [string]$restartVideoWebmPath,
         [string]($trustedForwardingProxyAddresses -join ','),
         [string]$numViewerAuthenticationSessionHours.Value,
         [string]$numDirectWebRtcSignalingPort.Value,
@@ -2482,7 +2556,11 @@ function Start-PlaintextAuthProxies {
         Ports                   = @($ports)
         AuthenticationMountPath = $authenticationMountPath
         TemporaryLinkUnavailableImagePath = $temporaryLinkUnavailableImagePath
+        TemporaryLinkUnavailableVideoMp4Path = $temporaryLinkUnavailableVideoMp4Path
+        TemporaryLinkUnavailableVideoWebmPath = $temporaryLinkUnavailableVideoWebmPath
         RestartImagePath          = $restartImagePath
+        RestartVideoMp4Path       = $restartVideoMp4Path
+        RestartVideoWebmPath      = $restartVideoWebmPath
         AuthenticationEnabled   = $true
         Accounts                = (Get-ViewerAuthenticationAccountObjects -Accounts $authenticationAccounts)
         SessionHours            = [int]$numViewerAuthenticationSessionHours.Value

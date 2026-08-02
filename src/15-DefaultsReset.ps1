@@ -245,6 +245,7 @@ function Reset-LetsEncryptDefaults {
     $chkViewerAuthenticationAllowPlaintext.Checked = $script:DefaultViewerAuthenticationAllowPlaintext
     $chkViewerAuthenticationKeepOnRestart.Checked = $script:DefaultViewerAuthenticationKeepOnRestart
     $chkViewerAuthenticationKeepOnExit.Checked = $script:DefaultViewerAuthenticationKeepOnExit
+    $chkViewerAuthenticationStartOnLaunch.Checked = $script:DefaultViewerAuthenticationStartOnLaunch
     $txtViewerAuthenticationTemporaryLinkProxyDomain.Text = $script:DefaultViewerAuthenticationTemporaryLinkProxyDomain
     $numViewerAuthenticationTemporaryLinkMinutes.Value = $script:DefaultViewerAuthenticationTemporaryLinkMinutes
     $chkViewerAuthenticationTemporaryLinkSingleUse.Checked = $script:DefaultViewerAuthenticationTemporaryLinkSingleUse
