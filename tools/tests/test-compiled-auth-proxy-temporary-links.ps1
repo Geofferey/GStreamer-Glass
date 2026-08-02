@@ -133,7 +133,9 @@ try {
     Assert-CompiledTemporaryLink ([int]$revokeReply.SessionsRevoked -ge 1) 'Compiled auth worker did not invalidate the redeemed viewer session.'
     $redeemResponse = Send-PlainRequest $externalPort "GET $redeemTarget HTTP/1.1`r`nHost: localhost`r`nConnection: close`r`n`r`n"
     Assert-CompiledTemporaryLink $redeemResponse.StartsWith('HTTP/1.1 410') 'Compiled auth worker accepted a revoked temporary link.'
-    Assert-CompiledTemporaryLink ($redeemResponse -match '(?im)^Content-Type:\s*image/png\s*$') 'Compiled auth worker did not serve the temporary-link rejection image.'
+    Assert-CompiledTemporaryLink ($redeemResponse -match '(?im)^Content-Type:\s*text/html; charset=utf-8\s*$') 'Compiled auth worker did not serve the temporary-link artwork message page.'
+    Assert-CompiledTemporaryLink ($redeemResponse.Contains('html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#000')) 'Compiled auth worker temporary-link message page does not enforce a black viewport.'
+    Assert-CompiledTemporaryLink ($redeemResponse.Contains('data:image/png;base64,')) 'Compiled auth worker temporary-link message page did not embed its rejection artwork.'
     $statusResponse = Send-PlainRequest $externalPort "GET /auth/status HTTP/1.1`r`nHost: localhost`r`nCookie: $cookie`r`nConnection: close`r`n`r`n"
     Assert-CompiledTemporaryLink ($statusResponse -match '\{"authenticated":false\}') 'Compiled auth worker still authenticated a session after its link was revoked.'
     $listReply = Send-WorkerCommand @{ Type = 'ListTemporaryLinks' }

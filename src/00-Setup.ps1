@@ -2779,7 +2779,7 @@ public class TlsTerminatingProxy
                         byte[] restartImage = restartImageBytes;
                         if (restartImage.Length > 0)
                         {
-                            await WriteHttpResponseBytesAsync(stream, 503, "Service Unavailable", "image/png", restartImage, restartHeaders);
+                            await WriteImageMessagePageAsync(stream, 503, "Service Unavailable", restartImage, "We'll Be Right Back!", restartHeaders);
                         }
                         else
                         {
@@ -3841,7 +3841,7 @@ public class TlsTerminatingProxy
         byte[] rejectionImage = temporaryLinkUnavailableImageBytes;
         if (rejectionImage.Length > 0)
         {
-            await WriteHttpResponseBytesAsync(stream, rejectionStatus, rejectionStatus == 403 ? "Forbidden" : "Gone", "image/png", rejectionImage, null);
+            await WriteImageMessagePageAsync(stream, rejectionStatus, rejectionStatus == 403 ? "Forbidden" : "Gone", rejectionImage, "Temporary viewer link unavailable", null);
             return;
         }
         await WriteHttpResponseAsync(stream, rejectionStatus, rejectionStatus == 403 ? "Forbidden" : "Gone", "text/plain; charset=utf-8", "This temporary viewer link is invalid, expired, already used, or unavailable from this client.", null);
@@ -3893,6 +3893,18 @@ public class TlsTerminatingProxy
         await WriteHttpResponseBytesAsync(stream, statusCode, reason, contentType, bodyBytes, additionalHeaders, scriptNonce, extraSetCookieHeaders);
     }
 
+    private static async Task WriteImageMessagePageAsync(Stream stream, int statusCode, string reason, byte[] imageBytes, string alternativeText, Dictionary<string, string> additionalHeaders)
+    {
+        string encodedImage = Convert.ToBase64String(imageBytes ?? new byte[0]);
+        string safeAlternativeText = WebUtility.HtmlEncode(alternativeText ?? "GStreamer Glass message");
+        string html = "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1,viewport-fit=cover\">" +
+            "<meta name=\"robots\" content=\"noindex,nofollow,noarchive,nosnippet,noimageindex\"><title>" + safeAlternativeText + "</title>" +
+            "<style>html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#000;color-scheme:dark}body{display:grid;place-items:center}" +
+            "img{display:block;max-width:100vw;max-height:100vh;width:auto;height:auto;object-fit:contain}</style></head>" +
+            "<body><img src=\"data:image/png;base64," + encodedImage + "\" alt=\"" + safeAlternativeText + "\"></body></html>";
+        await WriteHttpResponseAsync(stream, statusCode, reason, "text/html; charset=utf-8", html, additionalHeaders);
+    }
+
     private static async Task WriteHttpResponseBytesAsync(Stream stream, int statusCode, string reason, string contentType, byte[] bodyBytes, Dictionary<string, string> additionalHeaders, string scriptNonce = null, IEnumerable<string> extraSetCookieHeaders = null)
     {
         if (bodyBytes == null) bodyBytes = new byte[0];
@@ -3923,7 +3935,7 @@ public class TlsTerminatingProxy
         // the browser silently refuses to actually fetch either one, so
         // Chrome never sees a valid manifest and never offers to install
         // the page at all, regardless of how correct the markup is.
-        string contentSecurityPolicy = "default-src 'none'; style-src 'unsafe-inline'; manifest-src 'self'; img-src 'self'; form-action 'self'; frame-ancestors 'none'";
+        string contentSecurityPolicy = "default-src 'none'; style-src 'unsafe-inline'; manifest-src 'self'; img-src 'self' data:; form-action 'self'; frame-ancestors 'none'";
         if (!string.IsNullOrEmpty(scriptNonce))
         {
             contentSecurityPolicy += "; script-src 'nonce-" + scriptNonce + "'";

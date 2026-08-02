@@ -125,9 +125,10 @@ try {
     $proxy.ConfigureTemporaryLinkUnavailableImage($rejectionImagePath)
     $response = Redeem-Link $port $singleUse.Token
     Assert-TemporaryLink $response.StartsWith('HTTP/1.1 410') 'Single-use temporary link was accepted more than once.'
-    Assert-TemporaryLink ($response -match '(?im)^Content-Type:\s*image/png\s*$') 'Rejected temporary link did not return the PNG error image.'
-    $imageContentLength = [long]([regex]::Match($response, '(?im)^Content-Length:\s*(\d+)\s*$').Groups[1].Value)
-    Assert-TemporaryLink ($imageContentLength -eq (Get-Item -LiteralPath $rejectionImagePath).Length) 'Rejected temporary link returned incomplete image bytes.'
+    Assert-TemporaryLink ($response -match '(?im)^Content-Type:\s*text/html; charset=utf-8\s*$') 'Rejected temporary link did not return an artwork message page.'
+    Assert-TemporaryLink ($response.Contains('html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#000')) 'Temporary-link message page does not enforce a black viewport.'
+    $expectedRejectionImage = [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($rejectionImagePath))
+    Assert-TemporaryLink ($response.Contains('data:image/png;base64,' + $expectedRejectionImage)) 'Temporary-link message page did not embed the complete rejection artwork.'
     $proxy.ConfigureTemporaryLinkUnavailableImage('')
 
     $bound = $proxy.CreateTemporaryAuthenticationLink('viewer', 5, $false, '198.51.100.10')

@@ -102,11 +102,12 @@ function Invoke-PausedProxyResponse([string]$ImagePath) {
 $imageResponse = Invoke-PausedProxyResponse $restartImagePath
 $expectedImage = [System.IO.File]::ReadAllBytes($restartImagePath)
 Assert-RestartImage $imageResponse.Header.StartsWith('HTTP/1.1 503 Service Unavailable') 'Paused proxy did not return HTTP 503.'
-Assert-RestartImage ($imageResponse.Header -match '(?im)^Content-Type:\s*image/png\s*$') 'Paused proxy did not identify the restart artwork as PNG.'
-Assert-RestartImage ($imageResponse.Header -match ("(?im)^Content-Length:\s*" + $expectedImage.Length + "\s*$")) 'Paused proxy advertised the wrong restart-artwork length.'
+Assert-RestartImage ($imageResponse.Header -match '(?im)^Content-Type:\s*text/html; charset=utf-8\s*$') 'Paused proxy did not return the restart artwork in a message page.'
 Assert-RestartImage ($imageResponse.Header -match '(?im)^Retry-After:\s*2\s*$') 'Paused proxy lost its retry guidance.'
-Assert-RestartImage ($imageResponse.Body.Length -eq $expectedImage.Length) 'Paused proxy truncated the restart artwork.'
-Assert-RestartImage ([System.Linq.Enumerable]::SequenceEqual[byte]($imageResponse.Body, $expectedImage)) 'Paused proxy changed the restart artwork bytes.'
+$imageHtml = [System.Text.Encoding]::UTF8.GetString($imageResponse.Body)
+Assert-RestartImage ($imageHtml.Contains('html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#000')) 'Restart message page does not enforce a black viewport.'
+Assert-RestartImage ($imageHtml.Contains('data:image/png;base64,' + [Convert]::ToBase64String($expectedImage))) 'Restart message page does not contain the configured artwork.'
+Assert-RestartImage ($imageResponse.Header -match "(?im)^Content-Security-Policy:.*img-src 'self' data:") 'Restart message page CSP blocks its embedded artwork.'
 
 $fallbackResponse = Invoke-PausedProxyResponse ''
 $fallbackText = [System.Text.Encoding]::UTF8.GetString($fallbackResponse.Body)
