@@ -1,9 +1,9 @@
 (() => {
-  const FRONTEND_VERSION = '3.8-viewer-auth-54';
+  const FRONTEND_VERSION = '3.8-viewer-auth-55';
   const VIEWER_THEME_COLOR = '#000000';
   const VIEWER_DISPLAY_SETTINGS_KEY = 'gstglass-viewer-display-v1';
   const STREAM_STATE_SNAPSHOT_KEY = 'gstglass-stream-state-snapshot-v1';
-  const RESTART_PAGE_GRACE_MS = 7000;
+  const RESTART_PAGE_GRACE_MS = 0;
   console.info(`[GStreamer Glass Live] frontend ${FRONTEND_VERSION}`);
 
   function applyViewerThemeColor() {
@@ -662,11 +662,12 @@
       if (!res.ok) {
         // Settings-driven and automatic pipeline rebuilds can pause the auth
         // proxy without emitting the explicit viewer-restart marker first.
-        // Its local 503 is deliberately identifiable by the retry target it
-        // owns, so prolonged pauses still reach the holding page while an
-        // unrelated upstream/network failure does not force a navigation.
-        const refreshHeader = String(res.headers.get('Refresh') || '');
-        if (res.status === 503 && /^\s*2\s*;\s*url=/i.test(refreshHeader)) {
+        // Its local 503 carries an explicit proxy-owned marker, so prolonged
+        // pauses still reach the holding page while an unrelated upstream or
+        // network failure does not force a navigation. A Refresh header is
+        // intentionally not used because it would reset the looping video.
+        const forwardingPaused = String(res.headers.get('X-GStreamer-Glass-Forwarding-Paused') || '') === '1';
+        if (res.status === 503 && forwardingPaused) {
           state.restartPending = true;
           scheduleRestartPageRedirect();
         }

@@ -127,6 +127,7 @@ $imageResponse = $responses.Page
 Assert-RestartImage $imageResponse.Header.StartsWith('HTTP/1.1 503 Service Unavailable') 'Paused proxy did not return HTTP 503.'
 Assert-RestartImage ($imageResponse.Header -match '(?im)^Content-Type:\s*text/html; charset=utf-8\s*$') 'Paused proxy did not return the restart artwork in a message page.'
 Assert-RestartImage ($imageResponse.Header -match '(?im)^Retry-After:\s*2\s*$') 'Paused proxy lost its retry guidance.'
+Assert-RestartImage ($imageResponse.Header -match '(?im)^X-GStreamer-Glass-Forwarding-Paused:\s*1\s*$') 'Paused proxy lost the player-visible forwarding marker.'
 Assert-RestartImage ($imageResponse.Header -notmatch '(?im)^Refresh:') 'Restart video is reset by a full-page Refresh header.'
 $imageHtml = [System.Text.Encoding]::UTF8.GetString($imageResponse.Body)
 Assert-RestartImage ($imageHtml.Contains('html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#000')) 'Restart message page does not enforce a black viewport.'

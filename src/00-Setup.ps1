@@ -2855,7 +2855,11 @@ public class TlsTerminatingProxy
                         restartReturnPath = GetSafeReturnTarget(restartReturnPath);
                         Dictionary<string, string> restartHeaders = new Dictionary<string, string>
                         {
-                            { "Retry-After", "2" }
+                            { "Retry-After", "2" },
+                            // Stable machine-readable contract for player.js.
+                            // Do not restore the old Refresh header: refreshing
+                            // the holding document resets its looping video.
+                            { "X-GStreamer-Glass-Forwarding-Paused", "1" }
                         };
                         byte[] restartImage = restartImageBytes;
                         byte[] restartMp4 = restartMp4Bytes;

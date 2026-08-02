@@ -8,6 +8,7 @@ const vm = require('vm');
 
 const repoRoot = path.resolve(__dirname, '..', '..');
 const source = fs.readFileSync(path.join(repoRoot, 'gstwebrtc-api', 'dist', 'player.js'), 'utf8');
+const proxySource = fs.readFileSync(path.join(repoRoot, 'src', '00-Setup.ps1'), 'utf8');
 
 function extractFunction(name) {
   const start = source.indexOf(`  function ${name}(`);
@@ -29,7 +30,7 @@ let nextTimer = 1;
 const navigations = [];
 const context = vm.createContext({
   URL,
-  RESTART_PAGE_GRACE_MS: 7000,
+  RESTART_PAGE_GRACE_MS: 5000,
   state: { restartPageTimer: null, restartPending: true },
   window: { location: { href: 'https://stream.example.test:8889/watch/?quality=high#debug' } },
   location: { replace: (target) => navigations.push(target) },
@@ -54,7 +55,7 @@ vm.runInContext([
 context.scheduleRestartPageRedirect();
 const firstTimerId = context.state.restartPageTimer;
 assert(firstTimerId, 'restart page redirect was not scheduled');
-assert.strictEqual(scheduled.get(firstTimerId).delay, 7000, 'restart grace period is not seven seconds');
+assert.strictEqual(scheduled.get(firstTimerId).delay, 5000, 'restart grace period is not five seconds');
 context.scheduleRestartPageRedirect();
 assert.strictEqual(scheduled.size, 1, 'duplicate restart polls scheduled duplicate redirects');
 
@@ -70,7 +71,11 @@ assert.strictEqual(scheduled.get(cancelledTimerId).cleared, true, 'cancel did no
 
 assert(source.includes("if (data.restarting) {"), 'stream-state restart branch is missing');
 assert(source.includes('scheduleRestartPageRedirect();'), 'restart branch no longer schedules the holding page');
-assert(source.includes("res.status === 503 && /^\\s*2\\s*;\\s*url=/i.test(refreshHeader)"), 'proxy holding responses no longer schedule prolonged restart navigation');
+const pausedHeader = 'X-GStreamer-Glass-Forwarding-Paused';
+assert(source.includes('const RESTART_PAGE_GRACE_MS = 5000;'), 'packaged player does not use the five-second restart grace period');
+assert(source.includes(`res.headers.get('${pausedHeader}')`), 'player does not recognize the proxy-paused response marker');
+assert(proxySource.includes(`{ "${pausedHeader}", "1" }`), 'proxy does not emit the response marker expected by the player');
+assert(source.includes('res.status === 503 && forwardingPaused'), 'proxy holding responses no longer schedule prolonged restart navigation');
 assert(source.includes('function finishRestart() {\n    cancelRestartPageRedirect();'), 'successful restart no longer cancels the holding-page redirect');
 
 console.log('Player delayed restart-page redirect checks passed.');
