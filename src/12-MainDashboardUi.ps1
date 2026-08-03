@@ -850,6 +850,7 @@ function Apply-ModernDashboardUi {
     Add-Field $r -LabelControl $lblWebRtcSenderQueueMode -Control $cmbWebRtcSenderQueueMode -Width 180 | Out-Null
     Add-Field $r -LabelControl $lblCaptureQueueBuffers -Control $numCaptureQueueBuffers -Width 90 | Out-Null
     Add-Field $r -LabelControl $lblDirectWebRtcPacingMs -Control $numDirectWebRtcPacingMs -Width 90 | Out-Null
+    Add-Field $r -LabelControl $lblDirectWebRtcSenderQueueBuffers -Control $numDirectWebRtcSenderQueueBuffers -Width 90 | Out-Null
     $r = Add-Row $s
     Add-Field $r -LabelControl $lblVideoInputQueueLeakMode -Control $cmbVideoInputQueueLeakMode -Width 180 | Out-Null
     $r = Add-Row $s
@@ -994,6 +995,7 @@ function Apply-ModernDashboardUi {
     $s = Add-CollapsibleSection $paneAudio 'Audio queues'
     $r = Add-Row $s
     Add-Field $r -LabelControl $lblAudioQueueBuffers -Control $numAudioQueueBuffers -Width 90 | Out-Null
+    Add-Field $r -LabelControl $lblAudioOutputQueueBuffers -Control $numAudioOutputQueueBuffers -Width 90 | Out-Null
     Add-Field $r -LabelControl $lblAudioQueueCapMs -Control $numAudioQueueCapMs -Width 100 | Out-Null
     $r = Add-Row $s
     Add-Field $r -LabelControl $lblAudioInputQueueLeakMode -Control $cmbAudioInputQueueLeakMode -Width 180 | Out-Null

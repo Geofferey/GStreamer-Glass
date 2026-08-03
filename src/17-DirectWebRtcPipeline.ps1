@@ -571,6 +571,7 @@ function Apply-DirectWebRtcSmoothnessProfile {
             'Sane defaults' {
                 $cmbWebRtcSenderQueueMode.SelectedItem = 'Leaky live'
                 $numDirectWebRtcPacingMs.Value = 0
+                $numDirectWebRtcSenderQueueBuffers.Value = 2
                 $numDirectWebRtcPlayerJitterMs.Value = $script:DefaultDirectWebRtcPlayerJitterMs
                 $numDirectWebRtcVideoJitterMs.Value = $script:DefaultDirectWebRtcVideoJitterMs
                 $cmbDirectWebRtcCongestion.SelectedItem = 'disabled'
@@ -580,6 +581,7 @@ function Apply-DirectWebRtcSmoothnessProfile {
             'Lowest latency' {
                 $cmbWebRtcSenderQueueMode.SelectedItem = 'Leaky live'
                 $numDirectWebRtcPacingMs.Value = 0
+                $numDirectWebRtcSenderQueueBuffers.Value = 2
                 $numDirectWebRtcPlayerJitterMs.Value = 0
                 $numDirectWebRtcVideoJitterMs.Value = 0
                 $cmbDirectWebRtcCongestion.SelectedItem = 'disabled'
@@ -589,6 +591,7 @@ function Apply-DirectWebRtcSmoothnessProfile {
             'Balanced smooth' {
                 $cmbWebRtcSenderQueueMode.SelectedItem = 'Small cushion'
                 $numDirectWebRtcPacingMs.Value = 40
+                $numDirectWebRtcSenderQueueBuffers.Value = 4
                 $numDirectWebRtcPlayerJitterMs.Value = 60
                 $numDirectWebRtcVideoJitterMs.Value = 40
                 $cmbDirectWebRtcCongestion.SelectedItem = 'gcc'
@@ -598,6 +601,7 @@ function Apply-DirectWebRtcSmoothnessProfile {
             'WAN smooth' {
                 $cmbWebRtcSenderQueueMode.SelectedItem = 'Small cushion'
                 $numDirectWebRtcPacingMs.Value = 80
+                $numDirectWebRtcSenderQueueBuffers.Value = 4
                 $numDirectWebRtcPlayerJitterMs.Value = 100
                 $numDirectWebRtcVideoJitterMs.Value = 80
                 $cmbDirectWebRtcCongestion.SelectedItem = 'gcc'
@@ -607,6 +611,7 @@ function Apply-DirectWebRtcSmoothnessProfile {
             'Adaptive viewer' {
                 $cmbWebRtcSenderQueueMode.SelectedItem = 'Small cushion'
                 $numDirectWebRtcPacingMs.Value = 60
+                $numDirectWebRtcSenderQueueBuffers.Value = 4
                 $numDirectWebRtcPlayerJitterMs.Value = 80
                 $numDirectWebRtcVideoJitterMs.Value = 60
                 $cmbDirectWebRtcCongestion.SelectedItem = 'gcc'
@@ -626,6 +631,11 @@ function Get-DirectWebRtcPacingQueue {
     # Structurally honest: the visible cap is the emitted cap. Zero means no
     # max-size-time limit in every mode; presets may set a nonzero value explicitly.
     $ms = [Math]::Max(0, [int]$numDirectWebRtcPacingMs.Value)
+    # Buffer depth is independent of sender queue mode -- previously a bare
+    # literal picked by mode name (2 for Leaky live, 4 otherwise). Presets
+    # (Apply-DirectWebRtcSmoothnessProfile) set this per mode to preserve
+    # today's effective values; Custom lets it diverge.
+    $buffers = [Math]::Max(1, [int]$numDirectWebRtcSenderQueueBuffers.Value)
     $leak = Get-EffectiveVideoOutputQueueLeakValue
 
     if ($mode -eq 'Leaky live') {
@@ -635,14 +645,14 @@ function Get-DirectWebRtcPacingQueue {
         # property at all, i.e. GStreamer's own blocking default), create
         # rubber-band latency here.
         if ([string]::IsNullOrWhiteSpace($leak) -or $leak -eq 'no') { $leak = 'downstream' }
-        return (New-LiveQueueString -Buffers 2 -MaxTimeMs $ms -Leak $leak)
+        return (New-LiveQueueString -Buffers $buffers -MaxTimeMs $ms -Leak $leak)
     }
 
     if ($mode -eq 'Small cushion') {
-        return (New-LiveQueueString -Buffers 4 -MaxTimeMs $ms -Leak $leak)
+        return (New-LiveQueueString -Buffers $buffers -MaxTimeMs $ms -Leak $leak)
     }
 
-    return (New-LiveQueueString -Buffers 4 -MaxTimeMs $ms -Leak 'no')
+    return (New-LiveQueueString -Buffers $buffers -MaxTimeMs $ms -Leak 'no')
 }
 
 function Write-DirectWebRtcWebClientConfig {

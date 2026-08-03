@@ -114,7 +114,7 @@ function Get-AudioInputQueue {
 
 function Get-AudioFinalQueue {
     if ($chkBudgetAudioFinalQueue -and -not $chkBudgetAudioFinalQueue.Checked) { return 'identity' }
-    $buffers = [Math]::Max(1, [int]$numAudioQueueBuffers.Value * 2)
+    $buffers = [Math]::Max(1, [int]$numAudioOutputQueueBuffers.Value)
     $ms = Get-EffectiveAudioQueueCapMs
     return (New-LiveQueueString -Buffers $buffers -MaxTimeMs $ms -Leak (Get-EffectiveAudioOutputQueueLeakValue))
 }
@@ -137,6 +137,7 @@ function Apply-ThreadingProfile {
                 $cmbAudioOutputQueueLeakMode.SelectedItem = 'Downstream - drop old'
                 $numCaptureQueueBuffers.Value = 2
                 $numAudioQueueBuffers.Value = 4
+                $numAudioOutputQueueBuffers.Value = 8
                 $numAudioQueueCapMs.Value = 0
                 $chkBufferLatenessTracer.Checked = $false
             }
@@ -148,6 +149,7 @@ function Apply-ThreadingProfile {
                 $cmbAudioOutputQueueLeakMode.SelectedItem = 'Downstream - drop old'
                 $numCaptureQueueBuffers.Value = 4
                 $numAudioQueueBuffers.Value = 6
+                $numAudioOutputQueueBuffers.Value = 12
                 $numAudioQueueCapMs.Value = 40
                 $chkBufferLatenessTracer.Checked = $false
             }
@@ -159,6 +161,7 @@ function Apply-ThreadingProfile {
                 $cmbAudioOutputQueueLeakMode.SelectedItem = 'Downstream - drop old'
                 $numCaptureQueueBuffers.Value = 1
                 $numAudioQueueBuffers.Value = 2
+                $numAudioOutputQueueBuffers.Value = 4
                 $numAudioQueueCapMs.Value = 0
                 $chkBufferLatenessTracer.Checked = $false
             }
@@ -170,6 +173,7 @@ function Apply-ThreadingProfile {
                 $cmbAudioOutputQueueLeakMode.SelectedItem = 'No leak - block'
                 $numCaptureQueueBuffers.Value = 2
                 $numAudioQueueBuffers.Value = 4
+                $numAudioOutputQueueBuffers.Value = 8
                 $numAudioQueueCapMs.Value = 80
                 $chkBufferLatenessTracer.Checked = $true
             }

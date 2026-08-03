@@ -114,6 +114,7 @@ function Save-Settings {
             DirectWebRtcSmoothnessProfile = [string]$cmbDirectWebRtcSmoothnessProfile.SelectedItem
             DirectWebRtcPacingMs = [int]$numDirectWebRtcPacingMs.Value
             WebRtcSenderQueueCapMs = [int]$numDirectWebRtcPacingMs.Value
+            DirectWebRtcSenderQueueBuffers = [int]$numDirectWebRtcSenderQueueBuffers.Value
             DirectWebRtcPlayerJitterMs = [int]$numDirectWebRtcPlayerJitterMs.Value
             DirectWebRtcAudioJitterMs = [int]$numDirectWebRtcPlayerJitterMs.Value
             DirectWebRtcVideoJitterMs = [int]$numDirectWebRtcVideoJitterMs.Value
@@ -164,6 +165,7 @@ function Save-Settings {
             AudioOutputQueueLeakMode = [string]$cmbAudioOutputQueueLeakMode.SelectedItem
             CaptureQueueBuffers = [int]$numCaptureQueueBuffers.Value
             AudioQueueBuffers = [int]$numAudioQueueBuffers.Value
+            AudioOutputQueueBuffers = [int]$numAudioOutputQueueBuffers.Value
             AudioQueueCapMs = [int]$numAudioQueueCapMs.Value
             BufferLatenessTracer = $chkBufferLatenessTracer.Checked
             GstDebugMode     = [string]$cmbGstDebugMode.SelectedItem
@@ -563,6 +565,7 @@ function Restore-SettingsFromObject {
         if ($settings.WebRtcSenderQueueMode -and $cmbWebRtcSenderQueueMode.Items.Contains([string]$settings.WebRtcSenderQueueMode)) { $cmbWebRtcSenderQueueMode.SelectedItem = [string]$settings.WebRtcSenderQueueMode }
         if ($settings.DirectWebRtcSmoothnessProfile -and $cmbDirectWebRtcSmoothnessProfile.Items.Contains([string]$settings.DirectWebRtcSmoothnessProfile)) { $cmbDirectWebRtcSmoothnessProfile.SelectedItem = [string]$settings.DirectWebRtcSmoothnessProfile }
         if ($null -ne $settings.DirectWebRtcPacingMs) { $numDirectWebRtcPacingMs.Value = [decimal]([Math]::Min([int]$numDirectWebRtcPacingMs.Maximum, [Math]::Max([int]$numDirectWebRtcPacingMs.Minimum, [int]$settings.DirectWebRtcPacingMs))) }
+        if ($null -ne $settings.DirectWebRtcSenderQueueBuffers) { $numDirectWebRtcSenderQueueBuffers.Value = [decimal]([Math]::Min([int]$numDirectWebRtcSenderQueueBuffers.Maximum, [Math]::Max([int]$numDirectWebRtcSenderQueueBuffers.Minimum, [int]$settings.DirectWebRtcSenderQueueBuffers))) }
         if ($null -ne $settings.DirectWebRtcAudioJitterMs) { $numDirectWebRtcPlayerJitterMs.Value = [decimal]([Math]::Min([int]$numDirectWebRtcPlayerJitterMs.Maximum, [Math]::Max([int]$numDirectWebRtcPlayerJitterMs.Minimum, [int]$settings.DirectWebRtcAudioJitterMs))) }
         elseif ($null -ne $settings.DirectWebRtcPlayerJitterMs) { $numDirectWebRtcPlayerJitterMs.Value = [decimal]([Math]::Min([int]$numDirectWebRtcPlayerJitterMs.Maximum, [Math]::Max([int]$numDirectWebRtcPlayerJitterMs.Minimum, [int]$settings.DirectWebRtcPlayerJitterMs))) }
         if ($null -ne $settings.DirectWebRtcVideoJitterMs) { $numDirectWebRtcVideoJitterMs.Value = [decimal]([Math]::Min([int]$numDirectWebRtcVideoJitterMs.Maximum, [Math]::Max([int]$numDirectWebRtcVideoJitterMs.Minimum, [int]$settings.DirectWebRtcVideoJitterMs))) }
@@ -619,6 +622,7 @@ function Restore-SettingsFromObject {
         if ($settings.AudioOutputQueueLeakMode -and $cmbAudioOutputQueueLeakMode.Items.Contains([string]$settings.AudioOutputQueueLeakMode)) { $cmbAudioOutputQueueLeakMode.SelectedItem = [string]$settings.AudioOutputQueueLeakMode }
         if ($null -ne $settings.CaptureQueueBuffers) { $numCaptureQueueBuffers.Value = [decimal]([Math]::Min([int]$numCaptureQueueBuffers.Maximum, [Math]::Max([int]$numCaptureQueueBuffers.Minimum, [int]$settings.CaptureQueueBuffers))) }
         if ($null -ne $settings.AudioQueueBuffers) { $numAudioQueueBuffers.Value = [decimal]([Math]::Min([int]$numAudioQueueBuffers.Maximum, [Math]::Max([int]$numAudioQueueBuffers.Minimum, [int]$settings.AudioQueueBuffers))) }
+        if ($null -ne $settings.AudioOutputQueueBuffers) { $numAudioOutputQueueBuffers.Value = [decimal]([Math]::Min([int]$numAudioOutputQueueBuffers.Maximum, [Math]::Max([int]$numAudioOutputQueueBuffers.Minimum, [int]$settings.AudioOutputQueueBuffers))) }
         if ($null -ne $settings.AudioQueueCapMs) { $numAudioQueueCapMs.Value = [decimal]([Math]::Min([int]$numAudioQueueCapMs.Maximum, [Math]::Max([int]$numAudioQueueCapMs.Minimum, [int]$settings.AudioQueueCapMs))) }
         if ($null -ne $settings.BufferLatenessTracer) { $chkBufferLatenessTracer.Checked = [bool]$settings.BufferLatenessTracer }
         if ($settings.GstDebugMode -and $cmbGstDebugMode.Items.Contains([string]$settings.GstDebugMode)) { $cmbGstDebugMode.SelectedItem = [string]$settings.GstDebugMode }

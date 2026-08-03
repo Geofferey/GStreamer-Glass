@@ -288,7 +288,7 @@ function Start-GstStream {
     else {
         "$requestedAudioQueueCapMs ms"
     }
-    Append-Log "Threading: profile $([string]$cmbThreadingProfile.SelectedItem), priority $([string]$cmbGstProcessPriority.SelectedItem), capture queue $([int]$numCaptureQueueBuffers.Value) buffers, sender queue $([string]$cmbWebRtcSenderQueueMode.SelectedItem) / $([int]$numDirectWebRtcPacingMs.Value) ms, audio queue $([int]$numAudioQueueBuffers.Value) buffers / $audioQueueCapText, lateness tracer $($chkBufferLatenessTracer.Checked)."
+    Append-Log "Threading: profile $([string]$cmbThreadingProfile.SelectedItem), priority $([string]$cmbGstProcessPriority.SelectedItem), capture queue $([int]$numCaptureQueueBuffers.Value) buffers, sender queue $([string]$cmbWebRtcSenderQueueMode.SelectedItem) / $([int]$numDirectWebRtcSenderQueueBuffers.Value) buffers / $([int]$numDirectWebRtcPacingMs.Value) ms, audio queue $([int]$numAudioQueueBuffers.Value) in / $([int]$numAudioOutputQueueBuffers.Value) out buffers / $audioQueueCapText, lateness tracer $($chkBufferLatenessTracer.Checked)."
     $queueLeakControls = @(
         [pscustomobject]@{ Label = 'video input'; Combo = $cmbVideoInputQueueLeakMode; Effective = (Get-EffectiveVideoInputQueueLeakValue) }
         [pscustomobject]@{ Label = 'video output'; Combo = $cmbVideoOutputQueueLeakMode; Effective = (Get-EffectiveVideoOutputQueueLeakValue) }

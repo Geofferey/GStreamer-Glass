@@ -5675,6 +5675,11 @@ $script:DefaultDirectWebRtcMinBitrateKbps = 0
 $script:DefaultWebRtcRecoveryMode = 'None'
 $script:DefaultWebRtcSenderQueueMode = 'Leaky live'
 $script:DefaultDirectWebRtcPacingMs = 0
+# Buffer depth for the sender/pacing (output) queue, independent of sender
+# queue mode. Preserves today's mode-tied literals (2 for Leaky live, 4 for
+# Small cushion/Non-leaky experimental) as the starting value for the
+# default mode; Apply-DirectWebRtcSmoothnessProfile sets it per preset.
+$script:DefaultDirectWebRtcSenderQueueBuffers = 2
 $script:DefaultDirectWebRtcPlayerJitterMs = 20
 $script:DefaultDirectWebRtcVideoJitterMs = 10
 $script:DefaultDirectWebRtcOpusMode = 'Explicit Opus encoder'
@@ -5726,6 +5731,10 @@ $script:DefaultAudioInputQueueLeakMode = 'Default'
 $script:DefaultAudioOutputQueueLeakMode = 'Default'
 $script:DefaultCaptureQueueBuffers = 2
 $script:DefaultAudioQueueBuffers = 4
+# Buffer depth for the final audio queue (output side), independent of the
+# input-side queue above. Preserves today's hardcoded 2x-of-input value
+# (4 * 2) as the default; Apply-ThreadingProfile sets it per preset.
+$script:DefaultAudioOutputQueueBuffers = 8
 $script:DefaultAudioQueueCapMs = 0
 $script:DefaultSceneInputQueueBuffers = 3
 $script:DefaultSceneInputQueueCapMs = 0

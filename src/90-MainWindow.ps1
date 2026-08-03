@@ -1310,6 +1310,18 @@ $numDirectWebRtcPacingMs.Value = $script:DefaultDirectWebRtcPacingMs
 $settingsGroup.Controls.Add($numDirectWebRtcPacingMs)
 $toolTip.SetToolTip($numDirectWebRtcPacingMs, 'Encoded-video sender queue max-size-time for WHIP/GST WebRTC. 0 always emits max-size-time=0 with no hidden fallback. This is not the browser JBUF target; high values can accumulate latency.')
 
+$lblDirectWebRtcSenderQueueBuffers = Add-Label $settingsGroup 'Sender queue buffers' 15 548 150
+
+$numDirectWebRtcSenderQueueBuffers = New-Object System.Windows.Forms.NumericUpDown
+$numDirectWebRtcSenderQueueBuffers.Location = New-Object System.Drawing.Point(15, 548)
+$numDirectWebRtcSenderQueueBuffers.Size = New-Object System.Drawing.Size(70, 23)
+$numDirectWebRtcSenderQueueBuffers.Minimum = 1
+$numDirectWebRtcSenderQueueBuffers.Maximum = 32
+$numDirectWebRtcSenderQueueBuffers.Increment = 1
+$numDirectWebRtcSenderQueueBuffers.Value = $script:DefaultDirectWebRtcSenderQueueBuffers
+$settingsGroup.Controls.Add($numDirectWebRtcSenderQueueBuffers)
+$toolTip.SetToolTip($numDirectWebRtcSenderQueueBuffers, 'Buffer depth for the encoded-video sender/pacing queue (WHIP/GST WebRTC), independent of sender queue mode. Previously a hidden literal (2 for Leaky live, 4 otherwise).')
+
 $lblDirectWebRtcPlayerJitterMs = Add-Label $settingsGroup 'Audio JBUF ms' 15 548 130
 
 $numDirectWebRtcPlayerJitterMs = New-Object System.Windows.Forms.NumericUpDown
@@ -1628,7 +1640,7 @@ $cmbVideoInputQueueLeakMode.SelectedItem = $script:DefaultVideoInputQueueLeakMod
 $settingsGroup.Controls.Add($cmbVideoInputQueueLeakMode)
 $toolTip.SetToolTip($cmbVideoInputQueueLeakMode, 'How the queue immediately before the encoder behaves when full. Default omits the leaky property entirely -- no forced behavior, GStreamer''s own queue default (which blocks) applies unless the active threading profile picks a value for you. Downstream drops old frames and is usually right for live desktop.')
 
-$lblAudioQueueBuffers = Add-Label $settingsGroup 'Audio q buffers' 15 548 110
+$lblAudioQueueBuffers = Add-Label $settingsGroup 'Audio input q buffers' 15 548 140
 
 $numAudioQueueBuffers = New-Object System.Windows.Forms.NumericUpDown
 $numAudioQueueBuffers.Location = New-Object System.Drawing.Point(15, 548)
@@ -1638,7 +1650,19 @@ $numAudioQueueBuffers.Maximum = 32
 $numAudioQueueBuffers.Increment = 1
 $numAudioQueueBuffers.Value = $script:DefaultAudioQueueBuffers
 $settingsGroup.Controls.Add($numAudioQueueBuffers)
-$toolTip.SetToolTip($numAudioQueueBuffers, 'Audio queue buffer depth. If audio clock is dragging video, smaller/leaky audio queues help reveal it.')
+$toolTip.SetToolTip($numAudioQueueBuffers, 'Audio input queue buffer depth. If audio clock is dragging video, smaller/leaky audio queues help reveal it.')
+
+$lblAudioOutputQueueBuffers = Add-Label $settingsGroup 'Audio output q buffers' 15 548 150
+
+$numAudioOutputQueueBuffers = New-Object System.Windows.Forms.NumericUpDown
+$numAudioOutputQueueBuffers.Location = New-Object System.Drawing.Point(15, 548)
+$numAudioOutputQueueBuffers.Size = New-Object System.Drawing.Size(70, 23)
+$numAudioOutputQueueBuffers.Minimum = 1
+$numAudioOutputQueueBuffers.Maximum = 64
+$numAudioOutputQueueBuffers.Increment = 1
+$numAudioOutputQueueBuffers.Value = $script:DefaultAudioOutputQueueBuffers
+$settingsGroup.Controls.Add($numAudioOutputQueueBuffers)
+$toolTip.SetToolTip($numAudioOutputQueueBuffers, 'Buffer depth for the final audio queue just before the encoder/payloader, independent of the audio input queue''s buffer depth above. Previously silently hardcoded to double the input value.')
 
 $lblAudioQueueCapMs = Add-Label $settingsGroup 'Audio queue cap ms' 15 548 130
 
@@ -4915,7 +4939,7 @@ $cmbDirectWebRtcSmoothnessProfile.Add_SelectedIndexChanged({
     Update-CommandPreview
 })
 
-foreach ($smoothControl in @($numDirectWebRtcPacingMs, $numDirectWebRtcPlayerJitterMs, $numDirectWebRtcVideoJitterMs, $numJbufMaxMs)) {
+foreach ($smoothControl in @($numDirectWebRtcPacingMs, $numDirectWebRtcSenderQueueBuffers, $numDirectWebRtcPlayerJitterMs, $numDirectWebRtcVideoJitterMs, $numJbufMaxMs)) {
     $smoothControl.Add_ValueChanged({
         if (-not $script:ApplyingDirectWebRtcSmoothnessProfile -and $cmbDirectWebRtcSmoothnessProfile.SelectedItem -ne 'Custom') { $cmbDirectWebRtcSmoothnessProfile.SelectedItem = 'Custom' }
         Update-PlayerConfigFromUi
@@ -4966,7 +4990,7 @@ foreach ($budgetControl in @($numCpuWorkerLimit,$chkBudgetCaptureQueue,$chkBudge
         })
     }
 }
-foreach ($threadingControl in @($cmbGstProcessPriority, $numCaptureQueueBuffers, $numAudioQueueBuffers, $numAudioQueueCapMs, $chkBufferLatenessTracer)) {
+foreach ($threadingControl in @($cmbGstProcessPriority, $numCaptureQueueBuffers, $numAudioQueueBuffers, $numAudioOutputQueueBuffers, $numAudioQueueCapMs, $chkBufferLatenessTracer)) {
     if ($threadingControl -is [System.Windows.Forms.ComboBox]) {
         $threadingControl.Add_SelectedIndexChanged({
             if (-not $script:ApplyingThreadingProfile -and $cmbThreadingProfile.SelectedItem -ne 'Custom') { $cmbThreadingProfile.SelectedItem = 'Custom' }
