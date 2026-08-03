@@ -86,7 +86,7 @@ function Update-GstThreadCountStatus {
 function Get-CaptureEncoderQueue {
     if ($chkBudgetCaptureQueue -and -not $chkBudgetCaptureQueue.Checked) { return 'identity' }
     $buffers = [int]$numCaptureQueueBuffers.Value
-    return (New-LiveQueueString -Buffers $buffers -MaxTimeMs 0 -Leak (Get-EffectiveVideoQueueLeakValue))
+    return (New-LiveQueueString -Buffers $buffers -MaxTimeMs 0 -Leak (Get-EffectiveVideoInputQueueLeakValue))
 }
 
 function Get-EffectiveAudioQueueCapMs {
@@ -109,14 +109,14 @@ function Get-AudioInputQueue {
     if ($chkBudgetAudioInputQueue -and -not $chkBudgetAudioInputQueue.Checked) { return 'identity' }
     $buffers = [Math]::Max(1, [int]$numAudioQueueBuffers.Value * [Math]::Max(1, $Multiplier))
     $ms = Get-EffectiveAudioQueueCapMs
-    return (New-LiveQueueString -Buffers $buffers -MaxTimeMs $ms -Leak (Get-EffectiveAudioQueueLeakValue))
+    return (New-LiveQueueString -Buffers $buffers -MaxTimeMs $ms -Leak (Get-EffectiveAudioInputQueueLeakValue))
 }
 
 function Get-AudioFinalQueue {
     if ($chkBudgetAudioFinalQueue -and -not $chkBudgetAudioFinalQueue.Checked) { return 'identity' }
     $buffers = [Math]::Max(1, [int]$numAudioQueueBuffers.Value * 2)
     $ms = Get-EffectiveAudioQueueCapMs
-    return (New-LiveQueueString -Buffers $buffers -MaxTimeMs $ms -Leak (Get-EffectiveAudioQueueLeakValue))
+    return (New-LiveQueueString -Buffers $buffers -MaxTimeMs $ms -Leak (Get-EffectiveAudioOutputQueueLeakValue))
 }
 
 function Apply-ThreadingProfile {
@@ -131,8 +131,10 @@ function Apply-ThreadingProfile {
         switch ($profile) {
             'Live strict' {
                 $cmbGstProcessPriority.SelectedItem = 'High'
-                $cmbVideoQueueLeakMode.SelectedItem = 'Downstream - drop old'
-                $cmbAudioQueueLeakMode.SelectedItem = 'Downstream - drop old'
+                $cmbVideoInputQueueLeakMode.SelectedItem = 'Downstream - drop old'
+                $cmbVideoOutputQueueLeakMode.SelectedItem = 'Downstream - drop old'
+                $cmbAudioInputQueueLeakMode.SelectedItem = 'Downstream - drop old'
+                $cmbAudioOutputQueueLeakMode.SelectedItem = 'Downstream - drop old'
                 $numCaptureQueueBuffers.Value = 2
                 $numAudioQueueBuffers.Value = 4
                 $numAudioQueueCapMs.Value = 0
@@ -140,8 +142,10 @@ function Apply-ThreadingProfile {
             }
             'Balanced' {
                 $cmbGstProcessPriority.SelectedItem = 'Above normal'
-                $cmbVideoQueueLeakMode.SelectedItem = 'Downstream - drop old'
-                $cmbAudioQueueLeakMode.SelectedItem = 'Downstream - drop old'
+                $cmbVideoInputQueueLeakMode.SelectedItem = 'Downstream - drop old'
+                $cmbVideoOutputQueueLeakMode.SelectedItem = 'Downstream - drop old'
+                $cmbAudioInputQueueLeakMode.SelectedItem = 'Downstream - drop old'
+                $cmbAudioOutputQueueLeakMode.SelectedItem = 'Downstream - drop old'
                 $numCaptureQueueBuffers.Value = 4
                 $numAudioQueueBuffers.Value = 6
                 $numAudioQueueCapMs.Value = 40
@@ -149,8 +153,10 @@ function Apply-ThreadingProfile {
             }
             'Non-blocking brutal' {
                 $cmbGstProcessPriority.SelectedItem = 'High'
-                $cmbVideoQueueLeakMode.SelectedItem = 'Downstream - drop old'
-                $cmbAudioQueueLeakMode.SelectedItem = 'Downstream - drop old'
+                $cmbVideoInputQueueLeakMode.SelectedItem = 'Downstream - drop old'
+                $cmbVideoOutputQueueLeakMode.SelectedItem = 'Downstream - drop old'
+                $cmbAudioInputQueueLeakMode.SelectedItem = 'Downstream - drop old'
+                $cmbAudioOutputQueueLeakMode.SelectedItem = 'Downstream - drop old'
                 $numCaptureQueueBuffers.Value = 1
                 $numAudioQueueBuffers.Value = 2
                 $numAudioQueueCapMs.Value = 0
@@ -158,8 +164,10 @@ function Apply-ThreadingProfile {
             }
             'Blocking diagnostic' {
                 $cmbGstProcessPriority.SelectedItem = 'Normal'
-                $cmbVideoQueueLeakMode.SelectedItem = 'No leak - block'
-                $cmbAudioQueueLeakMode.SelectedItem = 'No leak - block'
+                $cmbVideoInputQueueLeakMode.SelectedItem = 'No leak - block'
+                $cmbVideoOutputQueueLeakMode.SelectedItem = 'No leak - block'
+                $cmbAudioInputQueueLeakMode.SelectedItem = 'No leak - block'
+                $cmbAudioOutputQueueLeakMode.SelectedItem = 'No leak - block'
                 $numCaptureQueueBuffers.Value = 2
                 $numAudioQueueBuffers.Value = 4
                 $numAudioQueueCapMs.Value = 80

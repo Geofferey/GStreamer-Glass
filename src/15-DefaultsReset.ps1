@@ -136,7 +136,8 @@ function Reset-VideoDefaults {
     $txtCustomEncoderOptions.Text = ''
     $numSceneInputQueueBuffers.Value = $script:DefaultSceneInputQueueBuffers
     $numSceneInputQueueCapMs.Value = $script:DefaultSceneInputQueueCapMs
-    $cmbVideoQueueLeakMode.SelectedIndex = -1
+    $cmbVideoInputQueueLeakMode.SelectedItem = $script:DefaultVideoInputQueueLeakMode
+    $cmbVideoOutputQueueLeakMode.SelectedItem = $script:DefaultVideoOutputQueueLeakMode
     Update-CaptureModeUi
     Update-EncoderUi
 }
@@ -173,7 +174,8 @@ function Reset-AudioDefaults {
     if ($cmbDirectWebRtcOpusAudioType.Items.Contains($script:DefaultDirectWebRtcOpusAudioType)) { $cmbDirectWebRtcOpusAudioType.SelectedItem = $script:DefaultDirectWebRtcOpusAudioType }
     $chkDirectWebRtcOpusFec.Checked = $script:DefaultDirectWebRtcOpusFec
     $chkDirectWebRtcOpusDtx.Checked = $script:DefaultDirectWebRtcOpusDtx
-    $cmbAudioQueueLeakMode.SelectedIndex = -1
+    $cmbAudioInputQueueLeakMode.SelectedItem = $script:DefaultAudioInputQueueLeakMode
+    $cmbAudioOutputQueueLeakMode.SelectedItem = $script:DefaultAudioOutputQueueLeakMode
     Update-AudioCodecChoices
 }
 

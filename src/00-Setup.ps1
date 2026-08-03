@@ -5711,13 +5711,19 @@ $script:DefaultAudioSyncMode = 'Default'
 # scheduler/backpressure issues where a live stream glitches despite plenty of CPU/GPU headroom.
 $script:DefaultThreadingProfile = 'Live strict'
 $script:DefaultGstProcessPriority = 'High'
-# Video/Audio-tab queue leak controls. True default is nothing selected --
-# no leaky= property at all (GStreamer's own queue default). Only reachable
-# via the 'Custom' threading profile; every other profile
-# (Apply-ThreadingProfile, src/18-ThreadingAndDebug.ps1) explicitly sets
-# both to a safe value as part of its preset.
-$script:DefaultVideoQueueLeakMode = ''
-$script:DefaultAudioQueueLeakMode = ''
+# One control per live queue (video input/output, audio input/output).
+# 'Default' is an explicit, visible item -- not just nothing selected --
+# meaning omit the leaky= property entirely (GStreamer's own queue
+# default). This app is a transparent pipeline constructor: a parameter's
+# "don't set this" state should be a real, self-documenting choice, not an
+# ambiguous blank control. Only actually reachable via the 'Custom'
+# threading profile; every other profile (Apply-ThreadingProfile,
+# src/18-ThreadingAndDebug.ps1) explicitly sets all four to a safe value as
+# part of its preset.
+$script:DefaultVideoInputQueueLeakMode = 'Default'
+$script:DefaultVideoOutputQueueLeakMode = 'Default'
+$script:DefaultAudioInputQueueLeakMode = 'Default'
+$script:DefaultAudioOutputQueueLeakMode = 'Default'
 $script:DefaultCaptureQueueBuffers = 2
 $script:DefaultAudioQueueBuffers = 4
 $script:DefaultAudioQueueCapMs = 0

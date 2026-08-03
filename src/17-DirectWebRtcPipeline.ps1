@@ -514,8 +514,8 @@ function New-LiveQueueString {
     # A blank/omitted Leak means exactly that -- no leaky= property at all,
     # so GStreamer's own queue default (blocking) applies. Every live-queue
     # caller that wants a specific behavior passes one explicitly (directly
-    # or via Get-EffectiveVideoQueueLeakValue/Get-EffectiveAudioQueueLeakValue);
-    # this is not a fallback lookup.
+    # or via Get-EffectiveQueueLeakValue and its four named wrappers,
+    # src/16-CaptureAndAudioDevices.ps1); this is not a fallback lookup.
     $Buffers = [Math]::Max(1, $Buffers)
     $ns = [int64]([Math]::Max(0, $MaxTimeMs)) * 1000000
     $leakSuffix = if ([string]::IsNullOrWhiteSpace($Leak)) { '' } else { " leaky=$Leak" }
@@ -626,14 +626,14 @@ function Get-DirectWebRtcPacingQueue {
     # Structurally honest: the visible cap is the emitted cap. Zero means no
     # max-size-time limit in every mode; presets may set a nonzero value explicitly.
     $ms = [Math]::Max(0, [int]$numDirectWebRtcPacingMs.Value)
-    $leak = Get-EffectiveVideoQueueLeakValue
+    $leak = Get-EffectiveVideoOutputQueueLeakValue
 
     if ($mode -eq 'Leaky live') {
         # Leaky live means newest-frame-wins, unconditionally -- do not let a
-        # stale 'No leak' override, or the video queue leak control being
-        # left unset entirely (which would otherwise mean no leaky= property
-        # at all, i.e. GStreamer's own blocking default), create rubber-band
-        # latency here.
+        # stale 'No leak' override, or the video output queue leak control
+        # being left on Default (which would otherwise mean no leaky=
+        # property at all, i.e. GStreamer's own blocking default), create
+        # rubber-band latency here.
         if ([string]::IsNullOrWhiteSpace($leak) -or $leak -eq 'no') { $leak = 'downstream' }
         return (New-LiveQueueString -Buffers 2 -MaxTimeMs $ms -Leak $leak)
     }

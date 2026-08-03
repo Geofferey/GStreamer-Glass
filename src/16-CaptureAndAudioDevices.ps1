@@ -128,22 +128,23 @@ function Get-CoercedLiveQueueLeakValue {
     return $RawValue
 }
 
-# Video/Audio-tab queue leak controls. GStreamer's queue leaky property is
-# independent per element instance -- these expose that independence for
-# the video capture/sender queues (Get-CaptureEncoderQueue,
-# Get-DirectWebRtcPacingQueue) and the audio input/final queues
-# (Get-AudioInputQueue, Get-AudioFinalQueue) respectively, with no shared
-# global setting between them (there used to be one; it was removed as
-# redundant once both tabs had their own control). Each combo's true
-# default is nothing selected at all -- returns '' (omit the leaky=
-# property entirely, GStreamer's own queue default) rather than silently
-# picking a value nobody chose. That's normally only reachable in the
-# 'Custom' threading profile: every other profile (Apply-ThreadingProfile,
-# src/18-ThreadingAndDebug.ps1) explicitly sets both combos as part of its
-# preset, the same safety net the old global setting used to provide.
-function Get-EffectiveVideoQueueLeakValue {
-    $selected = [string]$cmbVideoQueueLeakMode.SelectedItem
-    if ([string]::IsNullOrWhiteSpace($selected)) { return '' }
+# One control per actual queue -- GStreamer's queue leaky property is
+# independent per element instance, and this app is a transparent pipeline
+# constructor, so each of the four live queues (video capture-encoder,
+# video encoded-sender, audio input, audio final) gets its own control
+# rather than being bundled under a shared per-stream or global setting
+# (both existed at earlier points; removed as redundant once every queue
+# had its own home). 'Default' is an explicit, visible item -- not just
+# nothing selected -- meaning omit the leaky= property entirely (GStreamer's
+# own queue default). That's normally only reachable in the 'Custom'
+# threading profile: every other profile (Apply-ThreadingProfile,
+# src/18-ThreadingAndDebug.ps1) explicitly sets all four combos as part of
+# its preset, the same safety net a single removed global setting used to
+# provide.
+function Get-EffectiveQueueLeakValue {
+    param([Parameter(Mandatory)]$Combo)
+    $selected = [string]$Combo.SelectedItem
+    if ([string]::IsNullOrWhiteSpace($selected) -or $selected -eq 'Default') { return '' }
     $raw = switch ($selected) {
         'Upstream - drop new' { 'upstream' }
         'No leak - block' { 'no' }
@@ -152,16 +153,10 @@ function Get-EffectiveVideoQueueLeakValue {
     return Get-CoercedLiveQueueLeakValue -RawValue $raw
 }
 
-function Get-EffectiveAudioQueueLeakValue {
-    $selected = [string]$cmbAudioQueueLeakMode.SelectedItem
-    if ([string]::IsNullOrWhiteSpace($selected)) { return '' }
-    $raw = switch ($selected) {
-        'Upstream - drop new' { 'upstream' }
-        'No leak - block' { 'no' }
-        default { 'downstream' }
-    }
-    return Get-CoercedLiveQueueLeakValue -RawValue $raw
-}
+function Get-EffectiveVideoInputQueueLeakValue { return Get-EffectiveQueueLeakValue -Combo $cmbVideoInputQueueLeakMode }
+function Get-EffectiveVideoOutputQueueLeakValue { return Get-EffectiveQueueLeakValue -Combo $cmbVideoOutputQueueLeakMode }
+function Get-EffectiveAudioInputQueueLeakValue { return Get-EffectiveQueueLeakValue -Combo $cmbAudioInputQueueLeakMode }
+function Get-EffectiveAudioOutputQueueLeakValue { return Get-EffectiveQueueLeakValue -Combo $cmbAudioOutputQueueLeakMode }
 
 function Get-AudioTimingMode {
     return (Get-ComboSelectedOrDefault $cmbAudioTimingMode $script:DefaultAudioTimingMode)

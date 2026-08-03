@@ -1276,16 +1276,16 @@ $cmbWebRtcSenderQueueMode.SelectedItem = $script:DefaultWebRtcSenderQueueMode
 $settingsGroup.Controls.Add($cmbWebRtcSenderQueueMode)
 $toolTip.SetToolTip($cmbWebRtcSenderQueueMode, 'Encoded-video queue behavior for WHIP and GST WebRTC. Leaky live drops late frames instead of rubber-banding. Non-leaky is diagnostic only.')
 
-$lblVideoQueueLeakMode = Add-Label $settingsGroup 'Video queue leak' 15 548 110
+$lblVideoOutputQueueLeakMode = Add-Label $settingsGroup 'Video output queue leak' 15 548 145
 
-$cmbVideoQueueLeakMode = New-Object System.Windows.Forms.ComboBox
-$cmbVideoQueueLeakMode.Location = New-Object System.Drawing.Point(15, 548)
-$cmbVideoQueueLeakMode.Size = New-Object System.Drawing.Size(180, 23)
-$cmbVideoQueueLeakMode.DropDownStyle = 'DropDownList'
-$null = $cmbVideoQueueLeakMode.Items.AddRange([string[]]@('Downstream - drop old', 'Upstream - drop new', 'No leak - block'))
-$cmbVideoQueueLeakMode.SelectedIndex = -1
-$settingsGroup.Controls.Add($cmbVideoQueueLeakMode)
-$toolTip.SetToolTip($cmbVideoQueueLeakMode, 'How the video capture and encoded-sender queues behave when full. Downstream drops old frames and is usually right for live desktop. Left blank, the active threading profile picks a value (Custom leaves it unset -- no leaky property at all, GStreamer''s own default, which blocks).')
+$cmbVideoOutputQueueLeakMode = New-Object System.Windows.Forms.ComboBox
+$cmbVideoOutputQueueLeakMode.Location = New-Object System.Drawing.Point(15, 548)
+$cmbVideoOutputQueueLeakMode.Size = New-Object System.Drawing.Size(180, 23)
+$cmbVideoOutputQueueLeakMode.DropDownStyle = 'DropDownList'
+$null = $cmbVideoOutputQueueLeakMode.Items.AddRange([string[]]@('Default', 'Downstream - drop old', 'Upstream - drop new', 'No leak - block'))
+$cmbVideoOutputQueueLeakMode.SelectedItem = $script:DefaultVideoOutputQueueLeakMode
+$settingsGroup.Controls.Add($cmbVideoOutputQueueLeakMode)
+$toolTip.SetToolTip($cmbVideoOutputQueueLeakMode, 'How the encoded-sender queue (right before the pipeline hands off to webrtcsink) behaves when full. Default omits the leaky property entirely -- no forced behavior, GStreamer''s own queue default (which blocks) applies unless the active threading profile picks a value for you. Downstream drops old frames and is usually right for live desktop.')
 
 $lblDirectWebRtcSmoothnessProfile = Add-Label $settingsGroup 'Smooth profile' 15 548 100
 
@@ -1617,6 +1617,17 @@ $numCaptureQueueBuffers.Value = $script:DefaultCaptureQueueBuffers
 $settingsGroup.Controls.Add($numCaptureQueueBuffers)
 $toolTip.SetToolTip($numCaptureQueueBuffers, 'Queue depth immediately before the encoder. Lower = lower latency; higher = more cushion when compositor/GPU scheduling hiccups.')
 
+$lblVideoInputQueueLeakMode = Add-Label $settingsGroup 'Video input queue leak' 15 548 140
+
+$cmbVideoInputQueueLeakMode = New-Object System.Windows.Forms.ComboBox
+$cmbVideoInputQueueLeakMode.Location = New-Object System.Drawing.Point(15, 548)
+$cmbVideoInputQueueLeakMode.Size = New-Object System.Drawing.Size(180, 23)
+$cmbVideoInputQueueLeakMode.DropDownStyle = 'DropDownList'
+$null = $cmbVideoInputQueueLeakMode.Items.AddRange([string[]]@('Default', 'Downstream - drop old', 'Upstream - drop new', 'No leak - block'))
+$cmbVideoInputQueueLeakMode.SelectedItem = $script:DefaultVideoInputQueueLeakMode
+$settingsGroup.Controls.Add($cmbVideoInputQueueLeakMode)
+$toolTip.SetToolTip($cmbVideoInputQueueLeakMode, 'How the queue immediately before the encoder behaves when full. Default omits the leaky property entirely -- no forced behavior, GStreamer''s own queue default (which blocks) applies unless the active threading profile picks a value for you. Downstream drops old frames and is usually right for live desktop.')
+
 $lblAudioQueueBuffers = Add-Label $settingsGroup 'Audio q buffers' 15 548 110
 
 $numAudioQueueBuffers = New-Object System.Windows.Forms.NumericUpDown
@@ -1641,16 +1652,27 @@ $numAudioQueueCapMs.Value = $script:DefaultAudioQueueCapMs
 $settingsGroup.Controls.Add($numAudioQueueCapMs)
 $toolTip.SetToolTip($numAudioQueueCapMs, 'Optional audio queue time cap. 0 disables time cap. Nonzero caps below the safe live-audio floor are clamped at runtime to avoid GStreamer latency errors.')
 
-$lblAudioQueueLeakMode = Add-Label $settingsGroup 'Audio queue leak' 15 548 110
+$lblAudioInputQueueLeakMode = Add-Label $settingsGroup 'Audio input queue leak' 15 548 145
 
-$cmbAudioQueueLeakMode = New-Object System.Windows.Forms.ComboBox
-$cmbAudioQueueLeakMode.Location = New-Object System.Drawing.Point(15, 548)
-$cmbAudioQueueLeakMode.Size = New-Object System.Drawing.Size(180, 23)
-$cmbAudioQueueLeakMode.DropDownStyle = 'DropDownList'
-$null = $cmbAudioQueueLeakMode.Items.AddRange([string[]]@('Downstream - drop old', 'Upstream - drop new', 'No leak - block'))
-$cmbAudioQueueLeakMode.SelectedIndex = -1
-$settingsGroup.Controls.Add($cmbAudioQueueLeakMode)
-$toolTip.SetToolTip($cmbAudioQueueLeakMode, 'How the audio input and final queues behave when full. Downstream drops old frames and is usually right for live desktop. Left blank, the active threading profile picks a value (Custom leaves it unset -- no leaky property at all, GStreamer''s own default, which blocks).')
+$cmbAudioInputQueueLeakMode = New-Object System.Windows.Forms.ComboBox
+$cmbAudioInputQueueLeakMode.Location = New-Object System.Drawing.Point(15, 548)
+$cmbAudioInputQueueLeakMode.Size = New-Object System.Drawing.Size(180, 23)
+$cmbAudioInputQueueLeakMode.DropDownStyle = 'DropDownList'
+$null = $cmbAudioInputQueueLeakMode.Items.AddRange([string[]]@('Default', 'Downstream - drop old', 'Upstream - drop new', 'No leak - block'))
+$cmbAudioInputQueueLeakMode.SelectedItem = $script:DefaultAudioInputQueueLeakMode
+$settingsGroup.Controls.Add($cmbAudioInputQueueLeakMode)
+$toolTip.SetToolTip($cmbAudioInputQueueLeakMode, 'How the queue immediately after audio capture (before convert/resample/encode) behaves when full. Default omits the leaky property entirely -- no forced behavior, GStreamer''s own queue default (which blocks) applies unless the active threading profile picks a value for you. Downstream drops old frames and is usually right for live desktop.')
+
+$lblAudioOutputQueueLeakMode = Add-Label $settingsGroup 'Audio output queue leak' 15 548 150
+
+$cmbAudioOutputQueueLeakMode = New-Object System.Windows.Forms.ComboBox
+$cmbAudioOutputQueueLeakMode.Location = New-Object System.Drawing.Point(15, 548)
+$cmbAudioOutputQueueLeakMode.Size = New-Object System.Drawing.Size(180, 23)
+$cmbAudioOutputQueueLeakMode.DropDownStyle = 'DropDownList'
+$null = $cmbAudioOutputQueueLeakMode.Items.AddRange([string[]]@('Default', 'Downstream - drop old', 'Upstream - drop new', 'No leak - block'))
+$cmbAudioOutputQueueLeakMode.SelectedItem = $script:DefaultAudioOutputQueueLeakMode
+$settingsGroup.Controls.Add($cmbAudioOutputQueueLeakMode)
+$toolTip.SetToolTip($cmbAudioOutputQueueLeakMode, 'How the final audio queue (right before the pipeline hands off to webrtcsink) behaves when full. Default omits the leaky property entirely -- no forced behavior, GStreamer''s own queue default (which blocks) applies unless the active threading profile picks a value for you. Downstream drops old frames and is usually right for live desktop.')
 
 $chkBufferLatenessTracer = New-Object System.Windows.Forms.CheckBox
 $chkBufferLatenessTracer.Text = 'Buffer lateness tracer'
@@ -4965,13 +4987,13 @@ foreach ($threadingControl in @($cmbGstProcessPriority, $numCaptureQueueBuffers,
     }
 }
 
-# Video/Audio-tab queue leak controls -- deliberately NOT joined to the
-# $threadingControl loop's 'Custom' flip (nor the smoothness-profile loop
-# below, even though $cmbVideoQueueLeakMode shares a UI section with
+# Per-queue leak controls -- deliberately NOT joined to the $threadingControl
+# loop's 'Custom' flip (nor the smoothness-profile loop below, even though
+# $cmbVideoOutputQueueLeakMode shares a UI section with
 # $cmbWebRtcSenderQueueMode which does join that one): Apply-ThreadingProfile
-# already owns setting both of these explicitly as part of each preset, so
-# joining a second 'flip to Custom on change' mechanism here would fight it.
-foreach ($queueLeakOverrideCombo in @($cmbVideoQueueLeakMode, $cmbAudioQueueLeakMode)) {
+# already owns setting all four of these explicitly as part of each preset,
+# so joining a second 'flip to Custom on change' mechanism here would fight it.
+foreach ($queueLeakOverrideCombo in @($cmbVideoInputQueueLeakMode, $cmbVideoOutputQueueLeakMode, $cmbAudioInputQueueLeakMode, $cmbAudioOutputQueueLeakMode)) {
     $queueLeakOverrideCombo.Add_SelectedIndexChanged({ Update-CommandPreview; Save-Settings })
 }
 
