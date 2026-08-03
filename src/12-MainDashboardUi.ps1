@@ -817,9 +817,6 @@ function Apply-ModernDashboardUi {
     $r = Add-Row $s
     Add-Field $r -Label 'Monitor' -Control $numMonitor -Width 70 | Out-Null
     Add-Field $r -Control $chkCursor -Width 100 | Out-Null
-    Add-Field $r -LabelControl $lblCaptureQueueBuffers -Control $numCaptureQueueBuffers -Width 90 | Out-Null
-    $r = Add-Row $s
-    Add-Field $r -LabelControl $lblVideoInputQueueLeakMode -Control $cmbVideoInputQueueLeakMode -Width 180 | Out-Null
 
     $s = Add-Section $paneVideo 'Encoder'
     $r = Add-Row $s
@@ -848,10 +845,13 @@ function Apply-ModernDashboardUi {
     # Advanced (set-once) controls below, folded by default.
     Add-PaneDivider $paneVideo 'Advanced' | Out-Null
 
-    $s = Add-CollapsibleSection $paneVideo 'Encoded sender queue'
+    $s = Add-CollapsibleSection $paneVideo 'Video queues'
     $r = Add-Row $s
     Add-Field $r -LabelControl $lblWebRtcSenderQueueMode -Control $cmbWebRtcSenderQueueMode -Width 180 | Out-Null
+    Add-Field $r -LabelControl $lblCaptureQueueBuffers -Control $numCaptureQueueBuffers -Width 90 | Out-Null
     Add-Field $r -LabelControl $lblDirectWebRtcPacingMs -Control $numDirectWebRtcPacingMs -Width 90 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -LabelControl $lblVideoInputQueueLeakMode -Control $cmbVideoInputQueueLeakMode -Width 180 | Out-Null
     $r = Add-Row $s
     Add-Field $r -LabelControl $lblVideoOutputQueueLeakMode -Control $cmbVideoOutputQueueLeakMode -Width 180 | Out-Null
 
