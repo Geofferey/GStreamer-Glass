@@ -16,6 +16,18 @@ $repoRoot = Resolve-Path (Join-Path $PSScriptRoot '..\..')
 $rejectionImagePath = Join-Path $repoRoot 'gstwebrtc-api\dist\temporary-viewer-link-unavailable.png'
 $rejectionMp4Path = Join-Path $repoRoot 'gstwebrtc-api\dist\temporary-viewer-link-unavailable-glitch.mp4'
 $rejectionWebmPath = Join-Path $repoRoot 'gstwebrtc-api\dist\temporary-viewer-link-unavailable-glitch.webm'
+# Without these, StartFamily leaves every auth-proxy page template
+# unconfigured and the worker correctly falls back to its minimal built-in
+# page (see ConfigureMediaMessageTemplate/LoadTemplateText in 00-Setup.ps1)
+# -- which lacks the black-viewport CSS this test asserts on below. Point at
+# the real files so this exercises actual production markup, not the
+# safety-net fallback.
+$authProxyTemplateDir = Join-Path $repoRoot 'gstwebrtc-api\dist\auth-proxy'
+$loginTemplatePath = Join-Path $authProxyTemplateDir 'login.html'
+$linkConfirmTemplatePath = Join-Path $authProxyTemplateDir 'link-confirm.html'
+$accountSetupTemplatePath = Join-Path $authProxyTemplateDir 'account-setup.html'
+$totpChallengeTemplatePath = Join-Path $authProxyTemplateDir 'totp-challenge.html'
+$mediaMessageTemplatePath = Join-Path $authProxyTemplateDir 'media-message.html'
 
 function Assert-CompiledTemporaryLink {
     param([bool]$Condition, [string]$Message)
@@ -93,6 +105,11 @@ try {
         RestartImagePath = ''
         RestartVideoMp4Path = ''
         RestartVideoWebmPath = ''
+        LoginTemplatePath = $loginTemplatePath
+        LinkConfirmTemplatePath = $linkConfirmTemplatePath
+        AccountSetupTemplatePath = $accountSetupTemplatePath
+        TotpChallengeTemplatePath = $totpChallengeTemplatePath
+        MediaMessageTemplatePath = $mediaMessageTemplatePath
         TrustedForwardingProxyAddresses = @()
         Accounts = @(@{ Username = 'viewer'; PasswordHash = 'compiled-smoke-placeholder'; TotpSecret = '' })
         SessionKeyBase64 = [Convert]::ToBase64String($sessionKey)
