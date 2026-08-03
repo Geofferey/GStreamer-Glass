@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>GStreamer Glass - Verification Code</title>
+<style>
+html{color-scheme:dark}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;display:grid;place-items:center;background:#05070b;color:#e8edf5;font:16px system-ui,-apple-system,Segoe UI,sans-serif}
+body::before{content:"";position:fixed;inset:0;z-index:-1;background:
+    radial-gradient(560px circle at 18% 20%,rgba(79,140,255,.40),transparent 60%),
+    radial-gradient(520px circle at 85% 75%,rgba(53,215,137,.30),transparent 58%),
+    radial-gradient(640px circle at 60% 100%,rgba(255,93,108,.20),transparent 60%),
+    #05070b}
+main{width:min(92vw,420px);padding:32px;border:1px solid rgba(255,255,255,.12);border-radius:16px;background:linear-gradient(180deg,rgba(10,14,22,.82),rgba(10,14,22,.48));backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);box-shadow:0 14px 44px rgba(0,0,0,.35)}
+h1{margin:0 0 8px;font-size:1.55rem}
+p{color:#aab6c8}
+.error{color:#ff9b9b}
+label{display:block;margin:18px 0 6px;font-weight:650}
+input{width:100%;padding:12px;border:1px solid #35435a;border-radius:9px;background:#090f19;color:#fff;font:inherit;letter-spacing:.3em;text-align:center}
+button{width:100%;margin-top:22px;padding:12px;border:0;border-radius:9px;background:#4f8cff;color:white;font:inherit;font-weight:750;cursor:pointer}
+.remember{display:flex;align-items:center;gap:8px;margin-top:18px;font-weight:500;letter-spacing:normal;cursor:pointer}
+.remember input{width:auto}
+</style>
+</head>
+<body>
+<main>
+<h1>Verification code</h1>
+<p>Enter the 6-digit code from your authenticator app.</p>
+{{ERROR_BLOCK}}
+<form method="post" action="./verify">
+<input type="hidden" name="pending" value="{{PENDING_TOKEN}}">
+<input type="hidden" name="return" value="{{RETURN_TARGET}}">
+<label for="code">Code</label>
+<input id="code" name="code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" required autofocus>
+<label class="remember"><input type="checkbox" name="remember" value="1"> Remember this device for {{TRUSTED_DEVICE_DAYS}} days</label>
+<button type="submit">Verify</button>
+</form>
+</main>
+</body>
+</html>

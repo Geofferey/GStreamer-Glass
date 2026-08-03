@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow,noarchive,nosnippet,noimageindex">
+<title>GStreamer Glass - Open Broadcast</title>
+<style>
+html{color-scheme:dark}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;display:grid;place-items:center;background:#05070b;color:#e8edf5;font:16px system-ui,-apple-system,Segoe UI,sans-serif}
+body::before{content:"";position:fixed;inset:0;z-index:-1;background:radial-gradient(560px circle at 18% 20%,rgba(79,140,255,.40),transparent 60%),radial-gradient(520px circle at 85% 75%,rgba(53,215,137,.30),transparent 58%),radial-gradient(640px circle at 60% 100%,rgba(255,93,108,.20),transparent 60%),#05070b}
+main{width:min(92vw,460px);padding:32px;border:1px solid rgba(255,255,255,.12);border-radius:16px;background:linear-gradient(180deg,rgba(10,14,22,.82),rgba(10,14,22,.48));backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);box-shadow:0 14px 44px rgba(0,0,0,.35)}
+.bars{height:10px;margin:-8px 0 24px;border-radius:99px;background:linear-gradient(90deg,#fff 0 14%,#ffe500 14% 28%,#00e5e5 28% 42%,#19ef18 42% 56%,#ed38eb 56% 70%,#ff2626 70% 84%,#1515ef 84%)}
+h1{margin:0 0 10px;font-size:1.65rem}
+p{margin:0;color:#aab6c8;line-height:1.55}
+button{width:100%;margin-top:24px;padding:13px;border:0;border-radius:9px;background:#4f8cff;color:white;font:inherit;font-weight:750;cursor:pointer}
+</style>
+</head>
+<body>
+<main>
+<div class="bars" aria-hidden="true"></div>
+<h1>Open broadcast?</h1>
+<p>{{LINK_DESCRIPTION}}</p>
+<form method="post" action="/auth/session">
+<input type="hidden" name="token" value="{{TOKEN}}">
+<input type="hidden" name="return" value="{{RETURN_TARGET}}">
+<button type="submit">Continue to broadcast</button>
+</form>
+</main>
+</body>
+</html>

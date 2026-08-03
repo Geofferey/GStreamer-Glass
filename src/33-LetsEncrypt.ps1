@@ -2289,6 +2289,16 @@ function Resolve-ViewerAuthenticationRestartImagePath {
     return Resolve-ViewerAuthenticationMessageAssetPath -FileName 'well-be-right-back.png'
 }
 
+# The auth-proxy page templates (login/link-confirm/account-setup/
+# totp-challenge/media-message) live under their own gstwebrtc-api/dist/
+# auth-proxy/ subdirectory, away from the main player frontend -- reuses
+# Resolve-ViewerAuthenticationMessageAssetPath's exact working-copy-then-
+# bundled-copy resolution, just rooted one directory deeper.
+function Resolve-AuthProxyTemplatePath {
+    param([Parameter(Mandatory)][string]$FileName)
+    return Resolve-ViewerAuthenticationMessageAssetPath -FileName "auth-proxy/$FileName"
+}
+
 function Start-LetsEncryptTlsProxies {
     if (-not (Test-EmbeddedTlsActive)) { return }
 
@@ -2323,6 +2333,11 @@ function Start-LetsEncryptTlsProxies {
     $restartPortraitImagePath = Resolve-ViewerAuthenticationMessageAssetPath -FileName 'well-be-right-back-portrait.png'
     $restartPortraitVideoMp4Path = Resolve-ViewerAuthenticationMessageAssetPath -FileName 'well-be-right-back-portrait-glitch.mp4'
     $restartPortraitVideoWebmPath = Resolve-ViewerAuthenticationMessageAssetPath -FileName 'well-be-right-back-portrait-glitch.webm'
+    $loginTemplatePath = Resolve-AuthProxyTemplatePath -FileName 'login.html'
+    $linkConfirmTemplatePath = Resolve-AuthProxyTemplatePath -FileName 'link-confirm.html'
+    $accountSetupTemplatePath = Resolve-AuthProxyTemplatePath -FileName 'account-setup.html'
+    $totpChallengeTemplatePath = Resolve-AuthProxyTemplatePath -FileName 'totp-challenge.html'
+    $mediaMessageTemplatePath = Resolve-AuthProxyTemplatePath -FileName 'media-message.html'
 
     # Account data is deliberately NOT part of this signature -- adding,
     # removing, or editing viewer accounts is handled live via
@@ -2426,6 +2441,11 @@ function Start-LetsEncryptTlsProxies {
         RestartPortraitImagePath     = $restartPortraitImagePath
         RestartPortraitVideoMp4Path  = $restartPortraitVideoMp4Path
         RestartPortraitVideoWebmPath = $restartPortraitVideoWebmPath
+        LoginTemplatePath         = $loginTemplatePath
+        LinkConfirmTemplatePath   = $linkConfirmTemplatePath
+        AccountSetupTemplatePath  = $accountSetupTemplatePath
+        TotpChallengeTemplatePath = $totpChallengeTemplatePath
+        MediaMessageTemplatePath  = $mediaMessageTemplatePath
         AuthenticationEnabled   = [bool]$authenticationEnabled
         Accounts                = (Get-ViewerAuthenticationAccountObjects -Accounts $authenticationAccounts)
         SessionHours            = [int]$numViewerAuthenticationSessionHours.Value
@@ -2499,6 +2519,11 @@ function Start-PlaintextAuthProxies {
     $restartPortraitImagePath = Resolve-ViewerAuthenticationMessageAssetPath -FileName 'well-be-right-back-portrait.png'
     $restartPortraitVideoMp4Path = Resolve-ViewerAuthenticationMessageAssetPath -FileName 'well-be-right-back-portrait-glitch.mp4'
     $restartPortraitVideoWebmPath = Resolve-ViewerAuthenticationMessageAssetPath -FileName 'well-be-right-back-portrait-glitch.webm'
+    $loginTemplatePath = Resolve-AuthProxyTemplatePath -FileName 'login.html'
+    $linkConfirmTemplatePath = Resolve-AuthProxyTemplatePath -FileName 'link-confirm.html'
+    $accountSetupTemplatePath = Resolve-AuthProxyTemplatePath -FileName 'account-setup.html'
+    $totpChallengeTemplatePath = Resolve-AuthProxyTemplatePath -FileName 'totp-challenge.html'
+    $mediaMessageTemplatePath = Resolve-AuthProxyTemplatePath -FileName 'media-message.html'
 
     # Account data deliberately excluded -- see the matching comment in
     # Start-LetsEncryptTlsProxies.
@@ -2579,6 +2604,11 @@ function Start-PlaintextAuthProxies {
         RestartPortraitImagePath     = $restartPortraitImagePath
         RestartPortraitVideoMp4Path  = $restartPortraitVideoMp4Path
         RestartPortraitVideoWebmPath = $restartPortraitVideoWebmPath
+        LoginTemplatePath         = $loginTemplatePath
+        LinkConfirmTemplatePath   = $linkConfirmTemplatePath
+        AccountSetupTemplatePath  = $accountSetupTemplatePath
+        TotpChallengeTemplatePath = $totpChallengeTemplatePath
+        MediaMessageTemplatePath  = $mediaMessageTemplatePath
         AuthenticationEnabled   = $true
         Accounts                = (Get-ViewerAuthenticationAccountObjects -Accounts $authenticationAccounts)
         SessionHours            = [int]$numViewerAuthenticationSessionHours.Value

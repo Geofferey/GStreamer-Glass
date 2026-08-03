@@ -1988,6 +1988,31 @@ public class TlsTerminatingProxy
     private static string restartPortraitMp4Path = "";
     private static string restartPortraitWebmPath = "";
 
+    // The five auth-proxy page templates (gstwebrtc-api/dist/auth-proxy/*.html)
+    // -- read once per configured path and cached as text, same shape as the
+    // restart image/video caching above, just ReadAllText instead of
+    // ReadAllBytes since these get per-request placeholder substitution
+    // rather than being streamed as-is. Shared lock: these are configured
+    // together (one StartFamily command) and read far more often than
+    // written, so one lock for all five is simpler than five separate ones
+    // and never a real contention point.
+    private static readonly object authTemplateLock = new object();
+    // Defaults to the built-in fallback constant (defined below), not "" --
+    // an instance that never gets its Configure*Template method called at
+    // all (e.g. a test constructing this class directly) must serve the
+    // same safe minimal page a failed-to-load template falls back to, not a
+    // blank body.
+    private static string loginTemplatePath = "";
+    private static string loginTemplateText = FallbackLoginHtml;
+    private static string linkConfirmTemplatePath = "";
+    private static string linkConfirmTemplateText = FallbackLinkConfirmHtml;
+    private static string accountSetupTemplatePath = "";
+    private static string accountSetupTemplateText = FallbackAccountSetupHtml;
+    private static string totpChallengeTemplatePath = "";
+    private static string totpChallengeTemplateText = FallbackTotpChallengeHtml;
+    private static string mediaMessageTemplatePath = "";
+    private static string mediaMessageTemplateText = FallbackMediaMessageHtml;
+
     // Async continuations resume on arbitrary ThreadPool threads with no
     // PowerShell runspace bound to them, so failures here cannot invoke a
     // PowerShell callback directly (that throws "no Runspace available"
@@ -2167,6 +2192,126 @@ public class TlsTerminatingProxy
         if (string.IsNullOrWhiteSpace(assetPath)) return "";
         try { return Path.GetFullPath(assetPath); }
         catch { return ""; }
+    }
+
+    // Minimal, unstyled fallback markup for each auth-proxy page -- used
+    // only if its real template file (gstwebrtc-api/dist/auth-proxy/*.html)
+    // is missing or fails to load. A missing restart-page image just means
+    // no picture shows; a missing LOGIN template must not mean nobody can
+    // authenticate at all, so every page keeps a working (if plain) form
+    // here rather than failing the request outright.
+    private const string FallbackLoginHtml =
+        "<!doctype html><html><head><meta charset=\"utf-8\"><title>GStreamer Glass - Viewer Login</title></head><body>" +
+        "<h1>GStreamer Glass</h1><p>This broadcast requires viewer authentication.</p>{{ERROR_BLOCK}}" +
+        "<form method=\"post\" action=\"./login\"><input type=\"hidden\" name=\"return\" value=\"{{RETURN_TARGET}}\">" +
+        "<label>Username <input name=\"username\" autocomplete=\"username\" required autofocus></label><br>" +
+        "<label>Password <input name=\"password\" type=\"password\" autocomplete=\"current-password\" required></label><br>" +
+        "<button type=\"submit\">Watch broadcast</button></form></body></html>";
+    private const string FallbackLinkConfirmHtml =
+        "<!doctype html><html><head><meta charset=\"utf-8\"><title>GStreamer Glass - Open Broadcast</title></head><body>" +
+        "<h1>Open broadcast?</h1><p>{{LINK_DESCRIPTION}}</p>" +
+        "<form method=\"post\" action=\"/auth/session\"><input type=\"hidden\" name=\"token\" value=\"{{TOKEN}}\">" +
+        "<input type=\"hidden\" name=\"return\" value=\"{{RETURN_TARGET}}\"><button type=\"submit\">Continue to broadcast</button></form></body></html>";
+    private const string FallbackAccountSetupHtml =
+        "<!doctype html><html><head><meta charset=\"utf-8\"><title>GStreamer Glass - Account Setup</title></head><body>" +
+        "<h1>Set up {{USERNAME}}</h1><p>Choose a new password for this viewer account.</p>{{ERROR_BLOCK}}" +
+        "<form method=\"post\" action=\"/auth/setup\"><input type=\"hidden\" name=\"token\" value=\"{{TOKEN}}\">" +
+        "<input type=\"hidden\" name=\"return\" value=\"{{RETURN_TARGET}}\">" +
+        "<label>New password <input name=\"password\" type=\"password\" minlength=\"10\" maxlength=\"256\" autocomplete=\"new-password\" required autofocus></label><br>" +
+        "<label>Confirm password <input name=\"confirm\" type=\"password\" minlength=\"10\" maxlength=\"256\" autocomplete=\"new-password\" required></label><br>" +
+        "{{TOTP_FIELDS}}<button type=\"submit\">Save account and continue</button></form></body></html>";
+    private const string FallbackTotpChallengeHtml =
+        "<!doctype html><html><head><meta charset=\"utf-8\"><title>GStreamer Glass - Verification Code</title></head><body>" +
+        "<h1>Verification code</h1><p>Enter the 6-digit code from your authenticator app.</p>{{ERROR_BLOCK}}" +
+        "<form method=\"post\" action=\"./verify\"><input type=\"hidden\" name=\"pending\" value=\"{{PENDING_TOKEN}}\">" +
+        "<input type=\"hidden\" name=\"return\" value=\"{{RETURN_TARGET}}\">" +
+        "<label>Code <input name=\"code\" inputmode=\"numeric\" pattern=\"[0-9]{6}\" maxlength=\"6\" autocomplete=\"one-time-code\" required autofocus></label><br>" +
+        "<label><input type=\"checkbox\" name=\"remember\" value=\"1\"> Remember this device for {{TRUSTED_DEVICE_DAYS}} days</label><br>" +
+        "<button type=\"submit\">Verify</button></form></body></html>";
+    private const string FallbackMediaMessageHtml =
+        "<!doctype html><html><head><meta charset=\"utf-8\"><title>{{TITLE}}</title></head><body>{{MEDIA_MARKUP}}{{SCRIPT_BLOCK}}</body></html>";
+
+    // Shared by every Configure*Template method: normalize path, skip if
+    // unchanged and already cached (matches ConfigureRestartImage's shape),
+    // File.ReadAllText once, sanity-check it looks like an HTML document (a
+    // deliberately loose check -- these are trusted, locally-authored files,
+    // not untrusted input; this only guards against pointing the path at
+    // something obviously wrong, not against malformed markup within an
+    // otherwise-real template), cache or fall back to the built-in minimal
+    // page on any failure.
+    private string LoadTemplateText(string templatePath, string description, string fallback)
+    {
+        if (string.IsNullOrWhiteSpace(templatePath)) return fallback;
+        try
+        {
+            string text = File.ReadAllText(templatePath);
+            if (text.IndexOf("<!doctype html>", StringComparison.OrdinalIgnoreCase) < 0)
+            {
+                throw new InvalidDataException("The configured file does not look like an HTML document.");
+            }
+            pendingLog.Enqueue("loaded " + description + " template from " + templatePath);
+            return text;
+        }
+        catch (Exception ex)
+        {
+            pendingLog.Enqueue("could not load " + description + " template; using the built-in fallback page: " + ex.Message);
+            return fallback;
+        }
+    }
+
+    public void ConfigureLoginTemplate(string templatePath)
+    {
+        string normalizedPath = NormalizeMessageAssetPath(templatePath);
+        lock (authTemplateLock)
+        {
+            if (string.Equals(loginTemplatePath, normalizedPath, StringComparison.OrdinalIgnoreCase) && loginTemplateText.Length > 0) return;
+            loginTemplatePath = normalizedPath;
+            loginTemplateText = LoadTemplateText(normalizedPath, "login page", FallbackLoginHtml);
+        }
+    }
+
+    public void ConfigureLinkConfirmTemplate(string templatePath)
+    {
+        string normalizedPath = NormalizeMessageAssetPath(templatePath);
+        lock (authTemplateLock)
+        {
+            if (string.Equals(linkConfirmTemplatePath, normalizedPath, StringComparison.OrdinalIgnoreCase) && linkConfirmTemplateText.Length > 0) return;
+            linkConfirmTemplatePath = normalizedPath;
+            linkConfirmTemplateText = LoadTemplateText(normalizedPath, "temporary-link confirmation page", FallbackLinkConfirmHtml);
+        }
+    }
+
+    public void ConfigureAccountSetupTemplate(string templatePath)
+    {
+        string normalizedPath = NormalizeMessageAssetPath(templatePath);
+        lock (authTemplateLock)
+        {
+            if (string.Equals(accountSetupTemplatePath, normalizedPath, StringComparison.OrdinalIgnoreCase) && accountSetupTemplateText.Length > 0) return;
+            accountSetupTemplatePath = normalizedPath;
+            accountSetupTemplateText = LoadTemplateText(normalizedPath, "account setup page", FallbackAccountSetupHtml);
+        }
+    }
+
+    public void ConfigureTotpChallengeTemplate(string templatePath)
+    {
+        string normalizedPath = NormalizeMessageAssetPath(templatePath);
+        lock (authTemplateLock)
+        {
+            if (string.Equals(totpChallengeTemplatePath, normalizedPath, StringComparison.OrdinalIgnoreCase) && totpChallengeTemplateText.Length > 0) return;
+            totpChallengeTemplatePath = normalizedPath;
+            totpChallengeTemplateText = LoadTemplateText(normalizedPath, "TOTP challenge page", FallbackTotpChallengeHtml);
+        }
+    }
+
+    public void ConfigureMediaMessageTemplate(string templatePath)
+    {
+        string normalizedPath = NormalizeMessageAssetPath(templatePath);
+        lock (authTemplateLock)
+        {
+            if (string.Equals(mediaMessageTemplatePath, normalizedPath, StringComparison.OrdinalIgnoreCase) && mediaMessageTemplateText.Length > 0) return;
+            mediaMessageTemplatePath = normalizedPath;
+            mediaMessageTemplateText = LoadTemplateText(normalizedPath, "restart/holding page", FallbackMediaMessageHtml);
+        }
     }
 
     // Optional path -> internal-port overrides, checked against the decrypted
@@ -3880,34 +4025,18 @@ public class TlsTerminatingProxy
         // valid session -- logged in from elsewhere with the same shared
         // account, or a still-valid cookie the platform just didn't route a
         // fresh navigation through (observed specifically on installed
-        // Android PWAs). Poll the always-locally-answered /auth/status
-        // heartbeat (same endpoint player.js's checkAuthStatus polls) and
-        // bounce to the return target the moment it reports authenticated,
-        // without waiting for a manual reload. CSP blocks scripts by default
-        // (see WriteHttpResponseAsync); this is the one nonce-tagged inline
-        // script allowed through for this response. The return target is
-        // passed via an HTML-encoded data attribute (reusing the same
-        // WebUtility.HtmlEncode already trusted for the form field below)
-        // rather than interpolated into the script body, so it never needs
-        // its own separate JS-string escaping.
+        // Android PWAs). The template's heartbeat script polls the
+        // always-locally-answered /auth/status heartbeat (same endpoint
+        // player.js's checkAuthStatus polls) and bounces to the return
+        // target the moment it reports authenticated. CSP blocks scripts by
+        // default (see WriteHttpResponseAsync); this nonce is what allows
+        // that one inline script through for this response.
         byte[] scriptNonceBytes = new byte[16];
         using (RandomNumberGenerator random = RandomNumberGenerator.Create())
         {
             random.GetBytes(scriptNonceBytes);
         }
         string scriptNonce = Base64UrlEncode(scriptNonceBytes);
-        string heartbeatScript =
-            "<script nonce=\"" + scriptNonce + "\" data-return=\"" + WebUtility.HtmlEncode(safeReturn) + "\">" +
-            "(function(){var t=document.currentScript.getAttribute('data-return')||'/live/';" +
-            "var vv=window.visualViewport,liftTimer=0,appliedLift=0;" +
-            "function theme(){var m=document.querySelector('meta[name=\"theme-color\"]'),c=getComputedStyle(document.documentElement).getPropertyValue('--system-chrome-color').trim();if(m&&c)m.setAttribute('content',c);}" +
-            "function lift(){var card=document.querySelector('main');if(!card)return;requestAnimationFrame(function(){var pageTop=vv?(typeof vv.pageTop==='number'?vv.pageTop:scrollY+vv.offsetTop):scrollY,bottom=pageTop+(vv?vv.height:innerHeight),cardBottom=card.offsetTop+card.offsetHeight,overlap=Math.max(0,Math.ceil(cardBottom-bottom)),amount=overlap?overlap+32:0;if(amount===appliedLift)return;appliedLift=amount;card.style.transform=amount?'translateY(-'+amount+'px)':'';});}" +
-            "function queueLift(){clearTimeout(liftTimer);liftTimer=setTimeout(lift,80);setTimeout(lift,320);}" +
-            "function check(){fetch('/auth/status',{cache:'no-store'}).then(function(r){return r.ok?r.json():null;})" +
-            ".then(function(d){if(d&&d.authenticated){location.replace(t);}}).catch(function(){});}" +
-            "theme();addEventListener('pageshow',function(){theme();queueLift();});document.addEventListener('visibilitychange',function(){if(document.visibilityState==='visible'){theme();queueLift();}});" +
-            "document.addEventListener('pointerdown',function(e){if(e.target&&e.target.matches('input'))queueLift();});document.addEventListener('focusin',function(e){if(e.target&&e.target.matches('input'))queueLift();});if(vv)vv.addEventListener('resize',queueLift);if(navigator.virtualKeyboard)navigator.virtualKeyboard.addEventListener('geometrychange',queueLift);" +
-            "check();setInterval(check,2000);})();</script>";
         // Installable from here too, not just the player -- the whole point
         // being that an installed PWA always reopens to wherever it was
         // installed FROM (confirmed platform behavior, not something either
@@ -3926,40 +4055,12 @@ public class TlsTerminatingProxy
         // strand an existing WebAPK on an older display mode.
         string manifestUrl = pwaMountPath + "manifest.webmanifest?v=3.8.40";
         string iconUrl = pwaMountPath + "icons/gstreamer-glass-192.png";
-        string html = "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1,viewport-fit=cover\">" +
-            // Keep a valid initial color in the document so Android never
-            // paints its light default before the page-owned CSS value is
-            // dynamically applied by the nonce-tagged script below.
-            "<meta name=\"theme-color\" content=\"#07111f\"><meta name=\"mobile-web-app-capable\" content=\"yes\">" +
-            "<meta name=\"apple-mobile-web-app-capable\" content=\"yes\"><meta name=\"apple-mobile-web-app-status-bar-style\" content=\"black-translucent\">" +
-            "<meta name=\"apple-mobile-web-app-title\" content=\"Glass Live\">" +
-            "<link rel=\"manifest\" href=\"" + WebUtility.HtmlEncode(manifestUrl) + "\" crossorigin=\"use-credentials\">" +
-            "<link rel=\"icon\" type=\"image/png\" sizes=\"192x192\" href=\"" + WebUtility.HtmlEncode(iconUrl) + "\">" +
-            "<link rel=\"apple-touch-icon\" href=\"" + WebUtility.HtmlEncode(iconUrl) + "\">" +
-            "<title>GStreamer Glass - Viewer Login</title><style>html{color-scheme:dark;--system-chrome-color:#07111f}*{box-sizing:border-box}" +
-            // backdrop-filter blur only produces a visible effect when there is
-            // actual detail behind the element to blur -- the in-player .overlay
-            // is visibly frosted because it sits over real video. A smooth flat
-            // gradient behind main would blur to something indistinguishable
-            // from itself, so the body gets a few contrasty, brand-colored glow
-            // blobs (fixed, so they don't scroll away from behind the card) for
-            // the card's blur to actually soften against.
-            "body{margin:0;min-height:100vh;display:grid;place-items:center;background:#05070b;color:#e8edf5;font:16px system-ui,-apple-system,Segoe UI,sans-serif}" +
-            "body::before{content:\"\";position:fixed;inset:0;z-index:-1;background:" +
-            "radial-gradient(560px circle at 18% 20%,rgba(79,140,255,.40),transparent 60%)," +
-            "radial-gradient(520px circle at 85% 75%,rgba(53,215,137,.30),transparent 58%)," +
-            "radial-gradient(640px circle at 60% 100%,rgba(255,93,108,.20),transparent 60%)," +
-            "#05070b}" +
-            // Same frosted-glass treatment as the in-player .overlay (top-left
-            // status card): translucent gradient fill + backdrop-filter blur,
-            // so the login page matches the rest of the viewer chrome.
-            "main{width:min(92vw,420px);padding:32px;border:1px solid rgba(255,255,255,.12);border-radius:16px;background:linear-gradient(180deg,rgba(10,14,22,.82),rgba(10,14,22,.48));backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);box-shadow:0 14px 44px rgba(0,0,0,.35);transition:transform .16s ease-out}h1{margin:0 0 8px;font-size:1.55rem}p{color:#aab6c8}.error{color:#ff9b9b}" +
-            "label{display:block;margin:18px 0 6px;font-weight:650}input{width:100%;padding:12px;border:1px solid #35435a;border-radius:9px;background:#090f19;color:#fff;font:inherit}button{width:100%;margin-top:22px;padding:12px;border:0;border-radius:9px;background:#4f8cff;color:white;font:inherit;font-weight:750;cursor:pointer}</style></head>" +
-            "<body><main><h1>GStreamer Glass</h1><p>This broadcast requires viewer authentication.</p>" + error +
-            "<form method=\"post\" action=\"./login\"><input type=\"hidden\" name=\"return\" value=\"" + WebUtility.HtmlEncode(safeReturn) + "\">" +
-            "<label for=\"username\">Username</label><input id=\"username\" name=\"username\" autocomplete=\"username\" required autofocus>" +
-            "<label for=\"password\">Password</label><input id=\"password\" name=\"password\" type=\"password\" autocomplete=\"current-password\" required>" +
-            "<button type=\"submit\">Watch broadcast</button></form></main>" + heartbeatScript + "</body></html>";
+        string html = loginTemplateText
+            .Replace("{{MANIFEST_URL}}", WebUtility.HtmlEncode(manifestUrl))
+            .Replace("{{ICON_URL}}", WebUtility.HtmlEncode(iconUrl))
+            .Replace("{{ERROR_BLOCK}}", error)
+            .Replace("{{RETURN_TARGET}}", WebUtility.HtmlEncode(safeReturn))
+            .Replace("{{NONCE}}", scriptNonce);
         await WriteHttpResponseAsync(stream, statusCode, reason, "text/html; charset=utf-8", html, additionalHeaders, scriptNonce);
     }
 
@@ -3969,17 +4070,10 @@ public class TlsTerminatingProxy
         string linkDescription = link != null && link.SingleUse
             ? "This single-use link will only be consumed after you continue."
             : "This temporary link remains reusable until it expires or is revoked.";
-        string html = "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">" +
-            "<meta name=\"robots\" content=\"noindex,nofollow,noarchive,nosnippet,noimageindex\">" +
-            "<title>GStreamer Glass - Open Broadcast</title><style>html{color-scheme:dark}*{box-sizing:border-box}" +
-            "body{margin:0;min-height:100vh;display:grid;place-items:center;background:#05070b;color:#e8edf5;font:16px system-ui,-apple-system,Segoe UI,sans-serif}" +
-            "body::before{content:\"\";position:fixed;inset:0;z-index:-1;background:radial-gradient(560px circle at 18% 20%,rgba(79,140,255,.40),transparent 60%),radial-gradient(520px circle at 85% 75%,rgba(53,215,137,.30),transparent 58%),radial-gradient(640px circle at 60% 100%,rgba(255,93,108,.20),transparent 60%),#05070b}" +
-            "main{width:min(92vw,460px);padding:32px;border:1px solid rgba(255,255,255,.12);border-radius:16px;background:linear-gradient(180deg,rgba(10,14,22,.82),rgba(10,14,22,.48));backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);box-shadow:0 14px 44px rgba(0,0,0,.35)}" +
-            ".bars{height:10px;margin:-8px 0 24px;border-radius:99px;background:linear-gradient(90deg,#fff 0 14%,#ffe500 14% 28%,#00e5e5 28% 42%,#19ef18 42% 56%,#ed38eb 56% 70%,#ff2626 70% 84%,#1515ef 84%)}" +
-            "h1{margin:0 0 10px;font-size:1.65rem}p{margin:0;color:#aab6c8;line-height:1.55}button{width:100%;margin-top:24px;padding:13px;border:0;border-radius:9px;background:#4f8cff;color:white;font:inherit;font-weight:750;cursor:pointer}</style></head>" +
-            "<body><main><div class=\"bars\" aria-hidden=\"true\"></div><h1>Open broadcast?</h1><p>" + WebUtility.HtmlEncode(linkDescription) + "</p>" +
-            "<form method=\"post\" action=\"/auth/session\"><input type=\"hidden\" name=\"token\" value=\"" + WebUtility.HtmlEncode(token ?? "") + "\">" +
-            "<input type=\"hidden\" name=\"return\" value=\"" + WebUtility.HtmlEncode(safeReturn) + "\"><button type=\"submit\">Continue to broadcast</button></form></main></body></html>";
+        string html = linkConfirmTemplateText
+            .Replace("{{LINK_DESCRIPTION}}", WebUtility.HtmlEncode(linkDescription))
+            .Replace("{{TOKEN}}", WebUtility.HtmlEncode(token ?? ""))
+            .Replace("{{RETURN_TARGET}}", WebUtility.HtmlEncode(safeReturn));
         await WriteHttpResponseAsync(stream, 200, "OK", "text/html; charset=utf-8", html, null);
     }
 
@@ -4009,24 +4103,12 @@ public class TlsTerminatingProxy
                 "<p>Your existing two-factor enrollment will be preserved. Enter its current code to complete the password change.</p>" +
                 "<label for=\"code\">Authenticator code</label><input id=\"code\" name=\"code\" inputmode=\"numeric\" pattern=\"[0-9]{6}\" maxlength=\"6\" autocomplete=\"one-time-code\" required>";
         }
-        string html = "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">" +
-            "<meta name=\"robots\" content=\"noindex,nofollow,noarchive,nosnippet,noimageindex\">" +
-            "<title>GStreamer Glass - Account Setup</title><style>html{color-scheme:dark}*{box-sizing:border-box}" +
-            "body{margin:0;min-height:100vh;display:grid;place-items:center;background:#05070b;color:#e8edf5;font:16px system-ui,-apple-system,Segoe UI,sans-serif}" +
-            "body::before{content:\"\";position:fixed;inset:0;z-index:-1;background:radial-gradient(560px circle at 18% 20%,rgba(79,140,255,.40),transparent 60%),radial-gradient(520px circle at 85% 75%,rgba(53,215,137,.30),transparent 58%),radial-gradient(640px circle at 60% 100%,rgba(255,93,108,.20),transparent 60%),#05070b}" +
-            "main{width:min(92vw,420px);margin:24px 0;padding:32px;border:1px solid rgba(255,255,255,.12);border-radius:16px;background:linear-gradient(180deg,rgba(10,14,22,.82),rgba(10,14,22,.48));backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);box-shadow:0 14px 44px rgba(0,0,0,.35)}" +
-            ".bars{height:10px;margin:-8px 0 24px;border-radius:99px;background:linear-gradient(90deg,#fff 0 14%,#ffe500 14% 28%,#00e5e5 28% 42%,#19ef18 42% 56%,#ed38eb 56% 70%,#ff2626 70% 84%,#1515ef 84%)}" +
-            "h1{margin:0 0 8px;font-size:1.65rem}h2{margin:24px 0 6px;font-size:1.1rem}p{color:#aab6c8;line-height:1.5}.error{color:#ff9b9b}" +
-            "label{display:block;margin:17px 0 6px;font-weight:650}input{width:100%;padding:12px;border:1px solid #35435a;border-radius:9px;background:#090f19;color:#fff;font:inherit}" +
-            "#code{letter-spacing:.3em;text-align:center}code{display:block;padding:11px;border:1px solid #29364b;border-radius:8px;background:#070c14;color:#bcd0ef;overflow-wrap:anywhere;user-select:all}.uri{font-size:.78rem}.uri a{color:inherit;text-decoration:underline;text-decoration-color:#4f8cff;text-underline-offset:3px}" +
-            "button{width:100%;margin-top:24px;padding:13px;border:0;border-radius:9px;background:#4f8cff;color:white;font:inherit;font-weight:750;cursor:pointer}</style></head>" +
-            "<body><main><div class=\"bars\" aria-hidden=\"true\"></div><h1>Set up " + WebUtility.HtmlEncode(username) + "</h1>" +
-            "<p>Choose a new password for this viewer account. Completing setup signs out its existing sessions.</p>" + error +
-            "<form method=\"post\" action=\"/auth/setup\"><input type=\"hidden\" name=\"token\" value=\"" + WebUtility.HtmlEncode(token ?? "") + "\">" +
-            "<input type=\"hidden\" name=\"return\" value=\"" + WebUtility.HtmlEncode(safeReturn) + "\">" +
-            "<label for=\"password\">New password</label><input id=\"password\" name=\"password\" type=\"password\" minlength=\"10\" maxlength=\"256\" autocomplete=\"new-password\" required autofocus>" +
-            "<label for=\"confirm\">Confirm password</label><input id=\"confirm\" name=\"confirm\" type=\"password\" minlength=\"10\" maxlength=\"256\" autocomplete=\"new-password\" required>" +
-            totpFields + "<button type=\"submit\">Save account and continue</button></form></main></body></html>";
+        string html = accountSetupTemplateText
+            .Replace("{{USERNAME}}", WebUtility.HtmlEncode(username))
+            .Replace("{{ERROR_BLOCK}}", error)
+            .Replace("{{TOTP_FIELDS}}", totpFields)
+            .Replace("{{TOKEN}}", WebUtility.HtmlEncode(token ?? ""))
+            .Replace("{{RETURN_TARGET}}", WebUtility.HtmlEncode(safeReturn));
         await WriteHttpResponseAsync(stream, statusCode, reason, "text/html; charset=utf-8", html, additionalHeaders);
     }
 
@@ -4063,22 +4145,11 @@ public class TlsTerminatingProxy
     {
         string safeReturn = GetSafeReturnTarget(returnTarget);
         string error = invalid ? "<p class=\"error\">That code was not accepted. Check your authenticator app and try again.</p>" : "";
-        string html = "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">" +
-            "<title>GStreamer Glass - Verification Code</title><style>html{color-scheme:dark}*{box-sizing:border-box}" +
-            "body{margin:0;min-height:100vh;display:grid;place-items:center;background:#05070b;color:#e8edf5;font:16px system-ui,-apple-system,Segoe UI,sans-serif}" +
-            "body::before{content:\"\";position:fixed;inset:0;z-index:-1;background:" +
-            "radial-gradient(560px circle at 18% 20%,rgba(79,140,255,.40),transparent 60%)," +
-            "radial-gradient(520px circle at 85% 75%,rgba(53,215,137,.30),transparent 58%)," +
-            "radial-gradient(640px circle at 60% 100%,rgba(255,93,108,.20),transparent 60%)," +
-            "#05070b}" +
-            "main{width:min(92vw,420px);padding:32px;border:1px solid rgba(255,255,255,.12);border-radius:16px;background:linear-gradient(180deg,rgba(10,14,22,.82),rgba(10,14,22,.48));backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);box-shadow:0 14px 44px rgba(0,0,0,.35)}h1{margin:0 0 8px;font-size:1.55rem}p{color:#aab6c8}.error{color:#ff9b9b}" +
-            "label{display:block;margin:18px 0 6px;font-weight:650}input{width:100%;padding:12px;border:1px solid #35435a;border-radius:9px;background:#090f19;color:#fff;font:inherit;letter-spacing:.3em;text-align:center}button{width:100%;margin-top:22px;padding:12px;border:0;border-radius:9px;background:#4f8cff;color:white;font:inherit;font-weight:750;cursor:pointer}.remember{display:flex;align-items:center;gap:8px;margin-top:18px;font-weight:500;letter-spacing:normal;cursor:pointer}.remember input{width:auto}</style></head>" +
-            "<body><main><h1>Verification code</h1><p>Enter the 6-digit code from your authenticator app.</p>" + error +
-            "<form method=\"post\" action=\"./verify\"><input type=\"hidden\" name=\"pending\" value=\"" + WebUtility.HtmlEncode(pendingToken ?? "") + "\">" +
-            "<input type=\"hidden\" name=\"return\" value=\"" + WebUtility.HtmlEncode(safeReturn) + "\">" +
-            "<label for=\"code\">Code</label><input id=\"code\" name=\"code\" inputmode=\"numeric\" pattern=\"[0-9]{6}\" maxlength=\"6\" autocomplete=\"one-time-code\" required autofocus>" +
-            "<label class=\"remember\"><input type=\"checkbox\" name=\"remember\" value=\"1\"> Remember this device for " + TrustedDeviceDays + " days</label>" +
-            "<button type=\"submit\">Verify</button></form></main></body></html>";
+        string html = totpChallengeTemplateText
+            .Replace("{{ERROR_BLOCK}}", error)
+            .Replace("{{PENDING_TOKEN}}", WebUtility.HtmlEncode(pendingToken ?? ""))
+            .Replace("{{RETURN_TARGET}}", WebUtility.HtmlEncode(safeReturn))
+            .Replace("{{TRUSTED_DEVICE_DAYS}}", TrustedDeviceDays.ToString());
         await WriteHttpResponseAsync(stream, statusCode, reason, "text/html; charset=utf-8", html, additionalHeaders);
     }
 
@@ -4171,11 +4242,10 @@ public class TlsTerminatingProxy
                 "document.addEventListener('visibilitychange',function(){if(document.visibilityState==='visible')activate();});" +
                 "document.addEventListener('pointerdown',activate,{passive:true});media();play();wake();check();setInterval(check,2000);})();</script>";
         }
-        string html = "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1,viewport-fit=cover\">" +
-            "<meta name=\"robots\" content=\"noindex,nofollow,noarchive,nosnippet,noimageindex\"><title>" + safeAlternativeText + "</title>" +
-            "<style>html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#000;color-scheme:dark}body{display:grid;place-items:center}" +
-            "video,picture,img{display:block;width:100vw;height:100vh;height:100dvh;background:#000}video,img{object-fit:cover;object-position:center}</style></head>" +
-            "<body>" + mediaMarkup + script + "</body></html>";
+        string html = mediaMessageTemplateText
+            .Replace("{{TITLE}}", safeAlternativeText)
+            .Replace("{{MEDIA_MARKUP}}", mediaMarkup)
+            .Replace("{{SCRIPT_BLOCK}}", script);
         await WriteHttpResponseAsync(stream, statusCode, reason, "text/html; charset=utf-8", html, additionalHeaders, scriptNonce);
     }
 
@@ -5134,6 +5204,11 @@ if ($AuthProxyWorker) {
                             [string]$Command.RestartPortraitVideoMp4Path,
                             [string]$Command.RestartPortraitVideoWebmPath
                         )
+                        $proxy.ConfigureLoginTemplate([string]$Command.LoginTemplatePath)
+                        $proxy.ConfigureLinkConfirmTemplate([string]$Command.LinkConfirmTemplatePath)
+                        $proxy.ConfigureAccountSetupTemplate([string]$Command.AccountSetupTemplatePath)
+                        $proxy.ConfigureTotpChallengeTemplate([string]$Command.TotpChallengeTemplatePath)
+                        $proxy.ConfigureMediaMessageTemplate([string]$Command.MediaMessageTemplatePath)
                         $proxy.ConfigureTrustedForwardingProxies([string[]]@($Command.TrustedForwardingProxyAddresses))
                         foreach ($route in @($portInfo.PathRoutes)) {
                             $proxy.AddPathRoute([string]$route.Path, [int]$route.Port)

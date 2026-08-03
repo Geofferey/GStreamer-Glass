@@ -184,6 +184,13 @@ $proxy.ConfigureAuthentication(
     12
 )
 $proxy.DirectoryRedirectPath = '/live'
+# Points the real gstwebrtc-api/dist/auth-proxy/login.html at this proxy so
+# the assertions below exercise the actual production template (heartbeat
+# script, PWA manifest/meta tags), not the built-in minimal fallback --
+# template caching is a static field shared by every TlsTerminatingProxy
+# instance in this process, so configuring it once here covers every proxy
+# constructed later in this file too.
+$proxy.ConfigureLoginTemplate((Join-Path $PSScriptRoot '..\..\gstwebrtc-api\dist\auth-proxy\login.html'))
 $proxy.Start($proxyPort, '127.0.0.1', $upstreamPort, $certificate)
 Start-Sleep -Milliseconds 100
 

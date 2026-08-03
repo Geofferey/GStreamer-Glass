@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<!-- Keep a valid initial color in the document so Android never paints its
+     light default before the page-owned CSS value is dynamically applied by
+     the nonce-tagged script below. -->
+<meta name="theme-color" content="#07111f">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Glass Live">
+<link rel="manifest" href="{{MANIFEST_URL}}" crossorigin="use-credentials">
+<link rel="icon" type="image/png" sizes="192x192" href="{{ICON_URL}}">
+<link rel="apple-touch-icon" href="{{ICON_URL}}">
+<title>GStreamer Glass - Viewer Login</title>
+<style>
+html{color-scheme:dark;--system-chrome-color:#07111f}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;display:grid;place-items:center;background:#05070b;color:#e8edf5;font:16px system-ui,-apple-system,Segoe UI,sans-serif}
+/* backdrop-filter blur only produces a visible effect when there is actual
+   detail behind the element to blur -- the in-player .overlay is visibly
+   frosted because it sits over real video. A smooth flat gradient behind
+   main would blur to something indistinguishable from itself, so the body
+   gets a few contrasty, brand-colored glow blobs (fixed, so they don't
+   scroll away from behind the card) for the card's blur to actually soften
+   against. */
+body::before{content:"";position:fixed;inset:0;z-index:-1;background:
+    radial-gradient(560px circle at 18% 20%,rgba(79,140,255,.40),transparent 60%),
+    radial-gradient(520px circle at 85% 75%,rgba(53,215,137,.30),transparent 58%),
+    radial-gradient(640px circle at 60% 100%,rgba(255,93,108,.20),transparent 60%),
+    #05070b}
+/* Same frosted-glass treatment as the in-player .overlay (top-left status
+   card): translucent gradient fill + backdrop-filter blur, so the login
+   page matches the rest of the viewer chrome. */
+main{width:min(92vw,420px);padding:32px;border:1px solid rgba(255,255,255,.12);border-radius:16px;background:linear-gradient(180deg,rgba(10,14,22,.82),rgba(10,14,22,.48));backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);box-shadow:0 14px 44px rgba(0,0,0,.35);transition:transform .16s ease-out}
+h1{margin:0 0 8px;font-size:1.55rem}
+p{color:#aab6c8}
+.error{color:#ff9b9b}
+label{display:block;margin:18px 0 6px;font-weight:650}
+input{width:100%;padding:12px;border:1px solid #35435a;border-radius:9px;background:#090f19;color:#fff;font:inherit}
+button{width:100%;margin-top:22px;padding:12px;border:0;border-radius:9px;background:#4f8cff;color:white;font:inherit;font-weight:750;cursor:pointer}
+</style>
+</head>
+<body>
+<main>
+<h1>GStreamer Glass</h1>
+<p>This broadcast requires viewer authentication.</p>
+{{ERROR_BLOCK}}
+<form method="post" action="./login">
+<input type="hidden" name="return" value="{{RETURN_TARGET}}">
+<label for="username">Username</label>
+<input id="username" name="username" autocomplete="username" required autofocus>
+<label for="password">Password</label>
+<input id="password" name="password" type="password" autocomplete="current-password" required>
+<button type="submit">Watch broadcast</button>
+</form>
+</main>
+<!-- A tab/PWA can end up sitting on this page while already holding a valid
+     session -- logged in from elsewhere with the same shared account, or a
+     still-valid cookie the platform just didn't route a fresh navigation
+     through (observed specifically on installed Android PWAs). Poll the
+     always-locally-answered /auth/status heartbeat (same endpoint player.js's
+     checkAuthStatus polls) and bounce to the return target the moment it
+     reports authenticated, without waiting for a manual reload. CSP blocks
+     scripts by default; this is the one nonce-tagged inline script allowed
+     through for this response. The return target is passed via an
+     HTML-encoded data attribute rather than interpolated into the script
+     body, so it never needs its own separate JS-string escaping. -->
+<script nonce="{{NONCE}}" data-return="{{RETURN_TARGET}}">
+(function(){var t=document.currentScript.getAttribute('data-return')||'/live/';
+var vv=window.visualViewport,liftTimer=0,appliedLift=0;
+function theme(){var m=document.querySelector('meta[name="theme-color"]'),c=getComputedStyle(document.documentElement).getPropertyValue('--system-chrome-color').trim();if(m&&c)m.setAttribute('content',c);}
+function lift(){var card=document.querySelector('main');if(!card)return;requestAnimationFrame(function(){var pageTop=vv?(typeof vv.pageTop==='number'?vv.pageTop:scrollY+vv.offsetTop):scrollY,bottom=pageTop+(vv?vv.height:innerHeight),cardBottom=card.offsetTop+card.offsetHeight,overlap=Math.max(0,Math.ceil(cardBottom-bottom)),amount=overlap?overlap+32:0;if(amount===appliedLift)return;appliedLift=amount;card.style.transform=amount?'translateY(-'+amount+'px)':'';});}
+function queueLift(){clearTimeout(liftTimer);liftTimer=setTimeout(lift,80);setTimeout(lift,320);}
+function check(){fetch('/auth/status',{cache:'no-store'}).then(function(r){return r.ok?r.json():null;})
+.then(function(d){if(d&&d.authenticated){location.replace(t);}}).catch(function(){});}
+theme();addEventListener('pageshow',function(){theme();queueLift();});document.addEventListener('visibilitychange',function(){if(document.visibilityState==='visible'){theme();queueLift();}});
+document.addEventListener('pointerdown',function(e){if(e.target&&e.target.matches('input'))queueLift();});document.addEventListener('focusin',function(e){if(e.target&&e.target.matches('input'))queueLift();});if(vv)vv.addEventListener('resize',queueLift);if(navigator.virtualKeyboard)navigator.virtualKeyboard.addEventListener('geometrychange',queueLift);
+check();setInterval(check,2000);})();
+</script>
+</body>
+</html>
