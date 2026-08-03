@@ -7,12 +7,12 @@ $ErrorActionPreference = 'Stop'
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $setupPath = Join-Path $repoRoot 'src\00-Setup.ps1'
 $proxyStartupPath = Join-Path $repoRoot 'src\33-LetsEncrypt.ps1'
-$restartImagePath = Join-Path $repoRoot 'gstwebrtc-api\dist\well-be-right-back.png'
-$restartMp4Path = Join-Path $repoRoot 'gstwebrtc-api\dist\well-be-right-back-glitch.mp4'
-$restartWebmPath = Join-Path $repoRoot 'gstwebrtc-api\dist\well-be-right-back-glitch.webm'
-$restartPortraitImagePath = Join-Path $repoRoot 'gstwebrtc-api\dist\well-be-right-back-portrait.png'
-$restartPortraitMp4Path = Join-Path $repoRoot 'gstwebrtc-api\dist\well-be-right-back-portrait-glitch.mp4'
-$restartPortraitWebmPath = Join-Path $repoRoot 'gstwebrtc-api\dist\well-be-right-back-portrait-glitch.webm'
+$restartImagePath = Join-Path $repoRoot 'gstwebrtc-api\dist\auth-proxy\well-be-right-back.png'
+$restartMp4Path = Join-Path $repoRoot 'gstwebrtc-api\dist\auth-proxy\well-be-right-back-glitch.mp4'
+$restartWebmPath = Join-Path $repoRoot 'gstwebrtc-api\dist\auth-proxy\well-be-right-back-glitch.webm'
+$restartPortraitImagePath = Join-Path $repoRoot 'gstwebrtc-api\dist\auth-proxy\well-be-right-back-portrait.png'
+$restartPortraitMp4Path = Join-Path $repoRoot 'gstwebrtc-api\dist\auth-proxy\well-be-right-back-portrait-glitch.mp4'
+$restartPortraitWebmPath = Join-Path $repoRoot 'gstwebrtc-api\dist\auth-proxy\well-be-right-back-portrait-glitch.webm'
 $webUiManifestPath = Join-Path $repoRoot 'gstwebrtc-api\dist\gstglass-webui-manifest.json'
 
 function Assert-RestartImage([bool]$Condition, [string]$Message) {
@@ -28,15 +28,15 @@ Assert-RestartImage (Test-Path -LiteralPath $restartPortraitWebmPath -PathType L
 
 $proxyStartupSource = Get-Content -Raw -LiteralPath $proxyStartupPath
 $webUiManifest = Get-Content -Raw -LiteralPath $webUiManifestPath | ConvertFrom-Json
-Assert-RestartImage (@($webUiManifest.assets) -contains 'well-be-right-back.png') 'The packaged Web UI omits the stream-restart image.'
-Assert-RestartImage (@($webUiManifest.assets) -contains 'well-be-right-back-glitch.mp4') 'The packaged Web UI omits the stream-restart MP4.'
-Assert-RestartImage (@($webUiManifest.assets) -contains 'well-be-right-back-glitch.webm') 'The packaged Web UI omits the stream-restart WebM.'
-Assert-RestartImage (@($webUiManifest.assets) -contains 'well-be-right-back-portrait.png') 'The packaged Web UI omits the portrait stream-restart image.'
-Assert-RestartImage (@($webUiManifest.assets) -contains 'well-be-right-back-portrait-glitch.mp4') 'The packaged Web UI omits the portrait stream-restart MP4.'
-Assert-RestartImage (@($webUiManifest.assets) -contains 'well-be-right-back-portrait-glitch.webm') 'The packaged Web UI omits the portrait stream-restart WebM.'
-Assert-RestartImage ($proxyStartupSource.Contains("Resolve-ViewerAuthenticationMessageAssetPath -FileName 'well-be-right-back.png'")) 'Proxy startup does not resolve the stream-restart image.'
-Assert-RestartImage ($proxyStartupSource.Contains("Resolve-ViewerAuthenticationMessageAssetPath -FileName 'well-be-right-back-glitch.mp4'")) 'Proxy startup does not resolve the stream-restart MP4.'
-Assert-RestartImage ($proxyStartupSource.Contains("Resolve-ViewerAuthenticationMessageAssetPath -FileName 'well-be-right-back-glitch.webm'")) 'Proxy startup does not resolve the stream-restart WebM.'
+Assert-RestartImage (@($webUiManifest.assets) -contains 'auth-proxy/well-be-right-back.png') 'The packaged Web UI omits the stream-restart image.'
+Assert-RestartImage (@($webUiManifest.assets) -contains 'auth-proxy/well-be-right-back-glitch.mp4') 'The packaged Web UI omits the stream-restart MP4.'
+Assert-RestartImage (@($webUiManifest.assets) -contains 'auth-proxy/well-be-right-back-glitch.webm') 'The packaged Web UI omits the stream-restart WebM.'
+Assert-RestartImage (@($webUiManifest.assets) -contains 'auth-proxy/well-be-right-back-portrait.png') 'The packaged Web UI omits the portrait stream-restart image.'
+Assert-RestartImage (@($webUiManifest.assets) -contains 'auth-proxy/well-be-right-back-portrait-glitch.mp4') 'The packaged Web UI omits the portrait stream-restart MP4.'
+Assert-RestartImage (@($webUiManifest.assets) -contains 'auth-proxy/well-be-right-back-portrait-glitch.webm') 'The packaged Web UI omits the portrait stream-restart WebM.'
+Assert-RestartImage ($proxyStartupSource.Contains("Resolve-AuthProxyAssetPath -FileName 'well-be-right-back.png'")) 'Proxy startup does not resolve the stream-restart image.'
+Assert-RestartImage ($proxyStartupSource.Contains("Resolve-AuthProxyAssetPath -FileName 'well-be-right-back-glitch.mp4'")) 'Proxy startup does not resolve the stream-restart MP4.'
+Assert-RestartImage ($proxyStartupSource.Contains("Resolve-AuthProxyAssetPath -FileName 'well-be-right-back-glitch.webm'")) 'Proxy startup does not resolve the stream-restart WebM.'
 Assert-RestartImage (($proxyStartupSource | Select-String -Pattern 'RestartImagePath\s*=\s*\$restartImagePath' -AllMatches).Matches.Count -eq 2) 'TLS and plaintext proxy families do not both pass the stream-restart image to the worker.'
 Assert-RestartImage (($proxyStartupSource | Select-String -Pattern 'RestartVideoMp4Path\s*=\s*\$restartVideoMp4Path' -AllMatches).Matches.Count -eq 2) 'TLS and plaintext proxy families do not both pass the stream-restart MP4 to the worker.'
 Assert-RestartImage (($proxyStartupSource | Select-String -Pattern 'RestartVideoWebmPath\s*=\s*\$restartVideoWebmPath' -AllMatches).Matches.Count -eq 2) 'TLS and plaintext proxy families do not both pass the stream-restart WebM to the worker.'
@@ -123,6 +123,11 @@ function Invoke-PausedProxyResponse(
         $proxy.ConfigureRestartVideos($Mp4Path, $WebmPath)
         $proxy.ConfigureRestartPortraitImage($PortraitImagePath)
         $proxy.ConfigureRestartPortraitVideos($PortraitMp4Path, $PortraitWebmPath)
+        # Without this, the restart/holding page falls back to the built-in
+        # minimal page (LoadTemplateText/ConfigureMediaMessageTemplate,
+        # src/00-Setup.ps1), which lacks the black-viewport CSS, wake-lock,
+        # and MediaSession script the assertions below check for.
+        $proxy.ConfigureMediaMessageTemplate((Join-Path $repoRoot 'gstwebrtc-api\dist\auth-proxy\media-message.html'))
         # Force the proxy to consume the request header before returning its
         # local response. Closing a Windows socket with unread request bytes can
         # generate an RST that discards an otherwise-valid response in transit.
@@ -153,7 +158,8 @@ Assert-RestartImage ($imageResponse.Header -match '(?im)^X-GStreamer-Glass-Forwa
 Assert-RestartImage ($imageResponse.Header -notmatch '(?im)^Refresh:') 'Restart video is reset by a full-page Refresh header.'
 $imageHtml = [System.Text.Encoding]::UTF8.GetString($imageResponse.Body)
 Assert-RestartImage ($imageHtml.Contains('html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#000')) 'Restart message page does not enforce a black viewport.'
-Assert-RestartImage ($imageHtml.Contains('video,picture,img{display:block;width:100vw;height:100vh;height:100dvh;background:#000}video,img{object-fit:cover;object-position:center')) 'Restart message media does not dynamically cover and remain centered in the viewport.'
+Assert-RestartImage ($imageHtml.Contains('video,picture,img{display:block;width:100vw;height:100vh;height:100dvh;background:#000}')) 'Restart message media is not sized to fill the viewport.'
+Assert-RestartImage ($imageHtml.Contains('video,img{object-fit:cover;object-position:center')) 'Restart message media does not dynamically cover and remain centered in the viewport.'
 Assert-RestartImage (-not $imageHtml.Contains('object-fit:contain')) 'Restart message media still uses letterboxed contain sizing.'
 Assert-RestartImage ($imageHtml.Contains('<video autoplay muted loop playsinline preload="auto" poster="/auth/assets/well-be-right-back.png"')) 'Restart message page does not autoplay its looping video with the PNG poster.'
 Assert-RestartImage ($imageHtml.Contains('<source src="/auth/assets/well-be-right-back.webm" type="video/webm">')) 'Restart message page does not prefer its WebM source.'

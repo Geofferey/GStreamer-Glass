@@ -13,9 +13,9 @@ param(
 $ErrorActionPreference = 'Stop'
 $ExecutablePath = (Resolve-Path -LiteralPath $ExecutablePath).Path
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot '..\..')
-$rejectionImagePath = Join-Path $repoRoot 'gstwebrtc-api\dist\temporary-viewer-link-unavailable.png'
-$rejectionMp4Path = Join-Path $repoRoot 'gstwebrtc-api\dist\temporary-viewer-link-unavailable-glitch.mp4'
-$rejectionWebmPath = Join-Path $repoRoot 'gstwebrtc-api\dist\temporary-viewer-link-unavailable-glitch.webm'
+$rejectionImagePath = Join-Path $repoRoot 'gstwebrtc-api\dist\auth-proxy\temporary-viewer-link-unavailable.png'
+$rejectionMp4Path = Join-Path $repoRoot 'gstwebrtc-api\dist\auth-proxy\temporary-viewer-link-unavailable-glitch.mp4'
+$rejectionWebmPath = Join-Path $repoRoot 'gstwebrtc-api\dist\auth-proxy\temporary-viewer-link-unavailable-glitch.webm'
 # Without these, StartFamily leaves every auth-proxy page template
 # unconfigured and the worker correctly falls back to its minimal built-in
 # page (see ConfigureMediaMessageTemplate/LoadTemplateText in 00-Setup.ps1)

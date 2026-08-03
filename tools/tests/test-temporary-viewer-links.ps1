@@ -14,9 +14,9 @@ $proxySource = Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'src\33-LetsEn
 $settingsSource = Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'src\24-Settings.ps1')
 $uiSource = Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'src\90-MainWindow.ps1')
 $layoutSource = Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'src\12-MainDashboardUi.ps1')
-$rejectionImagePath = Join-Path $repoRoot 'gstwebrtc-api\dist\temporary-viewer-link-unavailable.png'
-$rejectionMp4Path = Join-Path $repoRoot 'gstwebrtc-api\dist\temporary-viewer-link-unavailable-glitch.mp4'
-$rejectionWebmPath = Join-Path $repoRoot 'gstwebrtc-api\dist\temporary-viewer-link-unavailable-glitch.webm'
+$rejectionImagePath = Join-Path $repoRoot 'gstwebrtc-api\dist\auth-proxy\temporary-viewer-link-unavailable.png'
+$rejectionMp4Path = Join-Path $repoRoot 'gstwebrtc-api\dist\auth-proxy\temporary-viewer-link-unavailable-glitch.mp4'
+$rejectionWebmPath = Join-Path $repoRoot 'gstwebrtc-api\dist\auth-proxy\temporary-viewer-link-unavailable-glitch.webm'
 $viewerIndexSource = Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'gstwebrtc-api\dist\index.html')
 $viewerRobotsSource = Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'gstwebrtc-api\dist\robots.txt')
 $viewerManifestSource = Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'gstwebrtc-api\dist\gstglass-webui-manifest.json')
@@ -89,6 +89,17 @@ $account.PasswordHash = [TlsTerminatingProxy]::HashAuthenticationPassword('tempo
 $proxy = [TlsTerminatingProxy]::new()
 $proxy.ConfigureAuthentication($true, [TlsTerminatingProxy+AuthenticationAccount[]]@($account), [TlsTerminatingProxy]::CreateAuthenticationSessionKey(), 24)
 $proxy.ConfigureTrustedForwardingProxies([string[]]@('127.0.0.1'))
+# Points every real gstwebrtc-api/dist/auth-proxy/*.html template at this
+# proxy so the assertions below (e.g. the confirmation page's robots meta
+# tag) exercise actual production markup instead of the built-in minimal
+# fallback (LoadTemplateText/Configure*Template, src/00-Setup.ps1) that a
+# never-configured page correctly falls back to.
+$authProxyTemplateDir = Join-Path $repoRoot 'gstwebrtc-api\dist\auth-proxy'
+$proxy.ConfigureLoginTemplate((Join-Path $authProxyTemplateDir 'login.html'))
+$proxy.ConfigureLinkConfirmTemplate((Join-Path $authProxyTemplateDir 'link-confirm.html'))
+$proxy.ConfigureAccountSetupTemplate((Join-Path $authProxyTemplateDir 'account-setup.html'))
+$proxy.ConfigureTotpChallengeTemplate((Join-Path $authProxyTemplateDir 'totp-challenge.html'))
+$proxy.ConfigureMediaMessageTemplate((Join-Path $authProxyTemplateDir 'media-message.html'))
 $port = Get-FreeTcpPort
 $proxy.Start($port, '127.0.0.1', (Get-FreeTcpPort), $null)
 Start-Sleep -Milliseconds 75
@@ -132,7 +143,8 @@ try {
     Assert-TemporaryLink $response.StartsWith('HTTP/1.1 410') 'Single-use temporary link was accepted more than once.'
     Assert-TemporaryLink ($response -match '(?im)^Content-Type:\s*text/html; charset=utf-8\s*$') 'Rejected temporary link did not return an artwork message page.'
     Assert-TemporaryLink ($response.Contains('html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#000')) 'Temporary-link message page does not enforce a black viewport.'
-    Assert-TemporaryLink ($response.Contains('video,picture,img{display:block;width:100vw;height:100vh;height:100dvh;background:#000}video,img{object-fit:cover;object-position:center')) 'Temporary-link message media does not dynamically cover and remain centered in the viewport.'
+    Assert-TemporaryLink ($response.Contains('video,picture,img{display:block;width:100vw;height:100vh;height:100dvh;background:#000}')) 'Temporary-link message media is not sized to fill the viewport.'
+    Assert-TemporaryLink ($response.Contains('video,img{object-fit:cover;object-position:center')) 'Temporary-link message media does not dynamically cover and remain centered in the viewport.'
     Assert-TemporaryLink ($response.Contains('<video autoplay muted loop playsinline preload="auto" poster="/auth/assets/temporary-link-unavailable.png"')) 'Temporary-link message page does not autoplay its looping video with the PNG poster.'
     Assert-TemporaryLink ($response.Contains('<source src="/auth/assets/temporary-link-unavailable.webm" type="video/webm">')) 'Temporary-link message page does not prefer its WebM source.'
     Assert-TemporaryLink ($response.Contains('<source src="/auth/assets/temporary-link-unavailable.mp4" type="video/mp4">')) 'Temporary-link message page does not offer its MP4 fallback.'
@@ -328,8 +340,8 @@ Assert-TemporaryLink ($uiSource -match 'Generate account setup link') 'Account s
 Assert-TemporaryLink ($viewerIndexSource -match '<meta name="robots" content="noindex, nofollow, noarchive, nosnippet, noimageindex">') 'The viewer document is missing its no-index policy.'
 Assert-TemporaryLink ($viewerRobotsSource -match '(?ms)^User-agent:\s*\*.*^Disallow:\s*/\s*$') 'The bundled web root is missing its deny-all robots.txt.'
 Assert-TemporaryLink ($viewerManifestSource -match '"robots\.txt"') 'The web UI manifest does not deploy robots.txt to the working web root.'
-Assert-TemporaryLink ($viewerManifestSource -match '"temporary-viewer-link-unavailable-glitch\.mp4"') 'The web UI manifest does not deploy the temporary-link MP4.'
-Assert-TemporaryLink ($viewerManifestSource -match '"temporary-viewer-link-unavailable-glitch\.webm"') 'The web UI manifest does not deploy the temporary-link WebM.'
+Assert-TemporaryLink ($viewerManifestSource -match '"auth-proxy/temporary-viewer-link-unavailable-glitch\.mp4"') 'The web UI manifest does not deploy the temporary-link MP4.'
+Assert-TemporaryLink ($viewerManifestSource -match '"auth-proxy/temporary-viewer-link-unavailable-glitch\.webm"') 'The web UI manifest does not deploy the temporary-link WebM.'
 Assert-TemporaryLink ($iisProxySource -match 'X-Robots-Tag.*noindex, nofollow, noarchive, nosnippet, noimageindex') 'The IIS proxy example does not mark the entire proxied viewer non-indexable.'
 Assert-TemporaryLink ($proxySource -match "Type\s*=\s*'RevokeTemporaryLink'") 'Temporary-link revocation is not wired to the auth worker.'
 

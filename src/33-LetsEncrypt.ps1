@@ -2282,19 +2282,21 @@ function Resolve-ViewerAuthenticationMessageAssetPath {
 }
 
 function Resolve-ViewerAuthenticationTemporaryLinkUnavailableImagePath {
-    return Resolve-ViewerAuthenticationMessageAssetPath -FileName 'temporary-viewer-link-unavailable.png'
+    return Resolve-AuthProxyAssetPath -FileName 'temporary-viewer-link-unavailable.png'
 }
 
 function Resolve-ViewerAuthenticationRestartImagePath {
-    return Resolve-ViewerAuthenticationMessageAssetPath -FileName 'well-be-right-back.png'
+    return Resolve-AuthProxyAssetPath -FileName 'well-be-right-back.png'
 }
 
-# The auth-proxy page templates (login/link-confirm/account-setup/
-# totp-challenge/media-message) live under their own gstwebrtc-api/dist/
-# auth-proxy/ subdirectory, away from the main player frontend -- reuses
+# Everything the auth proxy itself owns and serves -- the five page
+# templates (login/link-confirm/account-setup/totp-challenge/media-message)
+# and the restart/holding-page and temporary-link-rejection image/video
+# assets -- lives under its own gstwebrtc-api/dist/auth-proxy/
+# subdirectory, away from the main player frontend. Reuses
 # Resolve-ViewerAuthenticationMessageAssetPath's exact working-copy-then-
 # bundled-copy resolution, just rooted one directory deeper.
-function Resolve-AuthProxyTemplatePath {
+function Resolve-AuthProxyAssetPath {
     param([Parameter(Mandatory)][string]$FileName)
     return Resolve-ViewerAuthenticationMessageAssetPath -FileName "auth-proxy/$FileName"
 }
@@ -2325,19 +2327,19 @@ function Start-LetsEncryptTlsProxies {
     $viewerMountSegment = [string](Get-DirectWebRtcWebServerPathSegment)
     $authenticationMountPath = if ([string]::IsNullOrWhiteSpace($viewerMountSegment)) { '' } else { "/$($viewerMountSegment.Trim('/'))" }
     $temporaryLinkUnavailableImagePath = Resolve-ViewerAuthenticationTemporaryLinkUnavailableImagePath
-    $temporaryLinkUnavailableVideoMp4Path = Resolve-ViewerAuthenticationMessageAssetPath -FileName 'temporary-viewer-link-unavailable-glitch.mp4'
-    $temporaryLinkUnavailableVideoWebmPath = Resolve-ViewerAuthenticationMessageAssetPath -FileName 'temporary-viewer-link-unavailable-glitch.webm'
+    $temporaryLinkUnavailableVideoMp4Path = Resolve-AuthProxyAssetPath -FileName 'temporary-viewer-link-unavailable-glitch.mp4'
+    $temporaryLinkUnavailableVideoWebmPath = Resolve-AuthProxyAssetPath -FileName 'temporary-viewer-link-unavailable-glitch.webm'
     $restartImagePath = Resolve-ViewerAuthenticationRestartImagePath
-    $restartVideoMp4Path = Resolve-ViewerAuthenticationMessageAssetPath -FileName 'well-be-right-back-glitch.mp4'
-    $restartVideoWebmPath = Resolve-ViewerAuthenticationMessageAssetPath -FileName 'well-be-right-back-glitch.webm'
-    $restartPortraitImagePath = Resolve-ViewerAuthenticationMessageAssetPath -FileName 'well-be-right-back-portrait.png'
-    $restartPortraitVideoMp4Path = Resolve-ViewerAuthenticationMessageAssetPath -FileName 'well-be-right-back-portrait-glitch.mp4'
-    $restartPortraitVideoWebmPath = Resolve-ViewerAuthenticationMessageAssetPath -FileName 'well-be-right-back-portrait-glitch.webm'
-    $loginTemplatePath = Resolve-AuthProxyTemplatePath -FileName 'login.html'
-    $linkConfirmTemplatePath = Resolve-AuthProxyTemplatePath -FileName 'link-confirm.html'
-    $accountSetupTemplatePath = Resolve-AuthProxyTemplatePath -FileName 'account-setup.html'
-    $totpChallengeTemplatePath = Resolve-AuthProxyTemplatePath -FileName 'totp-challenge.html'
-    $mediaMessageTemplatePath = Resolve-AuthProxyTemplatePath -FileName 'media-message.html'
+    $restartVideoMp4Path = Resolve-AuthProxyAssetPath -FileName 'well-be-right-back-glitch.mp4'
+    $restartVideoWebmPath = Resolve-AuthProxyAssetPath -FileName 'well-be-right-back-glitch.webm'
+    $restartPortraitImagePath = Resolve-AuthProxyAssetPath -FileName 'well-be-right-back-portrait.png'
+    $restartPortraitVideoMp4Path = Resolve-AuthProxyAssetPath -FileName 'well-be-right-back-portrait-glitch.mp4'
+    $restartPortraitVideoWebmPath = Resolve-AuthProxyAssetPath -FileName 'well-be-right-back-portrait-glitch.webm'
+    $loginTemplatePath = Resolve-AuthProxyAssetPath -FileName 'login.html'
+    $linkConfirmTemplatePath = Resolve-AuthProxyAssetPath -FileName 'link-confirm.html'
+    $accountSetupTemplatePath = Resolve-AuthProxyAssetPath -FileName 'account-setup.html'
+    $totpChallengeTemplatePath = Resolve-AuthProxyAssetPath -FileName 'totp-challenge.html'
+    $mediaMessageTemplatePath = Resolve-AuthProxyAssetPath -FileName 'media-message.html'
 
     # Account data is deliberately NOT part of this signature -- adding,
     # removing, or editing viewer accounts is handled live via
@@ -2511,19 +2513,19 @@ function Start-PlaintextAuthProxies {
     $viewerMountSegment = [string](Get-DirectWebRtcWebServerPathSegment)
     $authenticationMountPath = if ([string]::IsNullOrWhiteSpace($viewerMountSegment)) { '' } else { "/$($viewerMountSegment.Trim('/'))" }
     $temporaryLinkUnavailableImagePath = Resolve-ViewerAuthenticationTemporaryLinkUnavailableImagePath
-    $temporaryLinkUnavailableVideoMp4Path = Resolve-ViewerAuthenticationMessageAssetPath -FileName 'temporary-viewer-link-unavailable-glitch.mp4'
-    $temporaryLinkUnavailableVideoWebmPath = Resolve-ViewerAuthenticationMessageAssetPath -FileName 'temporary-viewer-link-unavailable-glitch.webm'
+    $temporaryLinkUnavailableVideoMp4Path = Resolve-AuthProxyAssetPath -FileName 'temporary-viewer-link-unavailable-glitch.mp4'
+    $temporaryLinkUnavailableVideoWebmPath = Resolve-AuthProxyAssetPath -FileName 'temporary-viewer-link-unavailable-glitch.webm'
     $restartImagePath = Resolve-ViewerAuthenticationRestartImagePath
-    $restartVideoMp4Path = Resolve-ViewerAuthenticationMessageAssetPath -FileName 'well-be-right-back-glitch.mp4'
-    $restartVideoWebmPath = Resolve-ViewerAuthenticationMessageAssetPath -FileName 'well-be-right-back-glitch.webm'
-    $restartPortraitImagePath = Resolve-ViewerAuthenticationMessageAssetPath -FileName 'well-be-right-back-portrait.png'
-    $restartPortraitVideoMp4Path = Resolve-ViewerAuthenticationMessageAssetPath -FileName 'well-be-right-back-portrait-glitch.mp4'
-    $restartPortraitVideoWebmPath = Resolve-ViewerAuthenticationMessageAssetPath -FileName 'well-be-right-back-portrait-glitch.webm'
-    $loginTemplatePath = Resolve-AuthProxyTemplatePath -FileName 'login.html'
-    $linkConfirmTemplatePath = Resolve-AuthProxyTemplatePath -FileName 'link-confirm.html'
-    $accountSetupTemplatePath = Resolve-AuthProxyTemplatePath -FileName 'account-setup.html'
-    $totpChallengeTemplatePath = Resolve-AuthProxyTemplatePath -FileName 'totp-challenge.html'
-    $mediaMessageTemplatePath = Resolve-AuthProxyTemplatePath -FileName 'media-message.html'
+    $restartVideoMp4Path = Resolve-AuthProxyAssetPath -FileName 'well-be-right-back-glitch.mp4'
+    $restartVideoWebmPath = Resolve-AuthProxyAssetPath -FileName 'well-be-right-back-glitch.webm'
+    $restartPortraitImagePath = Resolve-AuthProxyAssetPath -FileName 'well-be-right-back-portrait.png'
+    $restartPortraitVideoMp4Path = Resolve-AuthProxyAssetPath -FileName 'well-be-right-back-portrait-glitch.mp4'
+    $restartPortraitVideoWebmPath = Resolve-AuthProxyAssetPath -FileName 'well-be-right-back-portrait-glitch.webm'
+    $loginTemplatePath = Resolve-AuthProxyAssetPath -FileName 'login.html'
+    $linkConfirmTemplatePath = Resolve-AuthProxyAssetPath -FileName 'link-confirm.html'
+    $accountSetupTemplatePath = Resolve-AuthProxyAssetPath -FileName 'account-setup.html'
+    $totpChallengeTemplatePath = Resolve-AuthProxyAssetPath -FileName 'totp-challenge.html'
+    $mediaMessageTemplatePath = Resolve-AuthProxyAssetPath -FileName 'media-message.html'
 
     # Account data deliberately excluded -- see the matching comment in
     # Start-LetsEncryptTlsProxies.
