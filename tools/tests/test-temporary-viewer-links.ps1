@@ -132,6 +132,7 @@ try {
     Assert-TemporaryLink $response.StartsWith('HTTP/1.1 410') 'Single-use temporary link was accepted more than once.'
     Assert-TemporaryLink ($response -match '(?im)^Content-Type:\s*text/html; charset=utf-8\s*$') 'Rejected temporary link did not return an artwork message page.'
     Assert-TemporaryLink ($response.Contains('html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#000')) 'Temporary-link message page does not enforce a black viewport.'
+    Assert-TemporaryLink ($response.Contains('video,picture,img{display:block;width:100vw;height:100vh;height:100dvh;background:#000}video,img{object-fit:cover;object-position:center')) 'Temporary-link message media does not dynamically cover and remain centered in the viewport.'
     Assert-TemporaryLink ($response.Contains('<video autoplay muted loop playsinline preload="auto" poster="/auth/assets/temporary-link-unavailable.png"')) 'Temporary-link message page does not autoplay its looping video with the PNG poster.'
     Assert-TemporaryLink ($response.Contains('<source src="/auth/assets/temporary-link-unavailable.webm" type="video/webm">')) 'Temporary-link message page does not prefer its WebM source.'
     Assert-TemporaryLink ($response.Contains('<source src="/auth/assets/temporary-link-unavailable.mp4" type="video/mp4">')) 'Temporary-link message page does not offer its MP4 fallback.'

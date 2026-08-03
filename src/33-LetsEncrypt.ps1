@@ -2320,6 +2320,9 @@ function Start-LetsEncryptTlsProxies {
     $restartImagePath = Resolve-ViewerAuthenticationRestartImagePath
     $restartVideoMp4Path = Resolve-ViewerAuthenticationMessageAssetPath -FileName 'well-be-right-back-glitch.mp4'
     $restartVideoWebmPath = Resolve-ViewerAuthenticationMessageAssetPath -FileName 'well-be-right-back-glitch.webm'
+    $restartPortraitImagePath = Resolve-ViewerAuthenticationMessageAssetPath -FileName 'well-be-right-back-portrait.png'
+    $restartPortraitVideoMp4Path = Resolve-ViewerAuthenticationMessageAssetPath -FileName 'well-be-right-back-portrait-glitch.mp4'
+    $restartPortraitVideoWebmPath = Resolve-ViewerAuthenticationMessageAssetPath -FileName 'well-be-right-back-portrait-glitch.webm'
 
     # Account data is deliberately NOT part of this signature -- adding,
     # removing, or editing viewer accounts is handled live via
@@ -2337,6 +2340,9 @@ function Start-LetsEncryptTlsProxies {
         [string]$restartImagePath,
         [string]$restartVideoMp4Path,
         [string]$restartVideoWebmPath,
+        [string]$restartPortraitImagePath,
+        [string]$restartPortraitVideoMp4Path,
+        [string]$restartPortraitVideoWebmPath,
         [string]($trustedForwardingProxyAddresses -join ','),
         [string]$numViewerAuthenticationSessionHours.Value,
         [string]$numDirectWebRtcSignalingPort.Value,
@@ -2417,6 +2423,9 @@ function Start-LetsEncryptTlsProxies {
         RestartImagePath          = $restartImagePath
         RestartVideoMp4Path       = $restartVideoMp4Path
         RestartVideoWebmPath      = $restartVideoWebmPath
+        RestartPortraitImagePath     = $restartPortraitImagePath
+        RestartPortraitVideoMp4Path  = $restartPortraitVideoMp4Path
+        RestartPortraitVideoWebmPath = $restartPortraitVideoWebmPath
         AuthenticationEnabled   = [bool]$authenticationEnabled
         Accounts                = (Get-ViewerAuthenticationAccountObjects -Accounts $authenticationAccounts)
         SessionHours            = [int]$numViewerAuthenticationSessionHours.Value
@@ -2487,6 +2496,9 @@ function Start-PlaintextAuthProxies {
     $restartImagePath = Resolve-ViewerAuthenticationRestartImagePath
     $restartVideoMp4Path = Resolve-ViewerAuthenticationMessageAssetPath -FileName 'well-be-right-back-glitch.mp4'
     $restartVideoWebmPath = Resolve-ViewerAuthenticationMessageAssetPath -FileName 'well-be-right-back-glitch.webm'
+    $restartPortraitImagePath = Resolve-ViewerAuthenticationMessageAssetPath -FileName 'well-be-right-back-portrait.png'
+    $restartPortraitVideoMp4Path = Resolve-ViewerAuthenticationMessageAssetPath -FileName 'well-be-right-back-portrait-glitch.mp4'
+    $restartPortraitVideoWebmPath = Resolve-ViewerAuthenticationMessageAssetPath -FileName 'well-be-right-back-portrait-glitch.webm'
 
     # Account data deliberately excluded -- see the matching comment in
     # Start-LetsEncryptTlsProxies.
@@ -2498,6 +2510,9 @@ function Start-PlaintextAuthProxies {
         [string]$restartImagePath,
         [string]$restartVideoMp4Path,
         [string]$restartVideoWebmPath,
+        [string]$restartPortraitImagePath,
+        [string]$restartPortraitVideoMp4Path,
+        [string]$restartPortraitVideoWebmPath,
         [string]($trustedForwardingProxyAddresses -join ','),
         [string]$numViewerAuthenticationSessionHours.Value,
         [string]$numDirectWebRtcSignalingPort.Value,
@@ -2561,6 +2576,9 @@ function Start-PlaintextAuthProxies {
         RestartImagePath          = $restartImagePath
         RestartVideoMp4Path       = $restartVideoMp4Path
         RestartVideoWebmPath      = $restartVideoWebmPath
+        RestartPortraitImagePath     = $restartPortraitImagePath
+        RestartPortraitVideoMp4Path  = $restartPortraitVideoMp4Path
+        RestartPortraitVideoWebmPath = $restartPortraitVideoWebmPath
         AuthenticationEnabled   = $true
         Accounts                = (Get-ViewerAuthenticationAccountObjects -Accounts $authenticationAccounts)
         SessionHours            = [int]$numViewerAuthenticationSessionHours.Value

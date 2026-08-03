@@ -1878,6 +1878,9 @@ public class TlsTerminatingProxy
     private const string RestartImageAssetPath = "/auth/assets/well-be-right-back.png";
     private const string RestartMp4AssetPath = "/auth/assets/well-be-right-back.mp4";
     private const string RestartWebmAssetPath = "/auth/assets/well-be-right-back.webm";
+    private const string RestartPortraitImageAssetPath = "/auth/assets/well-be-right-back-portrait.png";
+    private const string RestartPortraitMp4AssetPath = "/auth/assets/well-be-right-back-portrait.mp4";
+    private const string RestartPortraitWebmAssetPath = "/auth/assets/well-be-right-back-portrait.webm";
     private const string LegacyLoginPath = "/__gstglass/auth/login";
     private const string LegacyLogoutPath = "/__gstglass/auth/logout";
     private const string LegacySimpleLogoutPath = "/logout";
@@ -1978,6 +1981,12 @@ public class TlsTerminatingProxy
     private static byte[] restartWebmBytes = new byte[0];
     private static string restartMp4Path = "";
     private static string restartWebmPath = "";
+    private static byte[] restartPortraitImageBytes = new byte[0];
+    private static string restartPortraitImagePath = "";
+    private static byte[] restartPortraitMp4Bytes = new byte[0];
+    private static byte[] restartPortraitWebmBytes = new byte[0];
+    private static string restartPortraitMp4Path = "";
+    private static string restartPortraitWebmPath = "";
 
     // Async continuations resume on arbitrary ThreadPool threads with no
     // PowerShell runspace bound to them, so failures here cannot invoke a
@@ -2060,6 +2069,33 @@ public class TlsTerminatingProxy
         }
     }
 
+    public void ConfigureRestartPortraitImage(string imagePath)
+    {
+        string normalizedPath = NormalizeMessageAssetPath(imagePath);
+        lock (restartImageLock)
+        {
+            if (string.Equals(restartPortraitImagePath, normalizedPath, StringComparison.OrdinalIgnoreCase) && restartPortraitImageBytes.Length > 0) return;
+            restartPortraitImagePath = normalizedPath;
+            restartPortraitImageBytes = new byte[0];
+            if (string.IsNullOrEmpty(normalizedPath)) return;
+
+            try
+            {
+                byte[] imageBytes = File.ReadAllBytes(normalizedPath);
+                bool isPng = imageBytes.Length >= 8 &&
+                    imageBytes[0] == 0x89 && imageBytes[1] == 0x50 && imageBytes[2] == 0x4E && imageBytes[3] == 0x47 &&
+                    imageBytes[4] == 0x0D && imageBytes[5] == 0x0A && imageBytes[6] == 0x1A && imageBytes[7] == 0x0A;
+                if (!isPng) throw new InvalidDataException("The configured file is not a PNG image.");
+                restartPortraitImageBytes = imageBytes;
+                pendingLog.Enqueue("loaded portrait stream-restart image from " + normalizedPath);
+            }
+            catch (Exception ex)
+            {
+                pendingLog.Enqueue("could not load portrait stream-restart image; using the landscape fallback: " + ex.Message);
+            }
+        }
+    }
+
     private byte[] LoadMessageVideo(string videoPath, bool webm, string description)
     {
         if (string.IsNullOrWhiteSpace(videoPath)) return new byte[0];
@@ -2108,6 +2144,21 @@ public class TlsTerminatingProxy
             restartWebmPath = normalizedWebmPath;
             restartMp4Bytes = LoadMessageVideo(normalizedMp4Path, false, "stream-restart MP4");
             restartWebmBytes = LoadMessageVideo(normalizedWebmPath, true, "stream-restart WebM");
+        }
+    }
+
+    public void ConfigureRestartPortraitVideos(string mp4Path, string webmPath)
+    {
+        string normalizedMp4Path = NormalizeMessageAssetPath(mp4Path);
+        string normalizedWebmPath = NormalizeMessageAssetPath(webmPath);
+        lock (restartImageLock)
+        {
+            if (string.Equals(restartPortraitMp4Path, normalizedMp4Path, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(restartPortraitWebmPath, normalizedWebmPath, StringComparison.OrdinalIgnoreCase)) return;
+            restartPortraitMp4Path = normalizedMp4Path;
+            restartPortraitWebmPath = normalizedWebmPath;
+            restartPortraitMp4Bytes = LoadMessageVideo(normalizedMp4Path, false, "portrait stream-restart MP4");
+            restartPortraitWebmBytes = LoadMessageVideo(normalizedWebmPath, true, "portrait stream-restart WebM");
         }
     }
 
@@ -2864,12 +2915,17 @@ public class TlsTerminatingProxy
                         byte[] restartImage = restartImageBytes;
                         byte[] restartMp4 = restartMp4Bytes;
                         byte[] restartWebm = restartWebmBytes;
+                        byte[] restartPortraitImage = restartPortraitImageBytes;
+                        byte[] restartPortraitMp4 = restartPortraitMp4Bytes;
+                        byte[] restartPortraitWebm = restartPortraitWebmBytes;
                         if (restartImage.Length > 0 || restartMp4.Length > 0 || restartWebm.Length > 0)
                         {
                             await WriteMediaMessagePageAsync(
                                 stream, 503, "Service Unavailable",
                                 restartImage, restartMp4, restartWebm,
                                 RestartImageAssetPath, RestartMp4AssetPath, RestartWebmAssetPath,
+                                restartPortraitImage, restartPortraitMp4, restartPortraitWebm,
+                                RestartPortraitImageAssetPath, RestartPortraitMp4AssetPath, RestartPortraitWebmAssetPath,
                                 "We'll Be Right Back!", restartHeaders, restartReturnPath
                             );
                         }
@@ -3985,6 +4041,7 @@ public class TlsTerminatingProxy
                 stream, rejectionStatus, rejectionStatus == 403 ? "Forbidden" : "Gone",
                 rejectionImage, rejectionMp4, rejectionWebm,
                 TemporaryLinkUnavailableImageAssetPath, TemporaryLinkUnavailableMp4AssetPath, TemporaryLinkUnavailableWebmAssetPath,
+                new byte[0], new byte[0], new byte[0], "", "", "",
                 "Temporary viewer link unavailable", null, null
             );
             return;
@@ -4048,6 +4105,9 @@ public class TlsTerminatingProxy
         else if (string.Equals(path, RestartImageAssetPath, StringComparison.OrdinalIgnoreCase)) { assetBytes = restartImageBytes; contentType = "image/png"; }
         else if (string.Equals(path, RestartMp4AssetPath, StringComparison.OrdinalIgnoreCase)) { assetBytes = restartMp4Bytes; contentType = "video/mp4"; }
         else if (string.Equals(path, RestartWebmAssetPath, StringComparison.OrdinalIgnoreCase)) { assetBytes = restartWebmBytes; contentType = "video/webm"; }
+        else if (string.Equals(path, RestartPortraitImageAssetPath, StringComparison.OrdinalIgnoreCase)) { assetBytes = restartPortraitImageBytes; contentType = "image/png"; }
+        else if (string.Equals(path, RestartPortraitMp4AssetPath, StringComparison.OrdinalIgnoreCase)) { assetBytes = restartPortraitMp4Bytes; contentType = "video/mp4"; }
+        else if (string.Equals(path, RestartPortraitWebmAssetPath, StringComparison.OrdinalIgnoreCase)) { assetBytes = restartPortraitWebmBytes; contentType = "video/webm"; }
         return assetBytes != null && assetBytes.Length > 0;
     }
 
@@ -4055,12 +4115,18 @@ public class TlsTerminatingProxy
         Stream stream, int statusCode, string reason,
         byte[] imageBytes, byte[] mp4Bytes, byte[] webmBytes,
         string imageAssetPath, string mp4AssetPath, string webmAssetPath,
+        byte[] portraitImageBytes, byte[] portraitMp4Bytes, byte[] portraitWebmBytes,
+        string portraitImageAssetPath, string portraitMp4AssetPath, string portraitWebmAssetPath,
         string alternativeText, Dictionary<string, string> additionalHeaders, string refreshTarget)
     {
         string safeAlternativeText = WebUtility.HtmlEncode(alternativeText ?? "GStreamer Glass message");
         bool hasImage = imageBytes != null && imageBytes.Length > 0;
         bool hasMp4 = mp4Bytes != null && mp4Bytes.Length > 0;
         bool hasWebm = webmBytes != null && webmBytes.Length > 0;
+        bool hasPortraitImage = portraitImageBytes != null && portraitImageBytes.Length > 0;
+        bool hasPortraitMp4 = portraitMp4Bytes != null && portraitMp4Bytes.Length > 0;
+        bool hasPortraitWebm = portraitWebmBytes != null && portraitWebmBytes.Length > 0;
+        bool hasPortraitMedia = hasPortraitImage || hasPortraitMp4 || hasPortraitWebm;
         string poster = hasImage ? " poster=\"" + WebUtility.HtmlEncode(imageAssetPath) + "\"" : "";
         string mediaMarkup;
         if (hasMp4 || hasWebm)
@@ -4068,11 +4134,21 @@ public class TlsTerminatingProxy
             string sources =
                 (hasWebm ? "<source src=\"" + WebUtility.HtmlEncode(webmAssetPath) + "\" type=\"video/webm\">" : "") +
                 (hasMp4 ? "<source src=\"" + WebUtility.HtmlEncode(mp4AssetPath) + "\" type=\"video/mp4\">" : "");
-            mediaMarkup = "<video autoplay muted loop playsinline preload=\"auto\"" + poster + " aria-label=\"" + safeAlternativeText + "\">" + sources + "</video>";
+            string orientationData = hasPortraitMedia
+                ? " data-landscape-poster=\"" + WebUtility.HtmlEncode(hasImage ? imageAssetPath : "") + "\"" +
+                  " data-landscape-webm=\"" + WebUtility.HtmlEncode(hasWebm ? webmAssetPath : "") + "\"" +
+                  " data-landscape-mp4=\"" + WebUtility.HtmlEncode(hasMp4 ? mp4AssetPath : "") + "\"" +
+                  " data-portrait-poster=\"" + WebUtility.HtmlEncode(hasPortraitImage ? portraitImageAssetPath : "") + "\"" +
+                  " data-portrait-webm=\"" + WebUtility.HtmlEncode(hasPortraitWebm ? portraitWebmAssetPath : "") + "\"" +
+                  " data-portrait-mp4=\"" + WebUtility.HtmlEncode(hasPortraitMp4 ? portraitMp4AssetPath : "") + "\""
+                : "";
+            mediaMarkup = "<video autoplay muted loop playsinline preload=\"auto\"" + poster + orientationData + " aria-label=\"" + safeAlternativeText + "\">" + sources + "</video>";
         }
         else
         {
-            mediaMarkup = "<img src=\"" + WebUtility.HtmlEncode(imageAssetPath) + "\" alt=\"" + safeAlternativeText + "\">";
+            mediaMarkup = hasPortraitImage
+                ? "<picture><source media=\"(orientation: portrait)\" srcset=\"" + WebUtility.HtmlEncode(portraitImageAssetPath) + "\"><img src=\"" + WebUtility.HtmlEncode(imageAssetPath) + "\" alt=\"" + safeAlternativeText + "\"></picture>"
+                : "<img src=\"" + WebUtility.HtmlEncode(imageAssetPath) + "\" alt=\"" + safeAlternativeText + "\">";
         }
 
         string scriptNonce = null;
@@ -4084,19 +4160,21 @@ public class TlsTerminatingProxy
             scriptNonce = Base64UrlEncode(nonceBytes);
             string safeReturn = GetSafeReturnTarget(refreshTarget);
             script = "<script nonce=\"" + scriptNonce + "\" data-return=\"" + WebUtility.HtmlEncode(safeReturn) + "\" data-title=\"" + safeAlternativeText + "\">" +
-                "(function(){var s=document.currentScript,t=s.dataset.return,title=s.dataset.title||'GStreamer Glass',v=document.querySelector('video'),w=null;" +
+                "(function(){var s=document.currentScript,t=s.dataset.return,title=s.dataset.title||'GStreamer Glass',v=document.querySelector('video'),w=null,q=window.matchMedia?matchMedia('(orientation: portrait)'):null,layout='';" +
                 "function play(){if(v){v.muted=true;v.defaultMuted=true;var p=v.play();if(p&&p.catch)p.catch(function(){});}}" +
+                "function media(){if(!v||(!v.dataset.portraitPoster&&!v.dataset.portraitWebm&&!v.dataset.portraitMp4))return;var portrait=!!(q&&q.matches),next=portrait?'portrait':'landscape';if(layout===next)return;layout=next;var poster=v.dataset[next+'Poster'],webm=v.dataset[next+'Webm'],mp4=v.dataset[next+'Mp4'];if(poster)v.poster=poster;while(v.firstChild)v.removeChild(v.firstChild);function add(src,type){if(!src)return;var x=document.createElement('source');x.src=src;x.type=type;v.appendChild(x);}add(webm,'video/webm');add(mp4,'video/mp4');v.load();play();}" +
                 "function wake(){if(!('wakeLock' in navigator)||document.visibilityState!=='visible')return;navigator.wakeLock.request('screen').then(function(x){w=x;}).catch(function(){});}" +
                 "function check(){fetch('/auth/stream-status?reload='+Date.now(),{cache:'no-store',credentials:'same-origin'}).then(function(r){return r.ok?r.json():null;}).then(function(x){if(!x)return;if(x.authenticated===false){var u=new URL('/auth/login',location.href);u.searchParams.set('return',t);location.replace(u.href);return;}if(x.forwardingPaused===false)location.replace(t);}).catch(function(){});}" +
-                "function activate(){play();wake();}" +
+                "function activate(){media();play();wake();}" +
                 "if('mediaSession' in navigator){try{navigator.mediaSession.metadata=new MediaMetadata({title:title,artist:'GStreamer Glass',album:'Live broadcast'});navigator.mediaSession.playbackState='playing';navigator.mediaSession.setActionHandler('play',play);}catch(e){}}" +
+                "if(q){var rotate=media;if(q.addEventListener)q.addEventListener('change',rotate);else if(q.addListener)q.addListener(rotate);}" +
                 "document.addEventListener('visibilitychange',function(){if(document.visibilityState==='visible')activate();});" +
-                "document.addEventListener('pointerdown',activate,{passive:true});play();wake();check();setInterval(check,2000);})();</script>";
+                "document.addEventListener('pointerdown',activate,{passive:true});media();play();wake();check();setInterval(check,2000);})();</script>";
         }
         string html = "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1,viewport-fit=cover\">" +
             "<meta name=\"robots\" content=\"noindex,nofollow,noarchive,nosnippet,noimageindex\"><title>" + safeAlternativeText + "</title>" +
             "<style>html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#000;color-scheme:dark}body{display:grid;place-items:center}" +
-            "video,img{display:block;max-width:100vw;max-height:100vh;width:auto;height:auto;object-fit:contain;background:#000}</style></head>" +
+            "video,picture,img{display:block;width:100vw;height:100vh;height:100dvh;background:#000}video,img{object-fit:cover;object-position:center}</style></head>" +
             "<body>" + mediaMarkup + script + "</body></html>";
         await WriteHttpResponseAsync(stream, statusCode, reason, "text/html; charset=utf-8", html, additionalHeaders, scriptNonce);
     }
@@ -5050,6 +5128,11 @@ if ($AuthProxyWorker) {
                         $proxy.ConfigureRestartVideos(
                             [string]$Command.RestartVideoMp4Path,
                             [string]$Command.RestartVideoWebmPath
+                        )
+                        $proxy.ConfigureRestartPortraitImage([string]$Command.RestartPortraitImagePath)
+                        $proxy.ConfigureRestartPortraitVideos(
+                            [string]$Command.RestartPortraitVideoMp4Path,
+                            [string]$Command.RestartPortraitVideoWebmPath
                         )
                         $proxy.ConfigureTrustedForwardingProxies([string[]]@($Command.TrustedForwardingProxyAddresses))
                         foreach ($route in @($portInfo.PathRoutes)) {

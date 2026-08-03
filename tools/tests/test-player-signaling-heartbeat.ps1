@@ -35,6 +35,6 @@ Assert-SignalingHeartbeat ($player.Contains('signalingHeartbeat: { enabled:')) '
 
 Assert-SignalingHeartbeat ($player.Contains("FRONTEND_VERSION = '3.8-viewer-auth-55'")) 'The frontend version was not advanced for the current viewer release.'
 Assert-SignalingHeartbeat ($serviceWorker.Contains("gstglass-pwa-3.8-viewer-auth-66")) 'The PWA cache was not advanced for the current viewer release.'
-Assert-SignalingHeartbeat ($webUiManifest.webUiVersion -eq '3.8.65') 'The packaged Web UI version was not advanced for the current viewer release.'
+Assert-SignalingHeartbeat ($webUiManifest.webUiVersion -eq '3.8.66') 'The packaged Web UI version was not advanced for the current viewer release.'
 
 Write-Host 'PASS: primary and split-audio signaling heartbeats detect stale sockets and recover safely after timer suspension.'
