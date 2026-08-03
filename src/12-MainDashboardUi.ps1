@@ -850,6 +850,8 @@ function Apply-ModernDashboardUi {
     $r = Add-Row $s
     Add-Field $r -LabelControl $lblWebRtcSenderQueueMode -Control $cmbWebRtcSenderQueueMode -Width 180 | Out-Null
     Add-Field $r -LabelControl $lblDirectWebRtcPacingMs -Control $numDirectWebRtcPacingMs -Width 90 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -LabelControl $lblVideoQueueLeakMode -Control $cmbVideoQueueLeakMode -Width 180 | Out-Null
 
     $s = Add-CollapsibleSection $paneVideo 'Clock / timing'
     $r = Add-Row $s
@@ -991,6 +993,8 @@ function Apply-ModernDashboardUi {
     $r = Add-Row $s
     Add-Field $r -LabelControl $lblAudioQueueBuffers -Control $numAudioQueueBuffers -Width 90 | Out-Null
     Add-Field $r -LabelControl $lblAudioQueueCapMs -Control $numAudioQueueCapMs -Width 100 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -LabelControl $lblAudioQueueLeakMode -Control $cmbAudioQueueLeakMode -Width 180 | Out-Null
 
     $s = Add-CollapsibleSection $paneAudio 'Direct GST WebRTC Opus'
     $r = Add-Row $s

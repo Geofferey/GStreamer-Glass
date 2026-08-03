@@ -289,9 +289,16 @@ function Start-GstStream {
         "$requestedAudioQueueCapMs ms"
     }
     Append-Log "Threading: profile $([string]$cmbThreadingProfile.SelectedItem), priority $([string]$cmbGstProcessPriority.SelectedItem), capture queue $([int]$numCaptureQueueBuffers.Value) buffers, sender queue $([string]$cmbWebRtcSenderQueueMode.SelectedItem) / $([int]$numDirectWebRtcPacingMs.Value) ms, audio queue $([int]$numAudioQueueBuffers.Value) buffers / $audioQueueCapText, leak $([string]$cmbQueueLeakMode.SelectedItem), effective leak $(Get-EffectiveLiveQueueLeakValue), lateness tracer $($chkBufferLatenessTracer.Checked)."
+    $videoQueueLeakSelection = [string]$cmbVideoQueueLeakMode.SelectedItem
+    $audioQueueLeakSelection = [string]$cmbAudioQueueLeakMode.SelectedItem
+    if ($videoQueueLeakSelection -ne 'Use global default' -or $audioQueueLeakSelection -ne 'Use global default') {
+        Append-Log "Threading: per-stream leak override -- video $videoQueueLeakSelection (effective $(Get-EffectiveVideoQueueLeakValue)), audio $audioQueueLeakSelection (effective $(Get-EffectiveAudioQueueLeakValue))."
+    }
     $cpuWorkerText = if ([int]$numCpuWorkerLimit.Value -eq 0) { 'auto' } else { [string]([int]$numCpuWorkerLimit.Value) }
     Append-Log "Thread budget: $([string]$cmbThreadBudget.SelectedItem), CPU workers $cpuWorkerText, boundaries capture=$($chkBudgetCaptureQueue.Checked) sender=$($chkBudgetSenderQueue.Checked) audio-input=$($chkBudgetAudioInputQueue.Checked) audio-sender=$($chkBudgetAudioFinalQueue.Checked) scene-inputs=$($chkBudgetSceneInputQueues.Checked). Total process threads are observed, not hard-capped."
     if ((Get-QueueLeakValue) -eq 'no' -and (Get-EffectiveLiveQueueLeakValue) -ne 'no') { Append-Log 'Threading guard: No leak/block was selected but coerced to downstream/drop-old outside Blocking diagnostic profile.' }
+    if ($videoQueueLeakSelection -eq 'No leak - block' -and (Get-EffectiveVideoQueueLeakValue) -ne 'no') { Append-Log 'Threading guard: video queue No leak/block was selected but coerced to downstream/drop-old outside Blocking diagnostic profile.' }
+    if ($audioQueueLeakSelection -eq 'No leak - block' -and (Get-EffectiveAudioQueueLeakValue) -ne 'no') { Append-Log 'Threading guard: audio queue No leak/block was selected but coerced to downstream/drop-old outside Blocking diagnostic profile.' }
     if ($requestedAudioQueueCapMs -gt 0 -and $effectiveAudioQueueCapMs -gt $requestedAudioQueueCapMs) { Append-Log "Audio queue guard: raised nonzero audio queue cap from $requestedAudioQueueCapMs ms to $effectiveAudioQueueCapMs ms so GStreamer latency negotiation has enough headroom." }
     Append-Log "Browser JBUF guard: audio/video target $([int]$numDirectWebRtcPlayerJitterMs.Value)/$([int]$numDirectWebRtcVideoJitterMs.Value) ms, watchdog $([string]$cmbJbufWatchdogMode.SelectedItem), max $([int]$numJbufMaxMs.Value) ms, URL/config bridged."
     Append-Log "Split player sync: $([string]$cmbSplitPlayerSyncMode.SelectedItem), watchdog warmup $([int]$numSplitAudioWarmupSeconds.Value) sec applies to both JBUF and split-audio watchdogs, audio stall $([int]$numSplitAudioStallSeconds.Value) sec, offset baseline $([int]$numSplitAvOffsetBaselineMs.Value) ms (0 auto), drift warn $([int]$numSplitAvOffsetWarnMs.Value) ms. Default free-run never delays video."

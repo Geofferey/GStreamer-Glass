@@ -1276,6 +1276,17 @@ $cmbWebRtcSenderQueueMode.SelectedItem = $script:DefaultWebRtcSenderQueueMode
 $settingsGroup.Controls.Add($cmbWebRtcSenderQueueMode)
 $toolTip.SetToolTip($cmbWebRtcSenderQueueMode, 'Encoded-video queue behavior for WHIP and GST WebRTC. Leaky live drops late frames instead of rubber-banding. Non-leaky is diagnostic only.')
 
+$lblVideoQueueLeakMode = Add-Label $settingsGroup 'Video queue leak' 15 548 110
+
+$cmbVideoQueueLeakMode = New-Object System.Windows.Forms.ComboBox
+$cmbVideoQueueLeakMode.Location = New-Object System.Drawing.Point(15, 548)
+$cmbVideoQueueLeakMode.Size = New-Object System.Drawing.Size(180, 23)
+$cmbVideoQueueLeakMode.DropDownStyle = 'DropDownList'
+$null = $cmbVideoQueueLeakMode.Items.AddRange([string[]]@('Use global default', 'Downstream - drop old', 'Upstream - drop new', 'No leak - block'))
+$cmbVideoQueueLeakMode.SelectedItem = $script:DefaultVideoQueueLeakMode
+$settingsGroup.Controls.Add($cmbVideoQueueLeakMode)
+$toolTip.SetToolTip($cmbVideoQueueLeakMode, 'Overrides the Options-tab "Queue leak" setting for just the video capture and encoded-sender queues. Use global default follows whatever that setting (and the active threading profile) already says.')
+
 $lblDirectWebRtcSmoothnessProfile = Add-Label $settingsGroup 'Smooth profile' 15 548 100
 
 $cmbDirectWebRtcSmoothnessProfile = New-Object System.Windows.Forms.ComboBox
@@ -1640,6 +1651,17 @@ $numAudioQueueCapMs.Increment = 10
 $numAudioQueueCapMs.Value = $script:DefaultAudioQueueCapMs
 $settingsGroup.Controls.Add($numAudioQueueCapMs)
 $toolTip.SetToolTip($numAudioQueueCapMs, 'Optional audio queue time cap. 0 disables time cap. Nonzero caps below the safe live-audio floor are clamped at runtime to avoid GStreamer latency errors.')
+
+$lblAudioQueueLeakMode = Add-Label $settingsGroup 'Audio queue leak' 15 548 110
+
+$cmbAudioQueueLeakMode = New-Object System.Windows.Forms.ComboBox
+$cmbAudioQueueLeakMode.Location = New-Object System.Drawing.Point(15, 548)
+$cmbAudioQueueLeakMode.Size = New-Object System.Drawing.Size(180, 23)
+$cmbAudioQueueLeakMode.DropDownStyle = 'DropDownList'
+$null = $cmbAudioQueueLeakMode.Items.AddRange([string[]]@('Use global default', 'Downstream - drop old', 'Upstream - drop new', 'No leak - block'))
+$cmbAudioQueueLeakMode.SelectedItem = $script:DefaultAudioQueueLeakMode
+$settingsGroup.Controls.Add($cmbAudioQueueLeakMode)
+$toolTip.SetToolTip($cmbAudioQueueLeakMode, 'Overrides the Options-tab "Queue leak" setting for just the audio input and final queues. Use global default follows whatever that setting (and the active threading profile) already says.')
 
 $chkBufferLatenessTracer = New-Object System.Windows.Forms.CheckBox
 $chkBufferLatenessTracer.Text = 'Buffer lateness tracer'
@@ -4953,6 +4975,17 @@ foreach ($threadingControl in @($cmbGstProcessPriority, $cmbQueueLeakMode, $numC
             Update-CommandPreview
         })
     }
+}
+
+# Video/Audio-tab overrides for the global queue leak setting above --
+# deliberately NOT joined to the $threadingControl loop's 'Custom' flip
+# (nor the smoothness-profile loop below, even though
+# $cmbVideoQueueLeakMode shares a UI section with $cmbWebRtcSenderQueueMode
+# which does join that one): these are independent per-stream overrides
+# layered on top of whichever threading/smoothness profile is active, not
+# a setting either profile system owns.
+foreach ($queueLeakOverrideCombo in @($cmbVideoQueueLeakMode, $cmbAudioQueueLeakMode)) {
+    $queueLeakOverrideCombo.Add_SelectedIndexChanged({ Update-CommandPreview; Save-Settings })
 }
 
 $cmbGstDebugMode.Add_SelectedIndexChanged({ Update-GstDebugUi; Save-Settings; Update-CommandPreview })

@@ -86,7 +86,7 @@ function Update-GstThreadCountStatus {
 function Get-CaptureEncoderQueue {
     if ($chkBudgetCaptureQueue -and -not $chkBudgetCaptureQueue.Checked) { return 'identity' }
     $buffers = [int]$numCaptureQueueBuffers.Value
-    return (New-LiveQueueString -Buffers $buffers -MaxTimeMs 0)
+    return (New-LiveQueueString -Buffers $buffers -MaxTimeMs 0 -Leak (Get-EffectiveVideoQueueLeakValue))
 }
 
 function Get-EffectiveAudioQueueCapMs {
@@ -109,14 +109,14 @@ function Get-AudioInputQueue {
     if ($chkBudgetAudioInputQueue -and -not $chkBudgetAudioInputQueue.Checked) { return 'identity' }
     $buffers = [Math]::Max(1, [int]$numAudioQueueBuffers.Value * [Math]::Max(1, $Multiplier))
     $ms = Get-EffectiveAudioQueueCapMs
-    return (New-LiveQueueString -Buffers $buffers -MaxTimeMs $ms)
+    return (New-LiveQueueString -Buffers $buffers -MaxTimeMs $ms -Leak (Get-EffectiveAudioQueueLeakValue))
 }
 
 function Get-AudioFinalQueue {
     if ($chkBudgetAudioFinalQueue -and -not $chkBudgetAudioFinalQueue.Checked) { return 'identity' }
     $buffers = [Math]::Max(1, [int]$numAudioQueueBuffers.Value * 2)
     $ms = Get-EffectiveAudioQueueCapMs
-    return (New-LiveQueueString -Buffers $buffers -MaxTimeMs $ms)
+    return (New-LiveQueueString -Buffers $buffers -MaxTimeMs $ms -Leak (Get-EffectiveAudioQueueLeakValue))
 }
 
 function Apply-ThreadingProfile {

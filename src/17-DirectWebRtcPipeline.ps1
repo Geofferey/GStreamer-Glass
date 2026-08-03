@@ -621,7 +621,7 @@ function Get-DirectWebRtcPacingQueue {
     # Structurally honest: the visible cap is the emitted cap. Zero means no
     # max-size-time limit in every mode; presets may set a nonzero value explicitly.
     $ms = [Math]::Max(0, [int]$numDirectWebRtcPacingMs.Value)
-    $leak = Get-EffectiveLiveQueueLeakValue
+    $leak = Get-EffectiveVideoQueueLeakValue
 
     if ($mode -eq 'Leaky live') {
         # Leaky live means newest-frame-wins. Do not let a global stale 'No leak'

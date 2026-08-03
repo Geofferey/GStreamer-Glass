@@ -125,14 +125,51 @@ function Get-QueueLeakValue {
     }
 }
 
-function Get-EffectiveLiveQueueLeakValue {
-    # Live streaming should not silently preserve old frames. Blocking queues are
-    # allowed only in the explicit Blocking diagnostic profile; otherwise a stale
-    # saved setting of 'No leak - block' is coerced to downstream/drop-old.
-    $leak = Get-QueueLeakValue
+# Live streaming should not silently preserve old frames. Blocking queues
+# are allowed only in the explicit Blocking diagnostic profile; otherwise a
+# stale 'no' (block) value -- global, video, or audio -- is coerced to
+# downstream/drop-old. Shared by every effective-leak resolver below so
+# this safety rule can never drift between them.
+function Get-CoercedLiveQueueLeakValue {
+    param([string]$RawValue)
     $profile = Get-ComboSelectedOrDefault $cmbThreadingProfile $script:DefaultThreadingProfile
-    if ($leak -eq 'no' -and $profile -ne 'Blocking diagnostic') { return 'downstream' }
-    return $leak
+    if ($RawValue -eq 'no' -and $profile -ne 'Blocking diagnostic') { return 'downstream' }
+    return $RawValue
+}
+
+function Get-EffectiveLiveQueueLeakValue {
+    return Get-CoercedLiveQueueLeakValue -RawValue (Get-QueueLeakValue)
+}
+
+# Per-stream overrides for the "Queue leak" dropdown above -- Video/Audio
+# tab controls, both defaulting to 'Use global default' so nobody's saved
+# settings or generated pipeline changes until they explicitly opt into an
+# override. GStreamer's queue leaky property is independent per instance;
+# these just expose that independence for the video capture/sender queues
+# (Get-CaptureEncoderQueue, Get-DirectWebRtcPacingQueue) and the audio
+# input/final queues (Get-AudioInputQueue, Get-AudioFinalQueue)
+# respectively, without touching the shared global default those fall back
+# to or the threading profiles that still only drive that global value.
+function Get-EffectiveVideoQueueLeakValue {
+    $mode = Get-ComboSelectedOrDefault $cmbVideoQueueLeakMode $script:DefaultVideoQueueLeakMode
+    $raw = switch ($mode) {
+        'Upstream - drop new' { 'upstream' }
+        'No leak - block' { 'no' }
+        'Downstream - drop old' { 'downstream' }
+        default { return Get-EffectiveLiveQueueLeakValue }
+    }
+    return Get-CoercedLiveQueueLeakValue -RawValue $raw
+}
+
+function Get-EffectiveAudioQueueLeakValue {
+    $mode = Get-ComboSelectedOrDefault $cmbAudioQueueLeakMode $script:DefaultAudioQueueLeakMode
+    $raw = switch ($mode) {
+        'Upstream - drop new' { 'upstream' }
+        'No leak - block' { 'no' }
+        'Downstream - drop old' { 'downstream' }
+        default { return Get-EffectiveLiveQueueLeakValue }
+    }
+    return Get-CoercedLiveQueueLeakValue -RawValue $raw
 }
 
 function Get-AudioTimingMode {

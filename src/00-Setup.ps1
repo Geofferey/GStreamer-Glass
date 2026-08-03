@@ -5712,6 +5712,11 @@ $script:DefaultAudioSyncMode = 'Default'
 $script:DefaultThreadingProfile = 'Live strict'
 $script:DefaultGstProcessPriority = 'High'
 $script:DefaultQueueLeakMode = 'Downstream - drop old'
+# Video/Audio-tab overrides for the queue leak setting above -- both default
+# to following it rather than picking their own value, so nobody's saved
+# settings or generated pipeline changes until they explicitly opt in.
+$script:DefaultVideoQueueLeakMode = 'Use global default'
+$script:DefaultAudioQueueLeakMode = 'Use global default'
 $script:DefaultCaptureQueueBuffers = 2
 $script:DefaultAudioQueueBuffers = 4
 $script:DefaultAudioQueueCapMs = 0
