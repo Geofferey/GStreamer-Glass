@@ -1,18 +1,23 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
-# Regression coverage for the video/audio queue-leak override controls.
+# Regression coverage for the independent video/audio queue-leak controls.
 # GStreamer's queue "leaky" property is independent per element instance --
-# nothing in GStreamer itself ties queues together -- but this app used to
-# route almost every live queue through one shared "Queue leak" dropdown.
-# Get-EffectiveVideoQueueLeakValue/Get-EffectiveAudioQueueLeakValue add
-# per-tab overrides that default to following that shared value ("Use
-# global default") so existing settings/behavior are unaffected until a
-# user explicitly opts in.
+# nothing in GStreamer ties queues together. There used to be one shared
+# "Queue leak" dropdown driving almost every live queue; it was removed as
+# redundant once the Video and Audio tabs each got their own control. Each
+# control's true default is nothing selected at all -- Get-EffectiveVideo/
+# AudioQueueLeakValue return '' in that state, and New-LiveQueueString
+# treats a blank -Leak as "omit the leaky= property entirely" (GStreamer's
+# own queue default, which blocks) rather than substituting some other
+# value. The only thing that keeps that blocking default from being what
+# most users actually get is Apply-ThreadingProfile explicitly setting both
+# combos as part of every non-Custom profile -- covered by inspecting that
+# function's real source text below, since driving the whole WinForms
+# profile-switch UI here isn't practical.
 #
 # Extracts and executes the REAL functions from src/16-CaptureAndAudioDevices.ps1
-# (not a hand-copy), matching this repo's established convention, so this
-# fails if the real logic regresses in some new way, not just if this exact
-# bug comes back.
+# and src/17-DirectWebRtcPipeline.ps1 (not hand-copies), matching this
+# repo's established convention.
 
 [CmdletBinding()]
 param()
@@ -23,6 +28,8 @@ Add-Type -AssemblyName System.Windows.Forms
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot '..\..')
 $devicesPath = Join-Path $repoRoot 'src\16-CaptureAndAudioDevices.ps1'
 $recordingPath = Join-Path $repoRoot 'src\21-Recording.ps1'
+$webRtcPipelinePath = Join-Path $repoRoot 'src\17-DirectWebRtcPipeline.ps1'
+$threadingPath = Join-Path $repoRoot 'src\18-ThreadingAndDebug.ps1'
 
 function Assert-QueueLeak {
     param([bool]$Condition, [string]$Message)
@@ -40,83 +47,108 @@ function Get-FunctionSourceText {
     return $source.Substring($startIndex, $endIndex - $startIndex)
 }
 
-# Get-ComboSelectedOrDefault (src/21-Recording.ps1) -- a dependency of every
-# function under test here.
+# Get-ComboSelectedOrDefault (src/21-Recording.ps1) -- a dependency of
+# Get-CoercedLiveQueueLeakValue.
 Invoke-Expression (Get-FunctionSourceText -Path $recordingPath `
     -StartMarker 'function Get-ComboSelectedOrDefault {' `
     -EndMarker "`n}")
 
-# The real resolution chain: Get-QueueLeakValue, Get-CoercedLiveQueueLeakValue,
-# Get-EffectiveLiveQueueLeakValue, Get-EffectiveVideoQueueLeakValue,
-# Get-EffectiveAudioQueueLeakValue -- one contiguous block in the real file.
+# The real resolution chain: Get-CoercedLiveQueueLeakValue,
+# Get-EffectiveVideoQueueLeakValue, Get-EffectiveAudioQueueLeakValue -- one
+# contiguous block in the real file.
 Invoke-Expression (Get-FunctionSourceText -Path $devicesPath `
-    -StartMarker 'function Get-QueueLeakValue {' `
+    -StartMarker 'function Get-CoercedLiveQueueLeakValue {' `
     -EndMarker 'function Get-EffectiveAudioQueueLeakValue {
-    $mode = Get-ComboSelectedOrDefault $cmbAudioQueueLeakMode $script:DefaultAudioQueueLeakMode
-    $raw = switch ($mode) {
+    $selected = [string]$cmbAudioQueueLeakMode.SelectedItem
+    if ([string]::IsNullOrWhiteSpace($selected)) { return '''' }
+    $raw = switch ($selected) {
         ''Upstream - drop new'' { ''upstream'' }
         ''No leak - block'' { ''no'' }
-        ''Downstream - drop old'' { ''downstream'' }
-        default { return Get-EffectiveLiveQueueLeakValue }
+        default { ''downstream'' }
     }
     return Get-CoercedLiveQueueLeakValue -RawValue $raw
 }')
 
+# The real New-LiveQueueString -- proves the "blank means omit the leaky=
+# property, not substitute a value" mechanism end to end.
+Invoke-Expression (Get-FunctionSourceText -Path $webRtcPipelinePath `
+    -StartMarker 'function New-LiveQueueString {' `
+    -EndMarker "`n}")
+
 function New-TestComboBox {
-    param([string[]]$Items, [string]$Selected)
+    param([string[]]$Items, [int]$SelectedIndex = -1)
     $combo = New-Object System.Windows.Forms.ComboBox
     $null = $combo.Items.AddRange($Items)
-    $combo.SelectedItem = $Selected
+    $combo.SelectedIndex = $SelectedIndex
     return $combo
 }
 
-$script:DefaultQueueLeakMode = 'Downstream - drop old'
-$script:DefaultVideoQueueLeakMode = 'Use global default'
-$script:DefaultAudioQueueLeakMode = 'Use global default'
 $script:DefaultThreadingProfile = 'Live strict'
-
 $leakItems = @('Downstream - drop old', 'Upstream - drop new', 'No leak - block')
-$overrideItems = @('Use global default') + $leakItems
 
-$cmbThreadingProfile = New-TestComboBox -Items @('Live strict', 'Balanced', 'Non-blocking brutal', 'Blocking diagnostic', 'Custom') -Selected 'Live strict'
-$cmbQueueLeakMode = New-TestComboBox -Items $leakItems -Selected 'Downstream - drop old'
-$cmbVideoQueueLeakMode = New-TestComboBox -Items $overrideItems -Selected 'Use global default'
-$cmbAudioQueueLeakMode = New-TestComboBox -Items $overrideItems -Selected 'Use global default'
+$cmbThreadingProfile = New-TestComboBox -Items @('Live strict', 'Balanced', 'Non-blocking brutal', 'Blocking diagnostic', 'Custom') -SelectedIndex 0
+$cmbVideoQueueLeakMode = New-TestComboBox -Items $leakItems
+$cmbAudioQueueLeakMode = New-TestComboBox -Items $leakItems
 
-# --- 1. "Use global default" tracks the global combo for every one of its
-#         values, including through the Blocking-diagnostic 'no' coercion. ---
-foreach ($globalSelection in $leakItems) {
-    $cmbQueueLeakMode.SelectedItem = $globalSelection
-    foreach ($profileSelection in @('Live strict', 'Blocking diagnostic')) {
-        $cmbThreadingProfile.SelectedItem = $profileSelection
-        $expected = Get-EffectiveLiveQueueLeakValue
-        Assert-QueueLeak ((Get-EffectiveVideoQueueLeakValue) -eq $expected) "Video override on 'Use global default' did not track global='$globalSelection' profile='$profileSelection' (expected '$expected', got '$(Get-EffectiveVideoQueueLeakValue)')."
-        Assert-QueueLeak ((Get-EffectiveAudioQueueLeakValue) -eq $expected) "Audio override on 'Use global default' did not track global='$globalSelection' profile='$profileSelection' (expected '$expected', got '$(Get-EffectiveAudioQueueLeakValue)')."
-    }
+# --- 1. True default (nothing selected) resolves to '' -- omit, not a
+#         substituted value -- for both video and audio, independent of
+#         whatever the threading profile combo says. ---
+foreach ($profileSelection in @('Live strict', 'Blocking diagnostic')) {
+    $cmbThreadingProfile.SelectedItem = $profileSelection
+    Assert-QueueLeak ((Get-EffectiveVideoQueueLeakValue) -eq '') "Video with nothing selected should resolve to '' (omit), got '$(Get-EffectiveVideoQueueLeakValue)' under profile '$profileSelection'."
+    Assert-QueueLeak ((Get-EffectiveAudioQueueLeakValue) -eq '') "Audio with nothing selected should resolve to '' (omit), got '$(Get-EffectiveAudioQueueLeakValue)' under profile '$profileSelection'."
 }
 $cmbThreadingProfile.SelectedItem = 'Live strict'
-$cmbQueueLeakMode.SelectedItem = 'Downstream - drop old'
-Write-Output "'Use global default' tracks the global setting across every value and both the coerced and uncoerced profile paths."
+Write-Output "Nothing-selected resolves to '' (omit) for both video and audio, regardless of threading profile."
 
-# --- 2. Explicit video/audio overrides resolve independently of each
-#         other and of the (untouched) global default. ---
+# --- 2. New-LiveQueueString actually omits the leaky= property for a blank
+#         Leak, and includes it for an explicit one. ---
+$omittedQueue = New-LiveQueueString -Buffers 2 -MaxTimeMs 0 -Leak (Get-EffectiveVideoQueueLeakValue)
+Assert-QueueLeak ($omittedQueue -notmatch 'leaky=') "A blank effective leak value should produce a queue string with no leaky= property at all, got: $omittedQueue"
+Assert-QueueLeak ($omittedQueue -match '^queue max-size-buffers=2') "The omitted-leak queue string lost its other properties: $omittedQueue"
+$explicitQueue = New-LiveQueueString -Buffers 2 -MaxTimeMs 0 -Leak 'downstream'
+Assert-QueueLeak ($explicitQueue -match 'leaky=downstream$') "An explicit leak value should still produce leaky=<value>, got: $explicitQueue"
+Write-Output "New-LiveQueueString omits leaky= entirely for a blank value and includes it for an explicit one."
+
+# --- 3. Explicit video/audio overrides resolve independently of each
+#         other. ---
 $cmbVideoQueueLeakMode.SelectedItem = 'Upstream - drop new'
 $cmbAudioQueueLeakMode.SelectedItem = 'No leak - block'
 $cmbThreadingProfile.SelectedItem = 'Live strict'
 Assert-QueueLeak ((Get-EffectiveVideoQueueLeakValue) -eq 'upstream') "Video override did not resolve to its own explicit value (got '$(Get-EffectiveVideoQueueLeakValue)')."
 # Audio explicitly asked for 'No leak - block' outside the Blocking diagnostic
-# profile -- must be coerced to downstream, same safety rule as the global one.
+# profile -- must be coerced to downstream, the same safety rule the old
+# global setting used to apply.
 Assert-QueueLeak ((Get-EffectiveAudioQueueLeakValue) -eq 'downstream') "Audio override 'No leak - block' was not coerced to downstream outside Blocking diagnostic profile (got '$(Get-EffectiveAudioQueueLeakValue)')."
-Assert-QueueLeak ((Get-EffectiveLiveQueueLeakValue) -eq 'downstream') "Setting video/audio overrides must not change the untouched global default (got '$(Get-EffectiveLiveQueueLeakValue)')."
-Write-Output "Video and audio overrides resolve independently of each other and leave the global default untouched."
+Write-Output "Video and audio overrides resolve independently of each other."
 
-# --- 3. In the Blocking diagnostic profile, an explicit 'No leak - block'
-#         override is honored (not coerced) for whichever stream asked for it,
-#         same as the global setting already behaves. ---
+# --- 4. In the Blocking diagnostic profile, an explicit 'No leak - block'
+#         override is honored (not coerced). ---
 $cmbThreadingProfile.SelectedItem = 'Blocking diagnostic'
 Assert-QueueLeak ((Get-EffectiveAudioQueueLeakValue) -eq 'no') "Audio override 'No leak - block' should be honored (not coerced) inside the Blocking diagnostic profile (got '$(Get-EffectiveAudioQueueLeakValue)')."
 $cmbThreadingProfile.SelectedItem = 'Live strict'
-Write-Output "The 'no'-outside-Blocking-diagnostic coercion applies identically to global, video, and audio resolution paths."
+Write-Output "The 'no'-outside-Blocking-diagnostic coercion still applies to explicit video/audio overrides."
+
+# --- 5. Apply-ThreadingProfile's real source sets BOTH new combos for
+#         every non-Custom profile, and never references the removed
+#         global $cmbQueueLeakMode -- the actual safety net that keeps
+#         "nothing selected" from being what most users experience. ---
+# Apply-ThreadBudget (a different function in this same file) also has its
+# own 'Balanced'-named case block -- scope the search to just
+# Apply-ThreadingProfile's own body so that unrelated block can't produce a
+# false match.
+$applyThreadingProfileSource = Get-FunctionSourceText -Path $threadingPath `
+    -StartMarker 'function Apply-ThreadingProfile {' `
+    -EndMarker "Update-CommandPreview`n}"
+Assert-QueueLeak ($applyThreadingProfileSource -notmatch 'cmbQueueLeakMode') "Apply-ThreadingProfile still references the removed global `$cmbQueueLeakMode combo."
+foreach ($presetName in @('Live strict', 'Balanced', 'Non-blocking brutal', 'Blocking diagnostic')) {
+    $presetBlockPattern = "'$presetName' \{[^}]*\}"
+    $presetMatch = [regex]::Match($applyThreadingProfileSource, $presetBlockPattern, [System.Text.RegularExpressions.RegexOptions]::Singleline)
+    Assert-QueueLeak $presetMatch.Success "Could not find the '$presetName' block in Apply-ThreadingProfile -- this test needs updating."
+    Assert-QueueLeak ($presetMatch.Value -match '\$cmbVideoQueueLeakMode\.SelectedItem\s*=') "Threading profile '$presetName' does not set `$cmbVideoQueueLeakMode."
+    Assert-QueueLeak ($presetMatch.Value -match '\$cmbAudioQueueLeakMode\.SelectedItem\s*=') "Threading profile '$presetName' does not set `$cmbAudioQueueLeakMode."
+}
+Write-Output "Every threading profile sets both new per-stream combos directly; no reference to the removed global combo remains."
 
 Write-Output ""
 Write-Output "Queue leak mode checks passed."

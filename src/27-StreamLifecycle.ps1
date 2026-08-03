@@ -288,15 +288,14 @@ function Start-GstStream {
     else {
         "$requestedAudioQueueCapMs ms"
     }
-    Append-Log "Threading: profile $([string]$cmbThreadingProfile.SelectedItem), priority $([string]$cmbGstProcessPriority.SelectedItem), capture queue $([int]$numCaptureQueueBuffers.Value) buffers, sender queue $([string]$cmbWebRtcSenderQueueMode.SelectedItem) / $([int]$numDirectWebRtcPacingMs.Value) ms, audio queue $([int]$numAudioQueueBuffers.Value) buffers / $audioQueueCapText, leak $([string]$cmbQueueLeakMode.SelectedItem), effective leak $(Get-EffectiveLiveQueueLeakValue), lateness tracer $($chkBufferLatenessTracer.Checked)."
+    Append-Log "Threading: profile $([string]$cmbThreadingProfile.SelectedItem), priority $([string]$cmbGstProcessPriority.SelectedItem), capture queue $([int]$numCaptureQueueBuffers.Value) buffers, sender queue $([string]$cmbWebRtcSenderQueueMode.SelectedItem) / $([int]$numDirectWebRtcPacingMs.Value) ms, audio queue $([int]$numAudioQueueBuffers.Value) buffers / $audioQueueCapText, lateness tracer $($chkBufferLatenessTracer.Checked)."
     $videoQueueLeakSelection = [string]$cmbVideoQueueLeakMode.SelectedItem
     $audioQueueLeakSelection = [string]$cmbAudioQueueLeakMode.SelectedItem
-    if ($videoQueueLeakSelection -ne 'Use global default' -or $audioQueueLeakSelection -ne 'Use global default') {
-        Append-Log "Threading: per-stream leak override -- video $videoQueueLeakSelection (effective $(Get-EffectiveVideoQueueLeakValue)), audio $audioQueueLeakSelection (effective $(Get-EffectiveAudioQueueLeakValue))."
-    }
+    $videoQueueLeakDisplay = if ([string]::IsNullOrWhiteSpace($videoQueueLeakSelection)) { '(unset -- no leaky property)' } else { $videoQueueLeakSelection }
+    $audioQueueLeakDisplay = if ([string]::IsNullOrWhiteSpace($audioQueueLeakSelection)) { '(unset -- no leaky property)' } else { $audioQueueLeakSelection }
+    Append-Log "Threading: video queue leak $videoQueueLeakDisplay (effective '$(Get-EffectiveVideoQueueLeakValue)'), audio queue leak $audioQueueLeakDisplay (effective '$(Get-EffectiveAudioQueueLeakValue)')."
     $cpuWorkerText = if ([int]$numCpuWorkerLimit.Value -eq 0) { 'auto' } else { [string]([int]$numCpuWorkerLimit.Value) }
     Append-Log "Thread budget: $([string]$cmbThreadBudget.SelectedItem), CPU workers $cpuWorkerText, boundaries capture=$($chkBudgetCaptureQueue.Checked) sender=$($chkBudgetSenderQueue.Checked) audio-input=$($chkBudgetAudioInputQueue.Checked) audio-sender=$($chkBudgetAudioFinalQueue.Checked) scene-inputs=$($chkBudgetSceneInputQueues.Checked). Total process threads are observed, not hard-capped."
-    if ((Get-QueueLeakValue) -eq 'no' -and (Get-EffectiveLiveQueueLeakValue) -ne 'no') { Append-Log 'Threading guard: No leak/block was selected but coerced to downstream/drop-old outside Blocking diagnostic profile.' }
     if ($videoQueueLeakSelection -eq 'No leak - block' -and (Get-EffectiveVideoQueueLeakValue) -ne 'no') { Append-Log 'Threading guard: video queue No leak/block was selected but coerced to downstream/drop-old outside Blocking diagnostic profile.' }
     if ($audioQueueLeakSelection -eq 'No leak - block' -and (Get-EffectiveAudioQueueLeakValue) -ne 'no') { Append-Log 'Threading guard: audio queue No leak/block was selected but coerced to downstream/drop-old outside Blocking diagnostic profile.' }
     if ($requestedAudioQueueCapMs -gt 0 -and $effectiveAudioQueueCapMs -gt $requestedAudioQueueCapMs) { Append-Log "Audio queue guard: raised nonzero audio queue cap from $requestedAudioQueueCapMs ms to $effectiveAudioQueueCapMs ms so GStreamer latency negotiation has enough headroom." }

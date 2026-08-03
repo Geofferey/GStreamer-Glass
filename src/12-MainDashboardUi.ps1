@@ -1321,7 +1321,6 @@ function Apply-ModernDashboardUi {
     $r = Add-Row $s
     Add-Field $r -LabelControl $lblThreadingProfile -Control $cmbThreadingProfile -Width 165 | Out-Null
     Add-Field $r -LabelControl $lblGstProcessPriority -Control $cmbGstProcessPriority -Width 120 | Out-Null
-    Add-Field $r -LabelControl $lblQueueLeakMode -Control $cmbQueueLeakMode -Width 180 | Out-Null
     $r = Add-Row $s
     Add-Field $r -LabelControl $lblThreadBudget -Control $cmbThreadBudget -Width 130 | Out-Null
     Add-Field $r -LabelControl $lblCpuWorkerLimit -Control $numCpuWorkerLimit -Width 80 | Out-Null

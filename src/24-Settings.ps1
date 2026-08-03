@@ -158,7 +158,6 @@ function Save-Settings {
             BudgetAudioInputQueue = $chkBudgetAudioInputQueue.Checked
             BudgetAudioFinalQueue = $chkBudgetAudioFinalQueue.Checked
             BudgetSceneInputQueues = $chkBudgetSceneInputQueues.Checked
-            QueueLeakMode = [string]$cmbQueueLeakMode.SelectedItem
             VideoQueueLeakMode = [string]$cmbVideoQueueLeakMode.SelectedItem
             AudioQueueLeakMode = [string]$cmbAudioQueueLeakMode.SelectedItem
             CaptureQueueBuffers = [int]$numCaptureQueueBuffers.Value
@@ -612,7 +611,6 @@ function Restore-SettingsFromObject {
         if ($null -ne $settings.BudgetAudioFinalQueue) { $chkBudgetAudioFinalQueue.Checked = [bool]$settings.BudgetAudioFinalQueue }
         $chkBudgetSceneInputQueues.Checked = $true
         $chkBudgetSceneInputQueues.Enabled = $false
-        if ($settings.QueueLeakMode -and $cmbQueueLeakMode.Items.Contains([string]$settings.QueueLeakMode)) { $cmbQueueLeakMode.SelectedItem = [string]$settings.QueueLeakMode }
         if ($settings.VideoQueueLeakMode -and $cmbVideoQueueLeakMode.Items.Contains([string]$settings.VideoQueueLeakMode)) { $cmbVideoQueueLeakMode.SelectedItem = [string]$settings.VideoQueueLeakMode }
         if ($settings.AudioQueueLeakMode -and $cmbAudioQueueLeakMode.Items.Contains([string]$settings.AudioQueueLeakMode)) { $cmbAudioQueueLeakMode.SelectedItem = [string]$settings.AudioQueueLeakMode }
         if ($null -ne $settings.CaptureQueueBuffers) { $numCaptureQueueBuffers.Value = [decimal]([Math]::Min([int]$numCaptureQueueBuffers.Maximum, [Math]::Max([int]$numCaptureQueueBuffers.Minimum, [int]$settings.CaptureQueueBuffers))) }

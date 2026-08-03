@@ -5711,12 +5711,13 @@ $script:DefaultAudioSyncMode = 'Default'
 # scheduler/backpressure issues where a live stream glitches despite plenty of CPU/GPU headroom.
 $script:DefaultThreadingProfile = 'Live strict'
 $script:DefaultGstProcessPriority = 'High'
-$script:DefaultQueueLeakMode = 'Downstream - drop old'
-# Video/Audio-tab overrides for the queue leak setting above -- both default
-# to following it rather than picking their own value, so nobody's saved
-# settings or generated pipeline changes until they explicitly opt in.
-$script:DefaultVideoQueueLeakMode = 'Use global default'
-$script:DefaultAudioQueueLeakMode = 'Use global default'
+# Video/Audio-tab queue leak controls. True default is nothing selected --
+# no leaky= property at all (GStreamer's own queue default). Only reachable
+# via the 'Custom' threading profile; every other profile
+# (Apply-ThreadingProfile, src/18-ThreadingAndDebug.ps1) explicitly sets
+# both to a safe value as part of its preset.
+$script:DefaultVideoQueueLeakMode = ''
+$script:DefaultAudioQueueLeakMode = ''
 $script:DefaultCaptureQueueBuffers = 2
 $script:DefaultAudioQueueBuffers = 4
 $script:DefaultAudioQueueCapMs = 0

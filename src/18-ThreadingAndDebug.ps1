@@ -131,7 +131,8 @@ function Apply-ThreadingProfile {
         switch ($profile) {
             'Live strict' {
                 $cmbGstProcessPriority.SelectedItem = 'High'
-                $cmbQueueLeakMode.SelectedItem = 'Downstream - drop old'
+                $cmbVideoQueueLeakMode.SelectedItem = 'Downstream - drop old'
+                $cmbAudioQueueLeakMode.SelectedItem = 'Downstream - drop old'
                 $numCaptureQueueBuffers.Value = 2
                 $numAudioQueueBuffers.Value = 4
                 $numAudioQueueCapMs.Value = 0
@@ -139,7 +140,8 @@ function Apply-ThreadingProfile {
             }
             'Balanced' {
                 $cmbGstProcessPriority.SelectedItem = 'Above normal'
-                $cmbQueueLeakMode.SelectedItem = 'Downstream - drop old'
+                $cmbVideoQueueLeakMode.SelectedItem = 'Downstream - drop old'
+                $cmbAudioQueueLeakMode.SelectedItem = 'Downstream - drop old'
                 $numCaptureQueueBuffers.Value = 4
                 $numAudioQueueBuffers.Value = 6
                 $numAudioQueueCapMs.Value = 40
@@ -147,7 +149,8 @@ function Apply-ThreadingProfile {
             }
             'Non-blocking brutal' {
                 $cmbGstProcessPriority.SelectedItem = 'High'
-                $cmbQueueLeakMode.SelectedItem = 'Downstream - drop old'
+                $cmbVideoQueueLeakMode.SelectedItem = 'Downstream - drop old'
+                $cmbAudioQueueLeakMode.SelectedItem = 'Downstream - drop old'
                 $numCaptureQueueBuffers.Value = 1
                 $numAudioQueueBuffers.Value = 2
                 $numAudioQueueCapMs.Value = 0
@@ -155,7 +158,8 @@ function Apply-ThreadingProfile {
             }
             'Blocking diagnostic' {
                 $cmbGstProcessPriority.SelectedItem = 'Normal'
-                $cmbQueueLeakMode.SelectedItem = 'No leak - block'
+                $cmbVideoQueueLeakMode.SelectedItem = 'No leak - block'
+                $cmbAudioQueueLeakMode.SelectedItem = 'No leak - block'
                 $numCaptureQueueBuffers.Value = 2
                 $numAudioQueueBuffers.Value = 4
                 $numAudioQueueCapMs.Value = 80

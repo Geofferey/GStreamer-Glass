@@ -1282,10 +1282,10 @@ $cmbVideoQueueLeakMode = New-Object System.Windows.Forms.ComboBox
 $cmbVideoQueueLeakMode.Location = New-Object System.Drawing.Point(15, 548)
 $cmbVideoQueueLeakMode.Size = New-Object System.Drawing.Size(180, 23)
 $cmbVideoQueueLeakMode.DropDownStyle = 'DropDownList'
-$null = $cmbVideoQueueLeakMode.Items.AddRange([string[]]@('Use global default', 'Downstream - drop old', 'Upstream - drop new', 'No leak - block'))
-$cmbVideoQueueLeakMode.SelectedItem = $script:DefaultVideoQueueLeakMode
+$null = $cmbVideoQueueLeakMode.Items.AddRange([string[]]@('Downstream - drop old', 'Upstream - drop new', 'No leak - block'))
+$cmbVideoQueueLeakMode.SelectedIndex = -1
 $settingsGroup.Controls.Add($cmbVideoQueueLeakMode)
-$toolTip.SetToolTip($cmbVideoQueueLeakMode, 'Overrides the Options-tab "Queue leak" setting for just the video capture and encoded-sender queues. Use global default follows whatever that setting (and the active threading profile) already says.')
+$toolTip.SetToolTip($cmbVideoQueueLeakMode, 'How the video capture and encoded-sender queues behave when full. Downstream drops old frames and is usually right for live desktop. Left blank, the active threading profile picks a value (Custom leaves it unset -- no leaky property at all, GStreamer''s own default, which blocks).')
 
 $lblDirectWebRtcSmoothnessProfile = Add-Label $settingsGroup 'Smooth profile' 15 548 100
 
@@ -1605,17 +1605,6 @@ $lblLiveGstThreads.AutoSize = $true
 $settingsGroup.Controls.Add($lblLiveGstThreads)
 $toolTip.SetToolTip($lblLiveGstThreads, 'Observed Windows thread count for gst-launch-1.0.exe. Includes GStreamer, plugin, driver, audio, GPU, networking, and housekeeping threads.')
 
-$lblQueueLeakMode = Add-Label $settingsGroup 'Queue leak' 15 548 90
-
-$cmbQueueLeakMode = New-Object System.Windows.Forms.ComboBox
-$cmbQueueLeakMode.Location = New-Object System.Drawing.Point(15, 548)
-$cmbQueueLeakMode.Size = New-Object System.Drawing.Size(170, 23)
-$cmbQueueLeakMode.DropDownStyle = 'DropDownList'
-$null = $cmbQueueLeakMode.Items.AddRange([string[]]@('Downstream - drop old','Upstream - drop new','No leak - block'))
-$cmbQueueLeakMode.SelectedItem = $script:DefaultQueueLeakMode
-$settingsGroup.Controls.Add($cmbQueueLeakMode)
-$toolTip.SetToolTip($cmbQueueLeakMode, 'How live queues behave when full. Downstream drops old frames and is usually right for live desktop. No leak blocks upstream and can rubber-band.')
-
 $lblCaptureQueueBuffers = Add-Label $settingsGroup 'Capture q buffers' 15 548 120
 
 $numCaptureQueueBuffers = New-Object System.Windows.Forms.NumericUpDown
@@ -1658,10 +1647,10 @@ $cmbAudioQueueLeakMode = New-Object System.Windows.Forms.ComboBox
 $cmbAudioQueueLeakMode.Location = New-Object System.Drawing.Point(15, 548)
 $cmbAudioQueueLeakMode.Size = New-Object System.Drawing.Size(180, 23)
 $cmbAudioQueueLeakMode.DropDownStyle = 'DropDownList'
-$null = $cmbAudioQueueLeakMode.Items.AddRange([string[]]@('Use global default', 'Downstream - drop old', 'Upstream - drop new', 'No leak - block'))
-$cmbAudioQueueLeakMode.SelectedItem = $script:DefaultAudioQueueLeakMode
+$null = $cmbAudioQueueLeakMode.Items.AddRange([string[]]@('Downstream - drop old', 'Upstream - drop new', 'No leak - block'))
+$cmbAudioQueueLeakMode.SelectedIndex = -1
 $settingsGroup.Controls.Add($cmbAudioQueueLeakMode)
-$toolTip.SetToolTip($cmbAudioQueueLeakMode, 'Overrides the Options-tab "Queue leak" setting for just the audio input and final queues. Use global default follows whatever that setting (and the active threading profile) already says.')
+$toolTip.SetToolTip($cmbAudioQueueLeakMode, 'How the audio input and final queues behave when full. Downstream drops old frames and is usually right for live desktop. Left blank, the active threading profile picks a value (Custom leaves it unset -- no leaky property at all, GStreamer''s own default, which blocks).')
 
 $chkBufferLatenessTracer = New-Object System.Windows.Forms.CheckBox
 $chkBufferLatenessTracer.Text = 'Buffer lateness tracer'
@@ -4623,7 +4612,6 @@ foreach ($control in @(
     $cmbWebRtcSenderQueueMode,
     $cmbThreadingProfile,
     $cmbGstProcessPriority,
-    $cmbQueueLeakMode,
     $chkDirectWebRtcFec,
     $chkDirectWebRtcRetransmission,
     $cmbJbufWatchdogMode,
@@ -4956,7 +4944,7 @@ foreach ($budgetControl in @($numCpuWorkerLimit,$chkBudgetCaptureQueue,$chkBudge
         })
     }
 }
-foreach ($threadingControl in @($cmbGstProcessPriority, $cmbQueueLeakMode, $numCaptureQueueBuffers, $numAudioQueueBuffers, $numAudioQueueCapMs, $chkBufferLatenessTracer)) {
+foreach ($threadingControl in @($cmbGstProcessPriority, $numCaptureQueueBuffers, $numAudioQueueBuffers, $numAudioQueueCapMs, $chkBufferLatenessTracer)) {
     if ($threadingControl -is [System.Windows.Forms.ComboBox]) {
         $threadingControl.Add_SelectedIndexChanged({
             if (-not $script:ApplyingThreadingProfile -and $cmbThreadingProfile.SelectedItem -ne 'Custom') { $cmbThreadingProfile.SelectedItem = 'Custom' }
@@ -4977,13 +4965,12 @@ foreach ($threadingControl in @($cmbGstProcessPriority, $cmbQueueLeakMode, $numC
     }
 }
 
-# Video/Audio-tab overrides for the global queue leak setting above --
-# deliberately NOT joined to the $threadingControl loop's 'Custom' flip
-# (nor the smoothness-profile loop below, even though
-# $cmbVideoQueueLeakMode shares a UI section with $cmbWebRtcSenderQueueMode
-# which does join that one): these are independent per-stream overrides
-# layered on top of whichever threading/smoothness profile is active, not
-# a setting either profile system owns.
+# Video/Audio-tab queue leak controls -- deliberately NOT joined to the
+# $threadingControl loop's 'Custom' flip (nor the smoothness-profile loop
+# below, even though $cmbVideoQueueLeakMode shares a UI section with
+# $cmbWebRtcSenderQueueMode which does join that one): Apply-ThreadingProfile
+# already owns setting both of these explicitly as part of each preset, so
+# joining a second 'flip to Custom on change' mechanism here would fight it.
 foreach ($queueLeakOverrideCombo in @($cmbVideoQueueLeakMode, $cmbAudioQueueLeakMode)) {
     $queueLeakOverrideCombo.Add_SelectedIndexChanged({ Update-CommandPreview; Save-Settings })
 }

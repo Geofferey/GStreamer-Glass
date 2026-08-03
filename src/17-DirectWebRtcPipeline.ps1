@@ -511,10 +511,15 @@ function New-LiveQueueString {
         [string]$Leak = ''
     )
 
-    if ([string]::IsNullOrWhiteSpace($Leak)) { $Leak = Get-EffectiveLiveQueueLeakValue }
+    # A blank/omitted Leak means exactly that -- no leaky= property at all,
+    # so GStreamer's own queue default (blocking) applies. Every live-queue
+    # caller that wants a specific behavior passes one explicitly (directly
+    # or via Get-EffectiveVideoQueueLeakValue/Get-EffectiveAudioQueueLeakValue);
+    # this is not a fallback lookup.
     $Buffers = [Math]::Max(1, $Buffers)
     $ns = [int64]([Math]::Max(0, $MaxTimeMs)) * 1000000
-    return "queue max-size-buffers=$Buffers max-size-bytes=0 max-size-time=$ns leaky=$Leak"
+    $leakSuffix = if ([string]::IsNullOrWhiteSpace($Leak)) { '' } else { " leaky=$Leak" }
+    return "queue max-size-buffers=$Buffers max-size-bytes=0 max-size-time=$ns$leakSuffix"
 }
 
 function Set-WebRtcRecoveryMode {
@@ -624,9 +629,12 @@ function Get-DirectWebRtcPacingQueue {
     $leak = Get-EffectiveVideoQueueLeakValue
 
     if ($mode -eq 'Leaky live') {
-        # Leaky live means newest-frame-wins. Do not let a global stale 'No leak'
-        # setting override this and create rubber-band latency.
-        if ($leak -eq 'no') { $leak = 'downstream' }
+        # Leaky live means newest-frame-wins, unconditionally -- do not let a
+        # stale 'No leak' override, or the video queue leak control being
+        # left unset entirely (which would otherwise mean no leaky= property
+        # at all, i.e. GStreamer's own blocking default), create rubber-band
+        # latency here.
+        if ([string]::IsNullOrWhiteSpace($leak) -or $leak -eq 'no') { $leak = 'downstream' }
         return (New-LiveQueueString -Buffers 2 -MaxTimeMs $ms -Leak $leak)
     }
 
@@ -773,7 +781,6 @@ function Write-DirectWebRtcWebClientConfig {
             audioClockMode = [string]$cmbAudioClockMode.SelectedItem
             congestionControl = [string]$cmbDirectWebRtcCongestion.SelectedItem
             threadingProfile = [string]$cmbThreadingProfile.SelectedItem
-            queueLeakMode = [string]$cmbQueueLeakMode.SelectedItem
         }
         $json = $data | ConvertTo-Json -Compress
         Set-Content -LiteralPath $configPath -Value "window.GST_GLASS_CONFIG = $json;" -Encoding UTF8

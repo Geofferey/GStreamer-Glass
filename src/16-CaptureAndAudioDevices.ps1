@@ -116,20 +116,11 @@ function Resolve-FullscreenCaptureTarget {
     return $true
 }
 
-function Get-QueueLeakValue {
-    $mode = Get-ComboSelectedOrDefault $cmbQueueLeakMode $script:DefaultQueueLeakMode
-    switch ($mode) {
-        'Upstream - drop new' { return 'upstream' }
-        'No leak - block' { return 'no' }
-        default { return 'downstream' }
-    }
-}
-
 # Live streaming should not silently preserve old frames. Blocking queues
 # are allowed only in the explicit Blocking diagnostic profile; otherwise a
-# stale 'no' (block) value -- global, video, or audio -- is coerced to
-# downstream/drop-old. Shared by every effective-leak resolver below so
-# this safety rule can never drift between them.
+# stale 'no' (block) value is coerced to downstream/drop-old. Shared by
+# both effective-leak resolvers below so this safety rule can never drift
+# between them.
 function Get-CoercedLiveQueueLeakValue {
     param([string]$RawValue)
     $profile = Get-ComboSelectedOrDefault $cmbThreadingProfile $script:DefaultThreadingProfile
@@ -137,37 +128,37 @@ function Get-CoercedLiveQueueLeakValue {
     return $RawValue
 }
 
-function Get-EffectiveLiveQueueLeakValue {
-    return Get-CoercedLiveQueueLeakValue -RawValue (Get-QueueLeakValue)
-}
-
-# Per-stream overrides for the "Queue leak" dropdown above -- Video/Audio
-# tab controls, both defaulting to 'Use global default' so nobody's saved
-# settings or generated pipeline changes until they explicitly opt into an
-# override. GStreamer's queue leaky property is independent per instance;
-# these just expose that independence for the video capture/sender queues
-# (Get-CaptureEncoderQueue, Get-DirectWebRtcPacingQueue) and the audio
-# input/final queues (Get-AudioInputQueue, Get-AudioFinalQueue)
-# respectively, without touching the shared global default those fall back
-# to or the threading profiles that still only drive that global value.
+# Video/Audio-tab queue leak controls. GStreamer's queue leaky property is
+# independent per element instance -- these expose that independence for
+# the video capture/sender queues (Get-CaptureEncoderQueue,
+# Get-DirectWebRtcPacingQueue) and the audio input/final queues
+# (Get-AudioInputQueue, Get-AudioFinalQueue) respectively, with no shared
+# global setting between them (there used to be one; it was removed as
+# redundant once both tabs had their own control). Each combo's true
+# default is nothing selected at all -- returns '' (omit the leaky=
+# property entirely, GStreamer's own queue default) rather than silently
+# picking a value nobody chose. That's normally only reachable in the
+# 'Custom' threading profile: every other profile (Apply-ThreadingProfile,
+# src/18-ThreadingAndDebug.ps1) explicitly sets both combos as part of its
+# preset, the same safety net the old global setting used to provide.
 function Get-EffectiveVideoQueueLeakValue {
-    $mode = Get-ComboSelectedOrDefault $cmbVideoQueueLeakMode $script:DefaultVideoQueueLeakMode
-    $raw = switch ($mode) {
+    $selected = [string]$cmbVideoQueueLeakMode.SelectedItem
+    if ([string]::IsNullOrWhiteSpace($selected)) { return '' }
+    $raw = switch ($selected) {
         'Upstream - drop new' { 'upstream' }
         'No leak - block' { 'no' }
-        'Downstream - drop old' { 'downstream' }
-        default { return Get-EffectiveLiveQueueLeakValue }
+        default { 'downstream' }
     }
     return Get-CoercedLiveQueueLeakValue -RawValue $raw
 }
 
 function Get-EffectiveAudioQueueLeakValue {
-    $mode = Get-ComboSelectedOrDefault $cmbAudioQueueLeakMode $script:DefaultAudioQueueLeakMode
-    $raw = switch ($mode) {
+    $selected = [string]$cmbAudioQueueLeakMode.SelectedItem
+    if ([string]::IsNullOrWhiteSpace($selected)) { return '' }
+    $raw = switch ($selected) {
         'Upstream - drop new' { 'upstream' }
         'No leak - block' { 'no' }
-        'Downstream - drop old' { 'downstream' }
-        default { return Get-EffectiveLiveQueueLeakValue }
+        default { 'downstream' }
     }
     return Get-CoercedLiveQueueLeakValue -RawValue $raw
 }
