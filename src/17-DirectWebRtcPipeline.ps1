@@ -932,8 +932,8 @@ function Get-DirectWebRtcUnifiedRtpVideoDefinition {
                 Codec = 'H264'
                 PayloadType = 96
                 RtpCaps = 'application/x-rtp,media=(string)video,encoding-name=(string)H264,payload=(int)96,clock-rate=(int)90000'
-                Payloader = 'rtph264pay pt=96 config-interval=-1 aggregate-mode=zero-latency'
-                Receiver = 'rtph264depay ! h264parse config-interval=-1 ! "video/x-h264,stream-format=byte-stream,alignment=au"'
+                Payloader = "rtph264pay pt=96 config-interval=$([int]$numConfigInterval.Value) aggregate-mode=zero-latency"
+                Receiver = "rtph264depay ! h264parse config-interval=$([int]$numConfigInterval.Value) ! `"video/x-h264,stream-format=byte-stream,alignment=au`""
             }
         }
         'H265' {
@@ -941,8 +941,8 @@ function Get-DirectWebRtcUnifiedRtpVideoDefinition {
                 Codec = 'H265'
                 PayloadType = 96
                 RtpCaps = 'application/x-rtp,media=(string)video,encoding-name=(string)H265,payload=(int)96,clock-rate=(int)90000'
-                Payloader = 'rtph265pay pt=96 config-interval=-1 aggregate-mode=zero-latency'
-                Receiver = 'rtph265depay ! h265parse config-interval=-1 ! "video/x-h265,stream-format=byte-stream,alignment=au"'
+                Payloader = "rtph265pay pt=96 config-interval=$([int]$numConfigInterval.Value) aggregate-mode=zero-latency"
+                Receiver = "rtph265depay ! h265parse config-interval=$([int]$numConfigInterval.Value) ! `"video/x-h265,stream-format=byte-stream,alignment=au`""
             }
         }
         default {

@@ -114,7 +114,8 @@ function Reset-VideoDefaults {
     $numVideoBitrate.Value = 12000
     $numMaxVideoBitrate.Value = 0
     $numConstantQp.Value = 20
-    $numGopSeconds.Value = 1
+    $numGopSeconds.Value = 60
+    $numConfigInterval.Value = -1
     $chkUnifiedBridgeKeyframeGuard.Checked = $script:DefaultUnifiedBridgeKeyframeGuard
     $numUnifiedBridgeKeyframeIntervalMs.Value = $script:DefaultUnifiedBridgeKeyframeIntervalMs
     $cmbEncoder.SelectedItem = $script:DefaultEncoderName
@@ -192,7 +193,7 @@ function Reset-RecordingDefaults {
     $numRecordingWidth.Value = 1920
     $numRecordingHeight.Value = 1080
     $numRecordingFps.Value = 60
-    $numRecordingGopSeconds.Value = 2
+    $numRecordingGopSeconds.Value = 120
     $numRecordingBFrames.Value = 2
     $cmbRecordingPreset.SelectedItem = 'p5'
     $cmbRecordingProfile.SelectedItem = 'high'

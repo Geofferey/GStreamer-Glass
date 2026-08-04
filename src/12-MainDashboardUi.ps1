@@ -864,7 +864,9 @@ function Apply-ModernDashboardUi {
 
     $s = Add-CollapsibleSection $paneVideo 'Keyframes'
     $r = Add-Row $s
-    Add-Field $r -Label 'GOP sec' -Control $numGopSeconds -Width 80 | Out-Null
+    Add-Field $r -Label 'GOP size' -Control $numGopSeconds -Width 80 | Out-Null
+    Add-Field $r -LabelControl $lblConfigInterval -Control $numConfigInterval -Width 80 | Out-Null
+    $r = Add-Row $s
     Add-Field $r -Control $chkUnifiedBridgeKeyframeGuard -Width 260 | Out-Null
     Add-Field $r -Label 'Interval ms' -Control $numUnifiedBridgeKeyframeIntervalMs -Width 90 | Out-Null
 
@@ -1101,7 +1103,7 @@ function Apply-ModernDashboardUi {
     Add-Field $r -Label 'Width' -Control $numRecordingWidth -Width 90 | Out-Null
     Add-Field $r -Label 'Height' -Control $numRecordingHeight -Width 90 | Out-Null
     Add-Field $r -Label 'FPS' -Control $numRecordingFps -Width 80 | Out-Null
-    Add-Field $r -Label 'GOP sec' -Control $numRecordingGopSeconds -Width 80 | Out-Null
+    Add-Field $r -Label 'GOP size' -Control $numRecordingGopSeconds -Width 80 | Out-Null
     Add-Field $r -Label 'B-frames' -Control $numRecordingBFrames -Width 80 | Out-Null
     $r = Add-Row $s
     Add-Field $r -Label 'Preset' -Control $cmbRecordingPreset -Width 100 | Out-Null

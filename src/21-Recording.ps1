@@ -231,7 +231,7 @@ function Get-RecordingEncoderElementChain {
     $videoBitrateBps = $videoBitrateKbps * 1000
     $maxVideoBitrateKbps = [int]$numRecordingMaxVideoBitrate.Value
     $constantQp = [int]$numRecordingConstantQp.Value
-    $gopSize = [Math]::Max(1, $fps * [int]$numRecordingGopSeconds.Value)
+    $gopSize = [Math]::Max(1, [int]$numRecordingGopSeconds.Value)
     $preset = [string]$cmbRecordingPreset.SelectedItem
     $rateControl = Get-ComboSelectedOrDefault $cmbRecordingRateControl 'constqp'
     $tune = Get-ComboSelectedOrDefault $cmbRecordingTune 'high-quality'

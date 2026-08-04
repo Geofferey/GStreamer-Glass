@@ -17,7 +17,7 @@ function Get-BuiltInProfiles {
             _CompatibleProtocols = @('WHIP')
             _IsBuiltIn           = $true
             Protocol             = 'WHIP'
-            GopSeconds           = 1
+            GopSeconds           = 60
             RateControl          = 'cbr'
             EncoderTune          = 'ultra-low-latency'
             Multipass            = 'disabled'
@@ -37,7 +37,7 @@ function Get-BuiltInProfiles {
             _CompatibleProtocols = @('GST WebRTC')
             _IsBuiltIn           = $true
             Protocol             = 'GST WebRTC'
-            GopSeconds           = 1
+            GopSeconds           = 60
             RateControl          = 'cbr'
             EncoderTune          = 'ultra-low-latency'
             Multipass            = 'disabled'
@@ -57,7 +57,7 @@ function Get-BuiltInProfiles {
             _CompatibleProtocols = @('SRT')
             _IsBuiltIn           = $true
             Protocol             = 'SRT'
-            GopSeconds           = 2
+            GopSeconds           = 120
             RateControl          = 'vbr'
             EncoderTune          = 'high-quality'
             Multipass            = 'two-pass-quarter'
@@ -80,7 +80,7 @@ function Get-BuiltInProfiles {
             _CompatibleProtocols = @('RTMP')
             _IsBuiltIn           = $true
             Protocol             = 'RTMP'
-            GopSeconds           = 2
+            GopSeconds           = 120
             Preset               = 'p5'
             RateControl          = 'vbr'
             EncoderTune          = 'high-quality'
@@ -103,7 +103,7 @@ function Get-BuiltInProfiles {
             _CompatibleProtocols = @('RTSP')
             _IsBuiltIn           = $true
             Protocol             = 'RTSP'
-            GopSeconds           = 2
+            GopSeconds           = 120
             RateControl          = 'vbr'
             EncoderTune          = 'high-quality'
             Multipass            = 'two-pass-quarter'

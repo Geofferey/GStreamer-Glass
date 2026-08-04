@@ -240,7 +240,7 @@ function Start-GstStream {
                     Append-Log "Unified publisher keyframe guard: periodic IDR every $([int]$numUnifiedBridgeKeyframeIntervalMs.Value) ms -> encoder GOP $effectiveKeyframeFrames frames at $([int]$numFps.Value) FPS. This is the fallback for PLI/FIR requests that cannot cross the RTP process boundary."
                 }
                 else {
-                    Append-Log "Unified publisher keyframe guard: off; encoder uses Video-tab GOP $([int]$numGopSeconds.Value) sec."
+                    Append-Log "Unified publisher keyframe guard: off; encoder uses Video-tab GOP size $([int]$numGopSeconds.Value)."
                 }
             }
             elseif (Test-DirectWebRtcSplitAvPipelines) {

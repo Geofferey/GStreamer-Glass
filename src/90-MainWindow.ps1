@@ -1946,14 +1946,25 @@ $numVideoBitrate.Value = 12000
 $settingsGroup.Controls.Add($numVideoBitrate)
 $toolTip.SetToolTip($numVideoBitrate, 'The actual encoder bitrate= value, in kbps. Parsed unclamped into the pipeline on every run, for every protocol -- nothing else in the app adjusts, floors, or overrides this. If you override it for testing, that override is exactly what runs.')
 
-$null = Add-Label $settingsGroup 'GOP sec' 580 166 60
+$null = Add-Label $settingsGroup 'GOP size' 580 166 60
 $numGopSeconds = New-Object System.Windows.Forms.NumericUpDown
 $numGopSeconds.Location = New-Object System.Drawing.Point(640, 166)
 $numGopSeconds.Size = New-Object System.Drawing.Size(60, 23)
 $numGopSeconds.Minimum = 1
-$numGopSeconds.Maximum = 10
+$numGopSeconds.Maximum = 1000
 $numGopSeconds.Value = 1
 $settingsGroup.Controls.Add($numGopSeconds)
+$toolTip.SetToolTip($numGopSeconds, 'Keyframe interval, passed directly to the encoder''s gop-size/key-int-max property as-is -- no fps-based conversion. At 60fps, 60 = a 1-second GOP; at 30fps, 60 = a 2-second GOP.')
+
+$lblConfigInterval = Add-Label $settingsGroup 'Config interval' 580 166 100
+$numConfigInterval = New-Object System.Windows.Forms.NumericUpDown
+$numConfigInterval.Location = New-Object System.Drawing.Point(640, 166)
+$numConfigInterval.Size = New-Object System.Drawing.Size(60, 23)
+$numConfigInterval.Minimum = -1
+$numConfigInterval.Maximum = 3600
+$numConfigInterval.Value = -1
+$settingsGroup.Controls.Add($numConfigInterval)
+$toolTip.SetToolTip($numConfigInterval, 'RTP parameter-set (SPS/PPS/VPS) repeat interval for H.264/H.265. -1 = resend with every IDR/keyframe (recommended for live/WebRTC so late joiners and packet loss can resync). 0 = send once only. N = resend at most every N seconds. No effect for non-H.264/H.265 codecs.')
 
 $chkUnifiedBridgeKeyframeGuard = New-Object System.Windows.Forms.CheckBox
 $chkUnifiedBridgeKeyframeGuard.Text = 'Unified bridge periodic keyframes'
@@ -2684,9 +2695,10 @@ $numRecordingGopSeconds = New-Object System.Windows.Forms.NumericUpDown
 $numRecordingGopSeconds.Location = New-Object System.Drawing.Point(15, 548)
 $numRecordingGopSeconds.Size = New-Object System.Drawing.Size(80, 23)
 $numRecordingGopSeconds.Minimum = 1
-$numRecordingGopSeconds.Maximum = 10
+$numRecordingGopSeconds.Maximum = 1000
 $numRecordingGopSeconds.Value = 2
 $settingsGroup.Controls.Add($numRecordingGopSeconds)
+$toolTip.SetToolTip($numRecordingGopSeconds, 'Keyframe interval, passed directly to the encoder''s gop-size/key-int-max property as-is -- no fps-based conversion. At 60fps, 60 = a 1-second GOP; at 30fps, 60 = a 2-second GOP.')
 
 $numRecordingBFrames = New-Object System.Windows.Forms.NumericUpDown
 $numRecordingBFrames.Location = New-Object System.Drawing.Point(15, 548)
@@ -4388,6 +4400,7 @@ $numMaxVideoBitrate.Add_ValueChanged($previewHandler)
 $numDirectWebRtcMinBitrateKbps.Add_ValueChanged($previewHandler)
 $numConstantQp.Add_ValueChanged($previewHandler)
 $numGopSeconds.Add_ValueChanged($previewHandler)
+$numConfigInterval.Add_ValueChanged($previewHandler)
 $chkUnifiedBridgeKeyframeGuard.Add_CheckedChanged({ Update-UnifiedBridgeKeyframeUi; Update-CommandPreview })
 $numUnifiedBridgeKeyframeIntervalMs.Add_ValueChanged($previewHandler)
 $cmbPreset.Add_SelectedIndexChanged($previewHandler)

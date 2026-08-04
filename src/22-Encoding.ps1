@@ -534,7 +534,7 @@ function Get-EncoderElementChain {
     $videoBitrateBps = $videoBitrateKbps * 1000
     $maxVideoBitrateKbps = [int]$numMaxVideoBitrate.Value
     $constantQp = [int]$numConstantQp.Value
-    $gopSize = [Math]::Max(1, $fps * [int]$numGopSeconds.Value)
+    $gopSize = [Math]::Max(1, [int]$numGopSeconds.Value)
     if (
         (Test-DirectWebRtcUnifiedPublisher) -and
         $codec -in @('H264','H265') -and
@@ -642,7 +642,7 @@ function Get-EncoderElementChain {
         $parts.Add($parser)
 
         if ($codec -in @('H264', 'H265')) {
-            $parts.Add('config-interval=-1')
+            $parts.Add("config-interval=$([int]$numConfigInterval.Value)")
         }
     }
 

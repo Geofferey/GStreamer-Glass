@@ -240,6 +240,7 @@ function Save-Settings {
             MaxVideoBitrateKbps = [int]$numMaxVideoBitrate.Value
             ConstantQp        = [int]$numConstantQp.Value
             GopSeconds        = [int]$numGopSeconds.Value
+            ConfigInterval    = [int]$numConfigInterval.Value
             UnifiedBridgeKeyframeGuard = [bool]$chkUnifiedBridgeKeyframeGuard.Checked
             UnifiedBridgeKeyframeIntervalMs = [int]$numUnifiedBridgeKeyframeIntervalMs.Value
             Encoder           = [string]$cmbEncoder.SelectedItem
@@ -727,6 +728,7 @@ function Restore-SettingsFromObject {
         if ($null -ne $settings.MaxVideoBitrateKbps) { $numMaxVideoBitrate.Value = [decimal]$settings.MaxVideoBitrateKbps }
         if ($null -ne $settings.ConstantQp) { $numConstantQp.Value = [decimal]$settings.ConstantQp }
         if ($settings.GopSeconds) { $numGopSeconds.Value = [decimal]$settings.GopSeconds }
+        if ($null -ne $settings.ConfigInterval) { $numConfigInterval.Value = [decimal]([Math]::Min([int]$numConfigInterval.Maximum, [Math]::Max([int]$numConfigInterval.Minimum, [int]$settings.ConfigInterval))) }
         if ($null -ne $settings.UnifiedBridgeKeyframeGuard) { $chkUnifiedBridgeKeyframeGuard.Checked = [bool]$settings.UnifiedBridgeKeyframeGuard }
         if ($null -ne $settings.UnifiedBridgeKeyframeIntervalMs) { $numUnifiedBridgeKeyframeIntervalMs.Value = [decimal]([Math]::Min(10000, [Math]::Max(100, [int]$settings.UnifiedBridgeKeyframeIntervalMs))) }
         if ($settings.Encoder -and $cmbEncoder.Items.Contains([string]$settings.Encoder)) {
