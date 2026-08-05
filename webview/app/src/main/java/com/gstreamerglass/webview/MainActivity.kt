@@ -12,7 +12,9 @@ import android.graphics.Bitmap
 import android.net.http.SslError
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.util.Log
 import android.view.View
 import android.view.ViewGroup
@@ -21,8 +23,11 @@ import android.view.WindowInsetsController
 import android.view.WindowManager
 import android.webkit.ConsoleMessage
 import android.webkit.JavascriptInterface
-import android.webkit.WebChromeClient
 import android.webkit.SslErrorHandler
+import android.webkit.WebChromeClient
+import android.webkit.WebResourceError
+import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import java.net.HttpURLConnection
@@ -39,6 +44,8 @@ private const val TAG = "GlassViewerJS"
 private const val PREFS_NAME = "glass2glass"
 private const val KEY_SERVER_URL = "server_url"
 private const val KEY_SERVER_INSECURE = "server_insecure"
+private const val OFFLINE_URL = "file:///android_asset/offline.html"
+private const val RETRY_DELAY_MS = 10000L
 
 // Only used when the user has explicitly opted into "self-signed certificate" for a specific
 // saved server (local installs without a real CA-signed cert). Scoped to individual connections
@@ -161,6 +168,10 @@ class MainActivity : Activity() {
     private var boundToService = false
     private var connected = false
     private var insecureMode = false
+    private var serverUrl: String? = null
+    private var pendingLoadFailed = false
+    private val retryHandler = Handler(Looper.getMainLooper())
+    private val retryRunnable = Runnable { serverUrl?.let { webView.loadUrl(it) } }
 
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
@@ -287,7 +298,19 @@ class MainActivity : Activity() {
         webView.webViewClient = object : WebViewClient() {
             override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                 super.onPageStarted(view, url, favicon)
+                // A 503/404 still returns a response body at serverUrl, so onPageFinished
+                // below can't tell "loaded" from "loaded but errored" by URL alone - reset this
+                // at the start of every navigation and let onReceivedError/onReceivedHttpError
+                // flip it if this particular attempt turns out to fail.
+                pendingLoadFailed = false
                 view?.evaluateJavascript(MEDIA_BRIDGE_JS, null)
+            }
+
+            override fun onPageFinished(view: WebView?, url: String?) {
+                super.onPageFinished(view, url)
+                // A real page load succeeded - drop any retry left over from a prior failure
+                // instead of letting it fire a redundant reload later.
+                if (url == serverUrl && !pendingLoadFailed) retryHandler.removeCallbacks(retryRunnable)
             }
 
             // Only bypasses cert validation when the user explicitly opted into "self-signed
@@ -299,6 +322,31 @@ class MainActivity : Activity() {
                     handler.proceed()
                 } else {
                     super.onReceivedSslError(view, handler, error)
+                }
+            }
+
+            // The "can't reach the server at all" case - DNS/connect/timeout failures on the
+            // main navigation. Not sub-resource errors (a missing favicon shouldn't show the
+            // offline page), and not while still on the setup page (verifyAndConnect already
+            // has its own error handling for that).
+            override fun onReceivedError(view: WebView?, request: WebResourceRequest?, error: WebResourceError?) {
+                super.onReceivedError(view, request, error)
+                if (isMainFrameFailure(request)) {
+                    Log.w(TAG, "main frame load failed: $error")
+                    pendingLoadFailed = true
+                    showOfflineAndRetry()
+                }
+            }
+
+            // The other half: reached the server, but it answered with an error status - a
+            // proxy returning 502/503 while the backend stream is down, a 404 from a stale/wrong
+            // path, etc. Same recovery either way from the user's perspective.
+            override fun onReceivedHttpError(view: WebView?, request: WebResourceRequest?, errorResponse: WebResourceResponse?) {
+                super.onReceivedHttpError(view, request, errorResponse)
+                if (isMainFrameFailure(request)) {
+                    Log.w(TAG, "main frame http error: ${errorResponse?.statusCode}")
+                    pendingLoadFailed = true
+                    showOfflineAndRetry()
                 }
             }
         }
@@ -353,11 +401,21 @@ class MainActivity : Activity() {
         if (connected) return
         connected = true
         insecureMode = insecure
+        serverUrl = url
         webView.loadUrl(url)
         requestNotificationPermissionIfNeeded()
         requestPhoneStatePermissionIfNeeded()
         startStreamService()
         boundToService = bindService(Intent(this, StreamForegroundService::class.java), serviceConnection, Context.BIND_AUTO_CREATE)
+    }
+
+    private fun isMainFrameFailure(request: WebResourceRequest?): Boolean =
+        connected && request?.isForMainFrame == true && request.url.toString() != OFFLINE_URL
+
+    private fun showOfflineAndRetry() {
+        webView.loadUrl(OFFLINE_URL)
+        retryHandler.removeCallbacks(retryRunnable)
+        retryHandler.postDelayed(retryRunnable, RETRY_DELAY_MS)
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
@@ -366,6 +424,7 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
+        retryHandler.removeCallbacks(retryRunnable)
         if (boundToService) unbindService(serviceConnection)
         stopService(Intent(this, StreamForegroundService::class.java))
         super.onDestroy()

@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#000000">
+<title>Glass2Glass - Offline</title>
+<style>
+html,body{margin:0;height:100%;background:#000;overflow:hidden}
+#bg,#fallbackImg{position:fixed;inset:0;width:100%;height:100%;object-fit:cover}
+#fallbackImg{display:none}
+</style>
+</head>
+<body>
+<video id="bg" autoplay loop muted playsinline></video>
+<img id="fallbackImg" alt="We'll be right back!">
+<script>
+function sourcesForOrientation() {
+  var portrait = window.innerHeight >= window.innerWidth;
+  return portrait
+    ? { mp4: 'well-be-right-back-portrait-glitch.mp4', webm: 'well-be-right-back-portrait-glitch.webm', png: 'well-be-right-back-portrait.png' }
+    : { mp4: 'well-be-right-back-glitch.mp4', webm: 'well-be-right-back-glitch.webm', png: 'well-be-right-back.png' };
+}
+
+var video = document.getElementById('bg');
+var img = document.getElementById('fallbackImg');
+
+// This is the fallback page for when the server can't be reached at all, so it has to keep
+// working without any network access - if the video ever fails to decode/play for any reason,
+// fall back to the static image rather than showing nothing.
+video.addEventListener('error', function () {
+  video.style.display = 'none';
+  img.style.display = 'block';
+});
+
+function loadForOrientation() {
+  var s = sourcesForOrientation();
+  img.src = s.png;
+  video.innerHTML =
+    '<source src="' + s.mp4 + '" type="video/mp4">' +
+    '<source src="' + s.webm + '" type="video/webm">';
+  video.load();
+  video.play().catch(function () {});
+}
+
+window.addEventListener('resize', loadForOrientation);
+loadForOrientation();
+</script>
+</body>
+</html>
