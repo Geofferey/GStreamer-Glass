@@ -2100,8 +2100,23 @@ function Start-AuthProxyWorker {
             PassThru     = $true
         }
         if (Test-ProcessDiskLoggingEnabled) {
-            $startParams.RedirectStandardOutput = $script:StdOutPath
-            $startParams.RedirectStandardError = $script:StdErrPath
+            # Deliberately its own dedicated paths, not $script:StdOutPath/
+            # StdErrPath -- those belong to the main GST process and are only
+            # ever assigned inside Start-GstStream (src/27-StreamLifecycle.ps1),
+            # staying $null (Reset-ProcessLogPaths) whenever no stream has run
+            # yet this session. "Start auth on launch" starts this worker
+            # before any stream ever does, so reusing GST's paths here handed
+            # Start-Process a null -RedirectStandardError/-Output and failed
+            # closed with "argument is null or empty" -- confirmed live. The
+            # worker's own lifecycle (spans stream start/stop/restart cycles)
+            # doesn't match GST's anyway, so it needs paths GST's reset never
+            # touches.
+            Ensure-ProcessLogDirectory
+            $authWorkerStamp = Get-Date -Format 'yyyyMMdd-HHmmss-fff'
+            $script:AuthProxyWorkerStdOutPath = Join-Path $script:LogDirectory "authproxy-worker-$authWorkerStamp-out.log"
+            $script:AuthProxyWorkerStdErrPath = Join-Path $script:LogDirectory "authproxy-worker-$authWorkerStamp-err.log"
+            $startParams.RedirectStandardOutput = $script:AuthProxyWorkerStdOutPath
+            $startParams.RedirectStandardError = $script:AuthProxyWorkerStdErrPath
         }
         $process = Start-Process @startParams
         if ($script:JobHandle -ne [IntPtr]::Zero) {

@@ -690,7 +690,8 @@ function Stop-ControlledLiveStream {
     param(
         [switch]$Restart,
         [switch]$AutomaticRestart,
-        [switch]$SuppressPreviewRestore
+        [switch]$SuppressPreviewRestore,
+        [switch]$Exiting
     )
 
     if (-not $script:ControlledLiveStreamActive) { return $false }
@@ -747,8 +748,12 @@ function Stop-ControlledLiveStream {
     # redirected to login -- see Revoke-ActiveAuthenticationProxySessions's
     # comment. Also requires Test-ViewerAuthenticationEnabled -- that alone
     # is always false when auth is disabled entirely, which used to send
-    # auth-less viewers to a /auth/login nothing was running to answer.
-    if ((Test-ViewerAuthenticationEnabled) -and -not (Test-KeepAuthenticationProxiesOnRestart)) {
+    # auth-less viewers to a /auth/login nothing was running to answer. Also
+    # skipped when Exiting and "Keep auth on exit" is checked -- that is a
+    # distinct setting from "Keep auth on restarts" above and was previously
+    # not consulted here at all, so app exit revoked every session moments
+    # before Invoke-ApplicationCleanup's own save tried to snapshot them.
+    if ((Test-ViewerAuthenticationEnabled) -and -not (Test-KeepAuthenticationProxiesOnRestart) -and -not ($Exiting -and (Test-KeepAuthenticationOnExit))) {
         try { Set-DirectWebRtcAuthRevokedMarker } catch {}
         try { Revoke-ActiveAuthenticationProxySessions } catch {}
     }
@@ -804,10 +809,11 @@ function Stop-GstStream {
         [switch]$AutomaticRestart,
         [switch]$SuppressPreviewRestore,
         [switch]$Intentional,
-        [switch]$ViewerRestart
+        [switch]$ViewerRestart,
+        [switch]$Exiting
     )
 
-    Write-PsDebugTrace "Stop-GstStream: entering (Restart=$Restart AutomaticRestart=$AutomaticRestart Intentional=$Intentional ViewerRestart=$ViewerRestart)"
+    Write-PsDebugTrace "Stop-GstStream: entering (Restart=$Restart AutomaticRestart=$AutomaticRestart Intentional=$Intentional ViewerRestart=$ViewerRestart Exiting=$Exiting)"
     if ($ViewerRestart) {
         Set-DirectWebRtcStreamStopMarker -IntentionalStop $false -Restarting
     }
@@ -830,7 +836,7 @@ function Stop-GstStream {
     try { $null = Stop-AuthProxyWorkerIfViewerAuthenticationDisabled }
     catch { Append-Log "AUTH: could not stop the disabled auth/proxy worker cleanly: $($_.Exception.Message)" }
 
-    if (Stop-ControlledLiveStream -Restart:$Restart -AutomaticRestart:$AutomaticRestart -SuppressPreviewRestore:$SuppressPreviewRestore) { return }
+    if (Stop-ControlledLiveStream -Restart:$Restart -AutomaticRestart:$AutomaticRestart -SuppressPreviewRestore:$SuppressPreviewRestore -Exiting:$Exiting) { return }
 
     if ($script:DynamicScenePreviewActive) {
         Stop-DynamicScenePreview
@@ -958,8 +964,10 @@ function Stop-GstStream {
     # them here would defeat the login redirect entirely. Also requires
     # Test-ViewerAuthenticationEnabled -- that alone is always false when
     # auth is disabled entirely, which used to send auth-less viewers to a
-    # /auth/login nothing was running to answer.
-    if ((Test-ViewerAuthenticationEnabled) -and -not (Test-KeepAuthenticationProxiesOnRestart)) {
+    # /auth/login nothing was running to answer. Also skipped when Exiting
+    # and "Keep auth on exit" is checked -- see the matching comment in
+    # Stop-ControlledLiveStream's identical gate.
+    if ((Test-ViewerAuthenticationEnabled) -and -not (Test-KeepAuthenticationProxiesOnRestart) -and -not ($Exiting -and (Test-KeepAuthenticationOnExit))) {
         try { Set-DirectWebRtcAuthRevokedMarker } catch {}
         try { Revoke-ActiveAuthenticationProxySessions } catch {}
     }

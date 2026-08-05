@@ -557,11 +557,53 @@ function Test-LogViewLive {
     catch { return $false }
 }
 
+
+# Lazily opens a persistent, whole-session app-activity log on disk, independent of both the
+# in-app TextBox below (caps at 250KB, silently trims old lines) and the process-disk-logging
+# checkbox (Test-ProcessDiskLoggingEnabled only covers redirected child-process stdout/stderr,
+# never this general Append-Log stream). An intermittent failure -- e.g. an auth-proxy worker
+# IPC recycle -- needs to survive being looked at after the fact, not just flash through the
+# TextBox. $script:AppLogWriteFailed latches so a bad log path/permission failure is reported
+# (once, via the return value) rather than retried on every single Append-Log call.
+function Ensure-AppLogWriter {
+    if ($script:AppLogWriter -or $script:AppLogWriteFailed) {
+        return
+    }
+    try {
+        Ensure-ProcessLogDirectory
+        $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+        $path = Join-Path $script:LogDirectory "app-$stamp.log"
+        $utf8 = New-Object System.Text.UTF8Encoding($false)
+        $writer = New-Object System.IO.StreamWriter($path, $true, $utf8)
+        $writer.AutoFlush = $true
+        $script:AppLogWriter = $writer
+    }
+    catch {
+        $script:AppLogWriteFailed = $true
+    }
+}
+
+function Close-AppLogWriter {
+    try {
+        if ($script:AppLogWriter) {
+            $script:AppLogWriter.Dispose()
+        }
+    }
+    catch {}
+    $script:AppLogWriter = $null
+}
+
 function Append-Log {
     param([string]$Text)
 
     if ([string]::IsNullOrEmpty($Text)) {
         return
+    }
+
+    Ensure-AppLogWriter
+    if ($script:AppLogWriter) {
+        try { $script:AppLogWriter.WriteLine("[$(Get-Date -Format 'HH:mm:ss.fff')] $Text") }
+        catch {}
     }
 
     try {
@@ -637,13 +679,15 @@ function Test-StreamStopAvailable {
 }
 
 function Request-StreamStop {
+    param([switch]$Exiting)
+
     $script:PendingPipelineStop = [bool]$script:PipelineStartInProgress
     $script:RestartAt = $null
     $script:AutomaticRestartPending = $false
     $script:RestartRecordingOnlyMode = $false
     $script:WaitingForFullscreen = $false
     Append-Log "[$(Get-Date -Format 'HH:mm:ss')] Stop requested by user; cancelling pending starts/restarts and stopping all managed pipeline processes."
-    Stop-GstStream -Intentional
+    Stop-GstStream -Intentional -Exiting:$Exiting
 }
 
 function Invoke-StreamToggle {

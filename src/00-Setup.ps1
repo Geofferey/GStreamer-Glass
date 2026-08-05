@@ -3249,7 +3249,8 @@ public class TlsTerminatingProxy
                 "OK",
                 messageAssetContentType,
                 isAssetHead ? new byte[0] : messageAssetBytes,
-                null
+                null,
+                cacheable: true
             );
             return true;
         }
@@ -4274,20 +4275,38 @@ public class TlsTerminatingProxy
         await WriteHttpResponseAsync(stream, statusCode, reason, "text/html; charset=utf-8", html, additionalHeaders, scriptNonce);
     }
 
-    private static async Task WriteHttpResponseBytesAsync(Stream stream, int statusCode, string reason, string contentType, byte[] bodyBytes, Dictionary<string, string> additionalHeaders, string scriptNonce = null, IEnumerable<string> extraSetCookieHeaders = null)
+    private static async Task WriteHttpResponseBytesAsync(Stream stream, int statusCode, string reason, string contentType, byte[] bodyBytes, Dictionary<string, string> additionalHeaders, string scriptNonce = null, IEnumerable<string> extraSetCookieHeaders = null, bool cacheable = false)
     {
         if (bodyBytes == null) bodyBytes = new byte[0];
         StringBuilder response = new StringBuilder();
         response.Append("HTTP/1.1 ").Append(statusCode).Append(' ').Append(reason).Append("\r\n");
         response.Append("Content-Type: ").Append(contentType).Append("\r\n");
         response.Append("Content-Length: ").Append(bodyBytes.Length).Append("\r\n");
-        // no-store alone is the strongest, spec-correct directive (and the
-        // one actually verified fixing the auth-gate-bypass-via-cache bug),
-        // but the full belt-and-suspenders set costs nothing and covers
-        // older/nonstandard caches that only honor Pragma/Expires.
-        response.Append("Cache-Control: no-store, no-cache, must-revalidate, max-age=0\r\n");
-        response.Append("Pragma: no-cache\r\n");
-        response.Append("Expires: 0\r\n");
+        if (cacheable)
+        {
+            // Only the holding-page image/video assets opt into this --
+            // fixed bytes embedded at proxy startup, identical for every
+            // viewer and never session-specific (TryGetMessageAsset serves
+            // them before any auth check runs), unlike everything else this
+            // proxy answers. Letting the browser cache them client-side is
+            // what makes the holding page's media appear instantly when the
+            // stream stops, instead of racing a fresh fetch through this
+            // same proxy against it being torn down (app exit kills it
+            // shortly after). A bounded max-age -- not "immutable" -- caps
+            // how stale a cached copy can get across an app upgrade that
+            // ships different bytes at this same URL.
+            response.Append("Cache-Control: public, max-age=3600\r\n");
+        }
+        else
+        {
+            // no-store alone is the strongest, spec-correct directive (and the
+            // one actually verified fixing the auth-gate-bypass-via-cache bug),
+            // but the full belt-and-suspenders set costs nothing and covers
+            // older/nonstandard caches that only honor Pragma/Expires.
+            response.Append("Cache-Control: no-store, no-cache, must-revalidate, max-age=0\r\n");
+            response.Append("Pragma: no-cache\r\n");
+            response.Append("Expires: 0\r\n");
+        }
         // Authentication pages, bearer-link responses, status JSON, and
         // rejection artwork are never public discovery surfaces. This is a
         // crawler hint rather than an authorization control; the gate remains
@@ -5547,6 +5566,13 @@ $script:PipelineStartInProgress = $false
 $script:PendingPipelineStop = $false
 $script:StdOutPath = $null
 $script:StdErrPath = $null
+# Deliberately separate from the pair above -- the auth proxy worker's
+# lifecycle (Start-AuthProxyWorker, src/33-LetsEncrypt.ps1) doesn't match
+# the main GST process's (can start before any stream ever runs, e.g.
+# "Start auth on launch"), so it needs paths that Reset-ProcessLogPaths
+# never touches.
+$script:AuthProxyWorkerStdOutPath = $null
+$script:AuthProxyWorkerStdErrPath = $null
 $script:StdOutPosition = [int64]0
 $script:StdErrPosition = [int64]0
 $script:StdOutVideoPath = $null

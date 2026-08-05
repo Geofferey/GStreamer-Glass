@@ -6,6 +6,41 @@ function Invoke-ApplicationCleanup {
     }
 
     $script:ExitCleanupStarted = $true
+
+    # Every IPC call to the auth proxy worker below waits via
+    # Wait-UiResponsiveTask, which pumps Application.DoEvents() so the window
+    # doesn't look hung during an ordinary (non-exit) wait -- but that same
+    # pumping keeps the window and tray menu genuinely clickable while this
+    # multi-step exit sequence is still running. A click on Stop, "Save auth
+    # cache now", or anything else that reaches Send-AuthProxyWorkerCommand
+    # during that window lands on top of whichever call here is still
+    # in-flight on the single IPC channel -- that function has its own
+    # reentrancy guard, but it fails closed by resetting/restarting the
+    # worker process entirely, which then leaves the rest of THIS sequence
+    # (forwarding suspend, family stop, shutdown) running against a worker
+    # that just came back up with different state. Disabling input here,
+    # before any of those calls happen, removes the only realistic way a
+    # second command gets issued during exit -- the window is going away
+    # regardless, so there is no UX cost to it looking non-interactive.
+    try { $form.Enabled = $false } catch {}
+    try { $trayMenu.Enabled = $false } catch {}
+
+    # Snapshot settings and the live session table before anything else
+    # touches the stream, proxy, or worker process -- the exact same routine
+    # "Save auth cache now" runs while streaming normally
+    # (src/90-MainWindow.ps1's $btnViewerAuthenticationSaveExitCache handler:
+    # Save-Settings then Save-PersistedAuthenticationState), run here in the
+    # same uncontended state that button relies on. Doing this later, after
+    # marking the stop, suspending forwarding, disconnecting viewers, and
+    # killing GStreamer, left the worker process handling all of that plus a
+    # flood of client reconnect attempts right as the session-export IPC call
+    # (a 3-second-timeout round trip) came in -- a plausible reason exit's
+    # save was less reliable than the manual button's, even though the
+    # underlying call is identical.
+    try { Save-Settings } catch {}
+    Append-Log 'AUTH: beginning clean-exit authentication snapshot before anything else'
+    try { $null = Save-PersistedAuthenticationState } catch { Append-Log "AUTH: unhandled snapshot failure: $($_.Exception.Message)" }
+
     # Closing the UI is also an unconditional cancellation request. If the form
     # is closed while a controlled worker or MediaMTX is still handshaking, the
     # responsive startup waits will unwind instead of launching after cleanup.
@@ -19,38 +54,54 @@ function Invoke-ApplicationCleanup {
     }
     catch {}
 
-    try {
-        if ($script:ControlledLiveStreamActive) {
-            $script:ControlledLiveStreamActive = $false
-        }
-        Stop-DynamicScenePreview -Quiet
-    }
-    catch {}
+    # Fire off the exact same operation the Stop button does -- Request-
+    # StreamStop (src/13-ProcessLifecycle.ps1), run to full completion --
+    # instead of reimplementing pieces of it here. That is the only way exit
+    # reliably reproduces the Stop button's own behavior (same log lines,
+    # same marker/forwarding-suspend/disconnect/kill sequence, same handling
+    # of whichever streaming mode -- plain pipeline, controlled live, dynamic
+    # scene preview -- happens to be active), rather than a hand-rolled
+    # subset that can silently drift out of sync with it.
+    #
+    # -Exiting is the one real difference from a manual Stop click: Stop-
+    # GstStream normally revokes every viewer session on any non-restart
+    # intentional stop (Revoke-ActiveAuthenticationProxySessions), gated only
+    # on "Keep auth on restarts". "Keep auth on exit" is a separate setting
+    # and was never consulted there, so calling this unmodified during exit
+    # would revoke every session moments before they were saved above,
+    # silently defeating "Keep auth on exit". -Exiting threads through to
+    # both of Stop-GstStream's revocation gates (see their comments) so that
+    # setting is finally respected, without changing anything about a normal
+    # Stop click (which never passes -Exiting).
+    $hadActiveStream = [bool](
+        ($script:GstProcess -and -not $script:GstProcess.HasExited) -or
+        ($script:GstVideoProcess -and -not $script:GstVideoProcess.HasExited) -or
+        ($script:GstAudioProcess -and -not $script:GstAudioProcess.HasExited) -or
+        $script:ControlledLiveStreamActive -or
+        $script:DynamicScenePreviewActive
+    )
+    try { Request-StreamStop -Exiting } catch { Append-Log "Stop during exit failed: $($_.Exception.Message)" }
 
-    try {
-        if ($script:GstVideoProcess -and -not $script:GstVideoProcess.HasExited) {
-            Stop-ProcessTreeById -ProcessId $script:GstVideoProcess.Id
-            try { $script:GstVideoProcess.WaitForExit(3000) | Out-Null } catch {}
-        }
-        if ($script:GstAudioProcess -and -not $script:GstAudioProcess.HasExited) {
-            Stop-ProcessTreeById -ProcessId $script:GstAudioProcess.Id
-            try { $script:GstAudioProcess.WaitForExit(3000) | Out-Null } catch {}
-        }
-        if ($script:GstProcess -and -not $script:GstProcess.HasExited) {
-            Stop-ProcessTreeById -ProcessId $script:GstProcess.Id
-            try { $script:GstProcess.WaitForExit(3000) | Out-Null } catch {}
-        }
+    # After a normal Stop-button stop, the auth proxy worker keeps running
+    # indefinitely with forwarding suspended, so any request a viewer's
+    # browser happens to make gets the holding-page media back instantly --
+    # WriteMediaMessagePageAsync answers every request itself once
+    # forwardingPaused is set, without touching GStreamer at all. Exit
+    # doesn't get that "keeps running indefinitely" part -- the block below,
+    # which only runs AFTER Request-StreamStop above has fully completed,
+    # goes on to stop the proxy listeners and kill the worker process, and if
+    # that happens before the browser's next request lands, the holding page
+    # (which that worker serves) is gone before the client ever gets a
+    # chance to request it. Confirmed live: without this wait, the "We'll be
+    # right back" media inconsistently failed to load on exit even though it
+    # loads reliably after a normal Stop.
+    if ($hadActiveStream) {
+        Start-Sleep -Milliseconds 1500
     }
-    catch {}
 
     Close-ControlledLiveWorkerPipe
     Close-WebRtcPortRangeWorkerPipe
     try { Remove-UpnpPortMappings -Quiet } catch {}
-    # Snapshot the live session table and signing keys before either proxy
-    # family or its worker is torn down. This is opt-in via the distinct
-    # "Keep auth on exit" checkbox and DPAPI-protected by the helper.
-    Append-Log 'AUTH: beginning clean-exit authentication snapshot before proxy teardown'
-    try { $null = Save-PersistedAuthenticationState } catch { Append-Log "AUTH: unhandled snapshot failure: $($_.Exception.Message)" }
     try { Stop-LetsEncryptTlsProxies } catch {}
     try { Stop-PlaintextAuthProxies } catch {}
     # Stop-*Proxies above only tell the auth proxy worker process to stop
@@ -118,4 +169,6 @@ function Invoke-ApplicationCleanup {
         }
     }
     catch {}
+
+    Close-AppLogWriter
 }

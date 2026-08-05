@@ -129,6 +129,7 @@
     reconnectTimer: null,
     reconnectAttempts: 0,
     intentionalStopMarker: !!(restoredStreamState && restoredStreamState.intentionalStop),
+    holdingMediaPreloaded: false,
     streamStateKnown: false,
     streamStateRequestToken: 0,
     streamTransitionToken: restoredStreamState ? restoredStreamState.transitionToken : null,
@@ -632,6 +633,36 @@
     }
   }
 
+  // Warms the browser's HTTP cache with the "We'll be right back" holding
+  // media (src/00-Setup.ps1's TryGetMessageAsset/WriteMediaMessagePageAsync)
+  // well before the stream ever actually stops, so displaying it later never
+  // depends on a fresh network fetch racing this same proxy being paused/
+  // torn down (app exit stops it within seconds of marking the stop). Those
+  // /auth/assets/* responses are the one thing this proxy marks cacheable
+  // (see WriteHttpResponseBytesAsync's cacheable flag) specifically to make
+  // this possible -- every other response here is deliberately no-store.
+  // Only the format/orientation this browser would actually use gets
+  // fetched, matching the holding page's own <source>/media-query selection
+  // logic, so a viewer isn't made to download both a webm and an mp4 copy.
+  function preloadHoldingPageMedia() {
+    if (state.holdingMediaPreloaded) return;
+    state.holdingMediaPreloaded = true;
+    try {
+      const probe = document.createElement('video');
+      const supportsWebm = !!(probe.canPlayType && probe.canPlayType('video/webm'));
+      const videoExtension = supportsWebm ? '.webm' : '.mp4';
+      const bases = ['/auth/assets/well-be-right-back', '/auth/assets/well-be-right-back-portrait'];
+      for (const base of bases) {
+        for (const extension of ['.png', videoExtension]) {
+          const assetUrl = new URL(base + extension, window.location.href);
+          fetch(assetUrl.href, { credentials: 'same-origin' }).catch(() => {});
+        }
+      }
+    } catch (_) {
+      // Best-effort warm-up only -- never let this affect the live viewer.
+    }
+  }
+
   async function fetchStreamStopMarker() {
     const requestToken = ++state.streamStateRequestToken;
     const abortController = typeof AbortController === 'function' ? new AbortController() : null;
@@ -757,6 +788,10 @@
     setTimeout(() => reloadRuntimeConfig('startup'), 250);
     setTimeout(() => fetchStreamStopMarker(), 250);
     setTimeout(() => checkAuthStatus(), 250);
+    // Deliberately well after the above: the page/connection getting up and
+    // running comes first, this is just background cache warm-up for a
+    // holding-page media it may never even need this session.
+    setTimeout(() => preloadHoldingPageMedia(), 2000);
   }
 
   function stopConfigReloadTimer() {
