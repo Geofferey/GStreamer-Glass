@@ -966,18 +966,26 @@
     return boolValue(configValue('viewerAuthenticationEnabled', false), false);
   }
 
-  // Authenticated viewer sessions are carried by a Secure, host-scoped
-  // HttpOnly cookie. When authentication is enabled, never fall back to an
-  // insecure or different-host signaling socket that cannot carry that
-  // cookie and could bypass the TLS proxy's authorization check.
+  // Authenticated viewer sessions are carried by a host-scoped HttpOnly
+  // cookie whose Secure flag is dictated by whichever proxy mode actually
+  // served this page -- the TLS-terminating proxy and the plaintext-auth
+  // listener (Test-EmbeddedTlsActive / Test-PlaintextAuthActive) are
+  // mutually exclusive on the PowerShell side, so the scheme this page was
+  // loaded with (local plaintext, or reached through a remote proxy that
+  // itself terminates to plaintext) is exactly the scheme the cookie is
+  // valid on. Match candidates to that scheme dynamically -- never fall
+  // back to a *different* scheme or a different-host signaling socket that
+  // can't carry the cookie and could bypass the proxy's authorization
+  // check, but don't hardcode https/wss as if it were the only supported
+  // mode.
   function authenticatedSignalingCandidates(urls) {
     const candidates = uniqueWsUrls(urls);
     if (!viewerAuthenticationEnabled()) return candidates;
-    if (location.protocol !== 'https:') return [];
+    const requiredScheme = location.protocol === 'https:' ? 'wss:' : 'ws:';
     return candidates.filter((url) => {
       try {
         const parsed = new URL(url, location.href);
-        return parsed.protocol === 'wss:' && parsed.hostname === location.hostname;
+        return parsed.protocol === requiredScheme && parsed.hostname === location.hostname;
       } catch (_) {
         return false;
       }
@@ -2690,7 +2698,10 @@
     logoutButton.textContent = 'Sign out';
     logoutButton.title = 'Sign out of this broadcast';
     logoutButton.setAttribute('aria-label', logoutButton.title);
-    logoutButton.hidden = !viewerAuthenticationEnabled() || location.protocol !== 'https:';
+    // logout.js derives its endpoint from the script's own src, so it's
+    // already same-origin/same-scheme as whatever mode served this page --
+    // no reason to additionally hide the button on a plaintext-auth page.
+    logoutButton.hidden = !viewerAuthenticationEnabled();
 
     const installButton = document.createElement('button');
     installButton.type = 'button';
