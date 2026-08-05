@@ -9,6 +9,7 @@ import android.content.Intent
 import android.content.ServiceConnection
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.net.http.SslError
 import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
@@ -21,12 +22,35 @@ import android.view.WindowManager
 import android.webkit.ConsoleMessage
 import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
+import android.webkit.SslErrorHandler
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import java.net.HttpURLConnection
+import java.net.URL
+import java.security.SecureRandom
+import java.security.cert.X509Certificate
+import javax.net.ssl.HostnameVerifier
+import javax.net.ssl.HttpsURLConnection
+import javax.net.ssl.SSLContext
+import javax.net.ssl.TrustManager
+import javax.net.ssl.X509TrustManager
 
 private const val TAG = "GlassViewerJS"
 private const val PREFS_NAME = "glass2glass"
 private const val KEY_SERVER_URL = "server_url"
+private const val KEY_SERVER_INSECURE = "server_insecure"
+
+// Only used when the user has explicitly opted into "self-signed certificate" for a specific
+// saved server (local installs without a real CA-signed cert). Scoped to individual connections
+// below, never installed as the process-wide default SSL context.
+private fun trustAllSslContext(): SSLContext {
+    val trustAll = arrayOf<TrustManager>(object : X509TrustManager {
+        override fun checkClientTrusted(chain: Array<X509Certificate>, authType: String) {}
+        override fun checkServerTrusted(chain: Array<X509Certificate>, authType: String) {}
+        override fun getAcceptedIssuers(): Array<X509Certificate> = arrayOf()
+    })
+    return SSLContext.getInstance("TLS").apply { init(null, trustAll, SecureRandom()) }
+}
 
 // Bridges the page's PiP button and play/pause state into native Android APIs, since
 // android.webkit.WebView doesn't implement the Web PiP or Media Session APIs itself (that
@@ -135,6 +159,8 @@ class MainActivity : Activity() {
     private var streamService: StreamForegroundService? = null
     private var fullscreenView: View? = null
     private var boundToService = false
+    private var connected = false
+    private var insecureMode = false
 
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
@@ -175,12 +201,57 @@ class MainActivity : Activity() {
         }
 
         @JavascriptInterface
-        fun onServerUrlSubmitted(url: String) {
-            runOnUiThread {
-                getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit().putString(KEY_SERVER_URL, url).apply()
-                connectToServer(url)
-            }
+        fun onServerUrlSubmitted(url: String, insecure: Boolean) {
+            runOnUiThread { verifyAndConnect(url, insecure) }
         }
+    }
+
+    // Fetched natively rather than via JS fetch() from the setup page: that's a file:// origin
+    // hitting an arbitrary cross-origin host, which CORS would likely block even against a
+    // real Glass server, since a self-hosted instance has no reason to send permissive CORS
+    // headers on its HTML. Both the player page and its login page (if auth is required)
+    // contain "GStreamer Glass" regardless of auth state, so this works either way.
+    private fun verifyAndConnect(url: String, insecure: Boolean) {
+        Thread {
+            val verified = try {
+                (URL(url).openConnection() as HttpURLConnection).run {
+                    if (insecure && this is HttpsURLConnection) {
+                        sslSocketFactory = trustAllSslContext().socketFactory
+                        hostnameVerifier = HostnameVerifier { _, _ -> true }
+                    }
+                    connectTimeout = 8000
+                    readTimeout = 8000
+                    instanceFollowRedirects = true
+                    inputStream.bufferedReader().use { reader ->
+                        val buffer = CharArray(8192)
+                        val text = StringBuilder()
+                        while (text.length < 65536 && !text.contains("GStreamer Glass", ignoreCase = true)) {
+                            val read = reader.read(buffer)
+                            if (read == -1) break
+                            text.append(buffer, 0, read)
+                        }
+                        text.contains("GStreamer Glass", ignoreCase = true)
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "server verification failed for $url", e)
+                false
+            }
+            runOnUiThread {
+                if (verified) {
+                    getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+                        .putString(KEY_SERVER_URL, url)
+                        .putBoolean(KEY_SERVER_INSECURE, insecure)
+                        .apply()
+                    connectToServer(url, insecure)
+                } else {
+                    webView.evaluateJavascript(
+                        "window.__glassViewerSetupError && window.__glassViewerSetupError('Could not find a GStreamer Glass server at that address.');",
+                        null
+                    )
+                }
+            }
+        }.start()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -208,11 +279,27 @@ class MainActivity : Activity() {
 
         webView.settings.javaScriptEnabled = true
         webView.settings.domStorageEnabled = true
+        // Default is true, which blocks any script/autoplay-attribute-triggered playback
+        // until a real touch gesture happens in the WebView - the live stream should start
+        // the moment the app opens, not require a tap first.
+        webView.settings.mediaPlaybackRequiresUserGesture = false
         webView.addJavascriptInterface(WebMediaBridge(), "GlassViewer")
         webView.webViewClient = object : WebViewClient() {
             override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                 super.onPageStarted(view, url, favicon)
                 view?.evaluateJavascript(MEDIA_BRIDGE_JS, null)
+            }
+
+            // Only bypasses cert validation when the user explicitly opted into "self-signed
+            // certificate" for this saved server (local installs without a real CA-signed
+            // cert) - default behavior (reject) is unchanged otherwise.
+            override fun onReceivedSslError(view: WebView?, handler: SslErrorHandler, error: SslError) {
+                if (insecureMode) {
+                    Log.w(TAG, "proceeding past SSL error (self-signed cert opt-in): $error")
+                    handler.proceed()
+                } else {
+                    super.onReceivedSslError(view, handler, error)
+                }
             }
         }
         webView.webChromeClient = object : WebChromeClient() {
@@ -249,9 +336,10 @@ class MainActivity : Activity() {
                 hideSystemBars()
             }
         }
-        val savedUrl = getSharedPreferences(PREFS_NAME, MODE_PRIVATE).getString(KEY_SERVER_URL, null)
+        val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+        val savedUrl = prefs.getString(KEY_SERVER_URL, null)
         if (savedUrl != null) {
-            connectToServer(savedUrl)
+            connectToServer(savedUrl, prefs.getBoolean(KEY_SERVER_INSECURE, false))
         } else {
             webView.loadUrl("file:///android_asset/setup.html")
         }
@@ -259,9 +347,15 @@ class MainActivity : Activity() {
 
     // Only reachable once a server URL is known (already saved, or just entered on the setup
     // page) - no point claiming "streaming in the background" in the notification before then.
-    private fun connectToServer(url: String) {
+    // Guarded against running twice: a double-tap on the setup page's Connect button before it
+    // navigates away would otherwise bindService() a second time on the same connection.
+    private fun connectToServer(url: String, insecure: Boolean) {
+        if (connected) return
+        connected = true
+        insecureMode = insecure
         webView.loadUrl(url)
         requestNotificationPermissionIfNeeded()
+        requestPhoneStatePermissionIfNeeded()
         startStreamService()
         boundToService = bindService(Intent(this, StreamForegroundService::class.java), serviceConnection, Context.BIND_AUTO_CREATE)
     }
@@ -324,6 +418,22 @@ class MainActivity : Activity() {
             checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         ) {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
+        }
+    }
+
+    private fun requestPhoneStatePermissionIfNeeded() {
+        if (checkSelfPermission(Manifest.permission.READ_PHONE_STATE) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(arrayOf(Manifest.permission.READ_PHONE_STATE), 2)
+        }
+    }
+
+    // requestPhoneStatePermissionIfNeeded() fires before the user has answered the dialog, so
+    // the service's own attempt to start listening (in its onCreate, which runs around the same
+    // time) can miss a permission that gets granted moments later - retry once it lands.
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == 2 && grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) {
+            streamService?.startListeningForCalls()
         }
     }
 

@@ -1,11 +1,13 @@
 package com.gstreamerglass.webview
 
+import android.Manifest
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -18,6 +20,9 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
+import android.telephony.PhoneStateListener
+import android.telephony.TelephonyCallback
+import android.telephony.TelephonyManager
 import android.util.Log
 import java.net.URL
 
@@ -43,6 +48,11 @@ class StreamForegroundService : Service() {
     private var artist = ""
     private var artworkUrl: String? = null
     private var artworkBitmap: Bitmap? = null
+    private var telephonyManager: TelephonyManager? = null
+    private var telephonyCallback: TelephonyCallback? = null
+    private var legacyPhoneStateListener: PhoneStateListener? = null
+    private var listeningForCalls = false
+    private var pausedForCall = false
 
     // Set by MainActivity so the notification's play/pause button can drive the page's <video>.
     var onPlayPauseAction: ((Boolean) -> Unit)? = null
@@ -78,11 +88,69 @@ class StreamForegroundService : Service() {
                 }
             })
         }
+        startListeningForCalls()
     }
 
     private fun invokePlayPause(play: Boolean) {
         onPlayPauseAction?.invoke(play)
             ?: Log.w(TAG, "onPlayPauseAction is null - MainActivity never bound, control is a no-op")
+    }
+
+    // Deliberately not AudioManager focus: WebView requests its own focus for its playing
+    // MediaStream-backed <video>, and holding a second, separate focus request in this same
+    // process collides with it (our own request loses to WebView's the moment playback starts,
+    // pausing on launch instead of a real external event). Real call state, observed directly
+    // via TelephonyManager, has no such conflict. Public so MainActivity can retry this once the
+    // user actually grants READ_PHONE_STATE, since permission grant is asynchronous relative to
+    // this running at service creation.
+    fun startListeningForCalls() {
+        if (listeningForCalls) return
+        if (checkSelfPermission(Manifest.permission.READ_PHONE_STATE) != PackageManager.PERMISSION_GRANTED) {
+            Log.w(TAG, "READ_PHONE_STATE not granted, cannot pause for calls yet")
+            return
+        }
+        val manager = getSystemService(TELEPHONY_SERVICE) as? TelephonyManager ?: return
+        telephonyManager = manager
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val callback = object : TelephonyCallback(), TelephonyCallback.CallStateListener {
+                override fun onCallStateChanged(state: Int) = handleCallStateChanged(state)
+            }
+            telephonyCallback = callback
+            manager.registerTelephonyCallback(mainExecutor, callback)
+        } else {
+            @Suppress("DEPRECATION")
+            val listener = object : PhoneStateListener() {
+                override fun onCallStateChanged(state: Int, phoneNumber: String?) = handleCallStateChanged(state)
+            }
+            legacyPhoneStateListener = listener
+            @Suppress("DEPRECATION")
+            manager.listen(listener, PhoneStateListener.LISTEN_CALL_STATE)
+        }
+        listeningForCalls = true
+    }
+
+    private fun handleCallStateChanged(state: Int) {
+        Log.d(TAG, "call state changed=$state isPlaying=$isPlaying")
+        if (state != TelephonyManager.CALL_STATE_IDLE) {
+            if (isPlaying) {
+                pausedForCall = true
+                invokePlayPause(false)
+            }
+        } else if (pausedForCall) {
+            pausedForCall = false
+            invokePlayPause(true)
+        }
+    }
+
+    private fun stopListeningForCalls() {
+        if (!listeningForCalls) return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            telephonyCallback?.let { telephonyManager?.unregisterTelephonyCallback(it) }
+        } else {
+            @Suppress("DEPRECATION")
+            legacyPhoneStateListener?.let { telephonyManager?.listen(it, PhoneStateListener.LISTEN_NONE) }
+        }
+        listeningForCalls = false
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -156,6 +224,7 @@ class StreamForegroundService : Service() {
         .build()
 
     override fun onDestroy() {
+        stopListeningForCalls()
         mediaSession.isActive = false
         mediaSession.release()
         wakeLock?.let { if (it.isHeld) it.release() }

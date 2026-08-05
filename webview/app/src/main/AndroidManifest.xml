@@ -6,12 +6,17 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.READ_PHONE_STATE" />
 
+    <!-- The server address is only known at runtime (user-entered), so a static per-domain
+         Network Security Config can't scope this ahead of time. Actual cleartext usage is
+         still gated behind the setup page's explicit "Allow insecure connection(s)" opt-in. -->
     <application
         android:allowBackup="false"
         android:label="Glass2Glass"
         android:icon="@mipmap/ic_launcher"
-        android:roundIcon="@mipmap/ic_launcher_round">
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:usesCleartextTraffic="true">
 
         <activity
             android:name=".MainActivity"

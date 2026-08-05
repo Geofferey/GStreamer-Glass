@@ -20,6 +20,9 @@ p{color:#aab6c8}
 .error{color:#ff9b9b;display:none;margin:0 0 8px}
 label{display:block;margin:18px 0 6px;font-weight:650}
 input{width:100%;padding:12px;border:1px solid #35435a;border-radius:9px;background:#090f19;color:#fff;font:inherit}
+.checkboxRow{display:flex;align-items:flex-start;gap:10px;margin:30px 0 0;font-weight:500}
+.checkboxRow input{width:auto;padding:0;margin:3px 0 0 5px}
+.checkboxRow span{color:#aab6c8;font-size:.92rem}
 button{width:100%;margin-top:22px;padding:12px;border:0;border-radius:9px;background:#4f8cff;color:white;font:inherit;font-weight:750;cursor:pointer}
 </style>
 </head>
@@ -27,24 +30,54 @@ button{width:100%;margin-top:22px;padding:12px;border:0;border-radius:9px;backgr
 <main>
 <h1>Glass2Glass</h1>
 <p>Enter the address of your GStreamer Glass server to get started.</p>
-<p class="error" id="error">Enter a valid http(s) URL.</p>
+<p class="error" id="error">Enter a valid server address.</p>
 <form id="setupForm">
 <label for="serverUrl">Server URL</label>
-<input id="serverUrl" name="serverUrl" type="text" inputmode="url" autocomplete="url" placeholder="https://stream.example.com/" required autofocus>
+<input id="serverUrl" name="serverUrl" type="text" inputmode="url" autocomplete="url" placeholder="stream.example.com" required autofocus>
+<label class="checkboxRow" for="insecure">
+<input id="insecure" name="insecure" type="checkbox">
+<span>Allow insecure connections</span>
+</label>
 <button type="submit">Connect</button>
 </form>
 </main>
 <script>
-document.getElementById('setupForm').addEventListener('submit', function (e) {
+var form = document.getElementById('setupForm');
+var button = form.querySelector('button');
+var error = document.getElementById('error');
+
+window.__glassViewerSetupError = function (message) {
+  error.textContent = message;
+  error.style.display = 'block';
+  button.disabled = false;
+  button.textContent = 'Connect';
+};
+
+form.addEventListener('submit', function (e) {
   e.preventDefault();
+  if (button.disabled) return;
   var input = document.getElementById('serverUrl');
   var value = input.value.trim();
-  if (!/^https?:\/\/.+/i.test(value)) {
-    document.getElementById('error').style.display = 'block';
+  var insecure = document.getElementById('insecure').checked;
+  // Accept a bare domain (defaults to https://) as well as a full URL. http:// is only used
+  // when the user actually typed it that way, and only if they've opted into insecure mode -
+  // it's never silently upgraded or downgraded.
+  if (!/^https?:\/\//i.test(value)) {
+    value = 'https://' + value;
+  }
+  if (/^http:\/\//i.test(value) && !insecure) {
+    window.__glassViewerSetupError('Check "Allow insecure connection(s)" to use http://.');
     return;
   }
+  if (!/^https?:\/\/.+/i.test(value)) {
+    window.__glassViewerSetupError('Enter a valid server address.');
+    return;
+  }
+  error.style.display = 'none';
+  button.disabled = true;
+  button.textContent = 'Checking server...';
   if (window.GlassViewer && window.GlassViewer.onServerUrlSubmitted) {
-    window.GlassViewer.onServerUrlSubmitted(value);
+    window.GlassViewer.onServerUrlSubmitted(value, insecure);
   }
 });
 </script>
