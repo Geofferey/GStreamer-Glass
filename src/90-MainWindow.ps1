@@ -1411,7 +1411,7 @@ $chkVerbose.Location = New-Object System.Drawing.Point(480, 130)
 $chkVerbose.Size = New-Object System.Drawing.Size(120, 23)
 $chkVerbose.Checked = $false
 $settingsGroup.Controls.Add($chkVerbose)
-$toolTip.SetToolTip($chkVerbose, 'Adds gst-launch -v. This is element/caps verbosity, not full GST_DEBUG logging. Use GST debug below for deep logs.')
+$toolTip.SetToolTip($chkVerbose, 'Adds gst-launch -v (element/caps verbosity, not full GST_DEBUG logging -- use GST debug below for deep logs). Also enables the auth proxy''s per-connection relay-pump log lines (off by default -- a healthy viewer connection produces several of these a second from routine client polling, which drowns out real auth events otherwise).')
 
 $chkDiskProcessLogging = New-Object System.Windows.Forms.CheckBox
 $chkDiskProcessLogging.Text = 'Write process logs to disk'

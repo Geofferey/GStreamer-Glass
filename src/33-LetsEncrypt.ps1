@@ -2454,6 +2454,7 @@ function Start-LetsEncryptTlsProxies {
         TrustedForwardingProxyAddresses = $trustedForwardingProxyAddresses
         SessionKeyBase64        = if ($authenticationSessionKey) { [Convert]::ToBase64String($authenticationSessionKey) } else { '' }
         CertificatePfxBase64    = [Convert]::ToBase64String($certBytes)
+        Verbose                 = [bool]($chkVerbose -and $chkVerbose.Checked)
     }
 
     if (-not $reply -or [string]$reply.Status -ne 'Ready') {
@@ -2617,6 +2618,7 @@ function Start-PlaintextAuthProxies {
         TrustedForwardingProxyAddresses = $trustedForwardingProxyAddresses
         SessionKeyBase64        = [Convert]::ToBase64String($authenticationSessionKey)
         CertificatePfxBase64    = ''
+        Verbose                 = [bool]($chkVerbose -and $chkVerbose.Checked)
     }
 
     if (-not $reply -or [string]$reply.Status -ne 'Ready') {

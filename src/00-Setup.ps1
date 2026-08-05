@@ -1861,6 +1861,18 @@ public class TlsTerminatingProxy
     // cosmetic, used only when formatting drained log messages.
     public string Label;
 
+    // Gates PumpAsync/PumpResponseWithPolicyHeadersAsync's per-connection
+    // relay-pump-ended logging. Every other AUTH: message (login, session
+    // revocation, TLS handshake failures, etc.) is a real, comparatively
+    // rare event and always logged regardless of this flag -- relay pump
+    // completions are not: with the 1-second/3-fetch client polling cadence
+    // (config reload, stream-state check, auth-status check) and this
+    // proxy's deliberate close-after-every-request design, a healthy
+    // connection produces one of these messages several times a second for
+    // the entire time a viewer is connected, which drowns out anything
+    // actually worth debugging. Off by default; mirrors $chkVerbose.
+    public bool Verbose;
+
     // Canonical and legacy-alias authentication route paths, shared between
     // IsAuthenticationEndpointPath (classification) and
     // HandleAuthenticationAsync (dispatch) so the two can never drift apart.
@@ -3107,13 +3119,26 @@ public class TlsTerminatingProxy
                         try
                         {
                             using (NetworkStream upstreamStream = upstream.GetStream())
+                            using (CancellationTokenSource pumpCts = new CancellationTokenSource())
                             {
                                 if (headerBytes.Length > 0) await upstreamStream.WriteAsync(headerBytes, 0, headerBytes.Length);
-                                Task toUpstream = PumpAsync(stream, upstreamStream);
+                                Task toUpstream = PumpAsync(stream, upstreamStream, pendingLog, "client->upstream", pumpCts.Token, Verbose);
                                 Task toClient = rewriteHttpResponseHeaders
-                                    ? PumpResponseWithPolicyHeadersAsync(upstreamStream, stream, suppressDocumentCaching)
-                                    : PumpAsync(upstreamStream, stream);
+                                    ? PumpResponseWithPolicyHeadersAsync(upstreamStream, stream, suppressDocumentCaching, pendingLog, "upstream->client", pumpCts.Token, Verbose)
+                                    : PumpAsync(upstreamStream, stream, pendingLog, "upstream->client", pumpCts.Token, Verbose);
                                 await Task.WhenAny(toUpstream, toClient);
+                                // The winner is done. Signal cancellation as a courtesy for
+                                // any code path that actually honors it, but do NOT await the
+                                // loser here: a NetworkStream/SslStream ReadAsync already
+                                // in-flight typically ignores CancellationToken entirely until
+                                // the underlying stream is disposed, so blocking on it hung
+                                // this method (and therefore every request through this proxy)
+                                // indefinitely -- confirmed live. Disposing the shared streams
+                                // below (as this using block already did before this file's
+                                // cancellation logic existed) is what actually unblocks a
+                                // stuck read; PumpAsync/PumpResponseWithPolicyHeadersAsync
+                                // silently swallow the resulting ObjectDisposedException.
+                                pumpCts.Cancel();
                             }
                         }
                         finally
@@ -4839,14 +4864,42 @@ public class TlsTerminatingProxy
         return (long)(utc.ToUniversalTime() - new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc)).TotalSeconds;
     }
 
-    private static async Task PumpAsync(Stream source, Stream destination)
+    // WebSocket upgrades (signaling included) run through here as a raw,
+    // untouched pipe -- no framing/heartbeat awareness at this layer, just
+    // bytes. Only a genuine exception gets logged (verbose-gated); a clean
+    // EOF is the routine, expected way almost every connection ends and
+    // carries no diagnostic value. One of two pumps ending tears the whole
+    // tunnel down via Task.WhenAny at the call site; the call site cancels
+    // the token once that happens as a courtesy, but disposing the shared
+    // streams (not cancellation) is what actually unblocks the losing
+    // direction's in-flight read/write, which is why both
+    // OperationCanceledException and ObjectDisposedException below are
+    // expected shutdown noise, not logged; anything else is real.
+    private static async Task PumpAsync(Stream source, Stream destination, System.Collections.Concurrent.ConcurrentQueue<string> log, string direction, CancellationToken token, bool verbose)
     {
         try
         {
-            await source.CopyToAsync(destination);
+            await source.CopyToAsync(destination, 81920, token);
+            // Clean EOF is the routine, expected way almost every connection
+            // through this proxy ends (this app's own close-after-every-
+            // non-upgrade-request design plus the ~1s/3-fetch client polling
+            // cadence means it happens multiple times a second on a healthy
+            // connection) -- zero diagnostic value, not logged even in
+            // verbose. Only a genuine exception below is worth surfacing.
         }
-        catch
+        catch (OperationCanceledException)
         {
+        }
+        catch (ObjectDisposedException)
+        {
+            // Expected: the sibling direction already won the race and this
+            // stream was disposed out from under an in-flight read/write
+            // that cancellation alone doesn't reliably preempt (see the call
+            // site's comment). Not a real failure.
+        }
+        catch (Exception ex)
+        {
+            if (verbose) log.Enqueue("relay pump (" + direction + ") ended: " + ex.GetType().Name + ": " + ex.Message);
         }
     }
 
@@ -4854,8 +4907,10 @@ public class TlsTerminatingProxy
     // viewer resource can receive the site-wide robots policy. The navigable
     // document additionally receives no-store while auth is enabled. The
     // body is still copied as a transparent stream, so arbitrarily large
-    // assets remain safe and WebSocket upgrades never enter this path.
-    private static async Task PumpResponseWithPolicyHeadersAsync(Stream source, Stream destination, bool suppressDocumentCaching)
+    // assets remain safe and WebSocket upgrades never enter this path. Takes
+    // the same log/token treatment as PumpAsync -- it's the other side of
+    // the identical Task.WhenAny race for the non-WebSocket relay path.
+    private static async Task PumpResponseWithPolicyHeadersAsync(Stream source, Stream destination, bool suppressDocumentCaching, System.Collections.Concurrent.ConcurrentQueue<string> log, string direction, CancellationToken token, bool verbose)
     {
         try
         {
@@ -4863,12 +4918,29 @@ public class TlsTerminatingProxy
             if (responseHeader.Length > 0)
             {
                 byte[] rewritten = InjectResponsePolicyHeaders(responseHeader, suppressDocumentCaching);
-                await destination.WriteAsync(rewritten, 0, rewritten.Length);
+                await destination.WriteAsync(rewritten, 0, rewritten.Length, token);
             }
-            await source.CopyToAsync(destination);
+            await source.CopyToAsync(destination, 81920, token);
+            // Clean EOF is the routine, expected way almost every connection
+            // through this proxy ends (this app's own close-after-every-
+            // non-upgrade-request design plus the ~1s/3-fetch client polling
+            // cadence means it happens multiple times a second on a healthy
+            // connection) -- zero diagnostic value, not logged even in
+            // verbose. Only a genuine exception below is worth surfacing.
         }
-        catch
+        catch (OperationCanceledException)
         {
+        }
+        catch (ObjectDisposedException)
+        {
+            // Expected: the sibling direction already won the race and this
+            // stream was disposed out from under an in-flight read/write
+            // that cancellation alone doesn't reliably preempt (see the call
+            // site's comment). Not a real failure.
+        }
+        catch (Exception ex)
+        {
+            if (verbose) log.Enqueue("relay pump (" + direction + ") ended: " + ex.GetType().Name + ": " + ex.Message);
         }
     }
 
@@ -5188,6 +5260,7 @@ if ($AuthProxyWorker) {
                     try {
                         $proxy = New-Object TlsTerminatingProxy
                         $proxy.Label = [string]$portInfo.Label
+                        $proxy.Verbose = [bool]$Command.Verbose
                         $proxy.AuthenticationMountPath = [string]$Command.AuthenticationMountPath
                         $proxy.ConfigureTemporaryLinkUnavailableImage([string]$Command.TemporaryLinkUnavailableImagePath)
                         $proxy.ConfigureTemporaryLinkUnavailableVideos(
