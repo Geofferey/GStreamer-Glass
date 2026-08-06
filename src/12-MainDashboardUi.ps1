@@ -569,13 +569,26 @@ function Apply-ModernDashboardUi {
             if ($pane) {
                 $pane.PerformLayout()
                 # An AutoScroll FlowLayoutPanel doesn't reliably keep its scroll
-                # position sane after a child's Visible flips triggers a reflow --
-                # it can jump to show the bottom of the now taller/shorter content
-                # instead of staying on the section the user just clicked.
-                # Explicitly scroll the clicked header (and, when expanding, the
-                # revealed section) back into view to correct that.
+                # position sane after a child's Visible flips triggers a reflow,
+                # so the clicked header is explicitly scrolled back into view
+                # below. This previously ALSO unconditionally scrolled the
+                # revealed section into view when expanding -- but
+                # ScrollControlIntoView on a control taller than the visible
+                # viewport can only bring it fully on-screen by aligning its
+                # BOTTOM edge with the viewport's bottom (there's no way to show
+                # both ends at once), which pushes the header -- and everything
+                # above it -- off the TOP of the view. That is exactly the "opens
+                # at the bottom, outside of the section" bug reported on the
+                # larger sections (ICE candidate overrides, UPnP port
+                # forwarding, etc., which all have enough fields to exceed the
+                # viewport height): the header disappears upward and only the
+                # section's tail end is left on screen. Only doing this second
+                # scroll when the section actually fits keeps the header itself
+                # as the anchor otherwise -- exactly where the user just clicked.
                 $pane.ScrollControlIntoView($sender)
-                if (-not $state.Collapsed) { $pane.ScrollControlIntoView($state.Section) }
+                if (-not $state.Collapsed -and $state.Section.Height -le $pane.ClientSize.Height) {
+                    $pane.ScrollControlIntoView($state.Section)
+                }
             }
         })
         $header.Add_MouseEnter({ param($sender, $eventArgs) $sender.ForeColor = $script:ColorText })
