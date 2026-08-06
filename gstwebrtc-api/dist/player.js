@@ -43,6 +43,7 @@
     statsOverlay: document.getElementById('viewerSettingStats'),
     playbackControls: document.getElementById('viewerSettingControls'),
     nativeMediaControls: document.getElementById('viewerSettingNativeControls'),
+    autoPip: document.getElementById('viewerSettingAutoPip'),
     pictureInPictureShortcut: document.getElementById('viewerSettingPip'),
     pipDisablesBackgroundAudio: document.getElementById('viewerSettingPipDisablesBackgroundAudio'),
     mediaNotificationAnchor: document.getElementById('viewerSettingMediaNotificationAnchor'),
@@ -297,6 +298,10 @@
     return viewerDisplaySetting('mediaNotificationAnchor', false);
   }
 
+  function autoPipEnabled() {
+    return viewerDisplaySetting('autoPip', true);
+  }
+
   function pictureInPictureShortcutEnabled() {
     return viewerDisplaySetting('pictureInPictureShortcut', true);
   }
@@ -415,6 +420,7 @@
       statsOverlay: viewerDisplaySetting('statsOverlay', configuredStatsOverlayEnabled()),
       playbackControls: viewerDisplaySetting('playbackControls', true),
       nativeMediaControls: nativeMediaControlsEnabled(),
+      autoPip: autoPipEnabled(),
       pictureInPictureShortcut: pictureInPictureShortcutEnabled(),
       pipDisablesBackgroundAudio: pipDisablesBackgroundAudioEnabled(),
       mediaNotificationAnchor: mediaNotificationAnchorEnabled(),
@@ -435,6 +441,12 @@
     updatePictureInPictureButton();
     if (statsOverlay) statsOverlay.style.display = statsOverlayEnabled() ? '' : 'none';
     applyNativeMediaControlsPolicy();
+    // No-op outside the native Android wrapper app - window.GlassViewer only exists there
+    // (android.webkit.WebView doesn't implement PictureInPictureParams.setAutoEnterEnabled
+    // itself; that's a native Activity-level API the page can't reach any other way).
+    if (window.GlassViewer && typeof window.GlassViewer.setAutoPipEnabled === 'function') {
+      window.GlassViewer.setAutoPipEnabled(autoPipEnabled());
+    }
     syncViewerSettingsControls();
     if (state.controller.initialized) applyLogicalMediaState('viewer-display-settings');
   }
