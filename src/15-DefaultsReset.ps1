@@ -233,6 +233,7 @@ function Reset-LetsEncryptDefaults {
     $chkEmbeddedTlsEnabled.Checked = $script:DefaultEmbeddedTlsEnabled
     $txtTlsCertificatePath.Text = $script:DefaultTlsCertificatePath
     $txtTlsPrivateKeyPath.Text = $script:DefaultTlsPrivateKeyPath
+    $txtSelfSignedTlsHostname.Text = $script:DefaultSelfSignedTlsHostname
     $chkTlsAllowInsecurePorts.Checked = $script:DefaultTlsAllowInsecurePorts
     $chkLetsEncryptEnabled.Checked = $script:DefaultLetsEncryptEnabled
     $txtLetsEncryptEmail.Text = $script:DefaultLetsEncryptEmail

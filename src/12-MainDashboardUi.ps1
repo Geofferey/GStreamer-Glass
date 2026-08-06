@@ -1229,6 +1229,9 @@ function Apply-ModernDashboardUi {
     Add-Field $r -Label 'Private key path (optional)' -Control $txtTlsPrivateKeyPath -Width 320 | Out-Null
     Add-Field $r -Control $btnBrowseTlsPrivateKeyPath -Width 80 | Out-Null
     $r = Add-Row $s
+    Add-Field $r -Label 'Self-signed cert hostname/IP (optional)' -Control $txtSelfSignedTlsHostname -Width 320 | Out-Null
+    Add-Field $r -Control $btnGenerateSelfSignedTlsCertificate -Width 160 | Out-Null
+    $r = Add-Row $s
     Add-Field $r -Control $chkTlsAllowInsecurePorts -Width 420 | Out-Null
     $r = Add-Row $s
     Add-Field $r -Label 'Video external (0=same)' -Control $numLetsEncryptSignalingExternalPort -Width 90 | Out-Null

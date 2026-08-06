@@ -802,6 +802,20 @@ $btnBrowseTlsPrivateKeyPath.Location = New-Object System.Drawing.Point(15, 548)
 $btnBrowseTlsPrivateKeyPath.Size = New-Object System.Drawing.Size(80, 27)
 $settingsGroup.Controls.Add($btnBrowseTlsPrivateKeyPath)
 
+$txtSelfSignedTlsHostname = New-Object System.Windows.Forms.TextBox
+$txtSelfSignedTlsHostname.Location = New-Object System.Drawing.Point(15, 548)
+$txtSelfSignedTlsHostname.Size = New-Object System.Drawing.Size(320, 23)
+$txtSelfSignedTlsHostname.Text = $script:DefaultSelfSignedTlsHostname
+$settingsGroup.Controls.Add($txtSelfSignedTlsHostname)
+$toolTip.SetToolTip($txtSelfSignedTlsHostname, "Optional. Hostname or IP address the generated certificate's Subject/SAN will cover. Leave blank to auto-detect this machine's LAN IPv4 address when generating. localhost/127.0.0.1 are always included in addition.")
+
+$btnGenerateSelfSignedTlsCertificate = New-Object System.Windows.Forms.Button
+$btnGenerateSelfSignedTlsCertificate.Text = 'Generate self-signed cert'
+$btnGenerateSelfSignedTlsCertificate.Location = New-Object System.Drawing.Point(15, 548)
+$btnGenerateSelfSignedTlsCertificate.Size = New-Object System.Drawing.Size(160, 27)
+$settingsGroup.Controls.Add($btnGenerateSelfSignedTlsCertificate)
+$toolTip.SetToolTip($btnGenerateSelfSignedTlsCertificate, "Generates a new self-signed certificate (no external CA, no Let's Encrypt/DNS needed) and fills in the certificate path above to use it immediately. Viewers' browsers will show an untrusted-certificate warning the first time they connect unless the certificate is manually installed as trusted.")
+
 $chkTlsAllowInsecurePorts = New-Object System.Windows.Forms.CheckBox
 $chkTlsAllowInsecurePorts.Text = 'Allow insecure listeners (0.0.0.0 if embedded TLS/auth proxy is active)'
 $chkTlsAllowInsecurePorts.Location = New-Object System.Drawing.Point(15, 548)
@@ -4589,6 +4603,27 @@ $btnBrowseTlsPrivateKeyPath.Add_Click({
         }
     }
     catch { Append-Log "TLS: private key browser error: $($_.Exception.Message)" }
+})
+$btnGenerateSelfSignedTlsCertificate.Add_Click({
+    $lowerTabs.SelectedTab = $tabLog
+    try {
+        $hostname = [string]$txtSelfSignedTlsHostname.Text.Trim()
+        if ([string]::IsNullOrWhiteSpace($hostname)) {
+            $hostname = Get-UpnpLocalIPv4Address
+            if ([string]::IsNullOrWhiteSpace($hostname)) { $hostname = 'localhost' }
+        }
+        $pfxPath = New-SelfSignedTlsCertificate -Hostname $hostname
+        # A freshly generated PFX already embeds its own private key, same
+        # as any other .pfx picked via Browse -- clear the separate key
+        # field so Get-EmbeddedTlsCertificate doesn't try to attach a
+        # leftover key path from a previous custom cert.
+        $txtTlsCertificatePath.Text = $pfxPath
+        $txtTlsPrivateKeyPath.Text = ''
+        Append-Log "TLS: generated a self-signed certificate for '$hostname' -> $pfxPath"
+        Update-EmbeddedTlsUi
+        Save-Settings
+    }
+    catch { Append-Log "TLS: self-signed certificate generation failed: $($_.Exception.Message)" }
 })
 $btnBrowseLetsEncryptCertificateDirectory.Add_Click({
     try {

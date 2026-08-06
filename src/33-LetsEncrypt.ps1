@@ -624,6 +624,83 @@ function Save-LetsEncryptCertificatePfx {
     return $pfxPath
 }
 
+# Generates a self-signed TLS server certificate -- no ACME account, no DNS-01
+# challenge, no external CA at all -- for setups that just need embedded TLS
+# to work (e.g. a LAN-only viewer, or testing, or no real domain yet).
+# Deliberately reuses everything the Let's Encrypt path already has instead
+# of standing up a parallel certificate pipeline: the same RSA key
+# constructor (New-LetsEncryptCertificateKey), the same certificate storage
+# directory (Get-LetsEncryptCertificateDirectory), and the same PFX-on-disk
+# shape every other certificate source here already produces. Once generated,
+# its path is just dropped into the existing "custom cert" field
+# ($txtTlsCertificatePath) like any hand-picked PFX -- Resolve-
+# EmbeddedTlsCertificatePath/Get-EmbeddedTlsCertificate need no changes at
+# all to pick it up, since from their perspective it's indistinguishable from
+# a certificate the broadcaster obtained some other way and pointed at.
+function New-SelfSignedTlsCertificate {
+    param([Parameter(Mandatory)][string]$Hostname)
+
+    $key = New-LetsEncryptCertificateKey
+    $subject = New-Object System.Security.Cryptography.X509Certificates.X500DistinguishedName("CN=$Hostname")
+    $request = New-Object System.Security.Cryptography.X509Certificates.CertificateRequest(
+        $subject, $key, [System.Security.Cryptography.HashAlgorithmName]::SHA256, [System.Security.Cryptography.RSASignaturePadding]::Pkcs1)
+
+    # A self-signed cert is typically reached by IP on a LAN rather than a
+    # real DNS name -- add it as whichever SAN type it actually parses as.
+    # localhost/loopback are always included in addition, so the app's own
+    # machine can reach itself over TLS regardless of what was entered.
+    $sanBuilder = New-Object System.Security.Cryptography.X509Certificates.SubjectAlternativeNameBuilder
+    $parsedIp = $null
+    if ([System.Net.IPAddress]::TryParse($Hostname, [ref]$parsedIp)) {
+        $sanBuilder.AddIpAddress($parsedIp)
+    }
+    else {
+        $sanBuilder.AddDnsName($Hostname)
+    }
+    if ($Hostname -ne 'localhost') { $sanBuilder.AddDnsName('localhost') }
+    if ($Hostname -ne '127.0.0.1') { $sanBuilder.AddIpAddress([System.Net.IPAddress]::Loopback) }
+    $request.CertificateExtensions.Add($sanBuilder.Build())
+
+    $request.CertificateExtensions.Add(
+        [System.Security.Cryptography.X509Certificates.X509BasicConstraintsExtension]::new($false, $false, 0, $false)
+    )
+    $request.CertificateExtensions.Add(
+        [System.Security.Cryptography.X509Certificates.X509KeyUsageExtension]::new(
+            ([System.Security.Cryptography.X509Certificates.X509KeyUsageFlags]::DigitalSignature -bor [System.Security.Cryptography.X509Certificates.X509KeyUsageFlags]::KeyEncipherment),
+            $false
+        )
+    )
+    # Enhanced Key Usage = TLS Server Authentication. Not every client checks
+    # this, but some strict ones (recent Windows/Schannel included) do, and
+    # it costs nothing to include.
+    $serverAuthOid = New-Object System.Security.Cryptography.OidCollection
+    $null = $serverAuthOid.Add((New-Object System.Security.Cryptography.Oid('1.3.6.1.5.5.7.3.1')))
+    $request.CertificateExtensions.Add(
+        [System.Security.Cryptography.X509Certificates.X509EnhancedKeyUsageExtension]::new($serverAuthOid, $false)
+    )
+
+    # Ten years: this never goes through a public CA's shorter-lifetime
+    # policy (that only applies to publicly-trusted certificates), and a
+    # self-signed cert re-prompting the broadcaster to regenerate it every
+    # year or two for no real security benefit is just friction.
+    $notBefore = (Get-Date).AddDays(-1)
+    $notAfter = $notBefore.AddYears(10)
+    $certificate = $request.CreateSelfSigned($notBefore, $notAfter)
+
+    # CreateSelfSigned's result isn't guaranteed persistable/re-exportable as
+    # returned -- round-tripping through a PFX export/import (Exportable) is
+    # the same normalization Get-EmbeddedTlsCertificate already relies on for
+    # every other certificate source, including the reload after this app
+    # restarts and re-loads the very file being written below.
+    $pfxBytes = $certificate.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Pfx)
+    $safeFileName = ($Hostname -replace '[^A-Za-z0-9.\-]', '_')
+    # Get-LetsEncryptCertificateDirectory creates the directory itself if
+    # it's missing, same as every other caller here relies on.
+    $pfxPath = Join-Path (Get-LetsEncryptCertificateDirectory) "selfsigned-$safeFileName.pfx"
+    [System.IO.File]::WriteAllBytes($pfxPath, $pfxBytes)
+    return $pfxPath
+}
+
 function Get-LetsEncryptCertificateStatePath { Join-Path (Get-LetsEncryptCertificateDirectory) 'certificate-state.json' }
 
 function Get-LetsEncryptCertificateState {
@@ -938,7 +1015,8 @@ function Update-LetsEncryptUi {
 function Update-EmbeddedTlsUi {
     $enabled = [bool]($chkEmbeddedTlsEnabled -and $chkEmbeddedTlsEnabled.Checked)
     foreach ($control in @(
-        $txtTlsCertificatePath, $btnBrowseTlsCertificatePath, $txtTlsPrivateKeyPath, $btnBrowseTlsPrivateKeyPath
+        $txtTlsCertificatePath, $btnBrowseTlsCertificatePath, $txtTlsPrivateKeyPath, $btnBrowseTlsPrivateKeyPath,
+        $txtSelfSignedTlsHostname, $btnGenerateSelfSignedTlsCertificate
     )) {
         if ($control) { $control.Enabled = $enabled }
     }

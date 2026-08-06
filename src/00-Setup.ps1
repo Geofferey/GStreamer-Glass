@@ -5757,6 +5757,7 @@ $script:DefaultLetsEncryptWebServerExternalPort = 0
 $script:DefaultEmbeddedTlsEnabled = $false
 $script:DefaultTlsCertificatePath = ''
 $script:DefaultTlsPrivateKeyPath = ''
+$script:DefaultSelfSignedTlsHostname = ''
 $script:DefaultTlsAllowInsecurePorts = $false
 $script:DefaultViewerAuthenticationEnabled = $false
 $script:DefaultViewerAuthenticationSessionHours = 12

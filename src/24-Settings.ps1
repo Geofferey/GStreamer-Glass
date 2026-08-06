@@ -83,6 +83,7 @@ function Save-Settings {
             EmbeddedTlsEnabled = [bool]$chkEmbeddedTlsEnabled.Checked
             TlsCertificatePath = [string]$txtTlsCertificatePath.Text
             TlsPrivateKeyPath = [string]$txtTlsPrivateKeyPath.Text
+            SelfSignedTlsHostname = [string]$txtSelfSignedTlsHostname.Text
             TlsAllowInsecurePorts = [bool]$chkTlsAllowInsecurePorts.Checked
             ViewerAuthenticationEnabled = [bool]$chkViewerAuthenticationEnabled.Checked
             ViewerAuthenticationAccounts = @(@($script:ViewerAuthenticationAccounts) | ForEach-Object { [ordered]@{ Username = [string]$_.Username; PasswordHash = [string]$_.PasswordHash; TotpSecret = [string]$_.TotpSecret } })
@@ -502,6 +503,7 @@ function Restore-SettingsFromObject {
         if ($null -ne $settings.EmbeddedTlsEnabled) { $chkEmbeddedTlsEnabled.Checked = [bool]$settings.EmbeddedTlsEnabled }
         if ($null -ne $settings.TlsCertificatePath) { $txtTlsCertificatePath.Text = [string]$settings.TlsCertificatePath }
         if ($null -ne $settings.TlsPrivateKeyPath) { $txtTlsPrivateKeyPath.Text = [string]$settings.TlsPrivateKeyPath }
+        if ($null -ne $settings.SelfSignedTlsHostname) { $txtSelfSignedTlsHostname.Text = [string]$settings.SelfSignedTlsHostname }
         # TlsAllowInsecurePorts is a rename+polarity-flip of the earlier
         # TlsDisableInsecurePorts key -- deliberately not migrated (a stored
         # "true" meant the opposite thing under the old key), so an old
