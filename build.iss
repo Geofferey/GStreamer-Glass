@@ -8,7 +8,12 @@
 #ifndef MyAppVersion
   #define MyAppVersion "0.0.0"
 #endif
-#define ProjectRoot "C:\Users\geofferey\Downloads\GStreamer-Glass"
+; SourcePath is Inno Setup's built-in constant for the directory containing
+; this .iss file, with a trailing backslash -- trimming it here keeps every
+; existing "ProjectRoot + "\..."" concatenation below unchanged, and makes
+; this script portable to any clone location/machine instead of tied to one
+; personal path.
+#define ProjectRoot Copy(SourcePath, 1, Len(SourcePath) - 1)
 #define BuildDir ProjectRoot + "\out"
 #define InstallerDir ProjectRoot + "\out"
 
