@@ -1,11 +1,31 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
 function Invoke-ApplicationCleanup {
+    param(
+        [System.Windows.Forms.CloseReason]$CloseReason = [System.Windows.Forms.CloseReason]::None
+    )
+
     if ($script:ExitCleanupStarted) {
         return
     }
 
     $script:ExitCleanupStarted = $true
+
+    # Windows gives an app only a bounded window to finish handling a logoff/
+    # shutdown session-ending sequence before treating it as unresponsive and
+    # killing it outright (there is no separate CloseReason for logoff vs.
+    # shutdown -- WinForms reports WindowsShutDown for both). The GStreamer/
+    # MediaMTX/worker processes are already guaranteed to be torn down
+    # regardless of how this function exits (they're attached to a
+    # kill-on-job-close Job Object -- see Initialize-GstJob), so the slow,
+    # purely-graceful half of this sequence -- the "We'll be right back"
+    # media-availability grace sleep below, the WaitForExit calls after every
+    # Stop-ProcessTreeById on this path (Get-ProcessExitWaitBudgetMs,
+    # src/18-ThreadingAndDebug.ps1), and the multi-second auth-proxy-worker
+    # IPC round trips inside Send-AuthProxyWorkerCommand -- buys nothing a
+    # logged-off user could ever observe. Only that half is shortened; the
+    # settings/session save below stays exactly as it is either way.
+    $script:FastShutdownCleanup = ($CloseReason -eq [System.Windows.Forms.CloseReason]::WindowsShutDown)
 
     # Every IPC call to the auth proxy worker below waits via
     # Wait-UiResponsiveTask, which pumps Application.DoEvents() so the window
@@ -94,8 +114,10 @@ function Invoke-ApplicationCleanup {
     # (which that worker serves) is gone before the client ever gets a
     # chance to request it. Confirmed live: without this wait, the "We'll be
     # right back" media inconsistently failed to load on exit even though it
-    # loads reliably after a normal Stop.
-    if ($hadActiveStream) {
+    # loads reliably after a normal Stop. Skipped on a Windows logoff/shutdown
+    # close: nobody is around to see that holding page load, and the whole
+    # process (worker included) is about to be torn down by the OS regardless.
+    if ($hadActiveStream -and -not $script:FastShutdownCleanup) {
         Start-Sleep -Milliseconds 1500
     }
 

@@ -726,7 +726,7 @@ function Stop-ControlledLiveStream {
         # pipe Stop command or transition the graph to NULL first: terminating
         # this process is the signalling/socket boundary the web player expects.
         Stop-ProcessTreeById -ProcessId $workerProcess.Id
-        try { $workerProcess.WaitForExit(3000) | Out-Null } catch {}
+        try { $workerProcess.WaitForExit((Get-ProcessExitWaitBudgetMs)) | Out-Null } catch {}
     }
     Close-ControlledLiveWorkerPipe
     # Only demap on a genuine stop, not a settings-triggered restart-in-place
@@ -914,7 +914,7 @@ function Stop-GstStream {
         Stop-ProcessTreeById -ProcessId $script:GstProcess.Id
 
         try {
-            $script:GstProcess.WaitForExit(3000) | Out-Null
+            $script:GstProcess.WaitForExit((Get-ProcessExitWaitBudgetMs)) | Out-Null
         }
         catch {}
     }
@@ -925,7 +925,7 @@ function Stop-GstStream {
             "process tree - PID $($script:GstVideoProcess.Id)..."
         )
         Stop-ProcessTreeById -ProcessId $script:GstVideoProcess.Id
-        try { $script:GstVideoProcess.WaitForExit(3000) | Out-Null } catch {}
+        try { $script:GstVideoProcess.WaitForExit((Get-ProcessExitWaitBudgetMs)) | Out-Null } catch {}
     }
 
     if ($hadAudioGst) {
@@ -934,7 +934,7 @@ function Stop-GstStream {
             "process tree - PID $($script:GstAudioProcess.Id)..."
         )
         Stop-ProcessTreeById -ProcessId $script:GstAudioProcess.Id
-        try { $script:GstAudioProcess.WaitForExit(3000) | Out-Null } catch {}
+        try { $script:GstAudioProcess.WaitForExit((Get-ProcessExitWaitBudgetMs)) | Out-Null } catch {}
     }
 
     try {

@@ -5564,6 +5564,12 @@ $script:RestartAt = $null
 $script:AutomaticRestartPending = $false
 $script:PipelineStartInProgress = $false
 $script:PendingPipelineStop = $false
+# Set by Invoke-ApplicationCleanup (src/29-Cleanup.ps1) only for a Windows
+# logoff/shutdown close -- see Get-ProcessExitWaitBudgetMs
+# (src/18-ThreadingAndDebug.ps1) and Send-AuthProxyWorkerCommand
+# (src/33-LetsEncrypt.ps1), the two places that read it to shorten their
+# waits within the OS's bounded patience for session-ending.
+$script:FastShutdownCleanup = $false
 $script:StdOutPath = $null
 $script:StdErrPath = $null
 # Deliberately separate from the pair above -- the auth proxy worker's

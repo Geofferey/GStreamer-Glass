@@ -2173,6 +2173,16 @@ function Send-AuthProxyWorkerCommand {
         [switch]$NoUiPump
     )
 
+    # Set only by Invoke-ApplicationCleanup for a Windows logoff/shutdown close
+    # (src/29-Cleanup.ps1) -- the worker is going to die via the kill-on-close
+    # Job Object regardless of whether it acknowledges this command, so there
+    # is nothing to gain from waiting the normal several seconds for a reply
+    # that a logged-off user could never see anyway, and Windows' own patience
+    # for the app to finish handling session-ending is bounded.
+    if ($script:FastShutdownCleanup -and $TimeoutMs -gt 800) {
+        $TimeoutMs = 800
+    }
+
     if (-not (Test-AuthProxyWorkerRunning)) {
         if (-not $AutoStart) { return $null }
         if (-not (Start-AuthProxyWorker)) { return $null }

@@ -26,6 +26,14 @@
 # -Exiting switch threaded through Request-StreamStop -> Stop-GstStream ->
 # Stop-ControlledLiveStream is what fixes that, and this test locks in that
 # every link in that chain is still wired up.
+#
+# Also covers the Windows logoff/shutdown case: the OS only gives an app a
+# bounded window to finish handling session-ending before force-killing it,
+# and the graceful-stop sequence above (auth-proxy IPC round trips, process
+# WaitForExit calls, the holding-page grace sleep) can easily exceed that on
+# its own. $script:FastShutdownCleanup (set from the FormClosing event's
+# CloseReason) is what shortens those specific waits -- without touching the
+# settings/session save, which stays exactly as reliable either way.
 
 [CmdletBinding()]
 param()
@@ -36,6 +44,10 @@ $repoRoot = Resolve-Path (Join-Path $PSScriptRoot '..\..')
 $cleanupPath = Join-Path $repoRoot 'src\29-Cleanup.ps1'
 $processLifecyclePath = Join-Path $repoRoot 'src\13-ProcessLifecycle.ps1'
 $streamLifecyclePath = Join-Path $repoRoot 'src\27-StreamLifecycle.ps1'
+$letsEncryptPath = Join-Path $repoRoot 'src\33-LetsEncrypt.ps1'
+$threadingDebugPath = Join-Path $repoRoot 'src\18-ThreadingAndDebug.ps1'
+$mediaMtxPath = Join-Path $repoRoot 'src\26-MediaMtx.ps1'
+$mainWindowPath = Join-Path $repoRoot 'src\90-MainWindow.ps1'
 
 function Assert-AppExitGracefulStop {
     param([bool]$Condition, [string]$Message)
@@ -56,6 +68,22 @@ if (-not $streamLifecycleSource.Contains('function Stop-GstStream {')) {
 }
 if (-not $streamLifecycleSource.Contains('function Stop-ControlledLiveStream {')) {
     throw "Could not find Stop-ControlledLiveStream in $streamLifecyclePath -- this test needs updating to match wherever that logic now lives."
+}
+$letsEncryptSource = Get-Content -Raw -LiteralPath $letsEncryptPath
+if (-not $letsEncryptSource.Contains('function Send-AuthProxyWorkerCommand {')) {
+    throw "Could not find Send-AuthProxyWorkerCommand in $letsEncryptPath -- this test needs updating to match wherever that logic now lives."
+}
+$threadingDebugSource = Get-Content -Raw -LiteralPath $threadingDebugPath
+if (-not $threadingDebugSource.Contains('function Get-ProcessExitWaitBudgetMs {')) {
+    throw "Could not find Get-ProcessExitWaitBudgetMs in $threadingDebugPath -- this test needs updating to match wherever that logic now lives."
+}
+$mediaMtxSource = Get-Content -Raw -LiteralPath $mediaMtxPath
+if (-not $mediaMtxSource.Contains('function Stop-ManagedMediaMtx {')) {
+    throw "Could not find Stop-ManagedMediaMtx in $mediaMtxPath -- this test needs updating to match wherever that logic now lives."
+}
+$mainWindowSource = Get-Content -Raw -LiteralPath $mainWindowPath
+if (-not $mainWindowSource.Contains('$form.Add_FormClosing({')) {
+    throw "Could not find the FormClosing handler in $mainWindowPath -- this test needs updating to match wherever that logic now lives."
 }
 
 # --- 1. Invoke-ApplicationCleanup fires the real Request-StreamStop, with
@@ -145,6 +173,52 @@ $revocationGateCount = ([regex]::Matches($streamLifecycleSource, [regex]::Escape
 Assert-AppExitGracefulStop ($revocationGateCount -eq 2) `
     "Expected exactly 2 occurrences of the -Exiting-aware session-revocation gate (Stop-GstStream's plain-path teardown and Stop-ControlledLiveStream), found $revocationGateCount. Without this, Request-StreamStop -Exiting still revokes every viewer session on exit even when 'Keep auth on exit' is checked, silently defeating it."
 Write-Output "Stop-GstStream / Stop-ControlledLiveStream: both accept -Exiting, it's threaded through, and both session-revocation gates respect 'Keep auth on exit' when exiting."
+
+# --- 7. The FormClosing handler (src/90-MainWindow.ps1) passes its
+#         CloseReason through to Invoke-ApplicationCleanup, which uses it to
+#         set $script:FastShutdownCleanup only for a Windows logoff/shutdown
+#         close (WindowsShutDown -- WinForms has no separate reason for
+#         logoff vs. shutdown, both report the same value). ---
+Assert-AppExitGracefulStop ($mainWindowSource.Contains('Invoke-ApplicationCleanup -CloseReason $e.CloseReason')) `
+    "The FormClosing handler should pass its CloseReason through to Invoke-ApplicationCleanup, so it can detect a Windows logoff/shutdown close specifically."
+Assert-AppExitGracefulStop ($cleanupSource.Contains('[System.Windows.Forms.CloseReason]$CloseReason')) `
+    "Invoke-ApplicationCleanup should accept a CloseReason parameter."
+Assert-AppExitGracefulStop ($cleanupSource.Contains('$script:FastShutdownCleanup = ($CloseReason -eq [System.Windows.Forms.CloseReason]::WindowsShutDown)')) `
+    "Invoke-ApplicationCleanup should set `$script:FastShutdownCleanup exactly when CloseReason is WindowsShutDown."
+Write-Output "Invoke-ApplicationCleanup: FastShutdownCleanup is derived from the FormClosing event's CloseReason."
+
+# --- 8. During a fast shutdown, the auth-proxy IPC waits (Send-
+#         AuthProxyWorkerCommand) and every process WaitForExit on the stop
+#         path (Get-ProcessExitWaitBudgetMs) are both shortened, and the
+#         holding-page grace sleep is skipped outright -- nobody is around to
+#         see it, and the OS's patience for the whole app to finish
+#         session-ending is bounded regardless. The settings/session save
+#         itself is deliberately NOT gated by this anywhere -- it must stay
+#         exactly as reliable during a fast shutdown as any other exit. ---
+Assert-AppExitGracefulStop ($letsEncryptSource.Contains('$script:FastShutdownCleanup') -and $letsEncryptSource.Contains('$TimeoutMs = 800')) `
+    "Send-AuthProxyWorkerCommand should cap its wait to a short bound when `$script:FastShutdownCleanup is set."
+Assert-AppExitGracefulStop ($cleanupSource.Contains('if ($hadActiveStream -and -not $script:FastShutdownCleanup) {')) `
+    "The holding-page grace sleep should be skipped outright during a fast shutdown, not just shortened -- nobody is around to see it, and every millisecond counts against the OS's bounded patience."
+$saveGatedOnFastShutdown = $cleanupSource.Substring($cleanupSource.IndexOf('Save-Settings'), ($cleanupSource.IndexOf('Request-StreamStop -Exiting') - $cleanupSource.IndexOf('Save-Settings'))).Contains('FastShutdownCleanup')
+Assert-AppExitGracefulStop (-not $saveGatedOnFastShutdown) `
+    "The auth cache save must not be gated on `$script:FastShutdownCleanup -- it needs to stay exactly as reliable during a Windows logoff as during any other exit, unlike the purely-graceful steps that are safe to shorten."
+Write-Output "Invoke-ApplicationCleanup / Send-AuthProxyWorkerCommand: fast-shutdown shortens the graceful-stop waits without touching the auth cache save."
+
+# --- 9. Get-ProcessExitWaitBudgetMs (src/18-ThreadingAndDebug.ps1) backs
+#         every WaitForExit call after Stop-ProcessTreeById reachable from
+#         the exit path -- Stop-GstStream's three (main/video/audio),
+#         Stop-ControlledLiveStream's one, and Stop-ManagedMediaMtx's one --
+#         rather than only some of them silently keeping the old fixed
+#         3-second wait and reintroducing the same force-kill risk through a
+#         gap this fix otherwise closed. ---
+Assert-AppExitGracefulStop ($threadingDebugSource.Contains('$script:FastShutdownCleanup')) `
+    "Get-ProcessExitWaitBudgetMs should read `$script:FastShutdownCleanup to decide its budget."
+$streamLifecycleBudgetUses = ([regex]::Matches($streamLifecycleSource, [regex]::Escape('WaitForExit((Get-ProcessExitWaitBudgetMs))'))).Count
+Assert-AppExitGracefulStop ($streamLifecycleBudgetUses -eq 4) `
+    "Expected exactly 4 WaitForExit((Get-ProcessExitWaitBudgetMs)) call sites in src/27-StreamLifecycle.ps1 (Stop-GstStream's main/video/audio processes, Stop-ControlledLiveStream's worker process), found $streamLifecycleBudgetUses. A plain WaitForExit(3000) left in place here reintroduces the same Windows-logoff force-kill risk this fix closes elsewhere."
+Assert-AppExitGracefulStop ($mediaMtxSource.Contains('WaitForExit((Get-ProcessExitWaitBudgetMs))')) `
+    "Stop-ManagedMediaMtx should also use Get-ProcessExitWaitBudgetMs -- it runs on the same exit path (both inside Stop-GstStream and again at the end of Invoke-ApplicationCleanup) and would otherwise keep the old fixed 3-second wait."
+Write-Output "Get-ProcessExitWaitBudgetMs: backs every reachable WaitForExit on the exit path (GStreamer x3, controlled live, MediaMTX)."
 
 Write-Output ""
 Write-Output "App-exit graceful-stop checks passed."

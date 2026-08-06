@@ -5749,13 +5749,14 @@ $form.Add_Shown({
 
 
 $form.Add_FormClosing({
+    param($sender, $e)
     # Capture any password/2FA update completed through a browser setup link
     # since the last 400 ms poll before settings are serialized and the worker
     # is torn down. The worker never returns plaintext, only the derived hash.
     try { Drain-LetsEncryptTlsProxyLogs } catch {}
     Save-Settings
     $pollTimer.Stop()
-    Invoke-ApplicationCleanup
+    Invoke-ApplicationCleanup -CloseReason $e.CloseReason
 })
 
 # Prepare the initial minimized-to-tray window state before Application.Run()

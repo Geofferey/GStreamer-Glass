@@ -156,7 +156,7 @@ function Stop-ManagedMediaMtx {
 
         Stop-ProcessTreeById -ProcessId $script:MediaMtxProcess.Id
         try {
-            $script:MediaMtxProcess.WaitForExit(3000) | Out-Null
+            $script:MediaMtxProcess.WaitForExit((Get-ProcessExitWaitBudgetMs)) | Out-Null
         }
         catch {}
     }

@@ -302,6 +302,20 @@ function Ensure-ProcessLogDirectory {
     }
 }
 
+# Shared budget for every WaitForExit call after Stop-ProcessTreeById on the
+# stop/exit path (GStreamer, MediaMTX). $script:FastShutdownCleanup is set by
+# Invoke-ApplicationCleanup (src/29-Cleanup.ps1) only for a Windows logoff/
+# shutdown close, where the OS's patience for the whole app to finish
+# session-ending is bounded -- a normal 3-second wait per process risks the
+# app getting force-killed mid-cleanup before it ever reaches later steps.
+# Reuses the same 800ms budget Send-AuthProxyWorkerCommand already caps its
+# own waits to during a fast shutdown (src/33-LetsEncrypt.ps1), rather than
+# inventing a second number.
+function Get-ProcessExitWaitBudgetMs {
+    if ($script:FastShutdownCleanup) { return 800 }
+    return 3000
+}
+
 function Update-GstDebugUi {
     $mode = Get-ComboSelectedOrDefault $cmbGstDebugMode $script:DefaultGstDebugMode
     $custom = ($mode -eq 'Custom')
