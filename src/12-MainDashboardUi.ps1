@@ -628,12 +628,19 @@ function Apply-ModernDashboardUi {
         # -LabelControl an existing Label control whose .Text is updated at runtime
         # -Control     the input control
         # -Width       explicit control width (preserved from the old layout)
+        # -Wrap        for a Label control whose .Text is reassigned at runtime
+        #              to potentially long content (paths, URLs, hostnames) --
+        #              wraps it within Width instead of silently clipping
+        #              anything past its first line/original width, which a
+        #              plain fixed-size Label does with no visible indication
+        #              anything was cut off.
         param(
             [System.Windows.Forms.FlowLayoutPanel]$Row,
             [string]$Label,
             [System.Windows.Forms.Control]$LabelControl,
             [Parameter(Mandatory)][System.Windows.Forms.Control]$Control,
-            [int]$Width = 0
+            [int]$Width = 0,
+            [switch]$Wrap
         )
         if ($null -eq $Control) { return }
 
@@ -668,6 +675,20 @@ function Apply-ModernDashboardUi {
 
         if ($Width -gt 0) {
             $Control.Width = $Width
+        }
+        if ($Wrap -and $Width -gt 0 -and ($Control -is [System.Windows.Forms.Label])) {
+            # AutoSize + MaximumSize.Width (deliberately no MaximumSize.Height,
+            # so it isn't capped in the other dimension) is the standard
+            # WinForms idiom for "wrap within a bounded width, grow height to
+            # fit however many lines that takes". An AutoSize Label ignores a
+            # plain .Width assignment on the next layout pass, which is why
+            # this has to reuse the SAME Width passed in above rather than
+            # relying on it having taken effect. Integrates cleanly with the
+            # AutoSize/GrowAndShrink cascade this whole dashboard already
+            # relies on -- this cell, its row, and its section all auto-grow
+            # around children that resize themselves.
+            $Control.AutoSize = $true
+            $Control.MaximumSize = New-Object System.Drawing.Size($Width, 0)
         }
         $Control.Margin = New-Object System.Windows.Forms.Padding(0)
         $Control.Anchor = 'Left'
@@ -707,7 +728,7 @@ function Apply-ModernDashboardUi {
     $r = Add-Row $s
     Add-Field $r -LabelControl $lblTimingMode -Control $cmbTimingMode -Width 225 | Out-Null
     $r = Add-Row $s
-    Add-Field $r -Control $lblTimestampStatus -Width 535 | Out-Null
+    Add-Field $r -Control $lblTimestampStatus -Width 535 -Wrap | Out-Null
 
     $s = Add-Section $paneTransport 'MediaMTX'
     $r = Add-Row $s
@@ -730,7 +751,7 @@ function Apply-ModernDashboardUi {
 
     $s = Add-Section $paneWebRtc 'Signaling'
     $r = Add-Row $s
-    Add-Field $r -Control $lblDirectWebRtcStatus -Width 535 | Out-Null
+    Add-Field $r -Control $lblDirectWebRtcStatus -Width 535 -Wrap | Out-Null
     $r = Add-Row $s
     Add-Field $r -Label 'Signaling host' -Control $txtDirectWebRtcSignalingHost -Width 155 | Out-Null
     Add-Field $r -Label 'Video WS port' -Control $numDirectWebRtcSignalingPort -Width 85 | Out-Null
@@ -826,7 +847,7 @@ function Apply-ModernDashboardUi {
     $s = Add-Section $paneVideo 'Capture'
     $r = Add-Row $s
     Add-Field $r -Label 'Capture method' -Control $cmbCaptureMethod -Width 260 | Out-Null
-    Add-Field $r -Control $lblCaptureModeStatus -Width 260 | Out-Null
+    Add-Field $r -Control $lblCaptureModeStatus -Width 260 -Wrap | Out-Null
     $r = Add-Row $s
     Add-Field $r -Label 'Monitor' -Control $numMonitor -Width 70 | Out-Null
     Add-Field $r -Control $chkCursor -Width 100 | Out-Null
@@ -834,7 +855,7 @@ function Apply-ModernDashboardUi {
     $s = Add-Section $paneVideo 'Encoder'
     $r = Add-Row $s
     Add-Field $r -Label 'Encoder' -Control $cmbEncoder -Width 370 | Out-Null
-    Add-Field $r -Control $lblEncoderStatus -Width 160 | Out-Null
+    Add-Field $r -Control $lblEncoderStatus -Width 160 -Wrap | Out-Null
     $r = Add-Row $s
     Add-Field $r -Label 'Rate control' -Control $cmbRateControl -Width 105 | Out-Null
     Add-Field $r -Label 'Tune' -Control $cmbEncoderTune -Width 170 | Out-Null
@@ -925,7 +946,7 @@ function Apply-ModernDashboardUi {
     Add-Field $r -Label 'Scene preset' -Control $cmbScenePreset -Width 190 | Out-Null
     Add-Field $r -Label 'Compositor' -Control $cmbSceneCompositor -Width 190 | Out-Null
     $r = Add-Row $s
-    Add-Field $r -Control $lblSceneStatus -Width 540 | Out-Null
+    Add-Field $r -Control $lblSceneStatus -Width 540 -Wrap | Out-Null
 
     $s = Add-Section $paneScenes 'Scene input queues'
     $r = Add-Row $s
@@ -975,12 +996,12 @@ function Apply-ModernDashboardUi {
     Add-Field $r -Label 'Mic volume' -Control $numMicVolume -Width 90 | Out-Null
     $r = Add-Row $s
     Add-Field $r -Label 'Mic device' -Control $cmbMicAudioDevice -Width 420 | Out-Null
-    Add-Field $r -Control $lblAudioDeviceStatus -Width 260 | Out-Null
+    Add-Field $r -Control $lblAudioDeviceStatus -Width 260 -Wrap | Out-Null
 
     $s = Add-Section $paneAudio 'Audio codec'
     $r = Add-Row $s
     Add-Field $r -Label 'Codec' -Control $cmbAudioCodec -Width 250 | Out-Null
-    Add-Field $r -Control $lblAudioCodecStatus -Width 260 | Out-Null
+    Add-Field $r -Control $lblAudioCodecStatus -Width 260 -Wrap | Out-Null
     $r = Add-Row $s
     Add-Field $r -Label 'Audio kbps' -Control $numAudioBitrate -Width 110 | Out-Null
 
@@ -1077,7 +1098,7 @@ function Apply-ModernDashboardUi {
     Add-Field $r -Control $btnRefreshDirectWebRtcWebUi -Width 125 | Out-Null
     Add-Field $r -Control $btnOpenDirectWebRtcServedDir -Width 130 | Out-Null
     $r = Add-Row $s
-    Add-Field $r -Control $lblDirectWebRtcWebUiStatus -Width 550 | Out-Null
+    Add-Field $r -Control $lblDirectWebRtcWebUiStatus -Width 550 -Wrap | Out-Null
 
     $s = Add-Section $panePlayer 'Viewer launch'
     $r = Add-Row $s
@@ -1106,7 +1127,7 @@ function Apply-ModernDashboardUi {
     $s = Add-Section $paneRecording 'Recording encoder'
     $r = Add-Row $s
     Add-Field $r -Label 'Encoder' -Control $cmbRecordingEncoder -Width 360 | Out-Null
-    Add-Field $r -Control $lblRecordingStatus -Width 160 | Out-Null
+    Add-Field $r -Control $lblRecordingStatus -Width 160 -Wrap | Out-Null
     $r = Add-Row $s
     Add-Field $r -Label 'Rate control' -Control $cmbRecordingRateControl -Width 100 | Out-Null
     Add-Field $r -Label 'Video kbps' -Control $numRecordingVideoBitrate -Width 110 | Out-Null
@@ -1164,7 +1185,7 @@ function Apply-ModernDashboardUi {
     $r = Add-Row $s
     Add-Field $r -Control $chkUpnpEnabled -Width 300 | Out-Null
     $r = Add-Row $s
-    Add-Field $r -Control $lblUpnpStatus -Width 400 | Out-Null
+    Add-Field $r -Control $lblUpnpStatus -Width 400 -Wrap | Out-Null
     $r = Add-Row $s
     Add-Field $r -Control $chkUpnpMapSignaling -Width 180 | Out-Null
     Add-Field $r -Label 'External (0=same)' -Control $numUpnpSignalingExternalPort -Width 90 | Out-Null
@@ -1179,7 +1200,7 @@ function Apply-ModernDashboardUi {
     $r = Add-Row $s
     Add-Field $r -Control $chkDdnsEnabled -Width 340 | Out-Null
     $r = Add-Row $s
-    Add-Field $r -Control $lblDdnsStatus -Width 460 | Out-Null
+    Add-Field $r -Control $lblDdnsStatus -Width 460 -Wrap | Out-Null
     $r = Add-Row $s
     Add-Field $r -Label 'Provider' -Control $cmbDdnsProvider -Width 260 | Out-Null
     $r = Add-Row $s
@@ -1221,15 +1242,18 @@ function Apply-ModernDashboardUi {
     $r = Add-Row $s
     Add-Field $r -Control $chkEmbeddedTlsEnabled -Width 340 | Out-Null
     $r = Add-Row $s
-    Add-Field $r -Control $lblEmbeddedTlsStatus -Width 460 | Out-Null
+    Add-Field $r -Control $lblEmbeddedTlsStatus -Width 460 -Wrap | Out-Null
     $r = Add-Row $s
     Add-Field $r -Label 'Certificate path (optional)' -Control $txtTlsCertificatePath -Width 320 | Out-Null
+    $r = Add-Row $s
     Add-Field $r -Control $btnBrowseTlsCertificatePath -Width 80 | Out-Null
     $r = Add-Row $s
     Add-Field $r -Label 'Private key path (optional)' -Control $txtTlsPrivateKeyPath -Width 320 | Out-Null
+    $r = Add-Row $s
     Add-Field $r -Control $btnBrowseTlsPrivateKeyPath -Width 80 | Out-Null
     $r = Add-Row $s
     Add-Field $r -Label 'Self-signed cert hostname/IP (optional)' -Control $txtSelfSignedTlsHostname -Width 320 | Out-Null
+    $r = Add-Row $s
     Add-Field $r -Control $btnGenerateSelfSignedTlsCertificate -Width 160 | Out-Null
     $r = Add-Row $s
     Add-Field $r -Control $chkTlsAllowInsecurePorts -Width 420 | Out-Null
@@ -1242,7 +1266,7 @@ function Apply-ModernDashboardUi {
     $r = Add-Row $s
     Add-Field $r -Control $chkLetsEncryptEnabled -Width 340 | Out-Null
     $r = Add-Row $s
-    Add-Field $r -Control $lblLetsEncryptStatus -Width 460 | Out-Null
+    Add-Field $r -Control $lblLetsEncryptStatus -Width 460 -Wrap | Out-Null
     $r = Add-Row $s
     Add-Field $r -Label 'Contact email (optional)' -Control $txtLetsEncryptEmail -Width 260 | Out-Null
     $r = Add-Row $s
@@ -1281,7 +1305,7 @@ function Apply-ModernDashboardUi {
     $r = Add-Row $s
     Add-Field $r -Control $chkViewerAuthenticationStartOnLaunch -Width 420 | Out-Null
     $r = Add-Row $s
-    Add-Field $r -Control $lblViewerAuthenticationExitCacheStatus -Width 440 | Out-Null
+    Add-Field $r -Control $lblViewerAuthenticationExitCacheStatus -Width 440 -Wrap | Out-Null
     $r = Add-Row $s
     Add-Field $r -Control $btnViewerAuthenticationSaveExitCache -Width 145 | Out-Null
     Add-Field $r -Control $btnViewerAuthenticationDestroyExitCache -Width 135 | Out-Null
@@ -1348,7 +1372,7 @@ function Apply-ModernDashboardUi {
     $r = Add-Row $s
     Add-Field $r -LabelControl $lblThreadBudget -Control $cmbThreadBudget -Width 130 | Out-Null
     Add-Field $r -LabelControl $lblCpuWorkerLimit -Control $numCpuWorkerLimit -Width 80 | Out-Null
-    Add-Field $r -Control $lblLiveGstThreads -Width 230 | Out-Null
+    Add-Field $r -Control $lblLiveGstThreads -Width 230 -Wrap | Out-Null
     $r = Add-Row $s
     Add-Field $r -Control $chkBudgetCaptureQueue -Width 175 | Out-Null
     Add-Field $r -Control $chkBudgetSenderQueue -Width 175 | Out-Null
@@ -1381,7 +1405,7 @@ function Apply-ModernDashboardUi {
     $r = Add-Row $s
     Add-Field $r -Label 'Profile' -Control $cmbProfilePreset -Width 260 | Out-Null
     $r = Add-Row $s
-    Add-Field $r -Control $lblProfileDescription -Width 560 | Out-Null
+    Add-Field $r -Control $lblProfileDescription -Width 560 -Wrap | Out-Null
 
     $s = Add-Section $paneProfiles 'Manage'
     $r = Add-Row $s
