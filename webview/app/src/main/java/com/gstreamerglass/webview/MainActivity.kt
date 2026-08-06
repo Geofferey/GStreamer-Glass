@@ -288,7 +288,31 @@ class MainActivity : Activity() {
         }
 
         webView = WebView(this)
-        setContentView(webView)
+        // Apps targeting API 35 get edge-to-edge enforced by the platform itself - as of
+        // Android 15, setDecorFitsSystemWindows(true) is simply ignored, there's no more opting
+        // back into automatic content fitting. The remaining way to keep the WebView from being
+        // obscured by the status/nav bars when they're shown is to pad it by hand to whatever
+        // the current system bar insets are - but WebView is a self-rendering leaf view, not a
+        // ViewGroup, and its Chromium compositor sizes itself off the View's measured bounds
+        // while ignoring its own padding for content layout (unlike a container laying out
+        // children). Padding the WebView directly does nothing visible. Wrapping it in a plain
+        // container and padding *that* instead works, since the WebView is then a genuine
+        // MATCH_PARENT child that gets measured smaller by its padded parent.
+        val rootContainer = FrameLayout(this)
+        rootContainer.addView(webView, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        setContentView(rootContainer)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            rootContainer.setOnApplyWindowInsetsListener { view, insets ->
+                val bars = insets.getInsets(WindowInsets.Type.systemBars())
+                view.setPadding(bars.left, bars.top, bars.right, bars.bottom)
+                // Passing the unmodified insets down let the WebView's own Chromium engine see
+                // the same raw bar sizes and report them again via CSS env(safe-area-inset-*) -
+                // on top of the padding just applied above, doubling the effective inset (this is
+                // what was inflating the page's own safe-area-padded playback control bar).
+                // Consuming them here means the page sees none left to compensate for.
+                WindowInsets.CONSUMED
+            }
+        }
         hideSystemBars()
         showSquareSplashOverlay()
 
@@ -577,6 +601,10 @@ class MainActivity : Activity() {
                 hide(WindowInsets.Type.statusBars() or WindowInsets.Type.navigationBars())
                 systemBarsBehavior = WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
             }
+            // Toggling setDecorFitsSystemWindows after the window has already laid out doesn't
+            // reliably trigger a relayout on its own - without this the WebView can be left
+            // sized for whichever fit state was active at last layout instead of the new one.
+            window.decorView.requestApplyInsets()
         } else {
             @Suppress("DEPRECATION")
             window.decorView.systemUiVisibility = (
@@ -594,6 +622,7 @@ class MainActivity : Activity() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             window.setDecorFitsSystemWindows(true)
             window.insetsController?.show(WindowInsets.Type.statusBars() or WindowInsets.Type.navigationBars())
+            window.decorView.requestApplyInsets()
         } else {
             @Suppress("DEPRECATION")
             window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_VISIBLE

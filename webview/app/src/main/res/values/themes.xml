@@ -1,4 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="AppTheme" parent="@android:style/Theme.Black.NoTitleBar.Fullscreen"/>
+    <!-- NoTitleBar only, deliberately not .Fullscreen - that legacy theme flag hardcodes
+         windowFullscreen=true at the window level, which permanently tells Android to never
+         reserve layout space for the status bar no matter what the runtime insets controller
+         does. With it set, showSystemBars() could make the bar visually reappear but the decor
+         view would never actually shrink to make room for it, so the bar just drew over the
+         WebView's content instead of the content resizing to fit around it. Immersive-by-default
+         is handled purely at runtime now, in onCreate's hideSystemBars() call. -->
+    <style name="AppTheme" parent="@android:style/Theme.Black.NoTitleBar"/>
 </resources>

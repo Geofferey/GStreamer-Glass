@@ -9,7 +9,9 @@
          color to the overall splash background makes this brief, otherwise-unavoidable system
          phase render as a plain color with nothing visible in it, before MainActivity's own
          square icon overlay takes over. -->
-    <style name="AppTheme" parent="@android:style/Theme.Black.NoTitleBar.Fullscreen">
+    <!-- Not .Fullscreen here either - see values/themes.xml for why that legacy flag breaks
+         showSystemBars()'s ability to actually reclaim layout space for the status bar. -->
+    <style name="AppTheme" parent="@android:style/Theme.Black.NoTitleBar">
         <item name="android:windowSplashScreenBackground">@color/ic_launcher_background</item>
         <item name="android:windowSplashScreenAnimatedIcon">@android:color/transparent</item>
         <item name="android:windowSplashScreenIconBackgroundColor">@color/ic_launcher_background</item>
