@@ -405,6 +405,28 @@ body.hasGlassControls.isFullscreen .statsOverlay {
   padding: 7px 9px;
   font-size: 18px;
 }
+.glassFsIcon {
+  position: relative;
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  vertical-align: middle;
+}
+.glassFsIcon i {
+  position: absolute;
+  width: 7px;
+  height: 7px;
+  border: 2px solid currentColor;
+  transition: top .15s ease, left .15s ease, right .15s ease, bottom .15s ease;
+}
+.glassFsIcon i:nth-child(1) { top: 4px; left: 4px; border-right: none; border-bottom: none; }
+.glassFsIcon i:nth-child(2) { top: 4px; right: 4px; border-left: none; border-bottom: none; }
+.glassFsIcon i:nth-child(3) { bottom: 4px; right: 4px; border-left: none; border-top: none; }
+.glassFsIcon i:nth-child(4) { bottom: 4px; left: 4px; border-right: none; border-top: none; }
+.glassFullscreenButton[aria-pressed="true"] .glassFsIcon i:nth-child(1) { top: 0; left: 0; }
+.glassFullscreenButton[aria-pressed="true"] .glassFsIcon i:nth-child(2) { top: 0; right: 0; }
+.glassFullscreenButton[aria-pressed="true"] .glassFsIcon i:nth-child(3) { bottom: 0; right: 0; }
+.glassFullscreenButton[aria-pressed="true"] .glassFsIcon i:nth-child(4) { bottom: 0; left: 0; }
 .glassPinButton.isPinned {
   background: rgba(143,179,255,.26);
   color: #fff;

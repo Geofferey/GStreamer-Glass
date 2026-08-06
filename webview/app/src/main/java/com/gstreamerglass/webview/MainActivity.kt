@@ -168,6 +168,7 @@ class MainActivity : Activity() {
     private lateinit var webView: WebView
     private var streamService: StreamForegroundService? = null
     private var fullscreenView: View? = null
+    private var immersiveDismissed = false
     private var boundToService = false
     private var connected = false
     private var insecureMode = false
@@ -380,6 +381,7 @@ class MainActivity : Activity() {
                     return
                 }
                 fullscreenView = view
+                immersiveDismissed = false
                 addContentView(
                     view,
                     ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
@@ -387,9 +389,14 @@ class MainActivity : Activity() {
                 hideSystemBars()
             }
 
+            // Follow the page back out of immersive mode when its own fullscreen button exits,
+            // rather than staying immersive - the app still always starts immersive, but
+            // shouldn't fight the page's own exit control.
             override fun onHideCustomView() {
                 (fullscreenView?.parent as? ViewGroup)?.removeView(fullscreenView)
                 fullscreenView = null
+                immersiveDismissed = true
+                showSystemBars()
             }
         }
         val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
@@ -429,7 +436,7 @@ class MainActivity : Activity() {
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
-        if (hasFocus) hideSystemBars()
+        if (hasFocus && !immersiveDismissed) hideSystemBars()
     }
 
     override fun onDestroy() {

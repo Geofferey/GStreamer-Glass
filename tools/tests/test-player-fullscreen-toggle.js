@@ -109,13 +109,13 @@ const context = vm.createContext({
   assert.strictEqual(context.isFullscreen(), true, 'manifest fullscreen should remain immersive for styling');
   assert.strictEqual(context.elementFullscreenActive(), false, 'manifest fullscreen is not an element fullscreen session');
   context.setFullscreenState();
-  assert.strictEqual(fullscreenButton.textContent, '⛶', 'the enter state should use the standard fullscreen glyph');
+  assert.strictEqual(fullscreenButton.attributes['aria-pressed'], 'false', 'the enter state should leave the corner-bracket icon in its outward (enter) position');
 
   assert.strictEqual(await context.togglePlayerFullscreen('test-enter'), true);
   assert.strictEqual(calls.rootRequest, 1, 'Android should retain its established container-fullscreen behavior');
   assert.strictEqual(context.elementFullscreenActive(), true);
   context.setFullscreenState();
-  assert.strictEqual(fullscreenButton.textContent, '⛶', 'the exit state should retain the standard fullscreen glyph');
+  assert.strictEqual(fullscreenButton.attributes['aria-pressed'], 'true', 'the exit state should pull the corner-bracket icon inward so it visually differs from the enter state');
   assert.strictEqual(fullscreenButton.title, 'Exit fullscreen', 'the accessible label should still describe the exit action');
 
   assert.strictEqual(await context.togglePlayerFullscreen('test-exit'), true);

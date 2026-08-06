@@ -2269,9 +2269,9 @@
     if (active) document.body.classList.remove('fsBlocked');
     const button = state.controller && state.controller.fullscreenButton;
     if (button) {
-      button.textContent = '⛶';
       button.title = elementActive ? 'Exit fullscreen' : 'Enter fullscreen';
       button.setAttribute('aria-label', button.title);
+      // Drives the corner-bracket icon's inward/outward CSS state - see glassFsIcon in player.css.
       button.setAttribute('aria-pressed', elementActive ? 'true' : 'false');
     }
   }
@@ -2777,7 +2777,10 @@
     const fullscreenCtl = document.createElement('button');
     fullscreenCtl.type = 'button';
     fullscreenCtl.className = 'glassControlButton glassIconButton glassFullscreenButton';
-    fullscreenCtl.textContent = '⛶';
+    // A single static glyph made enter/exit hard to tell apart at a glance. Draw the icon as
+    // four corner brackets instead of relying on a text glyph - aria-pressed (kept in sync by
+    // setFullscreenState) drives CSS to pull them inward for "exit", same as native players.
+    fullscreenCtl.innerHTML = '<span class="glassFsIcon" aria-hidden="true"><i></i><i></i><i></i><i></i></span>';
     fullscreenCtl.title = 'Enter fullscreen';
     fullscreenCtl.setAttribute('aria-label', fullscreenCtl.title);
     fullscreenCtl.setAttribute('aria-pressed', 'false');

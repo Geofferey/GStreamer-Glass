@@ -1,10 +1,10 @@
-const CACHE_NAME = 'gstglass-pwa-3.8-viewer-auth-66';
+const CACHE_NAME = 'gstglass-pwa-3.8-viewer-auth-68';
 const SHELL_KEY = new URL('./index.html', self.registration.scope).href;
 const APP_SHELL = [
   './index.html',
   './logout.js',
   './player.js',
-  './player.css?v=3.8.30',
+  './player.css?v=3.8.32',
   './manifest.webmanifest?v=3.8.40',
   './icons/gstreamer-glass-192.png',
   './icons/gstreamer-glass-512.png',
