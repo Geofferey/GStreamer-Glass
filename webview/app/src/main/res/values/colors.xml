@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Sampled from the launcher icon's own interior color - this source (Glass2Glass-
+         Streamer-1024.png) has transparent corners rather than a full-bleed background, so
+         wherever a launcher's mask shape crops into that transparent margin, this blends with
+         the icon instead of showing up as a visible border. -->
+    <color name="ic_launcher_background">#02091A</color>
+</resources>

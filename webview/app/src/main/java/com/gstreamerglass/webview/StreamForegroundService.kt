@@ -270,7 +270,7 @@ class StreamForegroundService : Service() {
         return builder
             .setContentTitle(title)
             .setContentText(artist.ifBlank { if (isPlaying) "Playing" else "Paused" })
-            .setSmallIcon(R.mipmap.ic_launcher)
+            .setSmallIcon(R.mipmap.ic_launcher_foreground)
             .setLargeIcon(artworkBitmap)
             .setContentIntent(openApp)
             .setOngoing(true)

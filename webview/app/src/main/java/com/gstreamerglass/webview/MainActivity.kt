@@ -16,6 +16,7 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.util.Log
+import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowInsets
@@ -30,6 +31,8 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.FrameLayout
+import android.widget.ImageView
 import java.net.HttpURLConnection
 import java.net.URL
 import java.security.SecureRandom
@@ -165,6 +168,7 @@ class MainActivity : Activity() {
     private lateinit var webView: WebView
     private var streamService: StreamForegroundService? = null
     private var fullscreenView: View? = null
+    private var immersiveDismissed = false
     private var boundToService = false
     private var connected = false
     private var insecureMode = false
@@ -204,6 +208,11 @@ class MainActivity : Activity() {
         @JavascriptInterface
         fun requestPip() {
             runOnUiThread { enterPip() }
+        }
+
+        @JavascriptInterface
+        fun setAutoPipEnabled(enabled: Boolean) {
+            runOnUiThread { setAutoEnterPip(enabled) }
         }
 
         @JavascriptInterface
@@ -281,6 +290,7 @@ class MainActivity : Activity() {
         webView = WebView(this)
         setContentView(webView)
         hideSystemBars()
+        showSquareSplashOverlay()
 
         // Chrome/WebView caps content to the display's default refresh rate unless a View
         // explicitly asks for more (Android 15+ adaptive refresh rate API).
@@ -371,6 +381,7 @@ class MainActivity : Activity() {
                     return
                 }
                 fullscreenView = view
+                immersiveDismissed = false
                 addContentView(
                     view,
                     ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
@@ -378,10 +389,14 @@ class MainActivity : Activity() {
                 hideSystemBars()
             }
 
+            // Follow the page back out of immersive mode when its own fullscreen button exits,
+            // rather than immediately re-hiding the bars - the earlier "always stay immersive"
+            // choice fought the page's exit button instead of respecting it.
             override fun onHideCustomView() {
                 (fullscreenView?.parent as? ViewGroup)?.removeView(fullscreenView)
                 fullscreenView = null
-                hideSystemBars()
+                immersiveDismissed = true
+                showSystemBars()
             }
         }
         val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
@@ -407,6 +422,7 @@ class MainActivity : Activity() {
         requestPhoneStatePermissionIfNeeded()
         startStreamService()
         boundToService = bindService(Intent(this, StreamForegroundService::class.java), serviceConnection, Context.BIND_AUTO_CREATE)
+        setAutoEnterPip(true)
     }
 
     private fun isMainFrameFailure(request: WebResourceRequest?): Boolean =
@@ -420,7 +436,7 @@ class MainActivity : Activity() {
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
-        if (hasFocus) hideSystemBars()
+        if (hasFocus && !immersiveDismissed) hideSystemBars()
     }
 
     override fun onDestroy() {
@@ -453,10 +469,47 @@ class MainActivity : Activity() {
         webView.evaluateJavascript("window.__glassViewerSetVideoRendering && window.__glassViewerSetVideoRendering($enabled);", null)
     }
 
+    // onUserLeaveHint()/enterPip() below only fires while the activity is still resumed (Home
+    // button, switching apps) - by the time the user opens Recents and swipes the task away,
+    // the activity is already backgrounded, so that manual call never gets a chance to run for
+    // that specific gesture. Auto-enter (Android 12+) is the system doing the transition itself
+    // rather than us reacting to a callback, which is what actually covers swipe-away - the
+    // same mechanism a PWA's Chrome-hosted video relies on for the same smooth transition.
+    // Defaults on in connectToServer(); the web app's own "Enable auto PiP" viewer setting
+    // (player.js, defaults true too) confirms/overrides it once the page loads, via
+    // WebMediaBridge.setAutoPipEnabled - android.webkit.WebView has no way to expose this
+    // Activity-level API to the page on its own.
+    private fun setAutoEnterPip(enabled: Boolean) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            setPictureInPictureParams(PictureInPictureParams.Builder().setAutoEnterEnabled(enabled).build())
+        }
+    }
+
     private fun enterPip() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             enterPictureInPictureMode(PictureInPictureParams.Builder().build())
         }
+    }
+
+    // Our own square, uncropped splash - the system's own splash icon slot (API 31+) always
+    // draws a hardcoded circular backdrop no theme attribute can reshape (values-v31/themes.xml
+    // deliberately doesn't set windowSplashScreenAnimatedIcon at all). drawable-nodpi/splash_icon
+    // is a dedicated 512px asset so this is never upscaled/blurred the way the OS's own splash
+    // icon sizing was.
+    private fun showSquareSplashOverlay() {
+        val sizePx = (220 * resources.displayMetrics.density).toInt()
+        val overlay = FrameLayout(this).apply {
+            setBackgroundColor(getColor(R.color.ic_launcher_background))
+            addView(
+                ImageView(this@MainActivity).apply {
+                    setImageResource(R.drawable.splash_icon)
+                    scaleType = ImageView.ScaleType.CENTER_INSIDE
+                },
+                FrameLayout.LayoutParams(sizePx, sizePx, Gravity.CENTER)
+            )
+        }
+        addContentView(overlay, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        overlay.postDelayed({ (overlay.parent as? ViewGroup)?.removeView(overlay) }, 1500)
     }
 
     // Picks the highest-refresh-rate mode at the display's current resolution, so we don't
@@ -506,6 +559,18 @@ class MainActivity : Activity() {
     }
 
     private fun hideSystemBars() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            // Without this the system draws its own translucent gray protection scrim behind
+            // the status/nav bars whenever they're transiently revealed (swipe-to-peek) or
+            // shown, to guarantee icon contrast regardless of app content - setStatusBarColor/
+            // setNavigationBarColor are full no-ops on Android 15+ (targetSdk 35, confirmed by
+            // testing) so they can't fix this, but these contrast-enforcement toggles are a
+            // separate mechanism that still works for the persistently-shown state (the
+            // transient swipe-peek scrim's color is system-controlled with no app-level API to
+            // override it - a platform limitation, not something left unfixed here).
+            window.isStatusBarContrastEnforced = false
+            window.isNavigationBarContrastEnforced = false
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             window.setDecorFitsSystemWindows(false)
             window.insetsController?.apply {
@@ -522,6 +587,16 @@ class MainActivity : Activity() {
                     or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
                     or View.SYSTEM_UI_FLAG_FULLSCREEN
                 )
+        }
+    }
+
+    private fun showSystemBars() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            window.setDecorFitsSystemWindows(true)
+            window.insetsController?.show(WindowInsets.Type.statusBars() or WindowInsets.Type.navigationBars())
+        } else {
+            @Suppress("DEPRECATION")
+            window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_VISIBLE
         }
     }
 }
