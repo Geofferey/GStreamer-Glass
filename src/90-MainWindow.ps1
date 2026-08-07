@@ -598,7 +598,7 @@ $chkUpnpEnabled.Location = New-Object System.Drawing.Point(15, 548)
 $chkUpnpEnabled.Size = New-Object System.Drawing.Size(300, 24)
 $chkUpnpEnabled.Checked = $script:DefaultUpnpEnabled
 $settingsGroup.Controls.Add($chkUpnpEnabled)
-$toolTip.SetToolTip($chkUpnpEnabled, 'Off by default. When enabled, asks the router for a UPnP IGD port mapping for whichever categories below are checked, so the stream is reachable from outside the LAN without manual router configuration. Best-effort only: if the router does not support UPnP the stream still starts normally over the existing STUN/TURN path. Mappings are removed when the stream stops.')
+$toolTip.SetToolTip($chkUpnpEnabled, 'Off by default. When enabled, asks the router for a UPnP IGD port mapping for whichever categories below are checked, so the stream is reachable from outside the LAN without manual router configuration. Best-effort only: if the router does not support UPnP the stream still starts normally over the existing STUN/TURN path. Mappings are removed when the stream stops or the app exits, unless "Unmap on stop/exit" below is unchecked. A restart never touches them either way.')
 
 $lblUpnpStatus = New-Object System.Windows.Forms.Label
 $lblUpnpStatus.Text = 'UPnP: disabled'
@@ -641,6 +641,14 @@ $chkUpnpMapRtp.Size = New-Object System.Drawing.Size(180, 24)
 $chkUpnpMapRtp.Checked = $script:DefaultUpnpMapRtp
 $settingsGroup.Controls.Add($chkUpnpMapRtp)
 $toolTip.SetToolTip($chkUpnpMapRtp, 'Include the Min/Max RTP UDP port range in the UPnP mapping, when set. RTP ports are always mapped 1:1 (external port number == internal port number) -- remapping media ports is not offered, since the ICE agent itself only knows the internal port.')
+
+$chkUpnpUnmapOnStop = New-Object System.Windows.Forms.CheckBox
+$chkUpnpUnmapOnStop.Text = 'Unmap on stop/exit'
+$chkUpnpUnmapOnStop.Location = New-Object System.Drawing.Point(15, 548)
+$chkUpnpUnmapOnStop.Size = New-Object System.Drawing.Size(180, 24)
+$chkUpnpUnmapOnStop.Checked = $script:DefaultUpnpUnmapOnStop
+$settingsGroup.Controls.Add($chkUpnpUnmapOnStop)
+$toolTip.SetToolTip($chkUpnpUnmapOnStop, "On by default. When unchecked, port mappings are left in place on the router when the stream stops or the app exits, instead of being removed -- useful to avoid repeated router UPnP traffic when this machine always uses the same ports. The next stream start still reuses them automatically rather than mapping again.")
 
 $chkUpnpMapWebServer = New-Object System.Windows.Forms.CheckBox
 $chkUpnpMapWebServer.Text = 'Map web viewer port'

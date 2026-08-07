@@ -12,6 +12,12 @@
 # unmaps, and each direction checks whether there is anything to do before
 # ever touching the router.
 #
+# Also covers the "Unmap on stop/exit" opt-out checkbox: when unchecked,
+# Remove-UpnpPortMappings leaves mappings on the router entirely (stop or
+# exit) rather than removing them, for a broadcaster who always streams from
+# this same machine/ports and would rather avoid the router traffic of
+# demapping just to remap moments later.
+#
 # This is source-text verified rather than executed: these functions are
 # deeply tied to live WinForms controls and a real UPnP-capable router,
 # neither of which are practical to stand up in an isolated test, matching
@@ -86,6 +92,24 @@ Assert-UpnpRestartNoRemap ($addGuardIndex -gt $addFunctionStart -and $addGuardIn
 Assert-UpnpRestartNoRemap ($upnpSource.Contains('if ($script:ActiveUpnpMappings.Count -eq 0) { return }')) `
     "Remove-UpnpPortMappings should return immediately if nothing is tracked as active, without contacting the router at all."
 Write-Output "Add-UpnpPortMappings / Remove-UpnpPortMappings: both check for existing state before ever contacting the router."
+
+# --- 4. "Unmap on stop/exit" ($chkUpnpUnmapOnStop) unchecked: Remove-
+#         UpnpPortMappings returns before any router contact, and does NOT
+#         clear $script:ActiveUpnpMappings -- the mappings are still
+#         genuinely live on the router, and keeping the tracking intact is
+#         what lets Add-UpnpPortMappings' own guard (assertion 3 above)
+#         correctly skip re-mapping the next time a stream starts. ---
+Assert-UpnpRestartNoRemap ($upnpSource.Contains('if ($chkUpnpUnmapOnStop -and -not $chkUpnpUnmapOnStop.Checked) {')) `
+    "Remove-UpnpPortMappings should check the 'Unmap on stop/exit' checkbox and skip removal entirely when it's unchecked."
+$removeFunctionStart = $upnpSource.IndexOf('function Remove-UpnpPortMappings {')
+$unmapOptOutIndex = $upnpSource.IndexOf('if ($chkUpnpUnmapOnStop -and -not $chkUpnpUnmapOnStop.Checked) {')
+$removeNatDiscoveryIndex = $upnpSource.IndexOf('Get-UpnpNatDevice', $removeFunctionStart)
+Assert-UpnpRestartNoRemap ($unmapOptOutIndex -gt $removeFunctionStart -and $unmapOptOutIndex -lt $removeNatDiscoveryIndex) `
+    "The 'Unmap on stop/exit' opt-out check in Remove-UpnpPortMappings must run before any router discovery/contact (Get-UpnpNatDevice), not after -- otherwise the router still gets contacted on every stop/exit regardless of the checkbox."
+$optOutBlock = $upnpSource.Substring($unmapOptOutIndex, $removeNatDiscoveryIndex - $unmapOptOutIndex)
+Assert-UpnpRestartNoRemap (-not $optOutBlock.Contains('$script:ActiveUpnpMappings =')) `
+    "The 'Unmap on stop/exit' opt-out path must NOT clear `$script:ActiveUpnpMappings -- the mappings are still live on the router, and clearing the tracking here would make Add-UpnpPortMappings' 'already mapped' guard wrongly re-map them (and lose track of what's actually on the router) the next time a stream starts."
+Write-Output "Remove-UpnpPortMappings: 'Unmap on stop/exit' unchecked skips the router entirely and preserves mapping tracking."
 
 Write-Output ""
 Write-Output "UPnP restart-no-remap checks passed."

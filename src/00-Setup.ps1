@@ -5733,6 +5733,7 @@ $script:DefaultUpnpEnabled = $false
 $script:DefaultUpnpMapSignaling = $true
 $script:DefaultUpnpMapRtp = $true
 $script:DefaultUpnpMapWebServer = $true
+$script:DefaultUpnpUnmapOnStop = $true
 $script:DefaultUpnpSignalingExternalPort = 0
 $script:DefaultUpnpSplitAudioExternalPort = 0
 $script:DefaultUpnpWebServerExternalPort = 0

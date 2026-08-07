@@ -59,6 +59,7 @@ function Save-Settings {
             UpnpMapSignaling = [bool]$chkUpnpMapSignaling.Checked
             UpnpMapRtp = [bool]$chkUpnpMapRtp.Checked
             UpnpMapWebServer = [bool]$chkUpnpMapWebServer.Checked
+            UpnpUnmapOnStop = [bool]$chkUpnpUnmapOnStop.Checked
             UpnpSignalingExternalPort = [int]$numUpnpSignalingExternalPort.Value
             UpnpSplitAudioExternalPort = [int]$numUpnpSplitAudioExternalPort.Value
             UpnpWebServerExternalPort = [int]$numUpnpWebServerExternalPort.Value
@@ -479,6 +480,7 @@ function Restore-SettingsFromObject {
         if ($null -ne $settings.UpnpMapSignaling) { $chkUpnpMapSignaling.Checked = [bool]$settings.UpnpMapSignaling }
         if ($null -ne $settings.UpnpMapRtp) { $chkUpnpMapRtp.Checked = [bool]$settings.UpnpMapRtp }
         if ($null -ne $settings.UpnpMapWebServer) { $chkUpnpMapWebServer.Checked = [bool]$settings.UpnpMapWebServer }
+        if ($null -ne $settings.UpnpUnmapOnStop) { $chkUpnpUnmapOnStop.Checked = [bool]$settings.UpnpUnmapOnStop }
         if ($null -ne $settings.UpnpSignalingExternalPort) { $numUpnpSignalingExternalPort.Value = [decimal]([Math]::Min(65535, [Math]::Max(0, [int]$settings.UpnpSignalingExternalPort))) }
         if ($null -ne $settings.UpnpSplitAudioExternalPort) { $numUpnpSplitAudioExternalPort.Value = [decimal]([Math]::Min(65535, [Math]::Max(0, [int]$settings.UpnpSplitAudioExternalPort))) }
         if ($null -ne $settings.UpnpWebServerExternalPort) { $numUpnpWebServerExternalPort.Value = [decimal]([Math]::Min(65535, [Math]::Max(0, [int]$settings.UpnpWebServerExternalPort))) }

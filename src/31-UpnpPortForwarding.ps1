@@ -375,6 +375,20 @@ function Remove-UpnpPortMappings {
 
     if ($script:ActiveUpnpMappings.Count -eq 0) { return }
 
+    # Opt-out ("Unmap on stop/exit" unchecked): leave the mappings on the
+    # router untouched instead of removing them, e.g. for a broadcaster who
+    # always streams from this same machine on the same ports and would
+    # rather avoid the repeated router UPnP traffic of demapping just to
+    # remap moments later. Deliberately does NOT clear
+    # $script:ActiveUpnpMappings here -- the mappings are still genuinely
+    # live on the router, and leaving the tracking intact is what lets
+    # Add-UpnpPortMappings' own "already mapped" guard correctly skip
+    # re-mapping the next time a stream starts.
+    if ($chkUpnpUnmapOnStop -and -not $chkUpnpUnmapOnStop.Checked) {
+        if (-not $Quiet) { Append-Log "UPnP: leaving $($script:ActiveUpnpMappings.Count) mapping(s) in place on the router ('Unmap on stop/exit' is unchecked)." }
+        return
+    }
+
     $nat = Get-UpnpNatDevice -Quiet:$Quiet
     if (-not $nat) {
         if (-not $Quiet) {

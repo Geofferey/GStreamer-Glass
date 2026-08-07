@@ -1195,6 +1195,8 @@ function Apply-ModernDashboardUi {
     Add-Field $r -Label 'External (0=same)' -Control $numUpnpWebServerExternalPort -Width 90 | Out-Null
     $r = Add-Row $s
     Add-Field $r -Control $chkUpnpMapRtp -Width 180 | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Control $chkUpnpUnmapOnStop -Width 180 | Out-Null
 
     $s = Add-CollapsibleSection $paneNetwork 'Dynamic DNS'
     $r = Add-Row $s

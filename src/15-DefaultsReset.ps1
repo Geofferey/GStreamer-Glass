@@ -84,6 +84,7 @@ function Reset-TransportDefaults {
     $chkUpnpMapSignaling.Checked = $script:DefaultUpnpMapSignaling
     $chkUpnpMapRtp.Checked = $script:DefaultUpnpMapRtp
     $chkUpnpMapWebServer.Checked = $script:DefaultUpnpMapWebServer
+    $chkUpnpUnmapOnStop.Checked = $script:DefaultUpnpUnmapOnStop
     $numUpnpSignalingExternalPort.Value = $script:DefaultUpnpSignalingExternalPort
     $numUpnpSplitAudioExternalPort.Value = $script:DefaultUpnpSplitAudioExternalPort
     $numUpnpWebServerExternalPort.Value = $script:DefaultUpnpWebServerExternalPort
