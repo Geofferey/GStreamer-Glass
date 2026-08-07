@@ -2233,11 +2233,11 @@ $numAqStrength.Enabled = $false
 $settingsGroup.Controls.Add($numAqStrength)
 
 $chkDesktopAudio = New-Object System.Windows.Forms.CheckBox
-$chkDesktopAudio.Text = 'Desktop audio'
 $chkDesktopAudio.Location = New-Object System.Drawing.Point(15, 316)
-$chkDesktopAudio.Size = New-Object System.Drawing.Size(115, 23)
+$chkDesktopAudio.Size = New-Object System.Drawing.Size(16, 23)
 $chkDesktopAudio.Checked = $true
 $settingsGroup.Controls.Add($chkDesktopAudio)
+$toolTip.SetToolTip($chkDesktopAudio, 'Desktop audio: capture the selected output device via WASAPI loopback.')
 
 $chkAudioMixerMode = New-Object System.Windows.Forms.CheckBox
 $chkAudioMixerMode.Text = 'Route through audio mix'
@@ -2257,11 +2257,11 @@ $numDesktopVolume.Value = 100
 $settingsGroup.Controls.Add($numDesktopVolume)
 
 $chkMic = New-Object System.Windows.Forms.CheckBox
-$chkMic.Text = 'Default microphone'
 $chkMic.Location = New-Object System.Drawing.Point(280, 316)
-$chkMic.Size = New-Object System.Drawing.Size(140, 23)
+$chkMic.Size = New-Object System.Drawing.Size(16, 23)
 $chkMic.Checked = $false
 $settingsGroup.Controls.Add($chkMic)
+$toolTip.SetToolTip($chkMic, 'Default microphone: capture the selected input device.')
 
 $null = Add-Label $settingsGroup 'Volume %' 420 316 65
 $numMicVolume = New-Object System.Windows.Forms.NumericUpDown

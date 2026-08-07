@@ -737,6 +737,38 @@ function Apply-ModernDashboardUi {
         return $cell
     }
 
+    # A plain Add-Field for both a checkbox and a dropdown, one after the
+    # other, puts each in its OWN cell -- the dropdown's cell gains a label
+    # row above it, but the checkbox's cell (no label) does not, so the two
+    # controls end up on different rows of their respective cells and no
+    # longer line up: the checkbox sits at the top of the row (level with
+    # the label text) while the dropdown sits a row lower. Grouping them
+    # into one small nested FlowLayoutPanel first, then handing THAT to
+    # Add-Field as a single control, keeps them as plain left-to-right
+    # siblings at the same height, so the checkbox renders directly beside
+    # the dropdown box itself.
+    function Add-CheckedDeviceField {
+        param(
+            [System.Windows.Forms.FlowLayoutPanel]$Row,
+            [string]$Label,
+            [System.Windows.Forms.CheckBox]$CheckBox,
+            [System.Windows.Forms.Control]$Dropdown,
+            [int]$DropdownWidth
+        )
+        $group = New-Object System.Windows.Forms.FlowLayoutPanel
+        $group.FlowDirection = 'LeftToRight'
+        $group.WrapContents = $false
+        $group.AutoSize = $true
+        $group.AutoSizeMode = 'GrowAndShrink'
+        $group.Margin = New-Object System.Windows.Forms.Padding(0)
+        $CheckBox.Margin = New-Object System.Windows.Forms.Padding(0, 0, 2, 0)
+        $Dropdown.Width = $DropdownWidth
+        $Dropdown.Margin = New-Object System.Windows.Forms.Padding(0)
+        $group.Controls.Add($CheckBox)
+        $group.Controls.Add($Dropdown)
+        Add-Field $Row -Label $Label -Control $group | Out-Null
+    }
+
     # Pull each control out of the legacy GroupBox before the panes claim it.
     function Detach-FromLegacyGroup {
         param([System.Windows.Forms.Control]$Control)
@@ -1023,18 +1055,18 @@ function Apply-ModernDashboardUi {
     # Common (every-session) controls first: what you capture and how it's coded.
     $s = Add-Section $paneAudio 'Sources'
     $r = Add-Row $s
-    Add-Field $r -Control $chkDesktopAudio -Width 180 | Out-Null
+    Add-CheckedDeviceField $r -Label 'Desktop device' -CheckBox $chkDesktopAudio -Dropdown $cmbDesktopAudioDevice -DropdownWidth 392
+    $r = Add-Row $s
     Add-Field $r -Label 'Desktop volume' -Control $numDesktopVolume -Width 90 | Out-Null
-    Add-Field $r -Control $chkAudioMixerMode -Width 255 | Out-Null
     $r = Add-Row $s
-    Add-Field $r -Label 'Desktop device' -Control $cmbDesktopAudioDevice -Width 420 | Out-Null
-    Add-Field $r -Control $btnRefreshAudioDevices -Width 160 | Out-Null
+    Add-CheckedDeviceField $r -Label 'Mic device' -CheckBox $chkMic -Dropdown $cmbMicAudioDevice -DropdownWidth 392
     $r = Add-Row $s
-    Add-Field $r -Control $chkMic -Width 180 | Out-Null
     Add-Field $r -Label 'Mic volume' -Control $numMicVolume -Width 90 | Out-Null
     $r = Add-Row $s
-    Add-Field $r -Label 'Mic device' -Control $cmbMicAudioDevice -Width 420 | Out-Null
+    Add-Field $r -Control $btnRefreshAudioDevices -Width 160 | Out-Null
     Add-Field $r -Control $lblAudioDeviceStatus -Width 260 -Wrap | Out-Null
+    $r = Add-Row $s
+    Add-Field $r -Control $chkAudioMixerMode -Width 255 | Out-Null
 
     $s = Add-Section $paneAudio 'Audio codec'
     $r = Add-Row $s
