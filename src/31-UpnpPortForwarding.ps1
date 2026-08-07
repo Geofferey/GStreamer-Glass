@@ -260,6 +260,16 @@ function Get-UpnpRequiredMappings {
 }
 
 function Add-UpnpPortMappings {
+    # UPnP routers can rate-limit or otherwise dislike frequent add/remove
+    # churn -- skip entirely (no router discovery, no mapping-table
+    # enumeration) if this session is already tracking active mappings,
+    # rather than re-contacting the router just to reconcile into the same
+    # state. Callers that actually changed the required port set are
+    # responsible for calling Remove-UpnpPortMappings first -- the mirror
+    # image of Remove-UpnpPortMappings' own "nothing tracked, nothing to do"
+    # early return below.
+    if ($script:ActiveUpnpMappings.Count -gt 0) { return }
+
     $required = @(Get-UpnpRequiredMappings)
     if ($required.Count -eq 0) { return }
 

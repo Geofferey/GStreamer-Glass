@@ -399,7 +399,14 @@ function Start-GstStream {
 
             # Same gate as the plain gst-launch path below: only for a genuine
             # outbound stream, never for local scene editing/preview/recording.
-            if ($chkUpnpEnabled -and $chkUpnpEnabled.Checked -and $transportEnabled) {
+            # -not $Automatic excludes every restart resumption (manual
+            # Restart-button or truly automatic both funnel through here via
+            # -Automatic -- see the comment near the top of this function) --
+            # Stop-GstStream/Stop-ControlledLiveStream already skip
+            # Remove-UpnpPortMappings on a restart, so the mappings this is
+            # about to ask for are already live; touching the router again
+            # here would just be unnecessary churn.
+            if ($chkUpnpEnabled -and $chkUpnpEnabled.Checked -and $transportEnabled -and -not $Automatic) {
                 try { Add-UpnpPortMappings } catch { Append-Log "UPnP: $($_.Exception.Message)" }
             }
             if ($chkDdnsEnabled -and $chkDdnsEnabled.Checked -and $transportEnabled) {
@@ -505,11 +512,13 @@ function Start-GstStream {
         # Only for a genuine outbound stream -- $transportEnabled is already
         # forced false for Preview/Recording-only runs (Test-TransportEnabled
         # checks $script:ForceLocalPreviewMode), so local-only activity never
-        # touches the router. Mapping happens once per actual stream start;
-        # Add-UpnpPortMappings' own reconciliation logic makes a repeat call
-        # on an automatic restart a cheap no-op against already-live mappings
-        # rather than a real demap/remap cycle.
-        if ($chkUpnpEnabled -and $chkUpnpEnabled.Checked -and $transportEnabled) {
+        # touches the router. -not $Automatic excludes every restart
+        # resumption (manual Restart-button or truly automatic both funnel
+        # through here via -Automatic): Stop-GstStream/Stop-ControlledLiveStream
+        # already skip Remove-UpnpPortMappings on a restart, so those mappings
+        # are still live and there is nothing to reconcile -- mapping now
+        # happens exactly once per genuine stream start, not once per restart.
+        if ($chkUpnpEnabled -and $chkUpnpEnabled.Checked -and $transportEnabled -and -not $Automatic) {
             try { Add-UpnpPortMappings } catch { Append-Log "UPnP: $($_.Exception.Message)" }
         }
         if ($chkDdnsEnabled -and $chkDdnsEnabled.Checked -and $transportEnabled) {
@@ -730,7 +739,10 @@ function Stop-ControlledLiveStream {
     }
     Close-ControlledLiveWorkerPipe
     # Only demap on a genuine stop, not a settings-triggered restart-in-place
-    # -- see the identical comment in Stop-GstStream's plain-path teardown.
+    # -- the matching Start-GstStream resumption skips re-mapping too (its
+    # own -not $Automatic gate), so a restart now leaves these mappings
+    # completely untouched end to end instead of a demap/remap cycle. See
+    # the identical comment in Stop-GstStream's plain-path teardown.
     if (-not $Restart) {
         try { Remove-UpnpPortMappings } catch {}
     }
@@ -952,7 +964,9 @@ function Stop-GstStream {
     Close-WebRtcPortRangeWorkerPipe
     # Only demap on a genuine stop, not a settings-triggered restart-in-place
     # -- routers can rate-limit/dislike frequent UPnP add/remove churn, and
-    # a restart is about to re-map the exact same ports moments later anyway.
+    # the matching Start-GstStream resumption skips re-mapping too (its own
+    # -not $Automatic gate), so a restart now leaves these mappings
+    # completely untouched end to end instead of a demap/remap cycle.
     if (-not $Restart) {
         try { Remove-UpnpPortMappings } catch {}
     }
