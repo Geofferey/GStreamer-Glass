@@ -624,31 +624,22 @@ function Save-LetsEncryptCertificatePfx {
     return $pfxPath
 }
 
-# Generates a self-signed TLS server certificate -- no ACME account, no DNS-01
-# challenge, no external CA at all -- for setups that just need embedded TLS
-# to work (e.g. a LAN-only viewer, or testing, or no real domain yet).
-# Deliberately reuses everything the Let's Encrypt path already has instead
-# of standing up a parallel certificate pipeline: the same RSA key
-# constructor (New-LetsEncryptCertificateKey), the same certificate storage
-# directory (Get-LetsEncryptCertificateDirectory), and the same PFX-on-disk
-# shape every other certificate source here already produces. Once generated,
-# its path is just dropped into the existing "custom cert" field
-# ($txtTlsCertificatePath) like any hand-picked PFX -- Resolve-
-# EmbeddedTlsCertificatePath/Get-EmbeddedTlsCertificate need no changes at
-# all to pick it up, since from their perspective it's indistinguishable from
-# a certificate the broadcaster obtained some other way and pointed at.
-function New-SelfSignedTlsCertificate {
-    param([Parameter(Mandatory)][string]$Hostname)
+# Shared CertificateRequest construction for both New-SelfSignedTlsCertificate
+# and Export-TlsCertificateSigningRequest below -- SAN, basic constraints,
+# key usage, and EKU are identical regardless of whether the request ends up
+# self-signed locally or sent to a real CA for signing, so this is built once
+# and each caller just decides what to do with the finished CertificateRequest.
+function New-EmbeddedTlsCertificateRequest {
+    param([Parameter(Mandatory)][string]$Hostname, [Parameter(Mandatory)]$Key)
 
-    $key = New-LetsEncryptCertificateKey
     $subject = New-Object System.Security.Cryptography.X509Certificates.X500DistinguishedName("CN=$Hostname")
     $request = New-Object System.Security.Cryptography.X509Certificates.CertificateRequest(
-        $subject, $key, [System.Security.Cryptography.HashAlgorithmName]::SHA256, [System.Security.Cryptography.RSASignaturePadding]::Pkcs1)
+        $subject, $Key, [System.Security.Cryptography.HashAlgorithmName]::SHA256, [System.Security.Cryptography.RSASignaturePadding]::Pkcs1)
 
-    # A self-signed cert is typically reached by IP on a LAN rather than a
-    # real DNS name -- add it as whichever SAN type it actually parses as.
-    # localhost/loopback are always included in addition, so the app's own
-    # machine can reach itself over TLS regardless of what was entered.
+    # Typically reached by IP on a LAN rather than a real DNS name -- add it
+    # as whichever SAN type it actually parses as. localhost/loopback are
+    # always included in addition, so the app's own machine can reach itself
+    # over TLS regardless of what was entered.
     $sanBuilder = New-Object System.Security.Cryptography.X509Certificates.SubjectAlternativeNameBuilder
     $parsedIp = $null
     if ([System.Net.IPAddress]::TryParse($Hostname, [ref]$parsedIp)) {
@@ -670,14 +661,36 @@ function New-SelfSignedTlsCertificate {
             $false
         )
     )
-    # Enhanced Key Usage = TLS Server Authentication. Not every client checks
-    # this, but some strict ones (recent Windows/Schannel included) do, and
-    # it costs nothing to include.
+    # Enhanced Key Usage = TLS Server Authentication. Not every client/CA
+    # checks or honors this, but some strict ones (recent Windows/Schannel
+    # included) do, and it costs nothing to include.
     $serverAuthOid = New-Object System.Security.Cryptography.OidCollection
     $null = $serverAuthOid.Add((New-Object System.Security.Cryptography.Oid('1.3.6.1.5.5.7.3.1')))
     $request.CertificateExtensions.Add(
         [System.Security.Cryptography.X509Certificates.X509EnhancedKeyUsageExtension]::new($serverAuthOid, $false)
     )
+
+    return $request
+}
+
+# Generates a self-signed TLS server certificate -- no ACME account, no DNS-01
+# challenge, no external CA at all -- for setups that just need embedded TLS
+# to work (e.g. a LAN-only viewer, or testing, or no real domain yet).
+# Deliberately reuses everything the Let's Encrypt path already has instead
+# of standing up a parallel certificate pipeline: the same RSA key
+# constructor (New-LetsEncryptCertificateKey), the same certificate storage
+# directory (Get-LetsEncryptCertificateDirectory), and the same PFX-on-disk
+# shape every other certificate source here already produces. Once generated,
+# its path is just dropped into the existing "custom cert" field
+# ($txtTlsCertificatePath) like any hand-picked PFX -- Resolve-
+# EmbeddedTlsCertificatePath/Get-EmbeddedTlsCertificate need no changes at
+# all to pick it up, since from their perspective it's indistinguishable from
+# a certificate the broadcaster obtained some other way and pointed at.
+function New-SelfSignedTlsCertificate {
+    param([Parameter(Mandatory)][string]$Hostname)
+
+    $key = New-LetsEncryptCertificateKey
+    $request = New-EmbeddedTlsCertificateRequest -Hostname $Hostname -Key $key
 
     # Ten years: this never goes through a public CA's shorter-lifetime
     # policy (that only applies to publicly-trusted certificates), and a
@@ -699,6 +712,115 @@ function New-SelfSignedTlsCertificate {
     $pfxPath = Join-Path (Get-LetsEncryptCertificateDirectory) "selfsigned-$safeFileName.pfx"
     [System.IO.File]::WriteAllBytes($pfxPath, $pfxBytes)
     return $pfxPath
+}
+
+# Wraps DER bytes as PEM text, wrapping base64 at the conventional 64
+# columns. Symmetric counterpart to ConvertFrom-PemBody above.
+function ConvertTo-Pem {
+    param([Parameter(Mandatory)][byte[]]$Der, [Parameter(Mandatory)][string]$Label)
+    $base64 = [Convert]::ToBase64String($Der)
+    $lines = for ($i = 0; $i -lt $base64.Length; $i += 64) {
+        $base64.Substring($i, [Math]::Min(64, $base64.Length - $i))
+    }
+    return "-----BEGIN $Label-----`n" + ($lines -join "`n") + "`n-----END $Label-----`n"
+}
+
+# DER definite-length encoding -- the write-side mirror of Read-DerTlv's
+# length parsing above (same definite-length-only scope).
+function Write-DerLength {
+    param([int]$Length)
+    if ($Length -lt 0x80) { return [byte[]]@([byte]$Length) }
+    $bytes = [System.Collections.Generic.List[byte]]::new()
+    $remaining = $Length
+    while ($remaining -gt 0) {
+        $bytes.Insert(0, [byte]($remaining -band 0xFF))
+        $remaining = $remaining -shr 8
+    }
+    return [byte[]](@([byte](0x80 -bor $bytes.Count)) + $bytes.ToArray())
+}
+
+function Write-DerTlv {
+    param([byte]$Tag, [byte[]]$Content)
+    return [byte[]]((, $Tag) + (Write-DerLength $Content.Length) + $Content)
+}
+
+# DER INTEGER requires a leading 0x00 sign-padding byte whenever the high bit
+# of the raw magnitude would otherwise read as negative -- the write-side
+# mirror of ConvertFrom-DerInteger's strip operation above.
+function ConvertTo-DerInteger {
+    param([byte[]]$Magnitude)
+    if ($Magnitude.Length -eq 0) { return [byte[]]@(0x00) }
+    if ($Magnitude[0] -ge 0x80) { return [byte[]](@([byte]0x00) + $Magnitude) }
+    return $Magnitude
+}
+
+# PKCS#1 RSAPrivateKey ::= SEQUENCE { version, n, e, d, p, q, dp, dq, qInv }
+# -- the write-side mirror of ConvertFrom-Pkcs1RsaPrivateKeyDer above. Used
+# instead of RSA.ExportRSAPrivateKeyPem() (a .NET 5+-only instance method)
+# so exporting a private key works identically under both runtimes this app
+# can be hosted under, same reasoning as every other hand-rolled PKCS#1/
+# PKCS#8 helper in this file.
+function ConvertTo-Pkcs1RsaPrivateKeyDer {
+    param([Parameter(Mandatory)][System.Security.Cryptography.RSAParameters]$Parameters)
+    $fields = @(
+        [byte[]]@(0x00),
+        $Parameters.Modulus,
+        $Parameters.Exponent,
+        $Parameters.D,
+        $Parameters.P,
+        $Parameters.Q,
+        $Parameters.DP,
+        $Parameters.DQ,
+        $Parameters.InverseQ
+    )
+    $sequenceContent = [byte[]]@()
+    foreach ($field in $fields) {
+        $sequenceContent += (Write-DerTlv -Tag 0x02 -Content (ConvertTo-DerInteger $field))
+    }
+    return Write-DerTlv -Tag 0x30 -Content $sequenceContent
+}
+
+# Exports a CSR (PKCS#10, PEM) plus its matching private key (PEM, PKCS#1)
+# for submission to a real CA -- for setups that want a properly (publicly
+# or internally) trusted certificate instead of a self-signed one, without
+# going through Let's Encrypt/DNS-01. Reuses the same RSA key constructor
+# and request-building logic (New-EmbeddedTlsCertificateRequest) as New-
+# SelfSignedTlsCertificate, and the same certificate storage directory every
+# other certificate source here uses. The private key is deliberately saved
+# as a plain PEM file: once the CA's signed certificate comes back, it drops
+# straight into the EXISTING "Private key path" field alongside the returned
+# certificate in "Certificate path" -- exactly like any other custom cert/key
+# pair, no new pairing/loading mechanism needed.
+function Export-TlsCertificateSigningRequest {
+    param([Parameter(Mandatory)][string]$Hostname)
+
+    $key = New-LetsEncryptCertificateKey
+    $request = New-EmbeddedTlsCertificateRequest -Hostname $Hostname -Key $key
+
+    $csrPem = ConvertTo-Pem -Der $request.CreateSigningRequest() -Label 'CERTIFICATE REQUEST'
+    $keyPem = ConvertTo-Pem -Der (ConvertTo-Pkcs1RsaPrivateKeyDer -Parameters $key.ExportParameters($true)) -Label 'RSA PRIVATE KEY'
+
+    $safeFileName = ($Hostname -replace '[^A-Za-z0-9.\-]', '_')
+    $certDirectory = Get-LetsEncryptCertificateDirectory
+    $csrPath = Join-Path $certDirectory "csr-$safeFileName.csr"
+    $keyPath = Join-Path $certDirectory "csr-$safeFileName.key"
+    [System.IO.File]::WriteAllText($csrPath, $csrPem)
+    [System.IO.File]::WriteAllText($keyPath, $keyPem)
+
+    return [pscustomobject]@{ CsrPath = $csrPath; KeyPath = $keyPath; CsrPem = $csrPem }
+}
+
+# Shared by both the "Generate self-signed cert" and "Export CSR" button
+# handlers (src/90-MainWindow.ps1): the hostname/IP field they both read is
+# optional, auto-detecting this machine's LAN IPv4 address (falling back to
+# 'localhost') when left blank, rather than duplicating that fallback chain
+# in each handler.
+function Get-EmbeddedTlsCertificateHostnameOrDefault {
+    $hostname = if ($txtSelfSignedTlsHostname) { [string]$txtSelfSignedTlsHostname.Text.Trim() } else { '' }
+    if (-not [string]::IsNullOrWhiteSpace($hostname)) { return $hostname }
+    $detected = Get-UpnpLocalIPv4Address
+    if (-not [string]::IsNullOrWhiteSpace($detected)) { return $detected }
+    return 'localhost'
 }
 
 function Get-LetsEncryptCertificateStatePath { Join-Path (Get-LetsEncryptCertificateDirectory) 'certificate-state.json' }
@@ -1016,7 +1138,7 @@ function Update-EmbeddedTlsUi {
     $enabled = [bool]($chkEmbeddedTlsEnabled -and $chkEmbeddedTlsEnabled.Checked)
     foreach ($control in @(
         $txtTlsCertificatePath, $btnBrowseTlsCertificatePath, $txtTlsPrivateKeyPath, $btnBrowseTlsPrivateKeyPath,
-        $txtSelfSignedTlsHostname, $btnGenerateSelfSignedTlsCertificate
+        $txtSelfSignedTlsHostname, $btnGenerateSelfSignedTlsCertificate, $btnExportTlsCsr
     )) {
         if ($control) { $control.Enabled = $enabled }
     }

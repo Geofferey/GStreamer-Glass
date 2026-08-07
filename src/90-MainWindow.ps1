@@ -807,7 +807,7 @@ $txtSelfSignedTlsHostname.Location = New-Object System.Drawing.Point(15, 548)
 $txtSelfSignedTlsHostname.Size = New-Object System.Drawing.Size(320, 23)
 $txtSelfSignedTlsHostname.Text = $script:DefaultSelfSignedTlsHostname
 $settingsGroup.Controls.Add($txtSelfSignedTlsHostname)
-$toolTip.SetToolTip($txtSelfSignedTlsHostname, "Optional. Hostname or IP address the generated certificate's Subject/SAN will cover. Leave blank to auto-detect this machine's LAN IPv4 address when generating. localhost/127.0.0.1 are always included in addition.")
+$toolTip.SetToolTip($txtSelfSignedTlsHostname, "Optional. Hostname or IP address the generated certificate/CSR's Subject/SAN will cover. Leave blank to auto-detect this machine's LAN IPv4 address when generating. localhost/127.0.0.1 are always included in addition.")
 
 $btnGenerateSelfSignedTlsCertificate = New-Object System.Windows.Forms.Button
 $btnGenerateSelfSignedTlsCertificate.Text = 'Generate self-signed cert'
@@ -815,6 +815,13 @@ $btnGenerateSelfSignedTlsCertificate.Location = New-Object System.Drawing.Point(
 $btnGenerateSelfSignedTlsCertificate.Size = New-Object System.Drawing.Size(160, 27)
 $settingsGroup.Controls.Add($btnGenerateSelfSignedTlsCertificate)
 $toolTip.SetToolTip($btnGenerateSelfSignedTlsCertificate, "Generates a new self-signed certificate (no external CA, no Let's Encrypt/DNS needed) and fills in the certificate path above to use it immediately. Viewers' browsers will show an untrusted-certificate warning the first time they connect unless the certificate is manually installed as trusted.")
+
+$btnExportTlsCsr = New-Object System.Windows.Forms.Button
+$btnExportTlsCsr.Text = 'Export CSR'
+$btnExportTlsCsr.Location = New-Object System.Drawing.Point(15, 548)
+$btnExportTlsCsr.Size = New-Object System.Drawing.Size(160, 27)
+$settingsGroup.Controls.Add($btnExportTlsCsr)
+$toolTip.SetToolTip($btnExportTlsCsr, 'Generates a private key and a PKCS#10 certificate signing request (CSR) for the hostname/IP above, for submission to a real CA instead of self-signing. Saves both files next to the certificate storage directory and copies the CSR text to the clipboard. Once the CA returns a signed certificate, put its path in "Certificate path" above and this request''s .key file in "Private key path".')
 
 $chkTlsAllowInsecurePorts = New-Object System.Windows.Forms.CheckBox
 $chkTlsAllowInsecurePorts.Text = 'Allow insecure listeners (0.0.0.0 if embedded TLS/auth proxy is active)'
@@ -4607,11 +4614,7 @@ $btnBrowseTlsPrivateKeyPath.Add_Click({
 $btnGenerateSelfSignedTlsCertificate.Add_Click({
     $lowerTabs.SelectedTab = $tabLog
     try {
-        $hostname = [string]$txtSelfSignedTlsHostname.Text.Trim()
-        if ([string]::IsNullOrWhiteSpace($hostname)) {
-            $hostname = Get-UpnpLocalIPv4Address
-            if ([string]::IsNullOrWhiteSpace($hostname)) { $hostname = 'localhost' }
-        }
+        $hostname = Get-EmbeddedTlsCertificateHostnameOrDefault
         $pfxPath = New-SelfSignedTlsCertificate -Hostname $hostname
         # A freshly generated PFX already embeds its own private key, same
         # as any other .pfx picked via Browse -- clear the separate key
@@ -4624,6 +4627,17 @@ $btnGenerateSelfSignedTlsCertificate.Add_Click({
         Save-Settings
     }
     catch { Append-Log "TLS: self-signed certificate generation failed: $($_.Exception.Message)" }
+})
+$btnExportTlsCsr.Add_Click({
+    $lowerTabs.SelectedTab = $tabLog
+    try {
+        $hostname = Get-EmbeddedTlsCertificateHostnameOrDefault
+        $result = Export-TlsCertificateSigningRequest -Hostname $hostname
+        try { [GstClipboard]::SetText($result.CsrPem) } catch {}
+        Append-Log "TLS: exported a certificate signing request for '$hostname' -> $($result.CsrPath) (CSR text copied to clipboard)"
+        Append-Log "TLS: matching private key -> $($result.KeyPath) -- once your CA returns a signed certificate, put its path in 'Certificate path' and this key file's path in 'Private key path'."
+    }
+    catch { Append-Log "TLS: certificate signing request export failed: $($_.Exception.Message)" }
 })
 $btnBrowseLetsEncryptCertificateDirectory.Add_Click({
     try {

@@ -1252,9 +1252,10 @@ function Apply-ModernDashboardUi {
     $r = Add-Row $s
     Add-Field $r -Control $btnBrowseTlsPrivateKeyPath -Width 80 | Out-Null
     $r = Add-Row $s
-    Add-Field $r -Label 'Self-signed cert hostname/IP (optional)' -Control $txtSelfSignedTlsHostname -Width 320 | Out-Null
+    Add-Field $r -Label 'Certificate hostname/IP (optional)' -Control $txtSelfSignedTlsHostname -Width 320 | Out-Null
     $r = Add-Row $s
     Add-Field $r -Control $btnGenerateSelfSignedTlsCertificate -Width 160 | Out-Null
+    Add-Field $r -Control $btnExportTlsCsr -Width 160 | Out-Null
     $r = Add-Row $s
     Add-Field $r -Control $chkTlsAllowInsecurePorts -Width 420 | Out-Null
     $r = Add-Row $s
