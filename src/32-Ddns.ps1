@@ -453,4 +453,19 @@ function Update-DdnsUi {
         $script:paneDdnsAccount.Visible = ($isDynV2 -or $isCustom)
         $script:paneDdnsAccount.Enabled = $enabled
     }
+
+    # Toggling .Visible on the sub-panels above doesn't reliably propagate
+    # through this app's nested AutoSize/GrowAndShrink FlowLayoutPanel
+    # cascade (sub-panel -> this section's body -> its header/body wrapper
+    # -> the outer scrollable pane) via WinForms' own automatic layout
+    # invalidation -- confirmed live, and what let this section's body
+    # intermittently render in the wrong stacking position relative to
+    # other sections (see Add-CollapsibleSection's wrapper comment,
+    # src/12-MainDashboardUi.ps1). Walk up and reflow every FlowLayoutPanel
+    # ancestor explicitly instead of relying on that automatic propagation.
+    $ancestor = $script:paneDdnsToken
+    while ($ancestor -is [System.Windows.Forms.FlowLayoutPanel]) {
+        $ancestor.PerformLayout()
+        $ancestor = $ancestor.Parent
+    }
 }

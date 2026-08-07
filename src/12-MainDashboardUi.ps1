@@ -517,13 +517,38 @@ function Apply-ModernDashboardUi {
         $chevronCollapsed = [char]::ConvertFromUtf32(0x25B6)
         $chevronExpanded  = [char]::ConvertFromUtf32(0x25BC)
 
+        # The header and its body are added to a dedicated wrapper -- never
+        # directly to $Pane -- so they are always ONE atomic unit in $Pane's
+        # own Controls collection. Adding them as two separate direct
+        # children of $Pane relied on nothing ever needing to reflow $Pane
+        # between them; in practice, any later section's construction, or a
+        # settings-load-time .Visible toggle deep inside an already-built
+        # section's body (e.g. Update-DdnsUi's provider-specific
+        # sub-panels) that didn't happen to trigger a full, correct relayout
+        # of this nested-AutoSize-FlowLayoutPanel cascade, could leave this
+        # header sitting in the right place while its own body rendered
+        # after several unrelated LATER sections' headers instead --
+        # confirmed live, and intermittent by nature since it depends on
+        # incidental timing, not anything deterministic. With this wrapper,
+        # a stale/partial relayout can still get the wrapper's own size or
+        # position wrong, but it can never again let some OTHER section's
+        # header land between this header and its own body -- that's now
+        # structurally impossible instead of a timing race.
+        $wrapper = New-Object System.Windows.Forms.FlowLayoutPanel
+        $wrapper.FlowDirection = 'TopDown'
+        $wrapper.WrapContents = $false
+        $wrapper.AutoSize = $true
+        $wrapper.AutoSizeMode = 'GrowAndShrink'
+        $wrapper.Margin = New-Object System.Windows.Forms.Padding(0)
+        $Pane.Controls.Add($wrapper)
+
         $header = New-Object System.Windows.Forms.Label
         $header.AutoSize = $true
         $header.Font = New-Object System.Drawing.Font('Segoe UI', 8, [System.Drawing.FontStyle]::Bold)
         $header.ForeColor = $script:ColorAccent
         $header.Margin = New-Object System.Windows.Forms.Padding(2, 12, 0, 4)
         $header.Cursor = [System.Windows.Forms.Cursors]::Hand
-        $Pane.Controls.Add($header)
+        $wrapper.Controls.Add($header)
 
         $section = New-Object System.Windows.Forms.FlowLayoutPanel
         $section.FlowDirection = 'TopDown'
@@ -531,13 +556,18 @@ function Apply-ModernDashboardUi {
         $section.AutoSize = $true
         $section.AutoSizeMode = 'GrowAndShrink'
         $section.Margin = New-Object System.Windows.Forms.Padding(0)
-        $Pane.Controls.Add($section)
+        $wrapper.Controls.Add($section)
 
         $titleText = $Title.ToUpperInvariant()
         # All state the click handler needs lives on the header's Tag, so the
         # handler can be a plain scriptblock reading its sender -- no closures.
+        # Pane is captured directly (not derived via .Parent.Parent at click
+        # time) so the handler never has to assume how many wrapper levels
+        # sit between the section and the real scrollable pane.
         $header.Tag = @{
             Section   = $section
+            Wrapper   = $wrapper
+            Pane      = $Pane
             Collapsed = $Collapsed
             Title     = $titleText
             ChevronC  = $chevronCollapsed
@@ -565,7 +595,15 @@ function Apply-ModernDashboardUi {
                 $sender.Text = "$($state.ChevronE)  $($state.Title)"
                 $state.Section.Visible = $true
             }
-            $pane = $state.Section.Parent
+            # Reflow both levels explicitly -- the wrapper (whose own AutoSize
+            # height depends on the section's visibility) and the outer
+            # scrollable pane (whose scroll range and this wrapper's
+            # siblings' positions depend on the wrapper's size) -- rather
+            # than relying on WinForms to propagate this automatically
+            # through the nested AutoSize cascade, which is exactly what
+            # proved unreliable and let sections land in the wrong place.
+            if ($state.Wrapper) { $state.Wrapper.PerformLayout() }
+            $pane = $state.Pane
             if ($pane) {
                 $pane.PerformLayout()
                 # An AutoScroll FlowLayoutPanel doesn't reliably keep its scroll
