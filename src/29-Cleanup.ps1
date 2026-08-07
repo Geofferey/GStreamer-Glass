@@ -102,6 +102,27 @@ function Invoke-ApplicationCleanup {
     )
     try { Request-StreamStop -Exiting } catch { Append-Log "Stop during exit failed: $($_.Exception.Message)" }
 
+    # Request-StreamStop above may have just kicked off a background seek-
+    # index repair for a recording that was active (Start-RecordingIndexRepair,
+    # 21-Recording.ps1) -- normally drained by the 400ms poll tick, which is
+    # already stopped by the time this runs (see $pollTimer.Stop() in
+    # $form.Add_FormClosing). Without this wait, the repair's temp output
+    # file would still get produced (it isn't tied to the kill-on-job-close
+    # Job Object below, deliberately, so exiting can't cut it off mid-write)
+    # but would never get swapped in, and would be left next to the original
+    # forever. The remux itself is a fast repackage with no re-encode, so a
+    # short bounded wait covers the common case without meaningfully delaying
+    # exit; skipped on a Windows logoff/shutdown for the same reason as the
+    # grace sleep below -- nobody is around to see it finish either way.
+    if (-not $script:FastShutdownCleanup -and $script:PendingRecordingRepairs.Count -gt 0) {
+        Append-Log 'RECORDING: waiting briefly for the in-progress seek-index repair to finish before exiting...'
+        $repairDeadline = (Get-Date).AddSeconds(10)
+        while ($script:PendingRecordingRepairs.Count -gt 0 -and (Get-Date) -lt $repairDeadline) {
+            Start-Sleep -Milliseconds 200
+            Update-PendingRecordingRepairs
+        }
+    }
+
     # After a normal Stop-button stop, the auth proxy worker keeps running
     # indefinitely with forwarding suspended, so any request a viewer's
     # browser happens to make gets the holding-page media back instantly --

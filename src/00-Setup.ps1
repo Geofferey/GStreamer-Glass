@@ -5652,6 +5652,16 @@ $script:SceneEditorCanvasHomeAnchor = $null
 $script:SceneEditorCanvasHomeBorderStyle = $null
 $script:SceneEditorCanvasHostedInPreview = $false
 $script:ResolvedRecordingPath = ''
+# Whether the recording pipeline that just started included an audio branch --
+# snapshotted at start time (see Start-GstStream/Start-ControlledLiveWorker)
+# because the recording controls can change before the repair pass runs; see
+# Start-RecordingIndexRepair (21-Recording.ps1) for why this matters (the
+# remux pipeline must not reference an audio pad that will never exist).
+$script:RecordingHasAudioTrack = $false
+# Background remux-repair jobs started by Start-RecordingIndexRepair, drained
+# by Update-PendingRecordingRepairs on the existing 400ms poll tick. Each
+# entry is a pscustomobject: Process, OriginalPath, TempPath, StartedAt.
+$script:PendingRecordingRepairs = New-Object System.Collections.Generic.List[object]
 $script:CaptureWindowHwnd = [IntPtr]::Zero
 $script:CaptureWindowTitle = ''
 $script:NextFullscreenProbe = [datetime]::MinValue

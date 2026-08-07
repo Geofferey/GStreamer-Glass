@@ -8,6 +8,15 @@ function Test-RecordingEnabled {
     )
 }
 
+function Test-RecordingHasAudioTrack {
+    # Same condition Build-RecordingRawAudioChain uses to decide whether the
+    # recording pipeline gets an audio branch at all -- kept in sync here
+    # rather than re-derived, since Start-RecordingIndexRepair needs to know
+    # this AFTER the recording has already stopped and the controls may have
+    # changed.
+    return [bool]($chkRecordingDesktopAudio.Checked -or $chkRecordingMic.Checked)
+}
+
 function Get-SelectedRecordingEncoderDefinition {
     return Get-EncoderDefinitionForCombo -Combo $cmbRecordingEncoder
 }
@@ -461,5 +470,128 @@ function Assert-RecordingFrameRateCompatible {
     throw ("Recording FPS must match Video FPS while transport is enabled. " +
         "Set Video FPS to $([int]$numRecordingFps.Value), set Recording FPS to $([int]$numFps.Value), " +
         "or disable transport for recording-only capture. The D3D11 branch cannot convert frame rate with d3d11convert.")
+}
+
+# Every stop of a recording pipeline in this app kills gst-launch outright
+# (taskkill /T /F, Stop-ProcessTreeById) rather than sending it a clean EOS --
+# necessary everywhere else (killing the process IS the signalling boundary a
+# WebRTC/RTMP viewer expects), but it means matroskamux never gets to write
+# its Cues seek-index, since that only happens at finalization. The result
+# still plays fine start-to-finish, but can't be seeked in most players.
+#
+# This repairs that after the fact: matroskademux/matroskamux can rebuild a
+# correct Cues index from the already-valid frame/cluster data without
+# re-encoding, in a fraction of a second even for a long recording, so it
+# runs as a background pass right after each stop rather than trying to avoid
+# the hard kill in the first place. Named dynamic pads (video_0/audio_0) are
+# required on both ends -- gst-launch's bare-dot auto-request linking is
+# unreliable with matroskamux's on-request sink pads. HasAudioTrack must
+# reflect whether the ORIGINAL recording actually had an audio branch: an
+# audio_0 link that will never resolve (no audio track in the source) hangs
+# the pipeline forever instead of erroring, since gst-launch's delayed-linking
+# keeps waiting for a pad that will never appear.
+function Start-RecordingIndexRepair {
+    param(
+        [Parameter(Mandatory)][string]$RecordingPath,
+        [bool]$HasAudioTrack
+    )
+
+    try {
+        if ([string]::IsNullOrWhiteSpace($RecordingPath) -or -not (Test-Path -LiteralPath $RecordingPath -PathType Leaf)) { return }
+        if ((Get-Item -LiteralPath $RecordingPath).Length -le 0) { return }
+
+        $gstPath = Resolve-GstLaunchSelection -RequestedPath $txtGstPath.Text -Quiet
+        if (-not (Test-GstLaunchPath $gstPath)) {
+            Append-Log "RECORDING: could not locate gst-launch-1.0.exe to repair the seek index for '$RecordingPath' -- the file will still play but may not be seekable in every player."
+            return
+        }
+
+        $tempPath = "$RecordingPath.repair-$([Guid]::NewGuid().ToString('N')).mkv"
+        $videoLink = 'demux.video_0 ! queue ! mux.video_0'
+        $audioLink = if ($HasAudioTrack) { ' demux.audio_0 ! queue ! mux.audio_0' } else { '' }
+        $pipelineArgs = "-e filesrc location=$(Quote-GstValue $RecordingPath) ! matroskademux name=demux matroskamux name=mux ! filesink location=$(Quote-GstValue $tempPath) $videoLink$audioLink"
+
+        $process = Start-Process -FilePath $gstPath -ArgumentList $pipelineArgs -WindowStyle Hidden -PassThru
+        Append-Log "RECORDING: repairing the seek index for '$RecordingPath' in the background (PID $($process.Id))."
+
+        $script:PendingRecordingRepairs.Add([pscustomobject]@{
+            Process      = $process
+            OriginalPath = $RecordingPath
+            TempPath     = $tempPath
+            StartedAt    = Get-Date
+        })
+    }
+    catch {
+        Append-Log "RECORDING: could not start the seek-index repair pass for '$RecordingPath': $($_.Exception.Message)"
+    }
+}
+
+# Drained from the existing 400ms poll tick (90-MainWindow.ps1) rather than a
+# dedicated timer -- this is exactly the same kind of "notice a background
+# process finished" bookkeeping that timer already does for the auth proxy
+# worker. Swap-in uses a rename-rename-cleanup sequence (never a direct
+# overwrite) so the original recording is never in a state that could be lost
+# to a mid-swap failure: the original only stops existing once the repaired
+# file has successfully taken its place, and any failure restores it.
+function Update-PendingRecordingRepairs {
+    if ($script:PendingRecordingRepairs.Count -eq 0) { return }
+
+    # A remux here is a straight repackage with no re-encode, so even a very
+    # long recording finishes in well under a minute. Anything still running
+    # past this is treated as a stuck/broken source rather than waited on
+    # forever -- the original recording is untouched either way.
+    $timeoutSeconds = 300
+
+    $stillPending = New-Object System.Collections.Generic.List[object]
+    foreach ($entry in $script:PendingRecordingRepairs) {
+        $proc = $entry.Process
+        $timedOut = ((Get-Date) - $entry.StartedAt).TotalSeconds -gt $timeoutSeconds
+
+        if (-not $proc.HasExited -and -not $timedOut) {
+            $stillPending.Add($entry)
+            continue
+        }
+
+        if (-not $proc.HasExited -and $timedOut) {
+            Append-Log "RECORDING: seek-index repair for '$($entry.OriginalPath)' timed out; leaving the original recording untouched."
+            try { Stop-ProcessTreeById -ProcessId $proc.Id } catch {}
+            try { $proc.Dispose() } catch {}
+            try { if (Test-Path -LiteralPath $entry.TempPath) { Remove-Item -LiteralPath $entry.TempPath -Force -ErrorAction SilentlyContinue } } catch {}
+            continue
+        }
+
+        $exitCode = $proc.ExitCode
+        try { $proc.Dispose() } catch {}
+
+        $tempOk = (Test-Path -LiteralPath $entry.TempPath -PathType Leaf) -and ((Get-Item -LiteralPath $entry.TempPath).Length -gt 0)
+        if ($exitCode -ne 0 -or -not $tempOk) {
+            Append-Log "RECORDING: seek-index repair for '$($entry.OriginalPath)' did not complete cleanly (exit $exitCode); the original recording was left untouched."
+            try { if (Test-Path -LiteralPath $entry.TempPath) { Remove-Item -LiteralPath $entry.TempPath -Force -ErrorAction SilentlyContinue } } catch {}
+            continue
+        }
+
+        $backupPath = "$($entry.OriginalPath).prerepair-$([Guid]::NewGuid().ToString('N')).bak"
+        try {
+            Move-Item -LiteralPath $entry.OriginalPath -Destination $backupPath -Force
+        }
+        catch {
+            Append-Log "RECORDING: could not swap in the repaired recording for '$($entry.OriginalPath)': $($_.Exception.Message)"
+            try { Remove-Item -LiteralPath $entry.TempPath -Force -ErrorAction SilentlyContinue } catch {}
+            continue
+        }
+
+        try {
+            Move-Item -LiteralPath $entry.TempPath -Destination $entry.OriginalPath -Force
+            Remove-Item -LiteralPath $backupPath -Force -ErrorAction SilentlyContinue
+            Append-Log "RECORDING: seek index repaired for '$($entry.OriginalPath)'."
+        }
+        catch {
+            Append-Log "RECORDING: could not swap in the repaired recording for '$($entry.OriginalPath)'; restoring the original: $($_.Exception.Message)"
+            try { if (-not (Test-Path -LiteralPath $entry.OriginalPath)) { Move-Item -LiteralPath $backupPath -Destination $entry.OriginalPath -Force } } catch {}
+            try { Remove-Item -LiteralPath $entry.TempPath -Force -ErrorAction SilentlyContinue } catch {}
+        }
+    }
+
+    $script:PendingRecordingRepairs = $stillPending
 }
 

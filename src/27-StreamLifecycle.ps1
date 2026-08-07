@@ -389,6 +389,7 @@ function Start-GstStream {
 
             $script:ControlledLiveStreamActive = $true
             $script:RecordingPipelineActive = [bool](Test-RecordingEnabled)
+            $script:RecordingHasAudioTrack = $script:RecordingPipelineActive -and (Test-RecordingHasAudioTrack)
             $script:ControlledLivePreviewSurfaceHwnd = $renderTarget.Handle
             $script:ControlledLivePreviewAppliedSize = $renderSize
             $script:PreviewHwnd = [IntPtr]::Zero
@@ -600,6 +601,7 @@ function Start-GstStream {
 
         Save-ActiveProcessState
         $script:RecordingPipelineActive = [bool]((-not $customGstArgumentsOverride) -and (Test-RecordingEnabled))
+        $script:RecordingHasAudioTrack = $script:RecordingPipelineActive -and (Test-RecordingHasAudioTrack)
 
         $targetSuffix = if ((Test-FullscreenCaptureMode) -and $script:CaptureWindowTitle) { " - $($script:CaptureWindowTitle)" } else { '' }
         $mediaSuffix = if (
@@ -705,6 +707,14 @@ function Stop-ControlledLiveStream {
 
     if (-not $script:ControlledLiveStreamActive) { return $false }
 
+    # Snapshotted now, before the resets further down clear these -- the
+    # background seek-index repair (Start-RecordingIndexRepair) needs the
+    # values as they were for THIS recording, not whatever the controls have
+    # moved on to by the time this function returns.
+    $wasRecordingActive = [bool]$script:RecordingPipelineActive
+    $recordingPathToRepair = $script:ResolvedRecordingPath
+    $recordingHadAudioTrack = [bool]$script:RecordingHasAudioTrack
+
     $script:StopRequested = $true
     $script:WaitingForFullscreen = $false
     if ($Restart) {
@@ -736,6 +746,9 @@ function Stop-ControlledLiveStream {
         # this process is the signalling/socket boundary the web player expects.
         Stop-ProcessTreeById -ProcessId $workerProcess.Id
         try { $workerProcess.WaitForExit((Get-ProcessExitWaitBudgetMs)) | Out-Null } catch {}
+        if ($wasRecordingActive -and -not [string]::IsNullOrWhiteSpace($recordingPathToRepair) -and $workerProcess.HasExited) {
+            Start-RecordingIndexRepair -RecordingPath $recordingPathToRepair -HasAudioTrack $recordingHadAudioTrack
+        }
     }
     Close-ControlledLiveWorkerPipe
     # Only demap on a genuine stop, not a settings-triggered restart-in-place
@@ -859,6 +872,10 @@ function Stop-GstStream {
     $script:WaitingForFullscreen = $false
     $wasPreviewOnly = [bool]$script:PreviewOnlyMode
     $wasRecordingOnly = [bool]$script:RecordingOnlyMode
+    # Same snapshot-before-reset reasoning as Stop-ControlledLiveStream above.
+    $wasRecordingActive = [bool]$script:RecordingPipelineActive
+    $recordingPathToRepair = $script:ResolvedRecordingPath
+    $recordingHadAudioTrack = [bool]$script:RecordingHasAudioTrack
 
     if ($Restart) {
         $script:AutomaticRestartPending = [bool]$AutomaticRestart
@@ -929,6 +946,9 @@ function Stop-GstStream {
             $script:GstProcess.WaitForExit((Get-ProcessExitWaitBudgetMs)) | Out-Null
         }
         catch {}
+        if ($wasRecordingActive -and -not [string]::IsNullOrWhiteSpace($recordingPathToRepair) -and $script:GstProcess.HasExited) {
+            Start-RecordingIndexRepair -RecordingPath $recordingPathToRepair -HasAudioTrack $recordingHadAudioTrack
+        }
     }
 
     if ($hadVideoGst) {

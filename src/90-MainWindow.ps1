@@ -5467,6 +5467,7 @@ $pollTimer.Add_Tick({
     if ($pending) { Append-Log $pending }
     Update-GstThreadCountStatus
     Drain-LetsEncryptTlsProxyLogs
+    Update-PendingRecordingRepairs
 
     # The auth proxy worker process (Start-AuthProxyWorker, 33-LetsEncrypt.ps1)
     # has no heartbeat of its own -- if it dies unexpectedly while either
